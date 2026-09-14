@@ -17,6 +17,8 @@ export const config = {
     path.join(process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming'), 'Claude', 'claude-code', '2.1.270', 'claude.exe'),
   /** codex 실행 파일. */
   codexExe: process.env.PIXEL_CODEX_EXE || 'codex',
+  /** 세션 hooks 의 timeout(초). 허가·질문 보류 상한 — D-16: 600이면 10분 뒤 CLI가 hook을 끊고 TUI 프롬프트로 폴백한다. */
+  hookTimeoutSec: Number(process.env.PIXEL_HOOK_TIMEOUT_SEC || 86400),
   /** 기본 터미널 크기. */
   cols: 120,
   rows: 40,

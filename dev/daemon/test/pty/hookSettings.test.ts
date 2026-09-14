@@ -50,7 +50,7 @@ describe('buildClaudeSessionSettings', () => {
     }
   });
 
-  test('each event has one matcher group with one command hook, timeout 600, event name as last arg', () => {
+  test('each event has one matcher group with one command hook, timeout = HOOK_TIMEOUT_SEC, event name as last arg', () => {
     for (const ev of CLAUDE_HOOK_EVENTS) {
       const groups = settings.hooks[ev];
       assert.equal(groups.length, 1);
@@ -58,7 +58,7 @@ describe('buildClaudeSessionSettings', () => {
       const h = groups[0].hooks[0];
       assert.equal(h.type, 'command');
       assert.equal(h.timeout, HOOK_TIMEOUT_SEC);
-      assert.equal(h.timeout, 600);
+      assert.equal(h.timeout, 86400);
       assert.equal(h.command, `node D:/myproject/pixel-office/dev/daemon/src/hooks/hook.js ${PORT} ${ev}`);
       assert.ok(!h.command.includes('\\'), 'no backslashes in hook command');
     }
@@ -84,7 +84,7 @@ describe('buildCodexHooksFile', () => {
 
   test('uses the same hook shape as Claude', () => {
     const h = file.hooks.Interrupt[0].hooks[0];
-    assert.deepEqual(h, { type: 'command', command: `node D:/myproject/pixel-office/dev/daemon/src/hooks/hook.js ${PORT} Interrupt`, timeout: 600 });
+    assert.deepEqual(h, { type: 'command', command: `node D:/myproject/pixel-office/dev/daemon/src/hooks/hook.js ${PORT} Interrupt`, timeout: HOOK_TIMEOUT_SEC });
   });
 });
 

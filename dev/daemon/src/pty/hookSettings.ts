@@ -4,14 +4,15 @@
 // Codex 는 `<cwd>/.codex/hooks.json` + `--dangerously-bypass-hook-trust`. 두 CLI 모두 같은
 // 형식 `{ hooks: { <Event>: [ { hooks: [ { type:'command', command, timeout } ] } ] } }` 이다.
 // hook 명령은 Windows 에서 git-bash 로 실행되므로 경로는 슬래시(D-03, curl 은 Codex 에서 실패 → node 스크립트).
+import { config } from '../config.js';
 import fs from 'node:fs';
 import path from 'node:path';
 
 /** Codex hooks.json 에 우리가 쓴 파일임을 표시하는 마커(description 필드). */
 export const PIXEL_OFFICE_MARKER = 'pixel-office';
 
-/** 실측 ②: 75초 보류도 통과한 값. 상한(86400) 재확인은 T10. */
-export const HOOK_TIMEOUT_SEC = 600;
+/** 세션 hooks timeout(초). D-16: 600이면 10분 뒤 CLI가 hook을 끊고 TUI 프롬프트로 폴백 → 기본 86400(config.hookTimeoutSec). */
+export const HOOK_TIMEOUT_SEC = config.hookTimeoutSec;
 
 export const CLAUDE_HOOK_EVENTS = [
   'SessionStart',
