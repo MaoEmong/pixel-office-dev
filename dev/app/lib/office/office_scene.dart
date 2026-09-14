@@ -1,0 +1,282 @@
+// 사무실 장면 모델(순수 Dart). 상태 층의 members/latestEvent/pending 맵을 화면에 필요한 값만 추린 불변 데이터로 바꾼다.
+// 페인터·레이아웃은 이 클래스만 보고, 상태 층의 형태 변화는 여기서만 흡수한다.
+//
+// 요약 규칙(01-설계문서 §3 "캐릭터 상태 3중 표현" 중 모니터·말풍선):
+//   status exited → "(퇴근)", error → "⚠ 오류" (이벤트보다 우선)
+//   event reading → "📖 <basename>", editing → "✎ <basename>", running → "▶ <cmd 40자>", thinking → "…",
+//         idle → "(대기)", waiting_approval → "❗ 허가 대기", asking → "❓ 질문", error → "⚠ 오류",
+//         text → "💬 <text>", delegating → "→ 위임", reporting → "📋 보고"
+//   이벤트 없음 → status 로: starting "(출근 중)", idle "(대기)", working "…", waiting_* 는 위와 동일.
+
+import '../model/models.dart';
+
+/// 말풍선 최대 글자 수.
+const int bubbleMaxChars = 28;
+
+/// running 요약에 쓰는 명령 최대 글자 수.
+const int cmdMaxChars = 40;
+
+/// 캐릭터 한 명이 화면에 필요한 값.
+class SceneMember {
+  const SceneMember({
+    required this.id,
+    required this.name,
+    required this.engine,
+    required this.status,
+    required this.deskIndex,
+    required this.summary,
+    required this.isAlert,
+    this.queueIndex,
+  });
+
+  final String id;
+  final String name;
+  final Engine engine;
+  final MemberStatus status;
+
+  /// 책상 번호(0부터). 라벨은 `책상 ${deskIndex + 1}`.
+  final int deskIndex;
+
+  /// 모니터·말풍선 텍스트(말풍선은 [bubbleText] 로 잘라 쓴다).
+  final String summary;
+
+  /// alert 말풍선(waiting_approval / asking / reporting, 또는 waiting 상태).
+  final bool isAlert;
+
+  /// 내 책상 줄에 서 있으면 그 순서(0부터), 자기 자리면 null.
+  final int? queueIndex;
+
+  bool get isQueued => queueIndex != null;
+
+  /// 회색 처리(exited / error).
+  bool get isGone => status.isGone;
+
+  /// 이름 첫 글자(빈 이름이면 '?').
+  String get initial => name.isEmpty ? '?' : String.fromCharCode(name.runes.first);
+
+  String get engineLabel => switch (engine) {
+        Engine.claude => 'Claude',
+        Engine.codex => 'Codex',
+      };
+
+  String get deskLabel => '책상 ${deskIndex + 1} · $name';
+
+  String get bubbleText => truncate(summary, bubbleMaxChars);
+
+  @override
+  bool operator ==(Object other) =>
+      other is SceneMember &&
+      other.id == id &&
+      other.name == name &&
+      other.engine == engine &&
+      other.status == status &&
+      other.deskIndex == deskIndex &&
+      other.summary == summary &&
+      other.isAlert == isAlert &&
+      other.queueIndex == queueIndex;
+
+  @override
+  int get hashCode => Object.hash(id, name, engine, status, deskIndex, summary, isAlert, queueIndex);
+
+  @override
+  String toString() => 'SceneMember($id $name desk=$deskIndex queue=$queueIndex "$summary")';
+}
+
+/// 내 책상 줄의 한 항목.
+class QueueEntry {
+  const QueueEntry({required this.pendingId, required this.memberId, required this.memberName, required this.label});
+
+  final String pendingId;
+  final String memberId;
+  final String memberName;
+
+  /// "허가: (명령)" / "질문: (첫 질문)".
+  final String label;
+
+  /// 목록 한 줄: "1. 이음 — 허가: rm -rf build/".
+  String line(int index) => '${index + 1}. $memberName — $label';
+
+  @override
+  bool operator ==(Object other) =>
+      other is QueueEntry &&
+      other.pendingId == pendingId &&
+      other.memberId == memberId &&
+      other.memberName == memberName &&
+      other.label == label;
+
+  @override
+  int get hashCode => Object.hash(pendingId, memberId, memberName, label);
+}
+
+/// 사무실 한 장면. 값 비교 가능(페인터 shouldRepaint 용).
+class OfficeScene {
+  const OfficeScene({required this.members, required this.queue});
+
+  static const OfficeScene empty = OfficeScene(members: [], queue: []);
+
+  /// createdAt 순(책상 순서와 동일).
+  final List<SceneMember> members;
+
+  /// 열린 pending, createdAt 순.
+  final List<QueueEntry> queue;
+
+  bool get isEmpty => members.isEmpty;
+
+  SceneMember? memberById(String id) {
+    for (final m in members) {
+      if (m.id == id) return m;
+    }
+    return null;
+  }
+
+  /// 상태 층 맵에서 장면을 만든다. 멤버는 createdAt 순(= 책상 순서).
+  /// [teamId] 를 주면 그 팀 멤버(와 그 멤버들의 pending)만, null 이면 전체.
+  factory OfficeScene.build({
+    required Map<String, Member> members,
+    required Map<String, OfficeEvent> latestEvents,
+    required Map<String, Pending> pending,
+    String? teamId,
+  }) {
+    if (teamId != null) {
+      members = {for (final e in members.entries) if (e.value.teamId == teamId) e.key: e.value};
+      pending = {for (final e in pending.entries) if (members.containsKey(e.value.memberId)) e.key: e.value};
+    }
+    final sorted = members.values.toList(growable: false)..sort(_byCreatedAt);
+    final openPending = pending.values.toList(growable: false)..sort(_pendingByCreatedAt);
+
+    // 줄 순서: pending 생성 순으로 멤버가 처음 나타나는 순서. pending 없이 waiting 인 멤버는 그 뒤에 createdAt 순.
+    final queueOrder = <String>[];
+    for (final p in openPending) {
+      if (!queueOrder.contains(p.memberId) && members.containsKey(p.memberId)) queueOrder.add(p.memberId);
+    }
+    for (final m in sorted) {
+      if (m.status.isWaiting && !queueOrder.contains(m.id)) queueOrder.add(m.id);
+    }
+    // 실제로 줄에 서는 건 waiting 상태인 멤버뿐(pending 만 남고 status 가 바뀐 경우는 자리로).
+    final queued = <String, int>{};
+    for (final id in queueOrder) {
+      final m = members[id];
+      if (m != null && m.status.isWaiting) queued[id] = queued.length;
+    }
+
+    final sceneMembers = <SceneMember>[
+      for (var i = 0; i < sorted.length; i++)
+        SceneMember(
+          id: sorted[i].id,
+          name: sorted[i].name,
+          engine: sorted[i].engine,
+          status: sorted[i].status,
+          deskIndex: i,
+          summary: summarize(sorted[i].status, latestEvents[sorted[i].id]),
+          isAlert: isAlertFor(sorted[i].status, latestEvents[sorted[i].id]),
+          queueIndex: queued[sorted[i].id],
+        ),
+    ];
+
+    final queue = <QueueEntry>[
+      for (final p in openPending)
+        QueueEntry(
+          pendingId: p.id,
+          memberId: p.memberId,
+          memberName: members[p.memberId]?.name ?? p.memberId,
+          label: pendingLabel(p),
+        ),
+    ];
+    return OfficeScene(members: sceneMembers, queue: queue);
+  }
+
+  static int _byCreatedAt(Member a, Member b) {
+    final c = a.createdAt.compareTo(b.createdAt);
+    return c != 0 ? c : a.id.compareTo(b.id);
+  }
+
+  static int _pendingByCreatedAt(Pending a, Pending b) {
+    final c = a.createdAt.compareTo(b.createdAt);
+    return c != 0 ? c : a.id.compareTo(b.id);
+  }
+
+  @override
+  bool operator ==(Object other) =>
+      other is OfficeScene && _listEq(other.members, members) && _listEq(other.queue, queue);
+
+  @override
+  int get hashCode => Object.hash(Object.hashAll(members), Object.hashAll(queue));
+
+  static bool _listEq<T>(List<T> a, List<T> b) {
+    if (a.length != b.length) return false;
+    for (var i = 0; i < a.length; i++) {
+      if (a[i] != b[i]) return false;
+    }
+    return true;
+  }
+}
+
+// ---- 요약 함수 -------------------------------------------------------------------
+
+/// 모니터·말풍선용 한 줄 요약.
+String summarize(MemberStatus status, OfficeEvent? event) {
+  if (status == MemberStatus.exited) return '(퇴근)';
+  if (status == MemberStatus.error) return '⚠ 오류';
+  if (event == null) return _statusSummary(status);
+  final d = event.detail;
+  return switch (event.kind) {
+    OfficeEventKind.reading => '📖 ${d.path != null ? basename(d.path!) : d.oneLine}',
+    OfficeEventKind.editing => '✎ ${d.path != null ? basename(d.path!) : d.oneLine}',
+    OfficeEventKind.running => '▶ ${truncate(firstLine(d.cmd ?? d.oneLine), cmdMaxChars)}',
+    OfficeEventKind.thinking => '…',
+    OfficeEventKind.idle => '(대기)',
+    OfficeEventKind.waitingApproval => '❗ 허가 대기',
+    OfficeEventKind.asking => '❓ 질문',
+    OfficeEventKind.error => '⚠ 오류',
+    OfficeEventKind.text => d.oneLine.isEmpty ? '💬' : '💬 ${d.oneLine}',
+    OfficeEventKind.delegating => '→ 위임',
+    OfficeEventKind.reporting => '📋 보고',
+  };
+}
+
+String _statusSummary(MemberStatus s) => switch (s) {
+      MemberStatus.starting => '(출근 중)',
+      MemberStatus.idle => '(대기)',
+      MemberStatus.working => '…',
+      MemberStatus.waitingApproval => '❗ 허가 대기',
+      MemberStatus.waitingAnswer => '❓ 질문',
+      MemberStatus.exited => '(퇴근)',
+      MemberStatus.error => '⚠ 오류',
+    };
+
+/// alert 말풍선 여부: 마지막 이벤트가 waiting_approval/asking/reporting 이거나 멤버가 waiting 상태.
+bool isAlertFor(MemberStatus status, OfficeEvent? event) {
+  if (status.isGone) return false;
+  if (status.isWaiting) return true;
+  return event?.kind.isAlert ?? false;
+}
+
+/// 내 책상 목록용 "허가: (명령)" / "질문: (첫 질문)".
+String pendingLabel(Pending p) {
+  if (p.type == PendingType.approval) {
+    final input = p.payload['tool_input'];
+    String? arg;
+    if (input is Map) arg = (input['command'] ?? input['file_path'] ?? input['path'])?.toString();
+    final tool = p.payload['tool_name']?.toString() ?? '';
+    final what = firstLine(arg ?? tool);
+    return '허가: ${what.isEmpty ? '(도구)' : what}';
+  }
+  final q = firstLine(p.summary);
+  return '질문: ${q.isEmpty ? '(내용 없음)' : q}';
+}
+
+/// 경로의 마지막 조각(`/`·`\` 모두).
+String basename(String path) {
+  final trimmed = path.replaceAll(RegExp(r'[\\/]+$'), '');
+  final i = trimmed.lastIndexOf(RegExp(r'[\\/]'));
+  return i < 0 ? trimmed : trimmed.substring(i + 1);
+}
+
+String firstLine(String s) => s.split('\n').first.trim();
+
+/// 글자 수(rune 기준)로 자르고 넘치면 '…'.
+String truncate(String s, int max) {
+  final runes = s.runes.toList();
+  if (runes.length <= max) return s;
+  return '${String.fromCharCodes(runes.take(max - 1))}…';
+}
