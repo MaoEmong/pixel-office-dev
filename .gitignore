@@ -1,0 +1,16 @@
+node_modules/
+dist/
+build/
+*.log
+.dart_tool/
+.flutter-plugins*
+ephemeral/
+# spike artifacts
+dev/spike-0/sandbox/
+dev/spike-0/*.json
+dev/spike-0/*.txt
+dev/spike-0/*.pid
+dev/spike-0/flutter_term/build/
+dev/spike-0/flutter_term/windows/flutter/ephemeral/
+# local state
+.local/

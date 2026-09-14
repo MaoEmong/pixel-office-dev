@@ -1,0 +1,163 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<title>Pixel Office — wireframe</title>
+<style>
+  /* Intentionally rough: system font, thin gray borders, no color except state markers */
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: system-ui, "Malgun Gothic", sans-serif; font-size: 13px; color: #222; background: #fafafa; }
+  .app { display: grid; grid-template-rows: 44px 1fr 56px; grid-template-columns: 1fr 360px; height: 900px; width: 1400px; }
+  .top { grid-column: 1 / 3; border-bottom: 1px solid #999; display: flex; align-items: center; gap: 16px; padding: 0 12px; }
+  .top .tab { border: 1px solid #999; padding: 4px 10px; }
+  .top .tab.on { background: #ddd; }
+  .top .spacer { flex: 1; }
+  .top .daemon { border: 1px dashed #999; padding: 4px 8px; font-size: 12px; }
+
+  /* Office: a coarse grid; desks are boxes; characters are circles with a state bubble */
+  .office { position: relative; border-right: 1px solid #999; background:
+      repeating-linear-gradient(0deg, transparent 0 39px, #eee 39px 40px),
+      repeating-linear-gradient(90deg, transparent 0 39px, #eee 39px 40px); }
+  .desk { position: absolute; width: 160px; height: 100px; border: 1px solid #777; background: #fff; }
+  .desk .label { position: absolute; left: 6px; top: 4px; font-size: 11px; color: #555; }
+  .desk .engine { position: absolute; right: 6px; top: 4px; font-size: 10px; border: 1px solid #aaa; padding: 0 4px; }
+  .desk .monitor { position: absolute; left: 20px; top: 26px; width: 120px; height: 36px; border: 1px solid #777; font-family: ui-monospace, Consolas, monospace; font-size: 10px; padding: 3px; overflow: hidden; white-space: nowrap; }
+  .char { position: absolute; width: 28px; height: 28px; border-radius: 50%; border: 2px solid #333; background: #fff; display: flex; align-items: center; justify-content: center; font-size: 11px; }
+  .char.selected { outline: 3px solid #333; outline-offset: 2px; }
+  .bubble { position: absolute; border: 1px solid #333; background: #fff; padding: 3px 6px; font-size: 11px; white-space: nowrap; }
+  .bubble:after { content: ""; position: absolute; left: 10px; bottom: -6px; width: 6px; height: 6px; background: #fff; border-right: 1px solid #333; border-bottom: 1px solid #333; transform: rotate(45deg); }
+  .bubble.alert { border: 2px solid #333; font-weight: bold; }
+  .mydesk { position: absolute; left: 400px; top: 640px; width: 240px; height: 110px; border: 2px solid #333; background: #fff; }
+  .mydesk .label { position: absolute; left: 8px; top: 6px; font-weight: bold; }
+  .queue { position: absolute; left: 8px; top: 28px; right: 8px; font-size: 11px; }
+  .queue div { border-top: 1px dotted #999; padding: 3px 0; }
+  .path { position: absolute; border-top: 2px dotted #777; }
+  .door { position: absolute; left: 0; top: 380px; width: 8px; height: 60px; background: #777; }
+  .door + .doorlabel { position: absolute; left: 14px; top: 400px; font-size: 11px; color: #555; }
+
+  /* Right panel: selected character session detail */
+  .panel { display: flex; flex-direction: column; }
+  .panel h3 { margin: 0; padding: 10px 12px; border-bottom: 1px solid #999; font-size: 13px; }
+  .panel .tabs { display: flex; border-bottom: 1px solid #999; }
+  .panel .tabs div { padding: 6px 10px; border-right: 1px solid #999; font-size: 12px; }
+  .panel .tabs div.on { background: #ddd; }
+  .log { flex: 1; overflow: auto; padding: 8px 12px; font-family: ui-monospace, Consolas, monospace; font-size: 11px; line-height: 1.5; }
+  .log .u { color: #000; font-weight: bold; }
+  .log .t { color: #555; }
+  .card { margin: 8px 12px; border: 2px solid #333; padding: 8px; background: #fff; }
+  .card .title { font-weight: bold; margin-bottom: 4px; }
+  .card pre { margin: 6px 0; padding: 6px; border: 1px solid #aaa; font-size: 11px; white-space: pre-wrap; }
+  .card .btns { display: flex; gap: 6px; }
+  .card .btns span { border: 1px solid #333; padding: 3px 10px; }
+  .card .btns span.primary { background: #ddd; }
+
+  /* Bottom command bar */
+  .cmd { grid-column: 1 / 3; border-top: 1px solid #999; display: flex; align-items: center; gap: 8px; padding: 0 12px; }
+  .cmd .to { border: 1px solid #999; padding: 6px 10px; }
+  .cmd .input { flex: 1; border: 1px solid #999; padding: 8px 10px; color: #777; }
+  .cmd .send { border: 1px solid #333; padding: 6px 14px; }
+  .note { position: absolute; font-size: 10px; color: #777; font-style: italic; }
+</style>
+</head>
+<body>
+<!--
+  DESIGN NOTES
+  - One screen. Left = office (the "watch" surface), right = selected character's session (the "read" surface),
+    bottom = command bar (the "instruct" surface). Everything the user does daily is reachable without a modal.
+  - Character state is shown 3 ways at once: sprite pose (not drawable here), monitor text, and speech bubble.
+    Bubble text = last tool call, truncated. Alert bubble = needs the user (approval / question).
+  - "내 책상" is the physical inbox: a character needing approval walks here and queues. The queue list mirrors the
+    right-panel approval card so nothing is lost when 3 characters block at once.
+  - Engine badge on each desk (Claude / Codex) is the ONLY place the engine is visible; the office itself is engine-blind.
+  - Daemon status in the top bar: the office is a view over a daemon that may outlive the window.
+  - Empty state: no characters -> office shows only 내 책상 and the door; command bar reads "새 캐릭터 고용".
+  - Edge cases: long file paths truncate in bubble/monitor (full text in right panel); 5+ characters wrap to a second row of desks;
+    a disconnected daemon greys the whole office and shows a reconnect banner.
+-->
+<div class="app">
+  <div class="top">
+    <strong>Pixel Office</strong>
+    <div class="tab on">사무실</div>
+    <div class="tab">작업 기록</div>
+    <div class="tab">설정</div>
+    <div class="spacer"></div>
+    <div class="daemon">데몬 연결됨 · localhost:7420 · 세션 3 · 오늘 Claude 크레딧 $4.20 / Codex 12%</div>
+  </div>
+
+  <div class="office">
+    <div class="door"></div><div class="doorlabel">문 (새 캐릭터 입장)</div>
+
+    <!-- Desk 1: working -->
+    <div class="desk" style="left:120px; top:80px;">
+      <div class="label">책상 1 · 하루</div><div class="engine">Claude</div>
+      <div class="monitor">Edit lib/map/tiles.dart</div>
+    </div>
+    <div class="char" style="left:186px; top:150px;">하</div>
+    <div class="bubble" style="left:150px; top:36px;">✎ tiles.dart 수정 중 (3/7 파일)</div>
+
+    <!-- Desk 2: running command -->
+    <div class="desk" style="left:380px; top:80px;">
+      <div class="label">책상 2 · 모시</div><div class="engine">Codex</div>
+      <div class="monitor">$ flutter test test/stt_test.dart</div>
+    </div>
+    <div class="char" style="left:446px; top:150px;">모</div>
+    <div class="bubble" style="left:410px; top:36px;">▶ flutter test 실행 중 (00:41)</div>
+
+    <!-- Desk 3: empty, character walked to my desk -->
+    <div class="desk" style="left:640px; top:80px;">
+      <div class="label">책상 3 · 이음</div><div class="engine">Claude</div>
+      <div class="monitor" style="color:#999">(자리 비움)</div>
+    </div>
+    <div class="path" style="left:706px; top:150px; width:0; height:490px; border-left:2px dotted #777; border-top:none;"></div>
+    <div class="path" style="left:520px; top:640px; width:186px;"></div>
+
+    <!-- Desk 4: idle -->
+    <div class="desk" style="left:900px; top:80px;">
+      <div class="label">책상 4 · (빈 자리)</div>
+      <div class="monitor" style="color:#999">고용 대기</div>
+    </div>
+
+    <!-- My desk with queue -->
+    <div class="mydesk">
+      <div class="label">내 책상</div>
+      <div class="queue">
+        <div>1. 이음 — 허가: <code>rm -rf build/</code></div>
+        <div>2. (없음)</div>
+      </div>
+    </div>
+    <div class="char selected" style="left:480px; top:600px;">이</div>
+    <div class="bubble alert" style="left:470px; top:560px;">❗ 허가 필요</div>
+
+    <div class="note" style="left:120px; top:200px;">* 캐릭터 상태 = 스프라이트 포즈 + 모니터 텍스트 + 말풍선 (셋 다 같은 이벤트에서 나옴)</div>
+    <div class="note" style="left:120px; top:216px;">* 완료 시 캐릭터가 내 책상으로 걸어와 "보고" 말풍선, 보고서는 오른쪽 패널에</div>
+  </div>
+
+  <div class="panel">
+    <h3>이음 · Claude · D:\myproject\ieum · 12분 경과</h3>
+    <div class="tabs"><div class="on">로그</div><div>변경 파일 (4)</div><div>터미널</div><div>보고서</div></div>
+    <div class="card">
+      <div class="title">❗ 허가 요청 — Bash</div>
+      <pre>rm -rf build/ && flutter build apk --flavor production</pre>
+      <div>이유: 이전 빌드 캐시 때문에 R8 오류가 반복돼서 클린 빌드가 필요해요.</div>
+      <div class="btns"><span class="primary">허가</span><span>거부</span><span>이번 세션 항상 허가</span><span>수정해서 허가</span></div>
+    </div>
+    <div class="log">
+      <div class="t">12:01</div><div class="u">나: 명함 OCR 테스트 깨진 거 고쳐줘</div>
+      <div class="t">12:01 · 읽는 중</div><div>Read test/card_ocr_test.dart</div>
+      <div class="t">12:02 · 검색</div><div>Grep "MlKitRegistrar" app/android</div>
+      <div class="t">12:04 · 편집</div><div>Edit app/android/app/proguard-rules.pro (+3)</div>
+      <div class="t">12:05 · 실행</div><div>Bash flutter test test/card_ocr_test.dart → 실패 (R8 missing class)</div>
+      <div class="t">12:09 · 생각 중</div><div>클린 빌드 필요 판단…</div>
+      <div class="t">12:12 · 허가 대기</div><div>▲ 위 카드</div>
+    </div>
+  </div>
+
+  <div class="cmd">
+    <div class="to">→ 이음 ▾</div>
+    <div class="input">이음에게 지시… (Enter 전송, 작업 중이면 중간 지시로 들어감)</div>
+    <div class="send">보내기</div>
+    <div class="to">+ 고용</div>
+  </div>
+</div>
+</body>
+</html>
