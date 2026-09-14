@@ -1,0 +1,20 @@
+ ▐▛███▛█   Claude Code v2.1.270
+▝▜██████▀  Opus 5 (1M context) · Claude Max
+  ▝▝ ▝▝    D:\myproject\pixel-office\dev\spike-0\sandbox
+
+▎ Keep working from anywhere
+▎ Check progress or reply to any session from the mobile app, desktop app, or https://claude.ai/code. To keep a session
+▎ in this terminal only, run /remote-control
+  +2 more · /status
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  Try the new fullscreen renderer?
+
+  · Flicker-free output — fixes the flashing you see during long responses
+  · Mouse support — click to move your cursor or expand results
+  · Selected text auto-copies to your clipboard
+
+  ❯ 1. Yes, try it
+    2. Not now
+
+  Enter to confirm · Esc to cancel

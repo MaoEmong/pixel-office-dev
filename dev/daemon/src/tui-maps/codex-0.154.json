@@ -1,0 +1,44 @@
+{
+  "engine": "codex",
+  "version": "0.154.0",
+  "source": "dev/spike-0/run-codex2.log run-codex3.log run-codex5.log (2026-09-14, 120x40 ConPTY)",
+  "notes": [
+    "정규식 문자열은 JavaScript RegExp(u 플래그). JSON 이므로 백슬래시는 두 번(\\\\s, \\\\?). dialogs[].all 은 화면 전체 텍스트에 m 플래그로 검사.",
+    "verified:false 인 항목은 로그에서 실물을 못 본 추정 패턴 — M3 실기동에서 재확인할 것.",
+    "스파이크의 screen() 헬퍼는 버퍼 0행부터 읽어 Codex(일반 버퍼+스크롤백)에서는 작업 중 화면(스피너·상태줄)이 로그에 안 남았다. busy/interrupted 는 미검증.",
+    "promptReady.inputLine: '› ' 로 시작하는 입력줄 아래 statusWithin 줄 안에 ' · ' 가 있는 상태줄(model reasoning · cwd)이 보이면 준비로 본다(run-codex5 READY 화면)."
+  ],
+  "promptReady": {
+    "scanLines": 8,
+    "anyOf": ["Ask Codex to do anything"],
+    "inputLine": { "prompt": "^\\s*› ", "status": " · ", "statusWithin": 3 }
+  },
+  "busy": {
+    "verified": false,
+    "anyOf": ["esc to interrupt"]
+  },
+  "interrupted": {
+    "verified": false,
+    "anyOf": ["^\\s*[■•]?\\s*(Conversation interrupted|Interrupted\\b)"]
+  },
+  "inputBox": {
+    "prompt": "^\\s*›",
+    "ruleAbove": null
+  },
+  "skipLines": [
+    "^\\s*[─╌═━┄┈]+\\s*$",
+    "^\\s*\\S+ (default|minimal|low|medium|high|xhigh) · ",
+    "esc to interrupt"
+  ],
+  "dialogs": [
+    { "id": "trust-directory", "kind": "trust-folder-codex", "verified": true,
+      "all": ["Do you trust the contents of this directory\\?"], "keys": ["enter"],
+      "highlight": {
+        "marker": "^\\s*›\\s*",
+        "choices": [
+          { "match": "Yes, continue", "keys": ["enter"] },
+          { "match": "No, quit", "keys": ["up", "enter"] }
+        ]
+      } }
+  ]
+}

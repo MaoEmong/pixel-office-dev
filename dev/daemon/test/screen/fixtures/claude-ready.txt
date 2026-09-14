@@ -1,0 +1,40 @@
+
+ ▐▛███▛█   Claude Code v2.1.270
+▝▜██████▀  Opus 5 (1M context) · Claude Max
+  ▝▝ ▝▝    D:\myproject\pixel-office\dev\spike-0\sandbox · /rc active
+
+  ✔ Using flicker-free rendering · if you want to go back, use /tui default
+    · Click to move your cursor in the text input
+    · Click to expand collapsed tool results
+    · By default, text auto-copies when you select it (/config to change)
+    · Hold Shift while selecting to use your terminal's native copy instead
+
+  Fable 5.1 writes better code and reports progress on long tasks. Switch anytime with /model.
+  +2 more · /status
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+                                                                                                      ● high · /effort
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ 
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏸ manual mode on · ? for shortcuts · ← for agents

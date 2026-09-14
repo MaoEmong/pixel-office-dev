@@ -1,0 +1,11 @@
+╭──────────────────────────────────────────────────────────╮
+│ >_ OpenAI Codex (v0.154.0)                               │
+│                                                          │
+│ model:     loading   /model to change                    │
+│ directory: D:\myproject\pixel-office\dev\spike-0\sandbox │
+╰──────────────────────────────────────────────────────────╯
+
+
+› Ask Codex to do anything
+
+  gpt-6-astra default · D:\myproject\pixel-office\dev\spike-0\sandbox
