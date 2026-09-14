@@ -1,16 +1,38 @@
-// 픽셀 오피스 데스크탑 앱 골격(T11). 01-설계문서 §3 레이아웃의 자리만 잡는다:
-//   상단 바(연결 상태·데몬 버전·개수) / 왼쪽 사무실(T12) / 오른쪽 패널 탭(T13) / 아래 지시 바(T14).
-// 데몬과 끊기면 사무실 위에 회색 오버레이 + "데몬 연결 안 됨".
+// 픽셀 오피스 데스크탑 앱 (M1 배선). 01-설계문서 §3 레이아웃:
+//   상단 바(TopBar, T14) / 왼쪽 사무실(OfficeView, T12) / 오른쪽 패널(RightPanel, T13) / 아래 지시 바(CommandBar, T14).
+// 데몬과 끊기면 사무실 위에 회색 오버레이 + "데몬 연결 안 됨" + "데몬 시작"(T14 launcher).
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import 'model/models.dart';
+import 'command/command_bar.dart';
+import 'office/office_view.dart';
+import 'panel/right_panel.dart';
 import 'rpc/rpc_client.dart';
 import 'state/office_state.dart';
+import 'topbar/daemon_launcher.dart';
+import 'topbar/notices.dart';
+import 'topbar/top_bar.dart';
 
 void main() {
   runApp(const ProviderScope(child: PixelOfficeApp()));
+}
+
+/// 사무실에서 클릭해 선택한 멤버. 오른쪽 패널·지시 바·상단 바 퇴근 버튼이 공유한다.
+final selectedMemberIdProvider = NotifierProvider<SelectedMemberId, String?>(SelectedMemberId.new);
+
+class SelectedMemberId extends Notifier<String?> {
+  @override
+  String? build() {
+    // 선택된 멤버가 사라지면(퇴근·팀 삭제) 선택 해제.
+    ref.listen(membersProvider, (_, members) {
+      final id = state;
+      if (id != null && !members.containsKey(id)) state = null;
+    });
+    return null;
+  }
+
+  void select(String? id) => state = id;
 }
 
 class PixelOfficeApp extends StatelessWidget {
@@ -36,27 +58,37 @@ class OfficeShell extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final connection = ref.watch(connectionStateProvider);
+    final selected = ref.watch(selectedMemberIdProvider);
+    final teamId = ref.watch(activeTeamIdProvider);
     return Scaffold(
       body: Column(
         children: [
-          const TopBar(),
+          TopBar(selectedMemberId: selected),
           Expanded(
             child: Stack(
               children: [
-                const Column(
+                Column(
                   children: [
                     Expanded(
                       child: Row(
                         children: [
-                          Expanded(flex: 3, child: OfficeArea()),
-                          SizedBox(width: 380, child: RightPanel()),
+                          Expanded(
+                            flex: 3,
+                            child: OfficeView(
+                              selectedMemberId: selected,
+                              teamId: teamId,
+                              onSelectMember: (id) => ref.read(selectedMemberIdProvider.notifier).select(id),
+                            ),
+                          ),
+                          SizedBox(width: 420, child: RightPanel(memberId: selected)),
                         ],
                       ),
                     ),
-                    CommandBar(),
+                    CommandBar(selectedMemberId: selected),
                   ],
                 ),
                 if (connection != RpcConnectionState.connected) const DisconnectedOverlay(),
+                const NoticeBanner(),
               ],
             ),
           ),
@@ -66,168 +98,7 @@ class OfficeShell extends ConsumerWidget {
   }
 }
 
-class TopBar extends ConsumerWidget {
-  const TopBar({super.key});
-
-  @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final connection = ref.watch(connectionStateProvider);
-    final version = ref.watch(daemonVersionProvider);
-    final pid = ref.watch(daemonPidProvider);
-    final teams = ref.watch(teamsProvider).length;
-    final members = ref.watch(membersProvider).length;
-    final pending = ref.watch(openPendingProvider).length;
-    final lastSeq = ref.watch(lastSeqProvider);
-    final (label, color) = switch (connection) {
-      RpcConnectionState.connected => ('연결됨', Colors.greenAccent),
-      RpcConnectionState.connecting => ('연결 중', Colors.amber),
-      RpcConnectionState.disconnected => ('연결 안 됨', Colors.redAccent),
-    };
-    final style = Theme.of(context).textTheme.bodyMedium;
-    return Container(
-      height: 40,
-      padding: const EdgeInsets.symmetric(horizontal: 12),
-      color: Theme.of(context).colorScheme.surfaceContainerHigh,
-      child: Row(
-        children: [
-          Text('픽셀 오피스', style: style?.copyWith(fontWeight: FontWeight.bold)),
-          const SizedBox(width: 16),
-          Icon(Icons.circle, size: 10, color: color),
-          const SizedBox(width: 6),
-          Text('데몬 $label', style: style),
-          if (version != null) ...[
-            const SizedBox(width: 8),
-            Text('v$version${pid != null ? ' · pid $pid' : ''}', style: style?.copyWith(color: Colors.white54)),
-          ],
-          const Spacer(),
-          Text('팀 $teams · 멤버 $members · 대기 $pending · seq $lastSeq', style: style),
-        ],
-      ),
-    );
-  }
-}
-
-/// 왼쪽 사무실 — T12 에서 CustomPainter 로 교체. 지금은 자리 + 멤버 상태 한 줄씩.
-class OfficeArea extends ConsumerWidget {
-  const OfficeArea({super.key});
-
-  @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final members = ref.watch(membersProvider).values.toList()..sort((a, b) => a.name.compareTo(b.name));
-    final teams = ref.watch(teamsProvider);
-    return Container(
-      color: const Color(0xFF1B1F2A),
-      padding: const EdgeInsets.all(16),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text('사무실 (T12 CustomPainter 자리)', style: Theme.of(context).textTheme.titleMedium?.copyWith(color: Colors.white38)),
-          const SizedBox(height: 12),
-          if (members.isEmpty)
-            const Text('멤버 없음', style: TextStyle(color: Colors.white38))
-          else
-            for (final m in members) _MemberLine(member: m, teamName: teams[m.teamId]?.name ?? m.teamId),
-        ],
-      ),
-    );
-  }
-}
-
-class _MemberLine extends ConsumerWidget {
-  const _MemberLine({required this.member, required this.teamName});
-
-  final Member member;
-  final String teamName;
-
-  @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final derived = ref.watch(derivedStatusProvider(member.id));
-    final latest = ref.watch(latestEventProvider(member.id));
-    final bubble = latest == null ? '' : '  💬 ${latest.kind.wire}: ${latest.detail.oneLine}';
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 4),
-      child: Text(
-        '${member.name} [${member.engine.name}] $teamName · ${member.status.wire}'
-        '${derived != null && derived.wire != member.status.wire ? ' (${derived.wire})' : ''}$bubble',
-        style: const TextStyle(color: Colors.white70, fontSize: 13),
-        overflow: TextOverflow.ellipsis,
-      ),
-    );
-  }
-}
-
-/// 오른쪽 패널 — T13 에서 터미널(xterm)·로그 탭 구현.
-class RightPanel extends StatelessWidget {
-  const RightPanel({super.key});
-
-  @override
-  Widget build(BuildContext context) => DefaultTabController(
-        length: 4,
-        child: Container(
-          color: Theme.of(context).colorScheme.surfaceContainerLow,
-          child: const Column(
-            children: [
-              TabBar(
-                tabs: [Tab(text: '터미널'), Tab(text: '로그'), Tab(text: '보고서'), Tab(text: '지시문')],
-                labelStyle: TextStyle(fontSize: 13),
-              ),
-              Expanded(
-                child: TabBarView(
-                  children: [
-                    _Placeholder('터미널 탭 (T13 · xterm + member.attach)'),
-                    _Placeholder('로그 탭 (T13 · events)'),
-                    _Placeholder('보고서 (M4)'),
-                    _Placeholder('지시문 (M2)'),
-                  ],
-                ),
-              ),
-            ],
-          ),
-        ),
-      );
-}
-
-class _Placeholder extends StatelessWidget {
-  const _Placeholder(this.label);
-  final String label;
-
-  @override
-  Widget build(BuildContext context) => Center(child: Text(label, style: const TextStyle(color: Colors.white38)));
-}
-
-/// 아래 지시 바 — T14 에서 대상 선택·Enter 전송·bracketed paste 구현.
-class CommandBar extends StatelessWidget {
-  const CommandBar({super.key});
-
-  @override
-  Widget build(BuildContext context) => Container(
-        height: 56,
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-        color: Theme.of(context).colorScheme.surfaceContainerHigh,
-        child: Row(
-          children: [
-            const SizedBox(
-              width: 140,
-              child: TextField(
-                enabled: false,
-                decoration: InputDecoration(isDense: true, border: OutlineInputBorder(), hintText: '대상 (T14)'),
-              ),
-            ),
-            const SizedBox(width: 8),
-            const Expanded(
-              child: TextField(
-                enabled: false,
-                decoration: InputDecoration(isDense: true, border: OutlineInputBorder(), hintText: '지시 입력 — Enter 전송 (T14)'),
-              ),
-            ),
-            const SizedBox(width: 8),
-            IconButton(onPressed: null, icon: const Icon(Icons.send)),
-          ],
-        ),
-      );
-}
-
-/// 데몬 연결이 끊겼을 때 사무실을 덮는 회색 오버레이. T14 에서 "데몬 시작" 버튼 추가.
+/// 데몬 연결이 끊겼을 때 사무실을 덮는 회색 오버레이 + "데몬 시작".
 class DisconnectedOverlay extends ConsumerWidget {
   const DisconnectedOverlay({super.key});
 
@@ -256,9 +127,16 @@ class DisconnectedOverlay extends ConsumerWidget {
               Text(error, style: const TextStyle(color: Colors.white38, fontSize: 12), textAlign: TextAlign.center),
             ],
             const SizedBox(height: 16),
-            OutlinedButton(
-              onPressed: () => ref.read(rpcClientProvider).retryNow(),
-              child: const Text('다시 연결'),
+            Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                OutlinedButton(
+                  onPressed: () => ref.read(rpcClientProvider).retryNow(),
+                  child: const Text('다시 연결'),
+                ),
+                const SizedBox(width: 12),
+                const DaemonStartButton(),
+              ],
             ),
           ],
         ),
