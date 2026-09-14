@@ -52,6 +52,28 @@ v1a 에서 데몬이 만드는 이벤트(어댑터 표는 worklog T04 참고):
 - `idle{summary:'interrupted'}` — `member.interrupt` 후 화면 준비 문구로 idle 판정.
 - `idle{summary:'clocked out'}` — `member.clockOut`.
 - `error{summary:'process exited (code N)', exitCode}` — 데몬이 의도하지 않은 프로세스 종료(사용자 `/exit`·크래시). clockOut/restart/shutdown 에는 없음.
+- 재시작 복구(T09, 아래 "재시작 복구")가 만드는 이벤트:
+  - `error{summary:'재지시 필요: 허가 요청이 재시작으로 만료됨', pendingId, pendingType:'approval'}` ref `{approvalId}` — 열려 있던 허가 요청은 hook 프로세스와 함께 죽었으므로 `expired`.
+  - `error{summary:'재지시 필요: 질문이 재시작으로 만료됨', pendingId, pendingType:'question'}` ref `{questionId}` — TUI `AskUserQuestion` 질문(payload 에 `tool_input` 있음)만. M2 `ask_user` 질문은 열린 채 남는다.
+  - `error{summary:'restart: no session id to resume'}` — `session_id` 가 없어 되살리지 못한 멤버(status `error`, 미종료 task aborted). `member.rehire` 로 새 세션.
+  - `error{summary:'restart: spawn failed: …'}` / `error{summary:'restart: recovery failed: …'}` — 재스폰 자체가 실패(status `error`).
+  - `error{summary:'resume failed; started fresh session', exitCode, sessionId}` — `--resume` 직후(10초 안) 0 이 아닌 코드로 죽음(세션 파일 없음 증상) → `session_id` 를 지우고 새 세션으로 한 번 더 스폰. task 는 그대로.
+  - `text{summary:'resumed'}` — 되살린 세션의 `SessionStart(source=resume)`(어댑터, T04).
+
+## 재시작 복구
+
+데몬이 기동할 때(`daemon.json` 기록 직후, WS 서버가 열리기 전) 이전 기동이 DB 에 남긴 멤버를 되살린다. 클라이언트는 아무것도 요청하지 않아도 된다 — `hello` 때 스냅샷과 `since` replay 로 결과를 본다.
+
+1. **대상:** `members.status ∈ {starting, idle, working, waiting_approval, waiting_answer}`. `exited`/`error` 는 손대지 않는다(`member.rehire` 대상).
+2. **유령 정리:** 이전 데몬이 하드 킬됐으면 ConPTY 자식(`child_pid`)이 살아남는다(T09 실측 — 정상 종료 때만 같이 죽는다). 그 pid 가 살아 있고 프로세스 이름이 엔진 이름(`claude`/`codex`)을 포함하면 트리째 종료한 뒤 진행한다. 이름이 다르면(pid 재사용) 건드리지 않고 `daemon.notice{warn}` 만.
+3. **pending:** 열린 `approval` 전부 → `expired` + `error{재지시 필요…, pendingId}`. 열린 `question` 중 TUI `AskUserQuestion`(payload `tool_input` 있음) → 같은 처리. 그 외 질문(M2 `ask_user`, 턴 종료 상태)은 그대로 `open` — 스냅샷 `pending` 에 남는다.
+4. **재스폰:** `session_id` 가 있으면 `member.rehire` 와 같은 경로로 `--resume <session_id>`(status `starting` → SessionStart 로 `idle`). 없으면 status `error` + `error{restart: no session id to resume}`, 미종료 task aborted.
+5. **[RESUMED]:** 되살린 멤버의 입력 큐에 시스템 메시지를 먼저 넣는다(idle ∧ 프롬프트 준비 시 붙여넣기 — `thinking{text:'[RESUMED] …'}` 이벤트로 보인다):
+   `[RESUMED] 데몬이 재시작됐다. 진행 중이던 작업: task#<id>: <instruction 첫 80자>(, …) | 없음. 마지막 확인된 행동: <kind 요약>; …(그 멤버의 최근 이벤트 5건, 오래된 것부터; 복구가 새로 쓴 이벤트는 제외) | 없음. [만료된 허가·질문: N건(필요하면 다시 요청하라).] 현재 상태를 점검하고 이어서 진행하라.`
+6. **tasks:** `assigned` 는 그대로(위 문장에 열거되어 멤버가 이어서 진행). `queued` 는 [RESUMED] 뒤에 id 순으로 다시 큐에 넣는다(`[TASK#n from user]\n<text>`, 들어가면 `assigned`).
+7. **폴백:** `--resume` 한 프로세스가 10초 안에 0 이 아닌 코드로 죽으면 세션 파일이 없는 것으로 보고 `session_id` 를 지운 뒤 새 세션으로 **한 번** 더 스폰(`error{resume failed; started fresh session}` + `daemon.notice{warn}`), 같은 [RESUMED]·queued task 를 다시 큐에. 그 세션도 죽으면 일반 비정상 종료(`error{process exited}`, status `error`, task aborted).
+8. **알림:** 복구가 끝나면 `daemon.notice{level:'info', message:'복구: N명 재개, M건 만료[, K명 재개 불가][, 유령 J개 정리]'}` 를 내고 같은 문구를 콘솔(`[office] 복구: …`)에 남긴다. 되살릴 것이 없으면 알림 없음. 이 알림은 WS 서버가 열리기 전에 나가므로 보통 클라이언트는 받지 못한다 — 결과는 스냅샷(`members.status`, `pending`, `tasks`)과 `error`/`text{resumed}` 이벤트로 본다.
+9. 복구는 멤버 단위로 실패를 삼킨다(한 멤버가 실패해도 나머지 진행, 실패한 멤버는 status `error`). `daemon.json` 처리는 그대로(기동 시 덮어쓰고 정상 종료 시 삭제).
 
 ## 재접속 규칙
 

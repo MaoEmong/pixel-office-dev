@@ -24,8 +24,9 @@ import { ClaudeHooksAdapter } from '../adapters/ClaudeHooksAdapter.js';
 import { ScreenModel } from '../screen/ScreenModel.js';
 import { InputQueue } from '../input/InputQueue.js';
 import { USER_ACTOR } from '../store/types.js';
-import type { EventsQueryInput, Member, MemberStatus, OfficeEvent, Pending, Snapshot, Team } from '../store/types.js';
+import type { EventsQueryInput, Member, MemberStatus, OfficeEvent, Pending, Snapshot, Task, Team } from '../store/types.js';
 import { OfficeError, RPC_ERROR, badState, invalidParams, notFound } from './errors.js';
+import { defaultOrphanOps, reapOrphan, type OrphanOps } from './orphans.js';
 import type {
   ApprovalRespondParams,
   AttachResult,
@@ -43,8 +44,16 @@ import type {
 export type * from './types.js';
 export { OfficeError, RPC_ERROR } from './errors.js';
 
-/** `member.restart` 직후 큐에 넣는 시스템 메시지(01 §데몬 재시작 복구; T09 에서 진행 중 task 요약을 덧붙인다). */
+/** `member.restart` 직후 큐에 넣는 시스템 메시지(01 §데몬 재시작 복구). 데몬 재시작 복구는 `buildResumedText` 로 task·이벤트 요약을 붙인다(T09). */
 export const RESUMED_TEXT = '[RESUMED] 데몬이 세션을 재시작했다. 현재 상태를 점검하고 이어서 진행하라.';
+/** 데몬 재시작 복구(T09)에서 되살린 멤버를 대상으로 하는 status. exited/error 는 손대지 않는다. */
+export const RECOVERABLE: ReadonlySet<MemberStatus> = new Set(['starting', 'idle', 'working', 'waiting_approval', 'waiting_answer']);
+/** `--resume` 직후 이 시간 안에 0 이 아닌 코드로 죽으면 "세션 없음" 증상으로 보고 새 세션으로 한 번 폴백한다(T07 남은 것). */
+export const RESUME_FALLBACK_WINDOW_MS = 10_000;
+/** [RESUMED] 에 싣는 마지막 이벤트 수·instruction 글자 수·이벤트 요약 글자 수. */
+const RESUMED_EVENT_COUNT = 5;
+const RESUMED_INSTRUCTION_CHARS = 80;
+const RESUMED_SUMMARY_CHARS = 60;
 /** 종료된 것으로 보는 멤버 status. */
 const GONE: ReadonlySet<MemberStatus> = new Set(['exited', 'error']);
 /** Ctrl+C 를 두 번 연달아 보내면 Claude 가 종료되므로(T05 함정) 이 간격 안의 두 번째 interrupt 는 거절. */
@@ -67,6 +76,27 @@ export interface OfficeOptions {
   /** hook.js 절대 경로. 기본 src/hooks/hook.js. */
   hookScriptPath?: string;
   version?: string;
+  /** 재시작 복구 옵션(테스트용). */
+  recovery?: {
+    /** `--resume` 실패 판정 창(ms). 기본 RESUME_FALLBACK_WINDOW_MS. */
+    fallbackWindowMs?: number;
+    /** 유령 자식(child_pid) 확인·종료 연산. 기본 defaultOrphanOps(tasklist/taskkill). */
+    orphanOps?: OrphanOps;
+  };
+}
+
+/** `start()` 의 재시작 복구 결과(로그·notice·테스트용). */
+export interface RecoveryResult {
+  /** `--resume` 으로 다시 띄운 멤버 id. */
+  resumed: string[];
+  /** session_id 가 없거나 스폰에 실패해 error 로 둔 멤버 id. */
+  failed: string[];
+  /** 만료시킨 pending id(approval 전부 + TUI AskUserQuestion). */
+  expired: string[];
+  /** 큐에 다시 넣은 queued task id. */
+  requeued: number[];
+  /** 이전 데몬이 하드 킬돼 살아남은 자식 중 종료한 pid. */
+  orphansKilled: number[];
 }
 
 /** 살아 있거나 마지막 화면을 들고 있는 멤버별 런타임. */
@@ -85,6 +115,11 @@ interface MemberRuntime {
   exitMode?: 'clockOut' | 'restart' | 'shutdown';
   lastInterruptAt?: number;
   interruptWatch?: NodeJS.Timeout;
+  /**
+   * 재시작 복구로 `--resume` 한 세션. 이 창 안에 0 이 아닌 코드로 죽으면(세션 파일 없음 증상) 새 세션으로 한 번 폴백하고
+   * 같은 [RESUMED]·queued task 를 다시 큐에 넣는다.
+   */
+  resumeFallback?: { until: number; resumedText: string };
 }
 
 export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
@@ -102,13 +137,19 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
   private readonly runtimes = new Map<string, MemberRuntime>();
   /** `alwaysThisSession` 로 자동 allow 할 도구(멤버별, 데몬 메모리에만). */
   private readonly autoAllow = new Map<string, Set<string>>();
+  private readonly fallbackWindowMs: number;
+  private readonly orphanOps: OrphanOps;
   private info?: DaemonInfo;
   private started = false;
   private stopping = false;
+  /** 이번 기동의 재시작 복구 결과. start() 뒤에 채워진다. */
+  private recovery?: RecoveryResult;
 
   constructor(opts: OfficeOptions = {}) {
     super();
     this.cfg = { ...defaultConfig, ...opts.config };
+    this.fallbackWindowMs = opts.recovery?.fallbackWindowMs ?? RESUME_FALLBACK_WINDOW_MS;
+    this.orphanOps = opts.recovery?.orphanOps ?? defaultOrphanOps;
     this.version = opts.version ?? (pkg as { version?: string }).version ?? '0.0.0';
     this.hookScriptPath = toForwardSlashes(opts.hookScriptPath ?? path.resolve(import.meta.dirname, '..', 'hooks', 'hook.js'));
     this.store = opts.store ?? new Store(path.join(this.cfg.dataDir, 'pixel-office.db'));
@@ -152,7 +193,14 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
     } catch (err) {
       console.warn('[office] pruneEvents failed:', err);
     }
+    // 재시작 복구(T09): RPC 클라이언트가 붙기 전에 이전 기동의 멤버를 되살린다. 절대 throw 하지 않는다.
+    this.recovery = this.recover();
     return this.info;
+  }
+
+  /** 이번 기동의 재시작 복구 결과(start() 전에는 undefined). */
+  get recoveryResult(): RecoveryResult | undefined {
+    return this.recovery;
   }
 
   /** 실제 바인딩된 WS 포트가 설정과 다를 때(임시 포트 0) daemon.json 을 다시 쓴다. */
@@ -536,6 +584,164 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
     return rt;
   }
 
+  // ---- 내부: 재시작 복구(T09) ----------------------------------------------------------------
+
+  /**
+   * 기동 시 이전 기동의 멤버를 되살린다(01 §데몬 재시작 복구, §실측 "프로세스 수명": 데몬이 죽으면 ConPTY 자식도 죽는다).
+   *   - status 가 starting/idle/working/waiting_* 인 멤버: session_id 있으면 `--resume` 재스폰 + [RESUMED](진행 task·최근 이벤트 요약)
+   *     + queued task 를 id 순으로 다시 큐에. 없으면 error(재고용으로 새 세션).
+   *   - 열린 approval 은 전부 expired(hook 프로세스가 죽었으므로), 열린 question 은 TUI AskUserQuestion(payload.tool_input)만 expired
+   *     — M2 `ask_user`(턴 종료 상태) 질문은 그대로 유효.
+   *   - assigned task 는 그대로(멤버가 이어서 진행), queued 는 재큐잉.
+   * 멤버 하나가 실패해도 나머지는 계속한다. 절대 throw 하지 않는다.
+   */
+  private recover(): RecoveryResult {
+    const result: RecoveryResult = { resumed: [], failed: [], expired: [], requeued: [], orphansKilled: [] };
+    let members: Member[];
+    try {
+      members = this.store.listMembers().filter((m) => RECOVERABLE.has(m.status));
+    } catch (err) {
+      console.error('[office] recover: listMembers failed:', err);
+      return result;
+    }
+    for (const member of members) {
+      try {
+        this.recoverMember(member, result);
+      } catch (err) {
+        console.error(`[office] recover ${member.id} (${member.name}) failed:`, err);
+        this.markRecoveryFailure(member, `restart: recovery failed: ${errMsg(err)}`, result);
+      }
+    }
+    if (members.length > 0 || result.expired.length > 0) {
+      let message = `복구: ${result.resumed.length}명 재개, ${result.expired.length}건 만료`;
+      if (result.failed.length > 0) message += `, ${result.failed.length}명 재개 불가`;
+      if (result.orphansKilled.length > 0) message += `, 유령 ${result.orphansKilled.length}개 정리`;
+      this.notice('info', message);
+    }
+    return result;
+  }
+
+  private recoverMember(member: Member, result: RecoveryResult): void {
+    this.reapOrphanOf(member, result);
+    // 요약은 복구가 새 이벤트를 쓰기 전(=죽기 직전 모습)에 뜬다.
+    const assigned = this.store.listTasks({ toMember: member.id, status: 'assigned' });
+    const queued = this.store.listTasks({ toMember: member.id, status: 'queued' });
+    const recent = this.store.eventsQuery({ memberId: member.id, limit: RESUMED_EVENT_COUNT });
+    const expired = this.expirePendingForRestart(member, !member.sessionId);
+    result.expired.push(...expired.map((p) => p.id));
+
+    if (!member.sessionId) {
+      this.markRecoveryFailure(member, 'restart: no session id to resume', result);
+      return;
+    }
+
+    const resumedText = buildResumedText({ assigned, events: recent, expiredCount: expired.length });
+    let rt: MemberRuntime;
+    try {
+      rt = this.spawnMember(member, true);
+    } catch (err) {
+      this.markRecoveryFailure(member, `restart: spawn failed: ${errMsg(err)}`, result);
+      return;
+    }
+    rt.resumeFallback = { until: Date.now() + this.fallbackWindowMs, resumedText };
+    this.enqueueResumed(rt, resumedText, queued);
+    result.resumed.push(member.id);
+    result.requeued.push(...queued.map((t) => t.id));
+    console.log(
+      `[office] recover ${member.name}(${member.id}): --resume ${member.sessionId}, assigned ${assigned.length}, requeued ${queued.length}, expired ${expired.length}`,
+    );
+  }
+
+  /**
+   * 이전 데몬이 하드 킬돼 살아남은 자식(child_pid)이 있으면 `--resume` 전에 종료한다(orphans.ts). 그대로 두면 같은 토큰으로
+   * 새 데몬에 hook 을 보내고 세션 파일을 쥔다. 이름이 엔진과 다르면(pid 재사용) 건드리지 않고 경고만.
+   */
+  private reapOrphanOf(member: Member, result: RecoveryResult): void {
+    const pid = member.childPid;
+    if (!pid) return;
+    try {
+      const verdict = reapOrphan(this.orphanOps, pid, member.engine);
+      if (verdict.action === 'killed') {
+        result.orphansKilled.push(pid);
+        this.notice('warn', `복구: ${member.name} 의 이전 프로세스(pid ${pid})가 살아 있어 종료함`);
+      } else if (verdict.action === 'skipped') {
+        this.notice('warn', `복구: ${member.name} 의 이전 pid ${pid} 를 건드리지 않음 — ${verdict.reason}`);
+      }
+    } catch (err) {
+      console.warn(`[office] recover ${member.id}: orphan check for pid ${pid} failed:`, err);
+    }
+  }
+
+  /** [RESUMED] 를 먼저, 그 뒤에 queued task 를 id 순으로(원래 `instruct` 와 같은 모양이라 flush 시 assigned 가 된다). */
+  private enqueueResumed(rt: MemberRuntime, resumedText: string, queued: Task[]): void {
+    rt.queue.enqueue({ kind: 'system', text: resumedText });
+    for (const task of [...queued].sort((a, b) => a.id - b.id)) {
+      rt.queue.enqueue({ kind: 'instruct', text: `[TASK#${task.id} from user]\n${task.instruction}`, id: String(task.id) });
+    }
+  }
+
+  /**
+   * 재시작으로 무효가 된 pending 을 expired 로 + `error{summary:'재지시 필요…', pendingId}`(D-15 와 같은 모양).
+   * approval 전부, question 은 payload.tool_input 이 있는 것(TUI AskUserQuestion)만. all=true 면(멤버가 error 로 가는 경우) 전부.
+   */
+  private expirePendingForRestart(member: Member, all: boolean): Pending[] {
+    const out: Pending[] = [];
+    for (const p of this.store.listOpenPending(member.id)) {
+      const isTuiQuestion = p.type === 'question' && p.payload.tool_input !== undefined;
+      if (!all && p.type === 'question' && !isTuiQuestion) continue;
+      const final = this.store.expirePending(p.id);
+      if (final?.status !== 'expired') continue;
+      out.push(final);
+      const summary = p.type === 'approval' ? '재지시 필요: 허가 요청이 재시작으로 만료됨' : '재지시 필요: 질문이 재시작으로 만료됨';
+      const ref = p.type === 'approval' ? { approvalId: p.id } : { questionId: p.id };
+      this.appendEvent(member, 'error', { summary, pendingId: p.id, pendingType: p.type }, ref);
+    }
+    return out;
+  }
+
+  /** 되살리지 못한 멤버: error 이벤트 + status error + 미종료 task aborted(01 §error 공통 후처리). 재고용은 사용자 몫. */
+  private markRecoveryFailure(member: Member, summary: string, result: RecoveryResult): void {
+    if (!result.failed.includes(member.id)) result.failed.push(member.id);
+    try {
+      this.disposeRuntime(member.id);
+      this.store.abortTasksFor(member.id);
+      this.appendEvent(member, 'error', { summary });
+      this.store.updateMember(member.id, { childPid: null });
+      this.setStatus(member.id, 'error');
+      console.warn(`[office] recover ${member.name}(${member.id}): ${summary}`);
+    } catch (err) {
+      console.error(`[office] recover ${member.id}: marking error failed:`, err);
+    }
+  }
+
+  /**
+   * `--resume` 폴백: 창 안에 0 이 아닌 코드로 죽으면 세션 파일이 없는 것으로 보고 session_id 를 지운 뒤 새 세션으로 한 번 더.
+   * 처리했으면 true(일반 exit 처리는 건너뛴다).
+   */
+  private tryResumeFallback(rt: MemberRuntime, info: ExitInfo): boolean {
+    const fb = rt.resumeFallback;
+    if (!fb || info.exitCode === 0 || Date.now() > fb.until) return false;
+    const member = this.store.getMember(rt.memberId);
+    if (!member) return false;
+    this.adapter.expireAllForMember(member.id);
+    this.store.updateMember(member.id, { childPid: null, sessionId: null });
+    this.appendEvent(member, 'error', { summary: 'resume failed; started fresh session', exitCode: info.exitCode, sessionId: member.sessionId });
+    const queued = this.store.listTasks({ toMember: member.id, status: 'queued' });
+    let fresh: MemberRuntime;
+    try {
+      fresh = this.spawnMember(this.store.getMember(member.id)!, false);
+    } catch (err) {
+      this.notice('error', `복구: ${member.name} 새 세션 시작 실패: ${errMsg(err)}`);
+      this.appendEvent(member, 'error', { summary: `restart: spawn failed: ${errMsg(err)}` });
+      this.store.abortTasksFor(member.id);
+      this.setStatus(member.id, 'error');
+      return true;
+    }
+    this.enqueueResumed(fresh, fb.resumedText, queued);
+    this.notice('warn', `복구: ${member.name} 세션 재개 실패(code ${info.exitCode}) → 새 세션으로 시작`);
+    return true;
+  }
+
   private onPtyExit(memberId: string, info: ExitInfo): void {
     const rt = this.runtimes.get(memberId);
     if (rt) {
@@ -545,6 +751,7 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
     }
     const mode = rt?.exitMode;
     if (mode === 'shutdown') return;
+    if (rt && !mode && this.tryResumeFallback(rt, info)) return;
     this.store.updateMember(memberId, { childPid: null });
     if (mode === 'clockOut' || mode === 'restart') {
       // 데몬이 의도한 종료: error 이벤트 없이 status 만.
@@ -708,6 +915,34 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
   private ensureStarted(): void {
     if (!this.started) throw new OfficeError(RPC_ERROR.BAD_STATE, 'office not started');
   }
+}
+
+/**
+ * 재시작 복구의 [RESUMED] 본문(01 §데몬 재시작 복구). 한 문단 — bracketed paste 로 한 프롬프트에 들어간다.
+ *   [RESUMED] 데몬이 재시작됐다. 진행 중이던 작업: task#12: <instruction 첫 80자> / 없음.
+ *   마지막 확인된 행동: <kind summary>; … (최근 5건, 오래된 것부터) / 없음. [만료된 허가·질문: N건(필요하면 다시 요청하라).]
+ *   현재 상태를 점검하고 이어서 진행하라.
+ */
+export function buildResumedText(input: { assigned: Task[]; events: OfficeEvent[]; expiredCount?: number }): string {
+  const tasks = input.assigned.length
+    ? input.assigned.map((t) => `task#${t.id}: ${oneLine(truncate(t.instruction, RESUMED_INSTRUCTION_CHARS))}`).join(', ')
+    : '없음';
+  const recent = input.events.slice(-RESUMED_EVENT_COUNT);
+  const events = recent.length ? recent.map(describeEvent).join('; ') : '없음';
+  const expired = input.expiredCount ? ` 만료된 허가·질문: ${input.expiredCount}건(필요하면 다시 요청하라).` : '';
+  return `[RESUMED] 데몬이 재시작됐다. 진행 중이던 작업: ${tasks}. 마지막 확인된 행동: ${events}.${expired} 현재 상태를 점검하고 이어서 진행하라.`;
+}
+
+/** 이벤트 한 건 → "kind 요약". 요약은 detail.summary → text → cmd → path → tool 순으로 있는 것. */
+function describeEvent(ev: OfficeEvent): string {
+  const d = ev.detail;
+  const pick = [d.summary, d.text, d.cmd, d.path, d.tool].find((v) => typeof v === 'string' && v.trim().length > 0);
+  const summary = typeof pick === 'string' ? oneLine(truncate(pick.trim(), RESUMED_SUMMARY_CHARS)) : '';
+  return summary ? `${ev.kind} ${summary}` : ev.kind;
+}
+
+function oneLine(s: string): string {
+  return s.replace(/\s+/g, ' ').trim();
 }
 
 function checkSize(cols: number, rows: number): void {
