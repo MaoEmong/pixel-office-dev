@@ -1,49 +1,57 @@
 # 데몬 ↔ 클라이언트 프로토콜 (v1a 초안, T07에서 확정)
 
 전송: WebSocket `ws://127.0.0.1:7420`. 봉투: **JSON-RPC 2.0** (요청 `{jsonrpc:"2.0", id, method, params}` / 응답 `{jsonrpc:"2.0", id, result|error}` / 알림 `{jsonrpc:"2.0", method, params}`).
-인증: 데몬 기동 시 `%LOCALAPPDATA%\pixel-office\daemon.json`에 `{ "wsPort", "hookPort", "token", "pid", "startedAt" }`를 쓴다. 클라이언트는 첫 요청 `hello`에 token을 넣는다. 불일치면 에러 응답 후 소켓 종료.
+인증: 데몬 기동 시 `%LOCALAPPDATA%\pixel-office\daemon.json`(= `${PIXEL_DATA_DIR}/daemon.json`)에 `{ "wsPort", "hookPort", "token", "pid", "startedAt", "version" }`를 쓴다(포트는 실제 바인딩된 값; token 은 기동마다 새로 만든 32바이트 hex; 정상 종료 시 파일 삭제). 클라이언트는 첫 요청 `hello`에 token을 넣는다. 불일치면 에러 응답(-32001) 후 소켓 종료(close code 4001). `hello` 전에 다른 메서드를 부르면 같은 처리. 인증 후의 오류 응답은 소켓을 끊지 않는다.
+
+`params` 는 항상 객체(없으면 `{}`). 클라이언트→데몬 알림(id 없는 요청)은 정의된 것이 없으며 무시된다. 결과가 따로 없는 메서드는 `{}` 를 돌려준다.
 
 ## 클라이언트 → 데몬 (요청)
 
 | method | params | result |
 |---|---|---|
-| `hello` | `{ token, since?: number, client: { name, version } }` | `{ daemon: { version, pid }, snapshot }` 후 `since < seq` 인 `event` 알림 replay. `since` 없으면 스냅샷만. |
-| `events.query` | `{ teamId?, memberId?, beforeSeq?, limit? }` | `{ events: OfficeEvent[] }` (seq 내림차순 아님 — 오름차순 반환) |
-| `team.create` | `{ name, cwd, leaderEngine: 'claude'\|'codex', maxMembers?, allowedEngines? }` | `{ team, leader: Member }` — M4 전(v1a)에는 팀장 자동 출근 없이 `team`만. |
+| `hello` | `{ token, since?: number, client: { name, version } }` | `{ daemon: { version, pid }, snapshot }` 후 `seq > since` 인 `event` 알림 replay(응답이 먼저, replay 는 오름차순). `since` 없으면 스냅샷만. |
+| `events.query` | `{ teamId?, memberId?, beforeSeq?, limit? }` | `{ events: OfficeEvent[] }` (seq 내림차순 아님 — 오름차순 반환. `beforeSeq` 미만 중 최신 `limit`(기본 200)건; 다음 페이지는 첫 건 seq 를 `beforeSeq` 로) |
+| `team.create` | `{ name, cwd, leaderEngine: 'claude'\|'codex', maxMembers?, allowedEngines? }` | `{ team, leader: Member }` — M4 전(v1a)에는 팀장 자동 출근 없이 `team`만. `cwd` 가 폴더가 아니면 -32602. |
 | `team.delete` | `{ teamId }` | `{}` — 멤버 전부 clockOut 후 삭제 |
-| `member.clockIn` | `{ teamId, engine, name, instructions? }` | `{ member }` — CLI 스폰(문으로 입장) |
-| `member.clockOut` | `{ memberId }` | `{}` — 진행 task aborted 후처리, 프로세스 종료 |
-| `member.rehire` | `{ memberId }` | `{ member }` — exited/error 멤버를 같은 설정으로 재스폰(`--resume` 시도) |
-| `member.restart` | `{ memberId }` | `{ member }` — 지시문 즉시 반영용 재스폰(`--resume`) |
-| `member.instruct` | `{ memberId, text }` | `{ taskId }` — 입력 큐에 `[TASK#n from user]` 타이핑 |
-| `member.type` | `{ memberId, data }` | `{}` — 터미널 탭 직접 타이핑 (raw bytes, 큐 우선) |
-| `member.attach` | `{ memberId, cols, rows }` | `{ screen: string(ANSI serialize), cols, rows }` 이후 `term` 알림 구독 |
-| `member.detach` | `{ memberId }` | `{}` |
-| `member.resize` | `{ memberId, cols, rows }` | `{}` — 마지막 attach 클라이언트만 유효 |
-| `member.interrupt` | `{ memberId }` | `{}` — Ctrl+C |
-| `member.instructions.get` | `{ memberId }` | `{ markdown }` |
-| `member.instructions.set` | `{ memberId, markdown }` | `{}` — 다음 SessionStart부터 반영 |
-| `approval.respond` | `{ pendingId, behavior: 'allow'\|'deny', updatedInput?, alwaysThisSession?: boolean }` | `{}` |
-| `question.respond` | `{ pendingId, answers: Record<string,string> }` | `{}` |
-| `daemon.shutdown` | `{}` | `{}` |
+| `member.clockIn` | `{ teamId, engine, name, instructions? }` | `{ member }` — CLI 스폰(문으로 입장). 팀 정원(`maxMembers`) 초과 -32003, 팀에서 허용 안 된 엔진 -32602. v1a: `rank:'member'`, `hiredBy:'user'`. |
+| `member.clockOut` | `{ memberId }` | `{}` — 진행 task aborted 후처리, 프로세스 종료(Claude `/exit`). 행은 `status:'exited'` 로 남는다(rehire 가능). 이미 exited/error 면 -32003. |
+| `member.rehire` | `{ memberId }` | `{ member }` — exited/error 멤버를 같은 설정으로 재스폰(`--resume` 시도). 아직 살아 있으면 -32003(→ `member.restart`). |
+| `member.restart` | `{ memberId }` | `{ member }` — 지시문 즉시 반영용 재스폰(`--resume`) 후 큐에 `[RESUMED] …` 시스템 메시지. 종료된 멤버에도 허용. |
+| `member.instruct` | `{ memberId, text }` | `{ taskId }` — `tasks(from:'user', status:'queued')` 생성 후 입력 큐에 `[TASK#n from user]\n<text>` 타이핑. 실제로 pty 에 들어가면 `assigned`, 그 턴의 `Stop` 에서 `reported`(report_text = 마지막 assistant 메시지, v1a 보고). 종료된 멤버 -32003. |
+| `member.type` | `{ memberId, data }` | `{}` — 터미널 탭 직접 타이핑 (raw bytes, 큐 우선). 빈 문자열 허용. |
+| `member.attach` | `{ memberId, cols, rows }` | `{ screen: string(ANSI serialize), cols, rows }` 이후 `term` 알림 구독. attach 한 클라이언트가 "마지막 attach 클라이언트"가 되어 그 크기로 즉시 resize. cols 20~500, rows 5~300 밖은 -32602. 이 데몬 세션에서 한 번도 스폰되지 않은 멤버(재시작 전 멤버 등)는 -32003. |
+| `member.detach` | `{ memberId }` | `{}` — 연결이 끊기면 자동 detach. |
+| `member.resize` | `{ memberId, cols, rows }` | `{}` — 마지막 attach 클라이언트만 유효(다른 클라이언트의 호출은 오류 없이 무시) |
+| `member.interrupt` | `{ memberId }` | `{}` — Ctrl+C. 큐의 미전송 지시는 버리고 그 멤버의 미종료 task aborted·열린 pending expired. Ctrl+C 두 번이면 CLI 가 종료되므로 1.5초 안의 두 번째 호출은 -32003. `Stop` hook 이 없으므로 화면에 준비 문구가 보이면 데몬이 `idle{summary:'interrupted'}` 이벤트로 idle 처리. |
+| `member.instructions.get` | `{ memberId }` | `{ markdown }` (없으면 `""`) |
+| `member.instructions.set` | `{ memberId, markdown }` | `{}` — 다음 SessionStart부터 반영. 파일: `${dataDir}/teams/<teamId>/members/<memberId>/INSTRUCTIONS.md` |
+| `approval.respond` | `{ pendingId, behavior: 'allow'\|'deny', updatedInput?, message?, alwaysThisSession?: boolean }` | `{}` — `message` 는 deny 시 모델에게 보여줄 사유(기본 "Denied by user"). `alwaysThisSession` 은 allow 일 때 같은 멤버·같은 도구의 다음 허가 요청을 데몬이 자동 allow(데몬 메모리, 재시작 시 초기화). 없는 pending -32002, approval 이 아니면 -32602, 이미 answered/expired -32003. |
+| `question.respond` | `{ pendingId, answers: Record<string,string> }` | `{}` — `answers` 는 `{ "<question>": "<label>" }`. 오류 코드는 approval.respond 와 동일. |
+| `daemon.shutdown` | `{}` | `{}` — 응답 후 `daemon.notice{level:'info'}` 를 보내고 전원 정중히 종료(`/exit`) → 모든 소켓 close code 1001 → 프로세스 종료. 멤버 status 는 바꾸지 않는다(T09 재시작 복구용). |
 
-에러 코드: `-32001` 인증 실패, `-32002` 없는 멤버/팀, `-32003` 상태 오류(예: 이미 종료), `-32004` 직급 규칙 위반(M4), `-32602` 파라미터.
+에러 코드: `-32001` 인증 실패, `-32002` 없는 멤버/팀/pending, `-32003` 상태 오류(예: 이미 종료), `-32004` 직급 규칙 위반(M4), `-32602` 파라미터. 그 외 JSON-RPC 표준: `-32700` JSON 파싱 실패(id null), `-32600` 봉투 오류(`jsonrpc:"2.0"`·`method` 누락), `-32601` 없는 메서드, `-32000` 내부 오류. 에러 객체는 `{ code, message, data? }`.
 
 ## 데몬 → 클라이언트 (알림)
 
 | method | params |
 |---|---|
 | `event` | `OfficeEvent` — `{ seq, ts, teamId, memberId, kind, detail, ref }` (영속, 전역 단조 seq) |
-| `snapshot` | `{ seq, teams, members, pending, tasks }` — `hello` 응답에 포함되지만 데몬이 필요 시 재전송 가능 |
+| `snapshot` | `{ seq, teams, members, pending, tasks }` — `hello` 응답에 포함되지만 데몬이 필요 시 재전송 가능. `pending` 은 `status:'open'` 만, `tasks` 는 `queued|assigned` 만. |
 | `term` | `{ memberId, data }` — attach한 클라이언트에만, 비영속 |
-| `member.status` | `{ memberId, status, derived }` — 파생 상태(`waiting_reports` 등, M4) |
-| `daemon.notice` | `{ level, message }` — 예: hook 보류 타임아웃, 알 수 없는 멤버 토큰 |
+| `member.status` | `{ memberId, status, derived, member? }` — `status` 는 `starting|idle|working|waiting_approval|waiting_answer|exited|error`, `derived` 는 파생 상태(v1a: idle 이고 배정 task 없으면 `free`, 그 외는 status 와 같음; `waiting_reports` 는 M4). `member` 는 그 시점의 Member 행(새 멤버 출근을 다른 클라이언트가 알 수 있게; 행이 삭제됐으면 생략). status 값이 실제로 바뀔 때만 온다. |
+| `daemon.notice` | `{ level: 'info'\|'warn'\|'error', message }` — 예: hook 보류 타임아웃, 알 수 없는 멤버 토큰, 첫 실행 다이얼로그 자동 통과, 자동 allow, 데몬 종료 |
 
 ## 오피스 이벤트
 
 `kind`: `thinking | text | reading | editing | running | waiting_approval | asking | delegating | reporting | idle | error`
 `detail`: `{ tool?, path?, cmd?, summary?, text? }` — `text`는 턴 단위 코얼레스(Stop의 last_assistant_message)
 `ref`: `{ approvalId?, questionId?, taskId? }`
+
+v1a 에서 데몬이 만드는 이벤트(어댑터 표는 worklog T04 참고):
+- `reporting{summary}` ref `{taskId}` — `Stop` 시점에 그 멤버의 `assigned` task 를 `reported` 로 닫으면서(report_text = 직전 `text`), 내 책상 "보고".
+- `idle{summary:'interrupted'}` — `member.interrupt` 후 화면 준비 문구로 idle 판정.
+- `idle{summary:'clocked out'}` — `member.clockOut`.
+- `error{summary:'process exited (code N)', exitCode}` — 데몬이 의도하지 않은 프로세스 종료(사용자 `/exit`·크래시). clockOut/restart/shutdown 에는 없음.
 
 ## 재접속 규칙
 
