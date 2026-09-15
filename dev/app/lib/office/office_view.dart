@@ -1,17 +1,28 @@
-// 사무실 뷰(T12). main.dart 의 OfficeArea 자리에 그대로 들어간다:
+// 사무실 뷰(T12 + T16 이동 애니메이션). main.dart 의 OfficeArea 자리에 그대로 들어간다:
 //   OfficeView(selectedMemberId: id, onSelectMember: (id) => ..., teamId: null /* 전체 */)
 // membersProvider / latestEvent 맵 / openPendingProvider 세 개만 watch 해 OfficeScene 을 만들고 OfficePainter 로 그린다.
-// 탭 → OfficeLayout.hitTest → onSelectMember(멤버 id, 빈 곳이면 null).
+// 탭 → OfficeLayout.hitTest(지금 위치 기준) → onSelectMember(멤버 id, 빈 곳이면 null).
+//
+// 이동(T16): 장면이 바뀌면 OfficeMotion.sync 가 멤버별 목표 자리를 정하고 트윈을 건다. Ticker 하나가
+// 이동·흔들림이 있는 동안만 돌며 프레임마다 setState → 보간 위치로 다시 그린다. 전부 멈추면 Ticker 도 멈춘다
+// (쉬는 동안 연속 repaint 없음). 보고 방문의 6초 만료는 Timer(멤버별) 로 알린다.
+// 시계: Ticker elapsed 는 start 마다 0 부터라 `_clockBase + elapsed` 를 단조 시계로 쓴다(멈춘 동안은 시간이 서 있다 —
+// 그때는 움직이는 것이 없으므로 무방).
+
+import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/scheduler.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../model/models.dart';
 import '../state/office_state.dart';
 import 'office_layout.dart';
+import 'office_motion.dart';
 import 'office_painter.dart';
 import 'office_scene.dart';
 
+export 'office_motion.dart' show MovementState, OfficeMotion, ReportVisit, reportVisitDuration, reportVisitBubble;
 export 'office_scene.dart' show OfficeScene, SceneMember, QueueEntry;
 
 /// 멤버별 마지막 이벤트 맵. office_state 에는 멤버별 family(latestEventProvider)만 있어 여기서 맵 전체를 슬라이스한다.
@@ -30,7 +41,7 @@ final officeSceneProvider = Provider.family<OfficeScene, String?>(
   ),
 );
 
-class OfficeView extends ConsumerWidget {
+class OfficeView extends ConsumerStatefulWidget {
   const OfficeView({super.key, this.selectedMemberId, this.onSelectMember, this.teamId});
 
   /// 선택된 멤버(외곽 링). null 이면 없음.
@@ -43,8 +54,98 @@ class OfficeView extends ConsumerWidget {
   final String? teamId;
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final scene = ref.watch(officeSceneProvider(teamId));
+  ConsumerState<OfficeView> createState() => _OfficeViewState();
+}
+
+class _OfficeViewState extends ConsumerState<OfficeView> with SingleTickerProviderStateMixin {
+  late final Ticker _ticker;
+  final OfficeMotion _motion = OfficeMotion();
+
+  /// 단조 시계 = [_clockBase] + 현재 Ticker elapsed.
+  Duration _clockBase = Duration.zero;
+  Duration _elapsed = Duration.zero;
+
+  /// 보고 방문 만료 타이머(멤버 id → (그 방문의 seq, Timer)).
+  final Map<String, (int, Timer)> _visitTimers = {};
+
+  /// 마지막으로 sync 한 캔버스 크기. 바뀌면 전부 즉시 재배치(크기 변경은 걷지 않는다).
+  Size? _syncedSize;
+  OfficeLayout? _layout;
+
+  Duration get _now => _clockBase + _elapsed;
+
+  @override
+  void initState() {
+    super.initState();
+    _ticker = createTicker(_onTick);
+  }
+
+  @override
+  void dispose() {
+    _ticker.dispose();
+    for (final t in _visitTimers.values) {
+      t.$2.cancel();
+    }
+    _visitTimers.clear();
+    super.dispose();
+  }
+
+  void _onTick(Duration elapsed) {
+    _elapsed = elapsed;
+    _motion.advance(_now);
+    if (!_motion.needsTicker(_now)) _stopTicker();
+    setState(() {});
+  }
+
+  void _stopTicker() {
+    _clockBase = _now;
+    _elapsed = Duration.zero;
+    _ticker.stop();
+  }
+
+  void _ensureTicker() {
+    if (!_ticker.isActive && _motion.needsTicker(_now)) _ticker.start();
+  }
+
+  /// 장면·레이아웃을 이동 모델에 반영하고, 보고 방문 타이머를 맞춘다(build 안에서 호출 — 같은 입력이면 무해).
+  void _sync(OfficeScene scene, Size size) {
+    if (_syncedSize != size) {
+      _motion.reset();
+      _syncedSize = size;
+    }
+    final layout = OfficeLayout(size: size, deskCount: scene.members.length);
+    _layout = layout;
+    _motion.sync(scene, layout, _now);
+    _reconcileVisitTimers();
+    _ensureTicker();
+  }
+
+  void _reconcileVisitTimers() {
+    final visits = {for (final v in _motion.visits) v.memberId: v.seq};
+    for (final id in _visitTimers.keys.toList(growable: false)) {
+      final seq = visits[id];
+      if (seq == null || seq != _visitTimers[id]!.$1) {
+        _visitTimers.remove(id)!.$2.cancel();
+      }
+    }
+    for (final e in visits.entries) {
+      if (_visitTimers.containsKey(e.key)) continue;
+      _visitTimers[e.key] = (e.value, Timer(reportVisitDuration, () => _onVisitTimeout(e.key)));
+    }
+  }
+
+  void _onVisitTimeout(String memberId) {
+    _visitTimers.remove(memberId);
+    if (!mounted) return;
+    setState(() {
+      _motion.endVisit(memberId, _now);
+      _ensureTicker();
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final scene = ref.watch(officeSceneProvider(widget.teamId));
     final textDirection = Directionality.maybeOf(context) ?? TextDirection.ltr;
     return LayoutBuilder(
       builder: (context, constraints) {
@@ -52,20 +153,31 @@ class OfficeView extends ConsumerWidget {
           constraints.hasBoundedWidth ? constraints.maxWidth : 900,
           constraints.hasBoundedHeight ? constraints.maxHeight : 600,
         );
-        final painter = OfficePainter(scene: scene, selectedMemberId: selectedMemberId, textDirection: textDirection);
+        _sync(scene, size);
+        final now = _now;
+        final placements = _motion.placementsAt(now);
+        final painter = OfficePainter(
+          scene: scene,
+          selectedMemberId: widget.selectedMemberId,
+          textDirection: textDirection,
+          placements: placements,
+          bob: _motion.bobAt(now),
+          bubbleOverrides: _motion.bubbleOverrides,
+        );
+        final onSelect = widget.onSelectMember;
         return GestureDetector(
           behavior: HitTestBehavior.opaque,
-          onTapUp: onSelectMember == null
+          onTapUp: onSelect == null
               ? null
               : (d) {
-                  final layout = OfficeLayout(size: size, deskCount: scene.members.length);
-                  onSelectMember!(layout.hitTest(d.localPosition, scene));
+                  final layout = _layout ?? OfficeLayout(size: size, deskCount: scene.members.length);
+                  onSelect(layout.hitTest(d.localPosition, scene, _motion.placementsAt(_now)));
                 },
           child: ClipRect(
             child: CustomPaint(
               size: size,
               painter: painter,
-              willChange: false,
+              willChange: _ticker.isActive,
             ),
           ),
         );

@@ -1,0 +1,73 @@
+// OfficeView 위젯 테스트 공용 하네스(T12 office_view_test 에서 분리, T16 movement_test 와 공유).
+// officeProvider 를 데몬 없이 고정 상태를 돌려주는 Notifier 로 덮어쓴다.
+import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_test/flutter_test.dart';
+import 'package:pixel_office/model/models.dart';
+import 'package:pixel_office/office/office_painter.dart';
+import 'package:pixel_office/office/office_view.dart';
+import 'package:pixel_office/state/office_state.dart';
+
+import 'office_fixtures.dart';
+
+/// 데몬에 붙지 않는 OfficeNotifier — build 가 주어진 상태를 그대로 돌려준다.
+class FakeOfficeNotifier extends OfficeNotifier {
+  FakeOfficeNotifier(this.initial);
+  final OfficeState initial;
+
+  @override
+  OfficeState build() => initial;
+
+  void set(OfficeState s) => state = s;
+}
+
+const canvasSize = Size(1000, 700);
+
+/// 테스트 창(기본 800×600)을 캔버스보다 크게 잡고 OfficeView 를 띄운다.
+Future<void> pumpHarness(
+  WidgetTester tester,
+  FakeOfficeNotifier notifier, {
+  String? selected,
+  ValueChanged<String?>? onSelect,
+  String? teamId,
+}) async {
+  tester.view.physicalSize = const Size(1200, 800);
+  tester.view.devicePixelRatio = 1.0;
+  addTearDown(tester.view.reset);
+  await tester.pumpWidget(ProviderScope(
+    overrides: [officeProvider.overrideWith(() => notifier)],
+    child: MaterialApp(
+      home: Center(
+        child: SizedBox(
+          width: canvasSize.width,
+          height: canvasSize.height,
+          child: OfficeView(selectedMemberId: selected, onSelectMember: onSelect, teamId: teamId),
+        ),
+      ),
+    ),
+  ));
+}
+
+OfficePainter painterOf(WidgetTester tester) {
+  final paints = tester.widgetList<CustomPaint>(find.byType(CustomPaint)).where((c) => c.painter is OfficePainter);
+  expect(paints, hasLength(1));
+  return paints.first.painter! as OfficePainter;
+}
+
+/// 진행 중인 이동을 끝까지 돌린다(3초 × 2 — 문까지 갔다 오는 퇴근 경로도 끝난다).
+/// working 멤버가 있으면 흔들림 때문에 Ticker 가 계속 돌므로 pumpAndSettle 은 쓸 수 없다.
+Future<void> settleMotion(WidgetTester tester) async {
+  await tester.pump(const Duration(seconds: 3));
+  await tester.pump(const Duration(seconds: 3));
+}
+
+OfficeState twoMembers({MemberStatus m2Status = MemberStatus.idle, Map<String, Pending> pending = const {}}) => OfficeState(
+      members: {
+        'm1': member('m1', name: '하루', status: MemberStatus.working, createdAt: '1'),
+        'm2': member('m2', name: '모시', status: m2Status, engine: Engine.codex, createdAt: '2'),
+      },
+      latestEvent: {
+        'm1': event('m1', OfficeEventKind.running, detail: {'tool': 'Bash', 'cmd': 'flutter test test/stt_test.dart'}),
+      },
+      pending: pending,
+    );

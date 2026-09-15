@@ -156,6 +156,9 @@ class OfficeLayout {
 
   Offset get doorLabelPos => Offset(doorWidth + 6, size.height / 2);
 
+  /// 캐릭터가 입장·퇴장할 때 서는 점(문 바로 안쪽, T16 이동 애니메이션의 출발·도착점).
+  Offset get doorSpawn => Offset(doorRect.right + charRadius + 2, doorRect.center.dy);
+
   /// 빈 상태 안내 문구 위치(격자 영역 가운데).
   Offset get emptyHintCenter => Offset(size.width / 2, (topPadding + myDeskRect.top) / 2);
 

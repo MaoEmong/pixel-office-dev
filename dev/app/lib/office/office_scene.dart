@@ -27,6 +27,8 @@ class SceneMember {
     required this.summary,
     required this.isAlert,
     this.queueIndex,
+    this.eventKind,
+    this.eventSeq,
   });
 
   final String id;
@@ -45,6 +47,10 @@ class SceneMember {
 
   /// 내 책상 줄에 서 있으면 그 순서(0부터), 자기 자리면 null.
   final int? queueIndex;
+
+  /// 마지막 이벤트의 kind·seq(없으면 null). T16 이 reporting 방문(새 seq 인지)을 판정하는 데 쓴다.
+  final OfficeEventKind? eventKind;
+  final int? eventSeq;
 
   bool get isQueued => queueIndex != null;
 
@@ -73,10 +79,12 @@ class SceneMember {
       other.deskIndex == deskIndex &&
       other.summary == summary &&
       other.isAlert == isAlert &&
-      other.queueIndex == queueIndex;
+      other.queueIndex == queueIndex &&
+      other.eventKind == eventKind &&
+      other.eventSeq == eventSeq;
 
   @override
-  int get hashCode => Object.hash(id, name, engine, status, deskIndex, summary, isAlert, queueIndex);
+  int get hashCode => Object.hash(id, name, engine, status, deskIndex, summary, isAlert, queueIndex, eventKind, eventSeq);
 
   @override
   String toString() => 'SceneMember($id $name desk=$deskIndex queue=$queueIndex "$summary")';
@@ -170,6 +178,8 @@ class OfficeScene {
           summary: summarize(sorted[i].status, latestEvents[sorted[i].id]),
           isAlert: isAlertFor(sorted[i].status, latestEvents[sorted[i].id]),
           queueIndex: queued[sorted[i].id],
+          eventKind: latestEvents[sorted[i].id]?.kind,
+          eventSeq: latestEvents[sorted[i].id]?.seq,
         ),
     ];
 

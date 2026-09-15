@@ -1,6 +1,8 @@
 // 사무실 CustomPainter(D-09). 외부 에셋 없이 평면 도형 + TextPainter 로 그린다.
 // 그리는 것: 바둑판 바닥, 문, 책상(라벨·엔진 배지·모니터), 내 책상(제목·대기 목록), 캐릭터(원 + 이름 첫 글자), 말풍선.
 // 기하는 전부 OfficeLayout, 텍스트는 전부 OfficeScene 에서 온다 — 여기엔 색·글꼴·그리기 순서만.
+// T16: 캐릭터 위치는 [placements] 로 밖(OfficeMotion)에서 받을 수 있다(null 이면 레이아웃의 즉시 배치).
+//   [bob] 은 작업 중 흔들림(id → dy), [bubbleOverrides] 는 보고 방문 등 말풍선 덮어쓰기(항상 alert 스타일).
 
 import 'package:flutter/material.dart';
 import 'package:flutter/semantics.dart';
@@ -49,11 +51,23 @@ class OfficePainter extends CustomPainter {
     this.textDirection = TextDirection.ltr,
     this.fontFamily,
     this.fontFamilyFallback,
+    this.placements,
+    this.bob = const {},
+    this.bubbleOverrides = const {},
   });
 
   final OfficeScene scene;
   final String? selectedMemberId;
   final TextDirection textDirection;
+
+  /// 캐릭터 위치(장면 순서). null 이면 `OfficeLayout.placements(scene)`(즉시 배치).
+  final List<CharacterPlacement>? placements;
+
+  /// 멤버 id → 세로 흔들림(px). 원만 흔들리고 말풍선·시맨틱은 그대로.
+  final Map<String, double> bob;
+
+  /// 멤버 id → 말풍선 텍스트 덮어쓰기(alert 스타일). 보고 방문 중 "📄 보고".
+  final Map<String, String> bubbleOverrides;
 
   /// 글꼴 지정(앱에서는 null = 시스템 기본. 테스트 렌더링에서 FontLoader 로 올린 글꼴을 쓸 때).
   final String? fontFamily;
@@ -65,17 +79,26 @@ class OfficePainter extends CustomPainter {
 
   OfficeLayout layoutFor(Size size) => OfficeLayout(size: size, deskCount: scene.members.length);
 
+  List<CharacterPlacement> _placementsFor(OfficeLayout layout) {
+    final given = placements;
+    return given != null && given.length == scene.members.length ? given : layout.placements(scene);
+  }
+
+  /// 자기 자리를 비웠는가(줄·보고 방문·걷는 중). 퇴근·오류는 자리 기준으로 보지 않는다.
+  bool _isAway(OfficeLayout layout, SceneMember m, CharacterPlacement p) =>
+      !m.isGone && (p.center - layout.seatCenter(m.deskIndex)).distance > 0.5;
+
   @override
   void paint(Canvas canvas, Size size) {
     final layout = layoutFor(size);
-    final placements = layout.placements(scene);
+    final placements = _placementsFor(layout);
     lastLayout = layout;
     lastPlacements = placements;
 
     _paintFloor(canvas, size, layout);
     _paintDoor(canvas, layout);
-    for (final m in scene.members) {
-      _paintDesk(canvas, layout, m);
+    for (var i = 0; i < scene.members.length; i++) {
+      _paintDesk(canvas, layout, scene.members[i], away: _isAway(layout, scene.members[i], placements[i]));
     }
     _paintMyDesk(canvas, layout);
     if (scene.isEmpty) {
@@ -115,7 +138,8 @@ class OfficePainter extends CustomPainter {
 
   // ---- 책상 --------------------------------------------------------------------
 
-  void _paintDesk(Canvas canvas, OfficeLayout layout, SceneMember m) {
+  void _paintDesk(Canvas canvas, OfficeLayout layout, SceneMember m, {bool? away}) {
+    final isAway = away ?? m.isQueued;
     final d = layout.deskRect(m.deskIndex);
     final fs = layout.fontScale;
     final rr = RRect.fromRectAndRadius(d, Radius.circular(4 * layout.scale));
@@ -158,8 +182,8 @@ class OfficePainter extends CustomPainter {
           ..color = OfficeColors.monitorBorder
           ..style = PaintingStyle.stroke
           ..strokeWidth = 1);
-    final dim = m.isGone || m.isQueued || m.summary.startsWith('(');
-    _text(canvas, m.isQueued ? '(자리 비움)' : m.summary, Offset(mon.left + 4, mon.center.dy),
+    final dim = m.isGone || isAway || m.summary.startsWith('(');
+    _text(canvas, isAway ? '(자리 비움)' : m.summary, Offset(mon.left + 4, mon.center.dy),
         style: TextStyle(
           color: dim ? OfficeColors.monitorTextDim : OfficeColors.monitorText,
           fontSize: 10 * fs,
@@ -225,24 +249,25 @@ class OfficePainter extends CustomPainter {
 
   void _paintCharacter(Canvas canvas, OfficeLayout layout, SceneMember m, CharacterPlacement p) {
     final r = layout.charRadius;
+    final c = p.center + Offset(0, bob[m.id] ?? 0);
     if (m.id == selectedMemberId) {
       canvas.drawCircle(
-          p.center,
+          c,
           r + 4,
           Paint()
             ..color = OfficeColors.selectedRing
             ..style = PaintingStyle.stroke
             ..strokeWidth = 2.5);
     }
-    canvas.drawCircle(p.center, r, Paint()..color = _charColor(m));
+    canvas.drawCircle(c, r, Paint()..color = _charColor(m));
     canvas.drawCircle(
-        p.center,
+        c,
         r,
         Paint()
           ..color = OfficeColors.charOutline
           ..style = PaintingStyle.stroke
           ..strokeWidth = 1.5);
-    _text(canvas, m.initial, p.center,
+    _text(canvas, m.initial, c,
         style: TextStyle(
           color: m.isGone ? OfficeColors.charGoneText : OfficeColors.charText,
           fontSize: r * 0.95,
@@ -254,12 +279,14 @@ class OfficePainter extends CustomPainter {
   void _paintBubble(Canvas canvas, OfficeLayout layout, SceneMember m, CharacterPlacement p) {
     if (m.isGone) return; // 퇴근·오류는 모니터·회색 원으로만
     final fs = layout.fontScale;
+    final override = bubbleOverrides[m.id];
+    final alert = override != null || m.isAlert;
     final style = TextStyle(
       color: OfficeColors.bubbleText,
       fontSize: 11 * fs,
-      fontWeight: m.isAlert ? FontWeight.bold : FontWeight.normal,
+      fontWeight: alert ? FontWeight.bold : FontWeight.normal,
     );
-    final tp = _layoutText(m.bubbleText, style);
+    final tp = _layoutText(override != null ? truncate(override, bubbleMaxChars) : m.bubbleText, style);
     final padX = 6 * layout.scale, padY = 3 * layout.scale;
     final w = tp.width + padX * 2, h = tp.height + padY * 2;
     final tail = 6 * layout.scale;
@@ -276,9 +303,9 @@ class OfficePainter extends CustomPainter {
       ..close();
     final fill = Paint()..color = OfficeColors.bubbleFill;
     final border = Paint()
-      ..color = m.isAlert ? OfficeColors.bubbleAlertBorder : OfficeColors.bubbleBorder
+      ..color = alert ? OfficeColors.bubbleAlertBorder : OfficeColors.bubbleBorder
       ..style = PaintingStyle.stroke
-      ..strokeWidth = m.isAlert ? 2.5 : 1;
+      ..strokeWidth = alert ? 2.5 : 1;
     canvas.drawRRect(rr, fill);
     canvas.drawPath(tailPath, fill);
     canvas.drawRRect(rr, border);
@@ -315,16 +342,17 @@ class OfficePainter extends CustomPainter {
   @override
   SemanticsBuilderCallback get semanticsBuilder => (Size size) {
         final layout = layoutFor(size);
-        final placements = layout.placements(scene);
+        final placements = _placementsFor(layout);
         return [
           for (var i = 0; i < scene.members.length; i++)
             CustomPainterSemantics(
-              rect: scene.members[i].isQueued
+              // 자리를 비운 캐릭터(줄·보고·걷는 중)는 지금 위치의 원, 자리에 있으면 책상.
+              rect: _isAway(layout, scene.members[i], placements[i])
                   ? Rect.fromCircle(center: placements[i].center, radius: layout.charRadius)
                   : layout.deskRect(scene.members[i].deskIndex),
               properties: SemanticsProperties(
                 label: '${scene.members[i].deskLabel} · ${scene.members[i].engineLabel} · ${scene.members[i].summary}'
-                    '${scene.members[i].isQueued ? ' · 내 책상 줄' : ''}',
+                    '${scene.members[i].isQueued ? ' · 내 책상 줄' : bubbleOverrides.containsKey(scene.members[i].id) ? ' · ${bubbleOverrides[scene.members[i].id]}' : ''}',
                 selected: scene.members[i].id == selectedMemberId,
                 button: true,
                 textDirection: textDirection,
@@ -348,8 +376,31 @@ class OfficePainter extends CustomPainter {
 
   @override
   bool shouldRepaint(OfficePainter oldDelegate) =>
-      oldDelegate.scene != scene || oldDelegate.selectedMemberId != selectedMemberId;
+      shouldRebuildSemantics(oldDelegate) || !_mapEq(oldDelegate.bob, bob);
 
+  /// 흔들림(bob)은 시맨틱에 영향 없음 — 장면·선택·위치·말풍선 덮어쓰기만.
   @override
-  bool shouldRebuildSemantics(OfficePainter oldDelegate) => shouldRepaint(oldDelegate);
+  bool shouldRebuildSemantics(OfficePainter oldDelegate) =>
+      oldDelegate.scene != scene ||
+      oldDelegate.selectedMemberId != selectedMemberId ||
+      !_listEq(oldDelegate.placements, placements) ||
+      !_mapEq(oldDelegate.bubbleOverrides, bubbleOverrides);
+
+  static bool _listEq<T>(List<T>? a, List<T>? b) {
+    if (identical(a, b)) return true;
+    if (a == null || b == null || a.length != b.length) return false;
+    for (var i = 0; i < a.length; i++) {
+      if (a[i] != b[i]) return false;
+    }
+    return true;
+  }
+
+  static bool _mapEq<K, V>(Map<K, V> a, Map<K, V> b) {
+    if (identical(a, b)) return true;
+    if (a.length != b.length) return false;
+    for (final e in a.entries) {
+      if (!b.containsKey(e.key) || b[e.key] != e.value) return false;
+    }
+    return true;
+  }
 }
