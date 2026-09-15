@@ -2,7 +2,7 @@
 // -32003 → 배너, 재접속 → 재attach, 멤버 교체 → detach(old)+attach(new).
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:pixel_office/panel/terminal_tab.dart';
+import 'package:pixel_office/panel/right_panel.dart';
 import 'package:pixel_office/rpc/rpc_client.dart';
 import 'package:pixel_office/state/office_state.dart';
 import 'package:xterm/xterm.dart';
@@ -124,6 +124,39 @@ void main() {
       await pumpUntil(tester, () => daemon.paramsOf('member.attach').any((p) => p['memberId'] == 'm2'), reason: 'attach m2');
       await pumpUntil(tester, () => bufferText(tester).contains('SCREEN:m2'));
       expect(bufferText(tester), isNot(contains('SCREEN:m1')));
+    });
+  });
+
+  testWidgets('T18: 탭을 오가도 같은 Terminal 인스턴스(terminalCacheProvider) — 스크롤백 유지, attach 는 다시', (tester) async {
+    await tester.runAsync(() async {
+      final c = await pumpPanel(tester, daemon, const RightPanel(memberId: 'm1'));
+      await pumpUntilConnected(tester, c);
+      await tester.tap(find.text('터미널'));
+      await tester.pumpAndSettle();
+      await pumpUntil(tester, () => daemon.countOf('member.attach') == 1, reason: 'attach #1');
+      await pumpUntil(tester, () => bufferText(tester).contains('SCREEN:m1'));
+      final first = terminalOf(tester);
+      expect(identical(first, c.read(terminalCacheProvider).of('m1').terminal), isTrue);
+      // 뷰포트 높이보다 많이 써서 앞줄이 스크롤백으로 밀려나게 한다(재attach 의 \x1b[2J 는 뷰포트만 지운다).
+      daemon.push('term', {'memberId': 'm1', 'data': [for (var i = 1; i <= 200; i++) '스크롤백 줄 $i'].join('\r\n')});
+      await pumpUntil(tester, () => bufferText(tester).contains('스크롤백 줄 200'));
+      expect(bufferText(tester), contains('스크롤백 줄 1\n'));
+
+      await tester.tap(find.text('로그'));
+      await tester.pumpAndSettle();
+      await pumpUntil(tester, () => daemon.countOf('member.detach') == 1, reason: 'detach on hide');
+      expect(find.byType(TerminalView), findsNothing);
+      expect(c.read(terminalCacheProvider).of('m1').attached, isFalse);
+
+      await tester.tap(find.text('터미널'));
+      await tester.pumpAndSettle();
+      await pumpUntil(tester, () => daemon.countOf('member.attach') == 2, reason: 'attach #2');
+      expect(identical(terminalOf(tester), first), isTrue); // 같은 객체
+      await pumpUntil(tester, () => c.read(terminalCacheProvider).of('m1').attached);
+      expect(first.buffer.getText(), contains('스크롤백 줄 1\n')); // 스크롤백이 리셋되지 않았다
+      expect(first.buffer.getText(), contains('SCREEN:m1')); // 현재 화면은 다시 받았다
+      // 다른 멤버는 다른 인스턴스
+      expect(identical(c.read(terminalCacheProvider).of('m2').terminal, first), isFalse);
     });
   });
 }

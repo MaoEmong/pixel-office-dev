@@ -1,11 +1,11 @@
 // 터미널 탭 — xterm `TerminalView` 에 그 멤버의 실제 CLI 화면을 붙인다.
 //
+//  Terminal 인스턴스는 `terminalCacheProvider`(멤버별, T18)가 들고 있다 — 탭을 오가도 같은 버퍼(스크롤백 유지).
 //  탭이 보이면(initState → 첫 프레임 뒤)      member.attach{memberId, cols, rows} → screen 을 써넣고
 //  연결될 때마다(connectionStateProvider)     다시 attach (재접속 규칙 3: term 은 replay 되지 않는다)
 //  `term{memberId, data}` 알림                 → terminal.write(data)        (RpcClient.notifications 직접 구독)
-//  terminal.onOutput(키 입력·붙여넣기)         → member.type{memberId, data}
-//  terminal.onResize(뷰 크기 변경)             → member.resize{memberId, cols, rows} (attach 된 뒤에만)
-//  탭이 숨겨지거나(dispose) 멤버가 바뀌면     → member.detach{memberId}
+//  terminal.onOutput / onResize                → member.type / member.resize (terminal_cache.dart 가 배선)
+//  탭이 숨겨지거나(dispose) 멤버가 바뀌면     → member.detach{memberId}   (Terminal 은 캐시에 남는다)
 //
 // attach 실패(-32003: 이 데몬 세션에서 스폰된 적 없는 멤버 등)는 탭 위 배너로 보여 준다.
 
@@ -18,9 +18,9 @@ import 'package:xterm/xterm.dart';
 import '../rpc/rpc_client.dart';
 import '../state/office_state.dart';
 import 'labels.dart';
+import 'terminal_cache.dart';
 
-/// 스크롤백 줄 수.
-const int terminalMaxLines = 5000;
+export 'terminal_cache.dart' show terminalMaxLines;
 
 class TerminalTab extends ConsumerStatefulWidget {
   const TerminalTab({super.key, required this.memberId, this.fontSize = 13, this.autofocus = true});
@@ -34,11 +34,10 @@ class TerminalTab extends ConsumerStatefulWidget {
 }
 
 class _TerminalTabState extends ConsumerState<TerminalTab> {
-  late Terminal _terminal;
+  late CachedTerminal _entry;
   StreamSubscription<RpcNotification>? _termSub;
   ProviderSubscription<RpcConnectionState>? _connSub;
 
-  bool _attached = false;
   bool _attaching = false;
 
   /// 배너 문구(attach 오류·연결 끊김). null 이면 배너 없음.
@@ -54,13 +53,14 @@ class _TerminalTabState extends ConsumerState<TerminalTab> {
   void initState() {
     super.initState();
     _client = ref.read(rpcClientProvider);
-    _terminal = _newTerminal();
+    _entry = ref.read(terminalCacheProvider).of(widget.memberId);
+    _entry.attached = false;
     _termSub = _client.notifications.listen(_onNotification);
     _connSub = ref.listenManual<RpcConnectionState>(connectionStateProvider, (prev, next) {
       if (next == RpcConnectionState.connected) {
         if (prev != RpcConnectionState.connected) _attach();
       } else {
-        _attached = false;
+        _entry.attached = false;
         if (mounted) setState(() => _notice = '데몬 연결 끊김 — 재접속되면 화면을 다시 받습니다');
       }
     });
@@ -72,12 +72,12 @@ class _TerminalTabState extends ConsumerState<TerminalTab> {
   void didUpdateWidget(covariant TerminalTab old) {
     super.didUpdateWidget(old);
     if (old.memberId != widget.memberId) {
+      _entry.attached = false;
       _detach(old.memberId);
       _generation++;
-      _attached = false;
       _attaching = false;
       _notice = null;
-      _terminal = _newTerminal();
+      _entry = ref.read(terminalCacheProvider).of(widget.memberId);
       WidgetsBinding.instance.addPostFrameCallback((_) => _attach());
     }
   }
@@ -87,21 +87,12 @@ class _TerminalTabState extends ConsumerState<TerminalTab> {
     _generation++;
     _termSub?.cancel();
     _connSub?.close();
+    _entry.attached = false;
     _detach(widget.memberId);
     super.dispose();
   }
 
-  Terminal _newTerminal() {
-    final memberId = widget.memberId;
-    final t = Terminal(maxLines: terminalMaxLines);
-    t.onOutput = (data) => _send('member.type', {'memberId': memberId, 'data': data});
-    t.onResize = (w, h, _, _) {
-      if (_attached) _send('member.resize', {'memberId': memberId, 'cols': w, 'rows': h});
-    };
-    return t;
-  }
-
-  /// 결과가 필요 없는 호출. 실패는 조용히 삼킨다(끊김 중 타이핑 등).
+  /// 결과가 필요 없는 호출. 실패는 조용히 삼킨다(끊김 중 등).
   void _send(String method, Map<String, dynamic> params) {
     unawaited(_client.call(method, params).then((_) {}, onError: (Object _) {}));
   }
@@ -116,7 +107,8 @@ class _TerminalTabState extends ConsumerState<TerminalTab> {
     }
     final memberId = widget.memberId;
     final gen = _generation;
-    final terminal = _terminal;
+    final entry = _entry;
+    final terminal = entry.terminal;
     _attaching = true;
     setState(() => _notice = null);
     try {
@@ -131,19 +123,15 @@ class _TerminalTabState extends ConsumerState<TerminalTab> {
         _detach(memberId);
         return;
       }
-      // 재접속 attach 면 이전 화면이 남아 있으므로 뷰포트를 비우고(스크롤백은 유지) 현재 화면을 쓴다.
+      // 재attach 면 이전 화면이 남아 있으므로 뷰포트를 비우고(스크롤백은 유지) 현재 화면을 쓴다.
       terminal.write('\x1b[H\x1b[2J');
       terminal.write((r['screen'] as String?) ?? '');
-      setState(() {
-        _attached = true;
-        _notice = null;
-      });
+      entry.attached = true;
+      setState(() => _notice = null);
     } on RpcException catch (e) {
       if (!mounted || gen != _generation) return;
-      setState(() {
-        _attached = false;
-        _notice = describeAttachError(e);
-      });
+      entry.attached = false;
+      setState(() => _notice = describeAttachError(e));
     } finally {
       if (gen == _generation) _attaching = false;
     }
@@ -152,7 +140,7 @@ class _TerminalTabState extends ConsumerState<TerminalTab> {
   void _onNotification(RpcNotification n) {
     if (n.method != 'term' || n.params['memberId'] != widget.memberId) return;
     final data = n.params['data'];
-    if (data is String && data.isNotEmpty) _terminal.write(data);
+    if (data is String && data.isNotEmpty) _entry.terminal.write(data);
   }
 
   @override
@@ -168,7 +156,7 @@ class _TerminalTabState extends ConsumerState<TerminalTab> {
         ColoredBox(
           color: Colors.black,
           child: TerminalView(
-            _terminal,
+            _entry.terminal,
             textStyle: TerminalStyle(fontSize: widget.fontSize, fontFamily: panelMonoFamily, fontFamilyFallback: panelMonoFallback),
             autofocus: widget.autofocus,
             padding: const EdgeInsets.all(4),

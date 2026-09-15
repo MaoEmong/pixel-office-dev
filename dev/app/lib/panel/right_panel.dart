@@ -1,14 +1,18 @@
-// 오른쪽 패널(T13) — 선택된 멤버의 헤더 + 탭(로그 · 터미널 · 변경 파일 · 보고서).
+// 오른쪽 패널(T13 · T15 · T18) — 선택된 멤버의 헤더 + 배너 + 카드 + 탭(로그 · 터미널 · 변경 파일 · 보고서).
 //
 //  RightPanel(memberId: null)  → "캐릭터를 선택하세요"
-//  RightPanel(memberId: 'm_…') → PanelHeader(이름 · 엔진 · 상태 · 팀 cwd · 출근 후 경과) + TabBar
+//  RightPanel(memberId: 'm_…') → PanelHeader(이름 · 엔진 · 상태 · 팀 cwd · 출근 후 경과)
+//                                 + MemberGoneBanner(퇴근함 / 오류로 종료됨 + 재고용, T18 — status 가 exited/error 일 때만)
+//                                 + RecoveryHint(데몬 재시작으로 만료된 요청 N건, T18)
+//                                 + RedoCards(재지시 필요, T18) + PendingCards(열린 허가·질문 카드, T15) + TabBar
 //     로그      LogTab       (lib/panel/log_tab.dart)      memberLogProvider — 백필 ∪ 라이브
-//     터미널    TerminalTab  (lib/panel/terminal_tab.dart) xterm + member.attach/term/type/resize/detach
+//     터미널    TerminalTab  (lib/panel/terminal_tab.dart) xterm + member.attach/term/type/resize/detach, Terminal 은 terminalCacheProvider 에
 //     변경 파일 자리(추후)
-//     보고서    자리 — 지금은 마지막 `text` 이벤트 본문(latestTextEventProvider)
+//     보고서    ReportTab    (lib/panel/report_tab.dart)   reporting + 직전 text 로 되살린 task 보고, 최신 먼저
 //
 // 탭 위치(DefaultTabController)는 멤버가 바뀌어도 유지된다. TabBarView 는 보이지 않는 탭을 내리므로
-// 터미널 탭은 숨겨지면 detach, 다시 보이면 attach 한다.
+// 터미널 탭은 숨겨지면 detach, 다시 보이면 attach 한다(Terminal 인스턴스는 캐시에 남아 스크롤백이 유지된다).
+// `panelTabRequestProvider` 에 요청이 오면(재지시 카드 "터미널에서 답하기") 그 탭으로 animateTo.
 
 import 'dart:async';
 
@@ -19,16 +23,26 @@ import '../model/models.dart';
 import '../state/office_state.dart';
 import 'labels.dart';
 import 'log_tab.dart';
-import 'member_log.dart';
+import 'member_gone_banner.dart';
+import 'panel_tabs.dart';
+import 'pending_card.dart';
+import 'redo_card.dart';
+import 'report_tab.dart';
 import 'terminal_tab.dart';
 
 export 'labels.dart' show eventKindLabel, memberStatusLabel, derivedStatusLabel;
 export 'log_tab.dart' show LogTab, LogRow;
+export 'member_gone_banner.dart' show MemberGoneBanner, RecoveryHint, memberFailureEventsProvider, recoveryExpiredCountProvider;
 export 'member_log.dart' show memberLogProvider, memberBackfillProvider, latestTextEventProvider, MemberBackfill;
+export 'panel_tabs.dart' show RightPanelTab, PanelTabRequest, panelTabRequestProvider;
+export 'pending_card.dart' show PendingCards, PendingInbox, PendingCard, ApprovalCard, QuestionCard;
+export 'redo_card.dart' show RedoCards, RedoCard, redoNeededProvider, redoInstructionProvider, describeRedoSummary;
+export 'report_tab.dart' show ReportTab, ReportCard, MemberReport, memberReportsProvider, taskInstructionsProvider, parseTaskPrompt;
+export 'terminal_cache.dart' show terminalCacheProvider, TerminalCache, CachedTerminal;
 export 'terminal_tab.dart' show TerminalTab, describeAttachError;
 
-/// 탭 순서(테스트·외부에서 인덱스로 고를 때).
-enum RightPanelTab { log, terminal, files, report }
+/// 헤더 아래 카드 영역의 최대 높이(넘치면 카드 영역 안에서 스크롤).
+const double pendingCardsMaxHeight = 320;
 
 class RightPanel extends ConsumerWidget {
   const RightPanel({super.key, required this.memberId, this.initialTab = RightPanelTab.log});
@@ -54,31 +68,62 @@ class RightPanel extends ConsumerWidget {
       child: DefaultTabController(
         length: RightPanelTab.values.length,
         initialIndex: initialTab.index,
-        child: Column(
-          children: [
-            if (member == null)
-              _UnknownMemberHeader(memberId: id)
-            else
-              PanelHeader(member: member),
-            const TabBar(
-              tabs: [Tab(text: '로그'), Tab(text: '터미널'), Tab(text: '변경 파일'), Tab(text: '보고서')],
-              labelStyle: TextStyle(fontSize: 13),
-              labelPadding: EdgeInsets.symmetric(horizontal: 8),
-            ),
-            Expanded(
-              child: TabBarView(
-                children: [
-                  LogTab(memberId: id),
-                  TerminalTab(memberId: id),
-                  const _PlaceholderTab('변경 파일 (추후)'),
-                  ReportTab(memberId: id),
-                ],
+        child: _TabRequestListener(
+          child: Column(
+            children: [
+              if (member == null)
+                _UnknownMemberHeader(memberId: id)
+              else ...[
+                PanelHeader(member: member),
+                MemberGoneBanner(member: member),
+              ],
+              RecoveryHint(memberId: id),
+              // 재지시·허가·질문 카드(보통 0~1장). 길어지면 [pendingCardsMaxHeight] 까지만 차지하고 안에서 스크롤.
+              ConstrainedBox(
+                constraints: const BoxConstraints(maxHeight: pendingCardsMaxHeight),
+                child: SingleChildScrollView(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [RedoCards(memberId: id), PendingCards(memberId: id)],
+                  ),
+                ),
               ),
-            ),
-          ],
+              const TabBar(
+                tabs: [Tab(text: '로그'), Tab(text: '터미널'), Tab(text: '변경 파일'), Tab(text: '보고서')],
+                labelStyle: TextStyle(fontSize: 13),
+                labelPadding: EdgeInsets.symmetric(horizontal: 8),
+              ),
+              Expanded(
+                child: TabBarView(
+                  children: [
+                    LogTab(memberId: id),
+                    TerminalTab(memberId: id),
+                    const _PlaceholderTab('변경 파일 (추후)'),
+                    ReportTab(memberId: id),
+                  ],
+                ),
+              ),
+            ],
+          ),
         ),
       ),
     );
+  }
+}
+
+/// `panelTabRequestProvider` 요청 → DefaultTabController.animateTo. DefaultTabController 아래에 있어야 한다.
+class _TabRequestListener extends ConsumerWidget {
+  const _TabRequestListener({required this.child});
+
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    ref.listen<PanelTabRequest?>(panelTabRequestProvider, (prev, next) {
+      if (next == null || !context.mounted) return;
+      DefaultTabController.of(context).animateTo(next.tab.index);
+    });
+    return child;
   }
 }
 
@@ -197,37 +242,4 @@ class _PlaceholderTab extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => Center(child: Text(label, style: const TextStyle(color: Colors.white38)));
-}
-
-/// 보고서 탭 자리(v1a): 마지막 `text` 이벤트(턴 종료 시 마지막 assistant 메시지) 본문. T18 에서 교체.
-class ReportTab extends ConsumerWidget {
-  const ReportTab({super.key, required this.memberId});
-
-  final String memberId;
-
-  @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final ev = ref.watch(latestTextEventProvider(memberId));
-    if (ev == null) {
-      return const Center(child: Text('아직 응답 없음', style: TextStyle(color: Colors.white38)));
-    }
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Padding(
-          padding: const EdgeInsets.fromLTRB(12, 8, 12, 4),
-          child: Text('마지막 응답 · ${formatClockSeconds(ev.ts)} · #${ev.seq}', style: const TextStyle(fontSize: 11, color: Colors.white38)),
-        ),
-        Expanded(
-          child: SingleChildScrollView(
-            padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
-            child: SelectableText(
-              ev.detail.text ?? '',
-              style: const TextStyle(fontSize: 12.5, height: 1.4, color: Colors.white70, fontFamily: panelMonoFamily, fontFamilyFallback: panelMonoFallback),
-            ),
-          ),
-        ),
-      ],
-    );
-  }
 }

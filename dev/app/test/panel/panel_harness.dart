@@ -41,6 +41,25 @@ Map<String, dynamic> teamJson({String id = 't1', String name = 'pixel', String c
       'createdAt': 'c',
     };
 
+/// 스냅샷 `pending` 행(status open). [payload] 는 approval 이면 `{tool_name, tool_input}`, question 이면 `{questions}` 등.
+Map<String, dynamic> pendingJson(
+  String id, {
+  String memberId = 'm1',
+  String type = 'approval',
+  required Map<String, dynamic> payload,
+  String? createdAt,
+}) =>
+    {
+      'id': id,
+      'memberId': memberId,
+      'type': type,
+      'payload': payload,
+      'status': 'open',
+      'createdAt': createdAt ?? DateTime.now().toUtc().toIso8601String(),
+      'answeredAt': null,
+      'answer': null,
+    };
+
 /// 기본 스냅샷(팀 1, 멤버 m1 working / m2 idle)과 기본 핸들러(attach/detach/type/resize/events.query 빈 결과)를 가진 가짜 데몬.
 Future<PanelFakeDaemon> startDaemon() async {
   final d = PanelFakeDaemon();

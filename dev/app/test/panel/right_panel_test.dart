@@ -65,7 +65,41 @@ void main() {
     });
   });
 
-  testWidgets('보고서 자리: 마지막 text 이벤트 본문(백필 포함)', (tester) async {
+  testWidgets('허가 카드: 선택 멤버의 pending 만 헤더 아래에, 닫히면 사라짐(T15)', (tester) async {
+    daemon.snapshotBody['pending'] = [
+      pendingJson('a1', memberId: 'm1', payload: {'tool_name': 'Bash', 'tool_input': {'command': 'flutter test'}}),
+      pendingJson('q2', memberId: 'm2', type: 'question', payload: {'question': '모시의 질문?'}),
+    ];
+    daemon.handlers['approval.respond'] = (_) => {};
+    final overrides = panelOverrides(daemon);
+    await tester.runAsync(() async {
+      final c = await pumpPanel(tester, daemon, const RightPanel(memberId: 'm1'), overrides: overrides);
+      await pumpUntilConnected(tester, c);
+      await pumpUntil(tester, () => find.byType(ApprovalCard).evaluate().isNotEmpty, reason: 'm1 card');
+      expect(find.text('flutter test'), findsOneWidget);
+      expect(find.byType(QuestionCard), findsNothing); // m2 것은 안 보임
+      // 카드는 헤더 아래 · 탭 위
+      expect(tester.getTopLeft(find.byType(ApprovalCard)).dy, greaterThan(tester.getBottomLeft(find.byType(PanelHeader)).dy - 1));
+      expect(tester.getBottomLeft(find.byType(ApprovalCard)).dy, lessThanOrEqualTo(tester.getTopLeft(find.byType(TabBar)).dy + 1));
+
+      // m2 로 바꾸면 m2 의 질문 카드
+      await pumpPanel(tester, daemon, const RightPanel(memberId: 'm2'), overrides: overrides);
+      await tester.pump();
+      expect(find.byType(QuestionCard), findsOneWidget);
+      expect(find.text('모시의 질문?'), findsOneWidget);
+      expect(find.byType(ApprovalCard), findsNothing);
+
+      // 다시 m1 → 허가 → 카드 사라짐
+      await pumpPanel(tester, daemon, const RightPanel(memberId: 'm1'), overrides: overrides);
+      await tester.pump();
+      await tester.tap(find.text('허가'));
+      await pumpUntil(tester, () => daemon.countOf('approval.respond') == 1);
+      await pumpUntil(tester, () => find.byType(ApprovalCard).evaluate().isEmpty, reason: 'card gone after allow');
+      expect(find.byType(TabBar), findsOneWidget);
+    });
+  });
+
+  testWidgets('보고서 탭(T18): 백필 text 는 "보고(작업 없음)", 라이브 text 가 위에 쌓인다(최신 먼저)', (tester) async {
     daemon.handlers['events.query'] = (_) => {
           'events': [
             ev(4, kind: 'text', detail: {'text': '첫 번째 응답\n둘째 줄'}),
@@ -75,9 +109,13 @@ void main() {
       final c = await pumpPanel(tester, daemon, const RightPanel(memberId: 'm1', initialTab: RightPanelTab.report));
       await pumpUntilConnected(tester, c);
       await pumpUntil(tester, () => find.textContaining('첫 번째 응답').evaluate().isNotEmpty, reason: 'backfilled text');
+      expect(find.byType(ReportCard), findsOneWidget);
       daemon.emitEvent(ev(12, kind: 'text', detail: {'text': '최신 응답입니다'}));
       await pumpUntil(tester, () => find.textContaining('최신 응답입니다').evaluate().isNotEmpty, reason: 'live text');
-      expect(find.textContaining('첫 번째 응답'), findsNothing);
+      expect(find.textContaining('첫 번째 응답'), findsOneWidget); // 이전 보고도 남는다
+      final cards = tester.widgetList<ReportCard>(find.byType(ReportCard)).map((c) => c.report.seq).toList();
+      expect(cards, [12, 4]); // 최신 먼저
+      expect(find.text('보고(작업 없음)'), findsNWidgets(2));
       expect(find.textContaining('#12'), findsOneWidget);
     });
   });
