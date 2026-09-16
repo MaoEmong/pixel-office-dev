@@ -189,7 +189,8 @@ describe('Office', () => {
     office.on('status', (id, s, d) => statuses.push([id, s, d]));
     office.on('notice', (l, m) => notices.push(`${l}: ${m}`));
     await office.start();
-    team = office.createTeam({ name: 'alpha', cwd: dataDir, leaderEngine: 'claude', maxMembers: 2 });
+    // 팀장 없는 팀(store 직접) — 이 파일은 멤버 수명·입력·복구를 본다. team.create 의 팀장 자동 출근(T24)은 TeamRank.test.ts.
+    team = store.createTeam({ name: 'alpha', cwd: dataDir, maxMembers: 2 });
   });
   afterEach(async () => {
     await office.shutdown();
@@ -259,7 +260,7 @@ describe('Office', () => {
     // 팀 정원·엔진 허용 검사
     clockIn('lee');
     assert.throws(() => clockIn('park'), (e: { code: number }) => e.code === RPC_ERROR.BAD_STATE);
-    const t2 = office.createTeam({ name: 'codex-only', cwd: dataDir, leaderEngine: 'codex', allowedEngines: ['codex'] });
+    const t2 = store.createTeam({ name: 'codex-only', cwd: dataDir, allowedEngines: ['codex'] });
     assert.throws(() => office.clockIn({ teamId: t2.id, engine: 'claude', name: 'x' }), (e: { code: number }) => e.code === RPC_ERROR.INVALID_PARAMS);
     assert.throws(() => office.clockIn({ teamId: 'nope', engine: 'claude', name: 'x' }), (e: { code: number }) => e.code === RPC_ERROR.NOT_FOUND);
     assert.throws(() => office.createTeam({ name: 'bad', cwd: path.join(dataDir, 'missing'), leaderEngine: 'claude' }), (e: { code: number }) => e.code === RPC_ERROR.INVALID_PARAMS);
@@ -479,7 +480,7 @@ describe('Office', () => {
     assert.equal(store.getMember(m.id), undefined);
     assert.deepEqual(pty.kills, [{ memberId: m.id, graceful: true }]);
 
-    const t2 = office.createTeam({ name: 'b', cwd: dataDir, leaderEngine: 'claude' });
+    const t2 = store.createTeam({ name: 'b', cwd: dataDir });
     const m2 = office.clockIn({ teamId: t2.id, engine: 'claude', name: 'z' });
     sessionStart(m2);
     receiver.emit('hook', fakeReq(m2.memberToken, 'UserPromptSubmit', { ...base('UserPromptSubmit'), prompt: 'go' }).req);

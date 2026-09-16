@@ -98,7 +98,8 @@ describe('혼합 팀: Claude 1 + Codex 1 (T23)', () => {
       disposed.push(token);
       realDispose(token);
     };
-    team = office.createTeam({ name: 'demo', cwd: dataDir, leaderEngine: 'claude', allowedEngines: ['claude', 'codex'] });
+    // 팀장 없는 팀(store 직접) — 혼합 엔진 시나리오만 보므로 team.create 의 팀장 자동 출근(T24)은 끼우지 않는다.
+    team = store.createTeam({ name: 'demo', cwd: dataDir, allowedEngines: ['claude', 'codex'] });
     하루 = office.clockIn({ teamId: team.id, engine: 'claude', name: '하루' });
     코덱 = office.clockIn({ teamId: team.id, engine: 'codex', name: '코덱' });
   });
@@ -129,16 +130,20 @@ describe('혼합 팀: Claude 1 + Codex 1 (T23)', () => {
     send(하루, 'PreToolUse', claudePre('Write', { file_path: 'D:\\x\\multi.txt', content: 'a\n' }));
     send(코덱, 'PreToolUse', codexPre('apply_patch <<EOF\n*** Begin Patch\n*** Update File: src/a.ts\nEOF'));
 
-    assert.deepEqual(kindsOf(하루), ['reading', 'running', 'editing'], 'Claude: Read/Bash/Write 이름표');
-    assert.deepEqual(kindsOf(코덱), ['reading', 'running', 'editing'], 'Codex: cat / echo> / apply_patch 휴리스틱');
+    // T27(팀 셸 뮤텍스): 두 멤버가 **같은 팀**이라 하루의 `echo hold > hold.txt` 가 팀 락을 쥔 채이고(이 테스트는
+    // PostToolUse 를 안 보낸다) 코덱의 쓰기 셸 명령은 줄을 선다 → 매핑과 무관한 `running{waiting:'shell-lock'}` 이
+    // 뒤에 붙는다. 이 테스트는 **도구 매핑**만 보므로 대기 이벤트는 걸러 낸다(대기 자체는 ShellMutex.test.ts 가 본다).
+    const mapped = (m: Member) => eventsOf(m).filter((e) => e.detail.waiting !== 'shell-lock');
+    assert.deepEqual(mapped(하루).map((e) => e.kind), ['reading', 'running', 'editing'], 'Claude: Read/Bash/Write 이름표');
+    assert.deepEqual(mapped(코덱).map((e) => e.kind), ['reading', 'running', 'editing'], 'Codex: cat / echo> / apply_patch 휴리스틱');
 
-    const c = eventsOf(하루);
+    const c = mapped(하루);
     assert.equal(c[0]!.detail.path, 'D:\\x\\hello.txt');
     assert.equal(c[1]!.detail.cmd, 'echo hold > hold.txt');
     assert.equal(c[1]!.detail.summary, 'Write "hold" to hold.txt');
     assert.equal(c[2]!.detail.path, 'D:\\x\\multi.txt');
 
-    const x = eventsOf(코덱);
+    const x = mapped(코덱);
     assert.equal(x[0]!.detail.tool, 'Bash');
     assert.equal(x[0]!.detail.cmd, 'cat notes.txt');
     assert.equal(x[1]!.detail.cmd, 'echo hi > ../outside.txt', '쓰기 리다이렉트는 reading 이 아니다');

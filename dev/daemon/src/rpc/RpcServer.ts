@@ -7,7 +7,7 @@ import type { AddressInfo } from 'node:net';
 import { WebSocketServer, WebSocket, type RawData } from 'ws';
 import { OfficeError, RPC_ERROR } from '../office/errors.js';
 import type { OfficeApi, OfficeEvents } from '../office/types.js';
-import type { Engine } from '../store/types.js';
+import type { Engine, MemberRank } from '../store/types.js';
 
 export interface RpcServerOptions {
   port: number;
@@ -197,15 +197,16 @@ export class RpcServer {
           }),
         }),
 
-      'team.create': (_c, p) => ({
-        team: o.createTeam({
+      // 결과는 `{ team, leader }` — 팀장이 자동 출근한다(T24).
+      'team.create': (_c, p) =>
+        o.createTeam({
           name: reqStr(p, 'name'),
           cwd: reqStr(p, 'cwd'),
           leaderEngine: reqEngine(p, 'leaderEngine'),
+          leaderName: optStr(p, 'leaderName'),
           maxMembers: optNum(p, 'maxMembers'),
           allowedEngines: optEngines(p, 'allowedEngines'),
         }),
-      }),
       'team.delete': async (_c, p) => {
         await o.deleteTeam(reqStr(p, 'teamId'));
         return {};
@@ -217,6 +218,7 @@ export class RpcServer {
           engine: reqEngine(p, 'engine'),
           name: reqStr(p, 'name'),
           instructions: optStr(p, 'instructions'),
+          rank: optRank(p, 'rank'),
         }),
       }),
       'member.clockOut': async (_c, p) => {
@@ -225,7 +227,8 @@ export class RpcServer {
       },
       'member.rehire': async (_c, p) => ({ member: await o.rehire(reqStr(p, 'memberId')) }),
       'member.restart': async (_c, p) => ({ member: await o.restart(reqStr(p, 'memberId')) }),
-      'member.instruct': (_c, p) => ({ taskId: o.instruct(reqStr(p, 'memberId'), reqStr(p, 'text')) }),
+      // `force:true` 는 "팀장에게만 지시" 게이트(-32004)를 넘는 디버그 탈출구(T24) — 앱은 보내지 않는다.
+      'member.instruct': (_c, p) => ({ taskId: o.instruct(reqStr(p, 'memberId'), reqStr(p, 'text'), { force: p.force === true }) }),
       'member.type': (_c, p) => {
         o.typeRaw(reqStr(p, 'memberId'), reqStr(p, 'data', true));
         return {};
@@ -371,6 +374,13 @@ function optNum(p: Record<string, unknown>, key: string): number | undefined {
 function reqEngine(p: Record<string, unknown>, key: string): Engine {
   const v = p[key];
   if (v !== 'claude' && v !== 'codex') throw invalid(`${key} must be claude|codex`);
+  return v;
+}
+
+function optRank(p: Record<string, unknown>, key: string): MemberRank | undefined {
+  const v = p[key];
+  if (v === undefined || v === null) return undefined;
+  if (v !== 'member' && v !== 'leader') throw invalid(`${key} must be member|leader`);
   return v;
 }
 

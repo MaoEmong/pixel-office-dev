@@ -48,7 +48,8 @@ describe('화면 기반 감시 (T23b)', () => {
     office.on('event', (e) => events.push(e));
     office.on('notice', (l, m) => notices.push(`${l}: ${m}`));
     await office.start();
-    team = office.createTeam({ name: 'demo', cwd: dataDir, leaderEngine: 'claude', allowedEngines: ['claude', 'codex'], maxMembers: 6 });
+    // 팀장 없는 팀(store 직접) — 화면 감시만 보므로 team.create 의 팀장 자동 출근(T24)은 끼우지 않는다.
+    team = store.createTeam({ name: 'demo', cwd: dataDir, allowedEngines: ['claude', 'codex'], maxMembers: 6 });
   });
   afterEach(async () => {
     await office.shutdown();

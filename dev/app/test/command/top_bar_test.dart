@@ -1,8 +1,10 @@
 // TopBar: 연결 칩(버전·pid)·개수, 팀 탭 → selectedTeamIdProvider, 출근 다이얼로그(이름 검증 → clockIn{engine}),
 // 팀 없을 때 인라인 팀 만들기 → team.create → clockIn, 퇴근 확인 → member.clockOut.
+// T24: 팀 만들기가 팀장을 자동 출근시킨다(팀장 이름 필드, 팀원 이름은 선택, 생성 후 팀장 선택) + 팀장 배지.
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:pixel_office/main.dart' show selectedMemberIdProvider;
 import 'package:pixel_office/rpc/rpc_client.dart';
 import 'package:pixel_office/topbar/top_bar.dart';
 
@@ -108,9 +110,12 @@ void main() {
     expect(find.byType(ClockInDialog), findsNothing);
   });
 
-  testWidgets('팀이 없으면 인라인 팀 만들기 → team.create → member.clockIn(새 팀 id), 팀 선택됨', (tester) async {
+  testWidgets('팀이 없으면 인라인 팀 만들기 → team.create(팀장 자동 출근) → member.clockIn(새 팀 id), 팀·팀장 선택됨', (tester) async {
     fake.responder = (m, p) => switch (m) {
-          'team.create' => {'team': fakeTeam('tNew', name: p['name'] as String)},
+          'team.create' => {
+              'team': fakeTeam('tNew', name: p['name'] as String, leaderId: 'mL'),
+              'leader': fakeMember('mL', teamId: 'tNew', name: (p['leaderName'] as String?) ?? '팀장', rank: 'leader', status: 'starting'),
+            },
           'member.clockIn' => {'member': fakeMember('m9', teamId: 'tNew')},
           _ => <String, dynamic>{},
         };
@@ -122,28 +127,78 @@ void main() {
     await tester.tap(find.byKey(const Key('topbar.clockIn')));
     await tester.pumpAndSettle();
     expect(find.text('팀이 없습니다 — 먼저 팀을 만듭니다'), findsOneWidget);
+    expect(find.byKey(const Key('clockIn.leaderHint')), findsOneWidget);
     expect(find.byKey(const Key('clockIn.team')), findsNothing);
 
-    await tester.enterText(find.byKey(const Key('clockIn.name')), '이음');
+    // 팀원 이름은 새 팀에서 선택 — 팀 이름·cwd 만 검증에 걸린다.
     await tester.tap(find.byKey(const Key('clockIn.submit')));
     await tester.pump();
+    expect(find.text('이름을 입력하세요'), findsNothing);
     expect(find.text('팀 이름을 입력하세요'), findsOneWidget);
     expect(find.text('작업 폴더 경로를 입력하세요'), findsOneWidget);
     expect(fake.calls, isEmpty);
 
+    await tester.enterText(find.byKey(const Key('clockIn.name')), '이음');
     await tester.enterText(find.byKey(const Key('clockIn.teamName')), 'pixel');
     await tester.enterText(find.byKey(const Key('clockIn.cwd')), r'D:\myproject\pixel-office');
+    await tester.enterText(find.byKey(const Key('clockIn.leaderName')), '반장');
     await tester.tap(find.descendant(of: find.byKey(const Key('clockIn.leaderEngine')), matching: find.text('codex')));
     await tester.pump();
     await tester.tap(find.byKey(const Key('clockIn.submit')));
     await tester.pumpAndSettle();
 
     expect(fake.callList, [
-      ['team.create', {'name': 'pixel', 'cwd': r'D:\myproject\pixel-office', 'leaderEngine': 'codex'}],
+      ['team.create', {'name': 'pixel', 'cwd': r'D:\myproject\pixel-office', 'leaderEngine': 'codex', 'leaderName': '반장'}],
       ['member.clockIn', {'teamId': 'tNew', 'engine': 'claude', 'name': '이음'}],
     ]);
     expect(containerOf(tester).read(selectedTeamIdProvider), 'tNew');
+    // 새 팀에서 처음 고르는 멤버는 팀장(T24) — 지시는 팀장에게만 간다.
+    expect(containerOf(tester).read(selectedMemberIdProvider), 'mL');
     expect(find.byType(ClockInDialog), findsNothing);
+  });
+
+  testWidgets('팀 만들기: 팀원 이름을 비우면 team.create 만 — 팀장만 출근한 빈 사무실', (tester) async {
+    fake.responder = (m, p) => switch (m) {
+          'team.create' => {
+              'team': fakeTeam('tNew', name: p['name'] as String, leaderId: 'mL'),
+              'leader': fakeMember('mL', teamId: 'tNew', name: '팀장', rank: 'leader', status: 'starting'),
+            },
+          _ => <String, dynamic>{},
+        };
+    await pumpApp(tester, fake);
+    fake.emitHello();
+    await pump2(tester);
+
+    await tester.tap(find.byKey(const Key('topbar.clockIn')));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byKey(const Key('clockIn.teamName')), 'pixel');
+    await tester.enterText(find.byKey(const Key('clockIn.cwd')), r'D:\myproject\pixel-office');
+    await tester.tap(find.byKey(const Key('clockIn.submit')));
+    await tester.pumpAndSettle();
+
+    // leaderName 을 비우면 보내지 않는다 — 데몬이 기본 이름 '팀장' 을 붙인다.
+    expect(fake.callList, [
+      ['team.create', {'name': 'pixel', 'cwd': r'D:\myproject\pixel-office', 'leaderEngine': 'claude'}],
+    ]);
+    expect(containerOf(tester).read(selectedMemberIdProvider), 'mL');
+    expect(find.byType(ClockInDialog), findsNothing);
+  });
+
+  testWidgets('팀장 배지: 선택 멤버가 rank leader 면 이름 옆에 "팀장" 배지, 팀원이면 없다', (tester) async {
+    await pumpApp(tester, fake, selectedMemberId: 'mL');
+    fake.emitHello(
+      teams: [fakeTeam('t1', leaderId: 'mL')],
+      members: [fakeMember('mL', name: '반장', rank: 'leader'), fakeMember('m1', name: '이음')],
+    );
+    await pump2(tester);
+    expect(find.byKey(const Key('topbar.leaderBadge')), findsOneWidget);
+    expect(find.text('반장 [claude]'), findsOneWidget);
+
+    // 팀원을 고르면 배지가 사라진다.
+    await pumpApp(tester, fake, selectedMemberId: 'm1');
+    await pump2(tester);
+    expect(find.byKey(const Key('topbar.leaderBadge')), findsNothing);
+    expect(find.text('이음 [claude]'), findsOneWidget);
   });
 
   testWidgets('출근 RPC 오류는 다이얼로그 안에 표시되고 닫히지 않는다', (tester) async {

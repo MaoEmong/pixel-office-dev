@@ -26,16 +26,18 @@ import { toForwardSlashes } from '../pty/hookSettings.js';
 import type { ExitInfo, PtySession } from '../pty/types.js';
 import { HookReceiver } from '../hooks/HookReceiver.js';
 import type { BaseHooksAdapter } from '../adapters/BaseHooksAdapter.js';
+import type { AdapterDeps, ToolGateContext } from '../adapters/types.js';
 import { ClaudeHooksAdapter } from '../adapters/ClaudeHooksAdapter.js';
 import { CodexHooksAdapter } from '../adapters/CodexHooksAdapter.js';
 import { ScreenModel } from '../screen/ScreenModel.js';
 import { InputQueue } from '../input/InputQueue.js';
 import { TeamToolsServer, TEAM_MCP_NAME } from '../mcp/TeamToolsServer.js';
 import { USER_ACTOR } from '../store/types.js';
-import type { Engine, EventsQueryInput, Member, MemberStatus, OfficeEvent, Pending, Snapshot, Task, Team } from '../store/types.js';
+import type { Engine, EventsQueryInput, Member, MemberRank, MemberStatus, OfficeEvent, Pending, Snapshot, Task, Team } from '../store/types.js';
 import { OfficeError, RPC_ERROR, badState, invalidParams, notFound } from './errors.js';
 import { CODEX_FALLBACK, detectQuestion, isFallbackQuestion, type FallbackQuestionPayload } from './codexFallback.js';
 import { defaultOrphanOps, reapOrphan, type OrphanOps } from './orphans.js';
+import { ShellMutex, shellLockCommand, type ShellLockInfo } from './ShellMutex.js';
 import type {
   ApprovalRespondParams,
   AskUserParams,
@@ -43,9 +45,12 @@ import type {
   AttachResult,
   ClockInParams,
   CreateTeamParams,
+  CreateTeamResult,
   DaemonInfo,
   DerivedStatus,
+  HireByLeaderParams,
   HookReceiverLike,
+  InstructOptions,
   NoticeLevel,
   OfficeApi,
   OfficeEvents,
@@ -68,6 +73,10 @@ const RESUMED_INSTRUCTION_CHARS = 80;
 const RESUMED_SUMMARY_CHARS = 60;
 /** 종료된 것으로 보는 멤버 status. */
 const GONE: ReadonlySet<MemberStatus> = new Set(['exited', 'error']);
+/** `team.create` 가 `leaderName` 없이 올 때 팀장에게 붙는 기본 이름(T24). */
+export const DEFAULT_LEADER_NAME = '팀장';
+/** "팀장에게만 지시" 게이트(-32004)의 문구. PROTOCOL.md 와 같은 문자열이어야 한다(T24). */
+export const leaderOnlyMessage = (leaderName: string) => `팀장에게만 지시할 수 있습니다 (leader: ${leaderName})`;
 /** Ctrl+C 를 두 번 연달아 보내면 Claude 가 종료되므로(T05 함정) 이 간격 안의 두 번째 interrupt 는 거절. */
 const INTERRUPT_GUARD_MS = 1500;
 /** interrupt 후 화면 준비 문구로 idle 을 판정하는 감시 시간·주기(실측: Ctrl+C 에는 Stop hook 이 없다). */
@@ -184,6 +193,9 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
   /** engine → 어댑터. hook·pending·종료 처리는 전부 이 표를 거친다. */
   private readonly adapters: Record<Engine, BaseHooksAdapter>;
 
+  /** 팀 단위 셸 뮤텍스(T27). PreToolUse 게이트로 잡고 toolDone·후처리로 푼다. */
+  readonly shell = new ShellMutex();
+
   private readonly runtimes = new Map<string, MemberRuntime>();
   /** `alwaysThisSession` 로 자동 allow 할 도구(멤버별, 데몬 메모리에만). */
   private readonly autoAllow = new Map<string, Set<string>>();
@@ -225,9 +237,11 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
           askUser: (memberId, input) => ({ questionId: this.askUser(memberId, input).id }),
         },
       });
-    const adapterDeps = {
+    const adapterDeps: AdapterDeps = {
       store: this.store,
       getInstructions: (memberId: string) => this.readInstructions(memberId) || undefined,
+      // T27: 셸 도구(읽기 전용 제외)의 PreToolUse 는 팀 락을 잡을 때까지 응답을 보류한다.
+      toolGate: (memberId, tool, input, ctx) => this.shellGate(memberId, tool, input, ctx),
     };
     this.adapter = new ClaudeHooksAdapter(adapterDeps);
     this.codexAdapter = new CodexHooksAdapter(adapterDeps);
@@ -336,6 +350,7 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
     await this.mcp.close();
     for (const rt of this.runtimes.values()) rt.screen.dispose();
     this.runtimes.clear();
+    this.shell.clear(); // T27: 남은 보류·타이머 정리
     this.store.close();
     if (this.info) {
       try {
@@ -375,16 +390,39 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
 
   // ---- 팀 --------------------------------------------------------------------------
 
-  /** v1a: 팀만 만든다(팀장 자동 출근은 M4). leaderEngine 은 값만 검사. */
-  createTeam(params: CreateTeamParams): Team {
+  /**
+   * 팀 생성 + **팀장 자동 출근**(T24, 01 §4). 팀 행 → 팀장 멤버(rank 'leader', hiredBy 'user',
+   * 이름 `leaderName ?? '팀장'`) → CLI 스폰 → `teams.leader_id` 기록 순. 팀장도 정원(maxMembers)의 한 자리다.
+   * v1 권장 팀장 엔진은 Claude(01 §TeamTools "v1 팀장 엔진은 Claude 고정") 이지만 Codex 도 막지 않고 `daemon.notice{warn}` 만 낸다.
+   * 스폰이 실패하면 팀 행까지 되돌린다 — 팀장 없는 팀이 남지 않게.
+   */
+  createTeam(params: CreateTeamParams): CreateTeamResult {
+    this.ensureStarted();
     if (!fs.existsSync(params.cwd) || !fs.statSync(params.cwd).isDirectory()) throw invalidParams(`cwd is not a directory: ${params.cwd}`);
     if (params.leaderEngine !== 'claude' && params.leaderEngine !== 'codex') throw invalidParams(`unknown engine: ${String(params.leaderEngine)}`);
-    return this.store.createTeam({
+    if (params.allowedEngines && !params.allowedEngines.includes(params.leaderEngine)) {
+      throw invalidParams(`leaderEngine ${params.leaderEngine} is not in allowedEngines`);
+    }
+    if (params.maxMembers !== undefined && params.maxMembers < 1) throw invalidParams('maxMembers must be >= 1 (the leader takes one slot)');
+    const leaderName = (params.leaderName ?? DEFAULT_LEADER_NAME).trim() || DEFAULT_LEADER_NAME;
+
+    const team = this.store.createTeam({
       name: params.name,
       cwd: path.resolve(params.cwd),
       maxMembers: params.maxMembers,
       allowedEngines: params.allowedEngines,
     });
+    let leader: Member;
+    try {
+      leader = this.spawnNewMember(team, { name: leaderName, engine: params.leaderEngine, rank: 'leader', hiredBy: 'user' });
+    } catch (e) {
+      this.store.deleteTeam(team.id);
+      throw e;
+    }
+    if (params.leaderEngine === 'codex') {
+      this.notice('warn', `${team.name}: 팀장 엔진이 codex 입니다 — v1 권장은 claude(오케스트레이션 도구 실측이 Claude 기준)`);
+    }
+    return { team: this.store.updateTeam(team.id, { leaderId: leader.id })!, leader };
   }
 
   /** 멤버 전부 퇴근시킨 뒤 삭제(events 는 남는다). */
@@ -400,27 +438,73 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
 
   // ---- 멤버 수명 ---------------------------------------------------------------------
 
-  /** 출근: 멤버 행 생성 → (지시문 저장) → CLI 스폰. v1a 는 rank 'member', hiredBy 'user'. */
+  /**
+   * 출근(사용자): 멤버 행 생성 → (지시문 저장) → CLI 스폰. 기본 rank 'member', hiredBy 는 항상 'user'
+   * (사용자가 출근시킨 팀원은 팀장이 `dismiss` 할 수 없다 — 01 §4). `rank:'leader'` 는 팀장이 없는 팀에만(T24).
+   */
   clockIn(params: ClockInParams): Member {
     this.ensureStarted();
     const team = this.store.getTeam(params.teamId);
     if (!team) throw notFound('team', params.teamId);
-    if (params.engine !== 'claude' && params.engine !== 'codex') throw invalidParams(`unknown engine: ${String(params.engine)}`);
-    if (!team.allowedEngines.includes(params.engine)) throw invalidParams(`engine ${params.engine} not allowed in team ${team.name}`);
-    if (!params.name.trim()) throw invalidParams('name is empty');
+    const rank: MemberRank = params.rank ?? 'member';
+    if (rank !== 'member' && rank !== 'leader') throw invalidParams(`unknown rank: ${String(rank)}`);
+    if (rank === 'leader') {
+      const current = this.store.liveLeader(team.id);
+      if (current) throw badState(`team ${team.name} already has a leader (${current.name})`);
+    }
+    const member = this.spawnNewMember(team, {
+      name: params.name,
+      engine: params.engine,
+      rank,
+      hiredBy: 'user',
+      instructions: params.instructions,
+    });
+    if (rank === 'leader') this.store.updateTeam(team.id, { leaderId: member.id });
+    return member;
+  }
+
+  /**
+   * 팀장의 TeamTools `hire`(T25) 가 쓸 경로. RPC 로는 노출하지 않는다 — 팀원은 `hiredBy:'leader'` 가 되어
+   * 팀장이 `dismiss` 할 수 있다(사용자가 출근시킨 팀원과 구분, 01 §4). 부르는 쪽이 살아 있는 팀장이어야 한다.
+   */
+  hireByLeader(params: HireByLeaderParams): Member {
+    this.ensureStarted();
+    const leader = this.member(params.leaderId);
+    const team = this.store.getTeam(leader.teamId);
+    if (!team) throw notFound('team', leader.teamId);
+    if (leader.rank !== 'leader' || GONE.has(leader.status)) {
+      throw new OfficeError(RPC_ERROR.RANK_RULE, `hire 는 팀장만 할 수 있습니다 (${leader.name})`);
+    }
+    return this.spawnNewMember(team, {
+      name: params.name,
+      engine: params.engine,
+      rank: 'member',
+      hiredBy: 'leader',
+      instructions: params.instructions,
+    });
+  }
+
+  /** clockIn / hireByLeader / createTeam(팀장) 이 공유하는 "멤버 행 + 지시문 + 스폰". 정원·엔진 검사도 여기서. */
+  private spawnNewMember(
+    team: Team,
+    input: { name: string; engine: Engine; rank: MemberRank; hiredBy: 'user' | 'leader'; instructions?: string },
+  ): Member {
+    if (input.engine !== 'claude' && input.engine !== 'codex') throw invalidParams(`unknown engine: ${String(input.engine)}`);
+    if (!team.allowedEngines.includes(input.engine)) throw invalidParams(`engine ${input.engine} not allowed in team ${team.name}`);
+    if (!input.name.trim()) throw invalidParams('name is empty');
     const live = this.store.listMembers(team.id).filter((m) => !GONE.has(m.status)).length;
     if (live >= team.maxMembers) throw badState(`team ${team.name} is full (${live}/${team.maxMembers})`);
 
     const member = this.store.createMember({
       teamId: team.id,
-      name: params.name.trim(),
-      rank: 'member',
-      engine: params.engine,
+      name: input.name.trim(),
+      rank: input.rank,
+      engine: input.engine,
       cwd: team.cwd,
-      hiredBy: 'user',
+      hiredBy: input.hiredBy,
       status: 'starting',
     });
-    if (params.instructions !== undefined) this.setInstructions(member.id, params.instructions);
+    if (input.instructions !== undefined) this.setInstructions(member.id, input.instructions);
     this.spawnMember(this.store.getMember(member.id)!, false);
     return this.store.getMember(member.id)!;
   }
@@ -439,6 +523,7 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
     rt.queue.clear();
     rt.queue.stop();
     this.adapterOf(memberId).expireAllForMember(memberId);
+    this.releaseShellLocks(memberId); // T27 후처리
     this.store.abortTasksFor(memberId);
     await this.pty.kill(memberId, { graceful: true, timeoutMs: KILL_TIMEOUT_MS });
     this.finishMember(memberId, 'clocked out');
@@ -465,6 +550,7 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
       rt.queue.clear();
       rt.queue.stop();
       this.adapterOf(memberId).expireAllForMember(memberId);
+      this.releaseShellLocks(memberId); // T27 후처리
       await this.pty.kill(memberId, { graceful: true, timeoutMs: KILL_TIMEOUT_MS });
     }
     const fresh = this.spawnMember(this.store.getMember(memberId)!, true);
@@ -474,11 +560,21 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
 
   // ---- 입력 ------------------------------------------------------------------------
 
-  /** 사용자 지시 = task(from 'user'). 큐에 `[TASK#n from user]\n<text>` — flush 되면 assigned. */
-  instruct(memberId: string, text: string): number {
+  /**
+   * 사용자 지시 = task(from 'user'). 큐에 `[TASK#n from user]\n<text>` — flush 되면 assigned.
+   *
+   * **"팀장에게만 지시"(T24, 01 §4 · 전제 6):** 팀에 살아 있는 팀장이 있으면 팀원 직접 지시는 `-32004`.
+   * 팀장이 나가면(exited/error) 게이트가 열려 사용자가 팀원에게 직접 지시할 수 있다.
+   * `opts.force` 는 디버그용 탈출구 — 앱은 보내지 않는다. 터미널 탭 직접 타이핑(`member.type`)은 "지시"가 아니라 항상 가능.
+   */
+  instruct(memberId: string, text: string, opts: InstructOptions = {}): number {
     const member = this.member(memberId);
     const rt = this.liveRuntime(member);
     if (!text.trim()) throw invalidParams('text is empty');
+    if (!opts.force && member.rank !== 'leader') {
+      const leader = this.store.liveLeader(member.teamId);
+      if (leader) throw new OfficeError(RPC_ERROR.RANK_RULE, leaderOnlyMessage(leader.name), { leaderId: leader.id });
+    }
     const task = this.store.createTask({
       teamId: member.teamId,
       fromMember: USER_ACTOR,
@@ -511,6 +607,7 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
     rt.queue.clear();
     rt.queue.interrupt();
     this.adapterOf(memberId).expireAllForMember(memberId);
+    this.releaseShellLocks(memberId); // T27 후처리 — 중단한 명령이 쥔 락을 팀에 돌려준다
     this.store.abortTasksFor(memberId);
     this.watchInterrupted(rt);
   }
@@ -1000,6 +1097,7 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
   }
 
   private onPtyExit(memberId: string, info: ExitInfo): void {
+    this.releaseShellLocks(memberId); // T27 후처리(퇴근·재시작·크래시 공통)
     const rt = this.runtimes.get(memberId);
     if (rt) {
       rt.queue.stop();
@@ -1076,6 +1174,51 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
     if (rt.session.alive) rt.session.resize(cols, rows);
   }
 
+  // ---- 내부: 팀 셸 뮤텍스(T27) ------------------------------------------------------------
+
+  /**
+   * `AdapterDeps.toolGate`: 셸 도구(읽기 전용 제외)의 PreToolUse 를 팀 락이 풀릴 때까지 보류한다.
+   * **첫 await 전까지 동기**로 돌아야 한다 — hook 도착 순서가 곧 획득 순서다. 절대 reject 하지 않는다(D-11).
+   */
+  private shellGate(memberId: string, tool: string, input: unknown, ctx: ToolGateContext): Promise<void> {
+    const member = this.store.getMember(memberId);
+    if (!member) return Promise.resolve();
+    const cmd = shellLockCommand(tool, input);
+    if (cmd === null) return Promise.resolve(); // 셸이 아니거나 읽기 전용(D-27)
+    return this.shell.acquire(member.teamId, memberId, ctx.toolUseId, cmd, { signal: ctx.signal });
+  }
+
+  /** 도구 완료(PostToolUse / PostToolUseFailure)로 그 도구 호출이 쥔 락을 푼다. */
+  private releaseShellLock(memberId: string, toolUseId: string | null): void {
+    const teamId = this.store.getMember(memberId)?.teamId;
+    if (teamId) this.shell.release(teamId, memberId, toolUseId);
+  }
+
+  /** 후처리 안전망(Stop·interrupt·fire·퇴근·프로세스 종료): 그 멤버의 락·대기 자리를 전부 정리. */
+  private releaseShellLocks(memberId: string): void {
+    this.shell.releaseAllFor(memberId);
+  }
+
+  /**
+   * 셸 락을 기다리기 시작했다 → `running{waiting:'shell-lock'}` 한 번(PROTOCOL.md "오피스 이벤트").
+   * status 는 `working` 그대로다 — CLI 는 도구를 부른 채 우리 응답을 기다리는 중이다.
+   */
+  private noticeShellWait(info: ShellLockInfo, holder: ShellLockInfo): void {
+    const member = this.store.getMember(info.memberId);
+    if (!member) return;
+    const detail: OfficeEvent['detail'] = {
+      summary: `셸 대기 중 (락: ${this.memberLabel(holder.memberId)})`,
+      waiting: 'shell-lock',
+      holder: holder.memberId,
+    };
+    if (info.cmd) detail.cmd = truncate(info.cmd, 300);
+    this.appendEvent(member, 'running', detail);
+  }
+
+  private memberLabel(memberId: string): string {
+    return this.store.getMember(memberId)?.name ?? memberId;
+  }
+
   // ---- 내부: 배선 -------------------------------------------------------------------------
 
   private wire(): void {
@@ -1087,8 +1230,14 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
       });
       adapter.on('status', (memberId, status) => this.emitStatus(memberId, status));
       adapter.on('pendingCreated', (p) => this.maybeAutoAllow(p));
+      // T27: 도구 완료(PostToolUse / PostToolUseFailure) = 셸 락 해제 조건 1번(01 §해제 표).
+      adapter.on('toolDone', (memberId, info) => this.releaseShellLock(memberId, info.toolUseId));
       adapter.on('handler-error', (err, memberId, event) => this.notice('error', `hook ${event} handler failed for ${memberId}: ${errMsg(err)}`));
     }
+
+    // T27: 대기·강제 해제는 사용자에게 보여야 한다(대기는 이벤트, 강제 해제는 알림).
+    this.shell.on('waiting', (info, holder) => this.noticeShellWait(info, holder));
+    this.shell.on('warn', (info, message) => this.notice('warn', `${this.memberLabel(info.memberId)}: ${message}${info.cmd ? ` (${truncate(info.cmd, 80)})` : ''}`));
 
     this.receiver.on('hook', (req) => {
       const member = this.store.getMemberByToken(req.memberToken);
@@ -1128,6 +1277,8 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
   private afterOfficeEvent(ev: OfficeEvent): void {
     const rt = this.runtimes.get(ev.memberId);
     if (ev.kind === 'text' && typeof ev.detail.text === 'string' && rt) rt.lastText = ev.detail.text;
+    // T27 안전망: 턴이 끝났는데(Stop·세션 종료) 락이 남아 있으면 푼다 — PostToolUse 가 유실돼도 팀이 굳지 않는다.
+    if (ev.kind === 'idle') this.releaseShellLocks(ev.memberId);
     if (ev.kind !== 'idle' || ev.detail.summary !== undefined) return;
     const member = this.store.getMember(ev.memberId);
     if (!member) return;

@@ -106,14 +106,22 @@ class FakeRpcClient extends RpcClient {
   late final overrides = [rpcClientProvider.overrideWithValue(this)];
 }
 
-Map<String, dynamic> fakeTeam(String id, {String name = 'pixel'}) =>
-    {'id': id, 'name': name, 'cwd': 'D:/x', 'leaderId': null, 'maxMembers': 5, 'allowedEngines': ['claude', 'codex'], 'createdAt': 'c'};
+Map<String, dynamic> fakeTeam(String id, {String name = 'pixel', String? leaderId}) =>
+    {'id': id, 'name': name, 'cwd': 'D:/x', 'leaderId': leaderId, 'maxMembers': 5, 'allowedEngines': ['claude', 'codex'], 'createdAt': 'c'};
 
-Map<String, dynamic> fakeMember(String id, {String status = 'idle', String name = '', String teamId = 't1', String engine = 'claude'}) => {
+Map<String, dynamic> fakeMember(
+  String id, {
+  String status = 'idle',
+  String name = '',
+  String teamId = 't1',
+  String engine = 'claude',
+  String rank = 'member',
+}) =>
+    {
       'id': id,
       'teamId': teamId,
       'name': name.isEmpty ? id : name,
-      'rank': 'member',
+      'rank': rank,
       'engine': engine,
       'sessionId': null,
       'childPid': null,

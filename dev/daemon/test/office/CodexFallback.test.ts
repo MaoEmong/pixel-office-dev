@@ -83,7 +83,8 @@ describe('Office: Codex 폴백 (T22)', () => {
     office.on('event', (e) => events.push(e));
     office.on('status', (id, s, d) => statuses.push([id, s, d]));
     await office.start();
-    team = office.createTeam({ name: 'mix', cwd: dataDir, leaderEngine: 'codex', allowedEngines: ['claude', 'codex'] });
+    // 팀장 없는 팀(store 직접) — Codex 폴백만 보므로 team.create 의 팀장 자동 출근(T24)은 끼우지 않는다.
+    team = store.createTeam({ name: 'mix', cwd: dataDir, allowedEngines: ['claude', 'codex'] });
     codex = office.clockIn({ teamId: team.id, engine: 'codex', name: '코덱스' });
     claude = office.clockIn({ teamId: team.id, engine: 'claude', name: '이음' });
   });

@@ -330,6 +330,21 @@ export class Store {
     return this.getMember(id);
   }
 
+  /**
+   * 그 팀의 **살아 있는 팀장**(rank='leader' ∧ status ∉ {exited, error}). T24 직급 규칙의 단일 기준:
+   * `member.clockIn{rank:'leader'}` 중복 방지와 "팀장에게만 지시" 게이트가 이 함수 하나를 본다.
+   * 팀장이 나가고(exited/error) 나면 undefined 가 되어 게이트가 열린다.
+   */
+  liveLeader(teamId: string): Member | undefined {
+    const r = this.db
+      .prepare(
+        `SELECT * FROM members WHERE team_id = ? AND rank = 'leader' AND status NOT IN ('exited', 'error')
+         ORDER BY rowid LIMIT 1`,
+      )
+      .get(teamId) as Row | undefined;
+    return r ? rowToMember(r) : undefined;
+  }
+
   /** 멤버 삭제. 그 멤버의 pending 은 cascade. tasks·events 는 남는다(이력). */
   deleteMember(id: string): boolean {
     const res = this.db.prepare('DELETE FROM members WHERE id = ?').run(id);

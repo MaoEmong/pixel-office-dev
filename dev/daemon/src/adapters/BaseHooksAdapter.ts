@@ -28,7 +28,7 @@ import type { HookPayload } from '../hooks/types.js';
 import type { Store } from '../store/Store.js';
 import type { EventDetail, EventRef, Member, MemberStatus, OfficeEventKind, Pending } from '../store/types.js';
 import { questionSummary, toolDetail, truncate, type ToolMapping } from './mapping.js';
-import type { AdapterDeps, ApprovalDecisionInput, HoldLostReason, HooksAdapterEvents, ToolDoneInfo } from './types.js';
+import type { AdapterDeps, ApprovalDecisionInput, HoldLostReason, HooksAdapterEvents, ToolDoneInfo, ToolGateContext } from './types.js';
 
 /** UserPromptSubmit 의 prompt 를 thinking 말풍선에 싣는 상한. */
 export const MAX_THINKING_CHARS = 200;
@@ -51,6 +51,12 @@ interface HeldPending {
   handle: DecisionHandle;
 }
 
+/** toolGate 때문에 보류 중인 PreToolUse 하나(T27). 보류가 사라지면 abort 로 게이트에 알린다. */
+interface GateHold {
+  handle: DecisionHandle;
+  abort: AbortController;
+}
+
 export abstract class BaseHooksAdapter extends EventEmitter<HooksAdapterEvents> {
   protected readonly store: Store;
   private readonly getInstructions: AdapterDeps['getInstructions'];
@@ -58,8 +64,8 @@ export abstract class BaseHooksAdapter extends EventEmitter<HooksAdapterEvents> 
   private readonly now: () => number;
   /** 사용자 답을 기다리는 hook 보류. pendingId → handle. */
   private readonly held = new Map<string, HeldPending>();
-  /** toolGate 때문에 보류 중인 PreToolUse. memberId → handles. */
-  private readonly gateHolds = new Map<string, Set<DecisionHandle>>();
+  /** toolGate 때문에 보류 중인 PreToolUse. memberId → 보류들. */
+  private readonly gateHolds = new Map<string, Set<GateHold>>();
 
   constructor(deps: AdapterDeps) {
     super();
@@ -176,7 +182,10 @@ export abstract class BaseHooksAdapter extends EventEmitter<HooksAdapterEvents> 
     const gates = this.gateHolds.get(memberId);
     if (gates) {
       this.gateHolds.delete(memberId);
-      for (const h of gates) h.cancel();
+      for (const g of gates) {
+        g.handle.cancel();
+        g.abort.abort(); // 게이트(셸 뮤텍스)에 "이 보류는 없어졌다" — 대기 줄에서 빼라(T27)
+      }
     }
     for (const p of this.store.expireAllForMember(memberId)) this.emit('pendingSettled', p);
     const current = this.store.getMember(memberId)?.status;
@@ -243,28 +252,35 @@ export abstract class BaseHooksAdapter extends EventEmitter<HooksAdapterEvents> 
   private onPreToolUse(req: HookRequest, member: Member): void {
     const toolName = toolNameOf(req.payload);
     const mapped = this.mapTool(toolName, req.payload.tool_input);
+    // 도구 이벤트를 **게이트보다 먼저** 남긴다: 게이트(셸 뮤텍스)가 대기 이벤트를 낼 수 있고(T27), 그러면
+    // 마지막 이벤트 = "대기 중" 이어야 말풍선이 맞다.
+    this.setStatus(member.id, 'working');
+    if (mapped) this.appendEvent(member, mapped.kind, mapped.detail);
     const gate = this.toolGate;
     if (!gate || this.isQuestionTool(toolName)) {
       req.respond(PASS_THROUGH);
     } else {
       const handle = req.hold();
-      this.trackGateHold(member.id, handle);
+      const hold: GateHold = { handle, abort: new AbortController() };
+      this.trackGateHold(member.id, hold);
+      const ctx: ToolGateContext = {
+        toolUseId: typeof req.payload.tool_use_id === 'string' ? req.payload.tool_use_id : null,
+        signal: hold.abort.signal,
+      };
       // 게이트는 hook 도착 순서대로 **동기** 호출(뮤텍스 획득 순서 보장). reject/throw 돼도 deny 하지 않는다(D-11): 어떤 경우에도 '{}'.
       let gated: Promise<void>;
       try {
-        gated = Promise.resolve(gate(member.id, toolName, req.payload.tool_input));
+        gated = Promise.resolve(gate(member.id, toolName, req.payload.tool_input, ctx));
       } catch (err) {
         gated = Promise.reject(err);
       }
       gated
         .catch((err) => console.error(`[${this.label}] toolGate(${member.id}, ${toolName}) rejected:`, err))
         .finally(() => {
-          this.untrackGateHold(member.id, handle);
+          this.untrackGateHold(member.id, hold);
           handle.resolve(PASS_THROUGH);
         });
     }
-    this.setStatus(member.id, 'working');
-    if (mapped) this.appendEvent(member, mapped.kind, mapped.detail);
   }
 
   private onPermissionRequest(req: HookRequest, member: Member): void {
@@ -369,6 +385,8 @@ export abstract class BaseHooksAdapter extends EventEmitter<HooksAdapterEvents> 
   }
 
   private onHoldLost(memberToken: string, event: string, reason: HoldLostReason): void {
+    // PreToolUse 게이트 보류(셸 뮤텍스 대기)는 pending 이 없다 — 줄에서만 빼면 된다.
+    this.abortLostGateHolds(memberToken, event);
     for (const [id, entry] of [...this.held]) {
       const h = entry.handle;
       if (h.memberToken !== memberToken || h.event !== event || !h.settled) continue;
@@ -386,17 +404,32 @@ export abstract class BaseHooksAdapter extends EventEmitter<HooksAdapterEvents> 
     }
   }
 
-  private trackGateHold(memberId: string, handle: DecisionHandle): void {
+  private trackGateHold(memberId: string, hold: GateHold): void {
     let set = this.gateHolds.get(memberId);
     if (!set) this.gateHolds.set(memberId, (set = new Set()));
-    set.add(handle);
+    set.add(hold);
   }
 
-  private untrackGateHold(memberId: string, handle: DecisionHandle): void {
+  private untrackGateHold(memberId: string, hold: GateHold): void {
     const set = this.gateHolds.get(memberId);
     if (!set) return;
-    set.delete(handle);
+    set.delete(hold);
     if (set.size === 0) this.gateHolds.delete(memberId);
+  }
+
+  /**
+   * 보류가 어댑터 결정 없이 닫힌(hold-timeout/hold-closed) PreToolUse 게이트를 정리한다 — 게이트(셸 뮤텍스)에
+   * abort 로 알려 대기 줄에서 빼게 한다. 응답은 receiver 가 이미 '{}' 로 보냈으므로 그 명령은 그냥 실행된다(D-11).
+   */
+  private abortLostGateHolds(memberToken: string, event: string): void {
+    for (const [memberId, set] of [...this.gateHolds]) {
+      for (const hold of [...set]) {
+        const h = hold.handle;
+        if (h.memberToken !== memberToken || h.event !== event || !h.settled) continue;
+        this.untrackGateHold(memberId, hold);
+        hold.abort.abort();
+      }
+    }
   }
 
   protected appendEvent(member: Member, kind: OfficeEventKind, detail: EventDetail, ref: EventRef = {}): void {

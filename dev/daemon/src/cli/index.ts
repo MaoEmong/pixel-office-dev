@@ -38,14 +38,15 @@ const SPAWN_TIMEOUT_MS = 60_000;
 
 const HELP: Array<[string, string]> = [
   ['teams', '팀 목록'],
-  ['team create <name> <cwd> [claude|codex]', '팀 생성 (팀장 엔진 기본 claude)'],
+  ['team create <name> <cwd> [claude|codex] [팀장이름]', '팀 생성 + 팀장 자동 출근 (엔진 기본 claude, 이름 기본 팀장)'],
   ['team delete <team>', '팀 삭제 (멤버 전원 퇴근)'],
   ['members', '멤버 목록'],
   ['hire <team> <claude|codex> <name>', '멤버 출근 (member.clockIn)'],
   ['fire <member>', '멤버 퇴근 (member.clockOut)'],
   ['rehire <member>', 'exited/error 멤버 재출근 (member.rehire)'],
   ['restart <member>', '지시문 즉시 반영 재시작 (member.restart)'],
-  ['say <member> <text...>', '지시 (member.instruct) → taskId 출력'],
+  ['say <member> <text...>', '지시 (member.instruct) → taskId 출력. 팀장이 있으면 팀원 지시는 -32004'],
+  ['say! <member> <text...>', '팀원 직접 지시 (member.instruct{force:true}) — 디버그용'],
   ['type <member> <text>', '터미널에 raw 타이핑. \\n \\r \\t \\e \\xHH 이스케이프, 끝이 \\n/\\r 이 아니면 Enter 자동'],
   ['', '  이스케이프·제어문자만(\\e, \\e\\e, \\e[A, \\x03 …)이면 Enter 를 붙이지 않는다 — ESC 단독 전송용(T19b)'],
   ['attach <member>', '현재 화면 출력 + term 스트림 구독 ([term] 접두)'],
@@ -347,11 +348,11 @@ class Cli {
       case 'team': {
         const sub = args[0];
         if (sub === 'create') {
-          const [, name, cwd, engine] = args;
-          if (!name || !cwd) throw new CliError('사용법: team create <name> <cwd> [claude|codex]');
+          const [, name, cwd, engine, leaderName] = args;
+          if (!name || !cwd) throw new CliError('사용법: team create <name> <cwd> [claude|codex] [팀장이름]');
           const res = (await c.call(
             'team.create',
-            { name, cwd, leaderEngine: parseEngine(engine) },
+            { name, cwd, leaderEngine: parseEngine(engine), ...(leaderName ? { leaderName } : {}) },
             SPAWN_TIMEOUT_MS,
           )) as { team: Team; leader?: Member };
           this.teams.set(res.team.id, res.team);
@@ -368,7 +369,7 @@ class Cli {
           this.print(`팀 삭제: ${team.name}`);
           return;
         }
-        throw new CliError('사용법: team create <name> <cwd> [claude|codex] | team delete <team>');
+        throw new CliError('사용법: team create <name> <cwd> [claude|codex] [팀장이름] | team delete <team>');
       }
 
       // ---- 멤버 ----
@@ -405,12 +406,18 @@ class Cli {
         this.print(`${cmd === 'rehire' ? '재출근' : '재시작'}: ${formatMember(res.member, this.teamNameOf(res.member.teamId))}`);
         return;
       }
-      case 'say': {
+      // 팀장이 있는 팀에서 팀원에게 say 하면 데몬이 -32004 를 돌려준다(T24) — printError 가
+      // `오류 [-32004] 팀장에게만 지시할 수 있습니다 (leader: …)` 로 그대로 보여준다. `say!` 는 그 게이트를 넘는 디버그용.
+      case 'say':
+      case 'say!': {
         const m = this.member(args[0]);
         const text = p.rawAfter(1).trim();
-        if (!text) throw new CliError('사용법: say <member> <text...>');
-        const res = (await c.call('member.instruct', { memberId: m.id, text })) as { taskId: number | string };
-        this.print(`task#${res.taskId} → ${m.name}`);
+        if (!text) throw new CliError(`사용법: ${cmd} <member> <text...>`);
+        const force = cmd === 'say!';
+        const res = (await c.call('member.instruct', { memberId: m.id, text, ...(force ? { force: true } : {}) })) as {
+          taskId: number | string;
+        };
+        this.print(`task#${res.taskId} → ${m.name}${force ? ' (force)' : ''}`);
         return;
       }
       case 'type': {

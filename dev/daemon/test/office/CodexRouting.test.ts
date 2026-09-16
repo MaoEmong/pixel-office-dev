@@ -43,7 +43,8 @@ describe('Office: 엔진별 hook 라우팅 (T20)', () => {
     events = [];
     office.on('event', (e) => events.push(e));
     await office.start();
-    team = office.createTeam({ name: 'mix', cwd: dataDir, leaderEngine: 'claude', allowedEngines: ['claude', 'codex'] });
+    // 팀장 없는 팀(store 직접) — 엔진 라우팅만 보므로 team.create 의 팀장 자동 출근(T24)은 끼우지 않는다.
+    team = store.createTeam({ name: 'mix', cwd: dataDir, allowedEngines: ['claude', 'codex'] });
     claude = office.clockIn({ teamId: team.id, engine: 'claude', name: '이음' });
     codex = office.clockIn({ teamId: team.id, engine: 'codex', name: '코덱스' });
   });

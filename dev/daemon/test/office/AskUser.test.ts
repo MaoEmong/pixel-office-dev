@@ -54,7 +54,8 @@ describe('Office ask_user (T17)', () => {
     office.on('event', (e) => events.push(e));
     office.on('status', (id, s, d) => statuses.push([id, s, d]));
     await office.start();
-    team = office.createTeam({ name: 'alpha', cwd: dataDir, leaderEngine: 'claude', maxMembers: 3 });
+    // 팀장 없는 팀(store 직접 생성) — 이 파일은 clockIn/ask_user 를 보므로 team.create 의 팀장 자동 출근(T24)을 끼우지 않는다.
+    team = store.createTeam({ name: 'alpha', cwd: dataDir, maxMembers: 3 });
   });
   afterEach(async () => {
     for (const c of clients.splice(0)) await c.close().catch(() => {});
@@ -90,7 +91,7 @@ describe('Office ask_user (T17)', () => {
     assert.ok(office.mcp.port > 0);
     assert.equal(office.daemonInfo!.mcpPort, office.mcp.port);
 
-    const codexTeam = office.createTeam({ name: 'cx', cwd: dataDir, leaderEngine: 'codex', allowedEngines: ['codex'] });
+    const codexTeam = store.createTeam({ name: 'cx', cwd: dataDir, allowedEngines: ['codex'] });
     office.clockIn({ teamId: codexTeam.id, engine: 'codex', name: 'cdx' });
     assert.equal(pty.spawns[1]!.mcpConfigPath, undefined);
   });

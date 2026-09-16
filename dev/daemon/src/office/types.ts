@@ -4,7 +4,7 @@ import type { EventEmitter } from 'node:events';
 import type { ExitInfo, PtySession, SpawnOptions } from '../pty/types.js';
 import type { HookReceiverEvents } from '../hooks/HookReceiver.js';
 import type { ApprovalDecisionInput } from '../adapters/types.js';
-import type { Engine, EventsQueryInput, Member, MemberStatus, OfficeEvent, Snapshot, Team } from '../store/types.js';
+import type { Engine, EventsQueryInput, Member, MemberRank, MemberStatus, OfficeEvent, Snapshot, Team } from '../store/types.js';
 
 // ---- 데몬 기록 파일 ----------------------------------------------------------
 
@@ -26,8 +26,16 @@ export interface CreateTeamParams {
   name: string;
   cwd: string;
   leaderEngine: Engine;
+  /** 자동 출근하는 팀장의 이름. 기본 '팀장'(T24). */
+  leaderName?: string;
   maxMembers?: number;
   allowedEngines?: Engine[];
+}
+
+/** `team.create` 결과 — 팀과 **자동 출근한 팀장**(T24, 01 §4 "팀 생성 시 팀장이 자동 출근"). */
+export interface CreateTeamResult {
+  team: Team;
+  leader: Member;
 }
 
 export interface ClockInParams {
@@ -35,6 +43,22 @@ export interface ClockInParams {
   engine: Engine;
   name: string;
   instructions?: string;
+  /** 기본 'member'. 'leader' 는 그 팀에 살아 있는 팀장이 없을 때만(T24). */
+  rank?: MemberRank;
+}
+
+/** 팀장의 TeamTools `hire`(T25) 용 입력. RPC 가 아니라 Office 메서드 `hireByLeader()` 로만 부른다. */
+export interface HireByLeaderParams {
+  /** 고용하는 팀장의 memberId. 이 멤버가 살아 있는 팀장이어야 한다. */
+  leaderId: string;
+  engine: Engine;
+  name: string;
+  instructions?: string;
+}
+
+/** `member.instruct` 옵션. `force` 는 "팀장에게만 지시" 게이트를 넘는 디버그 탈출구(T24). */
+export interface InstructOptions {
+  force?: boolean;
 }
 
 export interface AttachResult {
@@ -96,14 +120,16 @@ export interface OfficeApi extends EventEmitter<OfficeEvents> {
   eventsSince(seq: number): OfficeEvent[];
   eventsQuery(input: EventsQueryInput): OfficeEvent[];
 
-  createTeam(params: CreateTeamParams): Team;
+  /** 팀 생성 + 팀장 자동 출근(T24). `team.leaderId` 는 이 시점에 채워진다. */
+  createTeam(params: CreateTeamParams): CreateTeamResult;
   deleteTeam(teamId: string): Promise<void>;
 
   clockIn(params: ClockInParams): Member;
   clockOut(memberId: string): Promise<void>;
   rehire(memberId: string): Promise<Member>;
   restart(memberId: string): Promise<Member>;
-  instruct(memberId: string, text: string): number;
+  /** 팀에 살아 있는 팀장이 있으면 팀원 지시는 -32004 — `opts.force` 로만 넘는다(T24). */
+  instruct(memberId: string, text: string, opts?: InstructOptions): number;
   typeRaw(memberId: string, data: string): void;
   attach(clientId: string, memberId: string, cols: number, rows: number): AttachResult;
   detach(clientId: string, memberId: string): void;

@@ -10,10 +10,23 @@ export interface AdapterDeps {
   /**
    * PreToolUse 응답 전에 await 되는 게이트(T27 팀 셸 뮤텍스 연결점). 주면 PreToolUse 를 hold() 하고
    * 프라미스가 settle 된 뒤 `{}` 로 푼다. reject 돼도 deny 하지 않는다(D-11: pass-through).
+   * hook 도착 순서대로 **동기** 호출되므로(첫 await 전까지) 게이트는 그 순서를 획득 순서로 쓸 수 있다.
    */
-  toolGate?(memberId: string, tool: string, input: unknown): Promise<void>;
+  toolGate?(memberId: string, tool: string, input: unknown, ctx: ToolGateContext): Promise<void>;
   /** 이벤트 ts 용 시각(epoch ms). 테스트에서 고정. 기본 Date.now. */
   now?(): number;
+}
+
+/** toolGate 가 받는 그 hook 호출의 맥락(T27). */
+export interface ToolGateContext {
+  /** PreToolUse 의 `tool_use_id`. 뮤텍스 해제(PostToolUse/PostToolUseFailure)와 짝을 맞추는 키. 없으면 null. */
+  toolUseId: string | null;
+  /**
+   * 이 PreToolUse 의 보류가 사라지면 abort 된다 — hook 보류 타임아웃·연결 끊김(D-11 pass-through) 또는
+   * interrupt/fire/퇴근 후처리(`expireAllForMember`). 게이트는 이때 대기 줄에서 자기 자리를 빼야 한다
+   * (아무도 안 기다리는 락을 넘겨받으면 팀 전체가 굳는다).
+   */
+  signal: AbortSignal;
 }
 
 /** `approval.respond` 가 넘기는 결정. */

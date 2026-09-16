@@ -11,13 +11,13 @@
 |---|---|---|
 | `hello` | `{ token, since?: number, client: { name, version } }` | `{ daemon: { version, pid }, snapshot }` 후 `seq > since` 인 `event` 알림 replay(응답이 먼저, replay 는 오름차순). `since` 없으면 스냅샷만. |
 | `events.query` | `{ teamId?, memberId?, beforeSeq?, limit? }` | `{ events: OfficeEvent[] }` (seq 내림차순 아님 — 오름차순 반환. `beforeSeq` 미만 중 최신 `limit`(기본 200)건; 다음 페이지는 첫 건 seq 를 `beforeSeq` 로) |
-| `team.create` | `{ name, cwd, leaderEngine: 'claude'\|'codex', maxMembers?, allowedEngines? }` | `{ team, leader: Member }` — M4 전(v1a)에는 팀장 자동 출근 없이 `team`만. `cwd` 가 폴더가 아니면 -32602. |
-| `team.delete` | `{ teamId }` | `{}` — 멤버 전부 clockOut 후 삭제 |
-| `member.clockIn` | `{ teamId, engine, name, instructions? }` | `{ member }` — CLI 스폰(문으로 입장). 팀 정원(`maxMembers`) 초과 -32003, 팀에서 허용 안 된 엔진 -32602. v1a: `rank:'member'`, `hiredBy:'user'`. |
+| `team.create` | `{ name, cwd, leaderEngine: 'claude'\|'codex', leaderName?, maxMembers?, allowedEngines? }` | `{ team, leader: Member }` — **팀장이 자동 출근한다(T24)**: 팀 행 → 팀장 멤버(`rank:'leader'`, `hiredBy:'user'`, 이름 `leaderName ?? '팀장'`, 엔진 `leaderEngine`) → CLI 스폰 → `team.leaderId` 기록. 팀장도 정원(`maxMembers`, 기본 4)의 한 자리다. 팀장 출근은 `member.clockIn` 과 같은 경로라 `member.status{starting, member}` 알림이 다른 클라이언트에도 나간다. `leaderEngine:'codex'` 도 허용하지만 `daemon.notice{warn}` 로 "v1 권장은 claude" 를 알린다. 오류: `cwd` 가 폴더가 아님·모르는 엔진·`allowedEngines` 에 없는 `leaderEngine`·`maxMembers < 1` → -32602. 팀장 스폰이 실패하면 팀 행도 되돌린다(팀장 없는 팀을 남기지 않는다). |
+| `team.delete` | `{ teamId }` | `{}` — 팀장 포함 멤버 전부 clockOut 후 삭제 |
+| `member.clockIn` | `{ teamId, engine, name, instructions?, rank?: 'member'\|'leader' }` | `{ member }` — CLI 스폰(문으로 입장). 팀 정원(`maxMembers`) 초과 -32003, 팀에서 허용 안 된 엔진 -32602. `rank` 기본 `'member'`, `hiredBy` 는 항상 `'user'`(사용자가 출근시킨 팀원은 팀장이 `dismiss` 할 수 없다). `rank:'leader'` 는 **그 팀에 살아 있는 팀장이 없을 때만**(팀장이 exited/error 로 나간 뒤의 교체) — 이미 있으면 -32003, 성공하면 `team.leaderId` 가 새 팀장으로 갱신된다. `rank` 가 두 값이 아니면 -32602. |
 | `member.clockOut` | `{ memberId }` | `{}` — 진행 task aborted 후처리, 프로세스 종료(Claude `/exit`). 행은 `status:'exited'` 로 남는다(rehire 가능). 이미 exited/error 면 -32003. |
 | `member.rehire` | `{ memberId }` | `{ member }` — exited/error 멤버를 같은 설정으로 재스폰(`--resume` 시도). 아직 살아 있으면 -32003(→ `member.restart`). |
 | `member.restart` | `{ memberId }` | `{ member }` — 지시문 즉시 반영용 재스폰(`--resume`) 후 큐에 `[RESUMED] …` 시스템 메시지. 종료된 멤버에도 허용. |
-| `member.instruct` | `{ memberId, text }` | `{ taskId }` — `tasks(from:'user', status:'queued')` 생성 후 입력 큐에 `[TASK#n from user]\n<text>` 타이핑. 실제로 pty 에 들어가면 `assigned`, 그 턴의 `Stop` 에서 `reported`(report_text = 마지막 assistant 메시지, v1a 보고). 종료된 멤버 -32003. |
+| `member.instruct` | `{ memberId, text, force?: boolean }` | `{ taskId }` — `tasks(from:'user', status:'queued')` 생성 후 입력 큐에 `[TASK#n from user]\n<text>` 타이핑. 실제로 pty 에 들어가면 `assigned`, 그 턴의 `Stop` 에서 `reported`(report_text = 마지막 assistant 메시지, v1a 보고). 종료된 멤버 -32003. **"팀장에게만 지시"(T24):** 대상이 팀원(`rank:'member'`)이고 그 팀에 살아 있는 팀장이 있으면 **-32004** `"팀장에게만 지시할 수 있습니다 (leader: <팀장 이름>)"`(`data: { leaderId }`) — task 는 만들어지지 않는다. 팀장이 exited/error 로 나가면 게이트가 열려 팀원 직접 지시가 허용된다. `force: true` 는 이 게이트를 넘는 **디버그 탈출구**로, 앱은 보내지 않는다. 터미널 탭 직접 타이핑(`member.type`)은 "지시"가 아니라 게이트와 무관하다. |
 | `member.type` | `{ memberId, data }` | `{}` — 터미널 탭 직접 타이핑 (raw bytes, 큐 우선). 빈 문자열 허용. |
 | `member.attach` | `{ memberId, cols, rows }` | `{ screen: string(ANSI serialize), cols, rows }` 이후 `term` 알림 구독. attach 한 클라이언트가 "마지막 attach 클라이언트"가 되어 그 크기로 즉시 resize. cols 20~500, rows 5~300 밖은 -32602. 이 데몬 세션에서 한 번도 스폰되지 않은 멤버(재시작 전 멤버 등)는 -32003. |
 | `member.detach` | `{ memberId }` | `{}` — 연결이 끊기면 자동 detach. |
@@ -29,7 +29,7 @@
 | `question.respond` | `{ pendingId, answers: Record<string,string> }` | `{}` — `answers` 는 `{ "<question>": "<label>" }`(자유 답도 `label` 자리에). 오류 코드는 approval.respond 와 동일. **출처별 처리(T17):** TUI `AskUserQuestion`(payload 에 `tool_input` 있음)은 hook 결정으로 돌려주고, TeamTools `ask_user`(payload `source:'ask_user'`)는 pending 을 answered 로 닫은 뒤 그 멤버 입력 큐에 `[ANSWER q#<pendingId>]\n<답>` 시스템 메시지를 넣는다(아래 "TeamTools MCP"). **Codex 질문 폴백**(payload 에 `fallback:'codex-stop'`, 아래 "Codex 폴백")은 봉투 없이 답 본문만 넣는다. 값이 전부 빈 문자열이면 -32602. 멤버가 실행 중이 아니면 -32003. |
 | `daemon.shutdown` | `{}` | `{}` — 응답 후 `daemon.notice{level:'info'}` 를 보내고 전원 정중히 종료(`/exit`) → 모든 소켓 close code 1001 → 프로세스 종료. 멤버 status 는 바꾸지 않는다(T09 재시작 복구용). |
 
-에러 코드: `-32001` 인증 실패, `-32002` 없는 멤버/팀/pending, `-32003` 상태 오류(예: 이미 종료), `-32004` 직급 규칙 위반(M4), `-32602` 파라미터. 그 외 JSON-RPC 표준: `-32700` JSON 파싱 실패(id null), `-32600` 봉투 오류(`jsonrpc:"2.0"`·`method` 누락), `-32601` 없는 메서드, `-32000` 내부 오류. 에러 객체는 `{ code, message, data? }`.
+에러 코드: `-32001` 인증 실패, `-32002` 없는 멤버/팀/pending, `-32003` 상태 오류(예: 이미 종료, 정원 초과, 팀장 중복), `-32004` 직급 규칙 위반(T24 "팀장에게만 지시", M4 TeamTools 의 팀장 전용 도구), `-32602` 파라미터. 그 외 JSON-RPC 표준: `-32700` JSON 파싱 실패(id null), `-32600` 봉투 오류(`jsonrpc:"2.0"`·`method` 누락), `-32601` 없는 메서드, `-32000` 내부 오류. 에러 객체는 `{ code, message, data? }`.
 
 ## 데몬 → 클라이언트 (알림)
 
@@ -40,6 +40,14 @@
 | `term` | `{ memberId, data }` — attach한 클라이언트에만, 비영속 |
 | `member.status` | `{ memberId, status, derived, member? }` — `status` 는 `starting|idle|working|waiting_approval|waiting_answer|exited|error`, `derived` 는 파생 상태(v1a: idle 인데 열린 질문 pending 이 있으면 `waiting_answer`(T17 — `ask_user` 는 턴이 끝난 뒤에도 질문이 열려 있다), idle 이고 배정 task 없으면 `free`, 그 외는 status 와 같음; `waiting_reports` 는 M4). `member` 는 그 시점의 Member 행(새 멤버 출근을 다른 클라이언트가 알 수 있게; 행이 삭제됐으면 생략). status 값이 실제로 바뀔 때만 온다 — 예외: `ask_user` 질문에 답하면 status 가 그대로여도 `derived` 갱신을 위해 한 번 더 온다. |
 | `daemon.notice` | `{ level: 'info'\|'warn'\|'error', message }` — 예: hook 보류 타임아웃, 알 수 없는 멤버 토큰, 첫 실행 다이얼로그 자동 통과, 자동 allow, 데몬 종료. **자동 통과할 수 없는 다이얼로그**(CLI 자체 허가 프롬프트 `approval-prompt`, D-23/D-26)는 `{level:'warn', message:'<이름>: CLI 허가 프롬프트가 떠 있음 — 카드로 답하거나 터미널에서 직접 답하세요'}` 로 **한 번만** 나온다(그 다이얼로그가 사라졌다 다시 뜨면 다시 한 번). 데몬은 이때 키를 보내지 않는다 — 사용자가 "재지시 필요" 카드나 터미널 탭에서 답해야 한다. |
+
+## 팀·직급 (T24)
+
+직급은 **팀장/팀원 2단**(01 §4, D-06). 클라이언트가 보는 필드는 스냅샷·`member.status.member` 에 그대로 실린다.
+
+- `Member.rank`: `'leader' | 'member'` — 팀장은 팀당 최대 한 명(살아 있는 기준). `Member.hiredBy`: `'user' | 'leader'` — 사용자가 출근시킨 팀원은 팀장이 `dismiss` 할 수 없다(M4 TeamTools).
+- `Team.leaderId`: 그 팀 팀장의 `memberId`(없으면 `null`). `team.create` 가 채우고, 팀장이 나간 뒤 `member.clockIn{rank:'leader'}` 로 교체하면 갱신된다. 팀장이 exited/error 가 돼도 `leaderId` 는 그대로 남으므로 **"살아 있는 팀장"은 `members` 에서 `rank:'leader' ∧ status ∉ {exited, error}` 로 판정한다** — 데몬도 같은 기준(`Store.liveLeader`)을 쓴다.
+- **지시 대상:** 살아 있는 팀장이 있으면 사용자 지시는 팀장에게만(`member.instruct` -32004, 위 표). 앱의 지시 바는 선택 멤버가 팀원이면 팀장으로 돌리거나 비활성화한다. 팀장이 없는 팀(팀장이 나간 경우)은 아무 멤버에게나 지시할 수 있다.
 
 ## 오피스 이벤트
 
@@ -52,6 +60,7 @@ v1a 에서 데몬이 만드는 이벤트(어댑터 표는 worklog T04 참고):
 - `reporting{summary}` ref `{taskId}` — `Stop` 시점에 그 멤버의 `assigned` task 를 `reported` 로 닫으면서(report_text = 직전 `text`), 내 책상 "보고".
 - `idle{summary:'interrupted'}` — `member.interrupt` 후 화면 준비 문구로 idle 판정.
 - `idle{summary:'screen-idle'}` — **턴 종료 hook 없이 프롬프트로 돌아온 화면**의 폴백(T23b, D-25). 멤버가 `working`/`waiting_approval`/`waiting_answer` 인데 ① 열린 pending 이 하나도 없고 ② 화면에 다이얼로그·busy 표시가 없고 prompt ready 이고 ③ 그 사이 새 hook 이 오지 않은 상태가 **3초 연속**이면 데몬이 이 이벤트를 내고 status 를 `idle` 로 내린다(500ms 폴링, 멤버당 타이머 하나, 세션이 끝나면 정지). 실제 사례: Codex 사용량 한도 안내는 화면에만 뜨고 `Stop` 을 내지 않아 멤버가 `working` 에 갇혔다. 보류(허가·질문)가 열려 있거나 busy 표시가 있으면 절대 나오지 않는다.
+- `running{cmd?, summary:'셸 대기 중 (락: <이름>)', waiting:'shell-lock', holder:<memberId>}` — **팀 셸 뮤텍스**(T27, 아래 "팀 셸 뮤텍스")에서 다른 멤버가 락을 쥐고 있어 이 멤버의 셸 명령이 줄을 섰다. 그 도구의 보통 `running{tool, cmd}` **바로 뒤에** 대기 한 번당 한 번만 나온다(말풍선이 "대기 중"으로 끝난다). `member.status` 는 `working` 그대로 — CLI 는 도구를 부른 채 데몬 응답을 기다린다. 락을 받으면 이벤트를 따로 내지 않는다(앞의 `running` 이 그대로 유효).
 - `idle{summary:'clocked out'}` — `member.clockOut`.
 - `error{summary:'process exited (code N)', exitCode}` — 데몬이 의도하지 않은 프로세스 종료(사용자 `/exit`·크래시). clockOut/restart/shutdown 에는 없음.
 - 재시작 복구(T09, 아래 "재시작 복구")가 만드는 이벤트:
@@ -81,6 +90,16 @@ v1a 에서 데몬이 만드는 이벤트(어댑터 표는 worklog T04 참고):
 | 보고(`reporting`) | TeamTools `report`(M4) / v1a 는 턴 종료 메시지 승격 | 같음(**폴백**: 아래 "Codex 폴백") |
 
 `SessionEnd` 의 `reason` 이 `clear`/`resume` 이면 두 엔진 모두 종료로 보지 않는다(같은 프로세스에서 새 `SessionStart` 가 따라온다).
+
+## 팀 셸 뮤텍스 (T27)
+
+같은 팀의 멤버 둘이 동시에 빌드·테스트·쓰기 명령을 돌리지 않도록 **팀당 셸 락 하나**를 둔다(01 §구성 요소 1). 클라이언트가 호출하는 RPC 는 없다 — 데몬이 hook 단계에서 처리하고, 클라이언트는 이벤트·알림으로만 본다.
+
+- **언제 잡나:** 셸 도구(`Bash`/`PowerShell`, Codex 의 셸 도구 포함)의 `PreToolUse`. 허가(`PermissionRequest`) 여부와 무관하다 — 읽기 명령은 허가 없이 실행되기 때문(실측 02 §②). **읽기 전용 명령(`cat`·`ls`·`git status`·`sed -n` …)은 잡지 않는다**(D-27): 서로 부딪히지 않는데 팀 전체를 직렬화하게 된다. 판정은 엔진 공통(`isReadOnlyCommand`), 애매하면 "쓰기"로 보고 잡는다.
+- **기다리는 동안:** 두 번째 셸의 `PreToolUse` **응답을 보류**한다(그 CLI 는 도구 실행 전에 멈춰 있다). 클라이언트에는 위 `running{waiting:'shell-lock'}` 이벤트 하나로 보인다. 줄은 FIFO(hook 도착 순).
+- **언제 푸나(01 §해제 표 + 실측):** ① `PostToolUse` **또는 `PostToolUseFailure`**(실패 때는 `PostToolUse` 가 안 온다) — `tool_use_id` 로 짝을 맞춘다. ② 그 멤버의 `Stop`·턴 종료(안전망). ③ `member.interrupt` / 퇴근 / 프로세스 종료 / 재시작 후처리. ④ 보유 상한 30분 초과 → 강제 해제 + `daemon.notice{level:'warn', message:'<이름>: 셸 락을 <N>초째 쥐고 있어 강제로 해제함 (<명령 80자>)'}`.
+- **hook 이 먼저 끊기면:** 보류 상한(D-16)·연결 끊김으로 응답이 pass-through(`{}`)로 나가면(D-11) 그 명령은 데몬 허락 없이 실행된다. 데몬은 그 대기 자리를 줄에서 **뺀다**(아무도 안 기다리는 락을 넘겨받아 팀이 굳는 것을 막는다). 뮤텍스가 한 번 뚫리는 것이 명령을 포기시키는 것보다 낫다는 D-11 그대로다.
+- **팀 경계:** 락은 `teams.id` 단위다. 다른 팀은 서로 막지 않고, 같은 팀이면 엔진이 달라도(Claude ↔ Codex) 같은 락을 쓴다.
 
 ## 재시작 복구
 

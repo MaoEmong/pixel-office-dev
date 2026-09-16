@@ -1,17 +1,25 @@
-// 상단 바(T14): 앱 이름 / 팀 탭 / 선택 멤버 + 퇴근 / 데몬 상태 칩 / 멤버·대기 개수 / 출근 버튼.
+// 상단 바(T14): 앱 이름 / 팀 탭 / 선택 멤버(+팀장 배지) + 퇴근 / 데몬 상태 칩 / 멤버·대기 개수 / 출근 버튼.
 //  - 팀 탭 선택은 `selectedTeamIdProvider`(selected_team.dart, 여기서 export) 에 저장. main.dart 는 `activeTeamIdProvider` 를 읽으면 된다.
-//  - 출근: 이름·엔진·지시문·팀 → `member.clockIn`. 팀이 없으면(또는 "새 팀" 을 켜면) 이름·cwd·팀장 엔진 → `team.create` 먼저.
+//  - 출근: 이름·엔진·지시문·팀 → `member.clockIn`. 팀이 없으면(또는 "새 팀" 을 켜면) 팀 이름·cwd·팀장 엔진·팀장 이름 → `team.create` 먼저.
+//  - **팀 만들기 = 팀장 자동 출근(T24).** `team.create` 결과의 `leader` 를 바로 선택하고, 팀원 이름을 비워 두면
+//    팀장만 출근한 빈 사무실이 된다(01 v1b 성공 기준 7).
 //  - 퇴근: `selectedMemberId` 가 있으면 그 이름 옆 작은 버튼 → 확인 → `member.clockOut`.
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+// 선택 멤버 provider 는 main.dart 에 있다(T11). 팀 만들기 직후 팀장을 고르려면 여기서 써야 한다 —
+// Dart 는 순환 import 를 허용하지만, provider 를 lib/state/ 로 옮기는 정리는 T24b 로 넘긴다.
+import '../main.dart' show selectedMemberIdProvider;
 import '../model/models.dart';
 import '../rpc/rpc_client.dart';
 import '../state/office_state.dart';
 import 'selected_team.dart';
 
 export 'selected_team.dart';
+
+/// `team.create` 에 `leaderName` 을 안 보냈을 때 데몬이 붙이는 기본 팀장 이름(daemon `DEFAULT_LEADER_NAME`).
+const kDefaultLeaderName = '팀장';
 
 class TopBar extends ConsumerWidget {
   const TopBar({super.key, this.selectedMemberId});
@@ -68,6 +76,10 @@ class TopBar extends ConsumerWidget {
           ),
           if (selected != null) ...[
             const SizedBox(width: 8),
+            if (selected.rank == MemberRank.leader) ...[
+              const _LeaderBadge(key: Key('topbar.leaderBadge')),
+              const SizedBox(width: 6),
+            ],
             Text('${selected.name} [${selected.engine.wire}]', style: style?.copyWith(color: Colors.white70)),
             const SizedBox(width: 2),
             IconButton(
@@ -118,6 +130,34 @@ class _TeamTab extends StatelessWidget {
         child: Text(
           team.name,
           style: TextStyle(fontSize: 13, fontWeight: active ? FontWeight.bold : FontWeight.normal, color: active ? scheme.primary : Colors.white70),
+        ),
+      ),
+    );
+  }
+}
+
+/// 선택 멤버가 팀장(`rank:'leader'`)일 때 이름 앞에 붙는 왕관 배지(T24).
+class _LeaderBadge extends StatelessWidget {
+  const _LeaderBadge({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    final color = Theme.of(context).colorScheme.primary;
+    return Tooltip(
+      message: '팀장 — 사용자 지시는 팀장에게만 갑니다',
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(color: color.withValues(alpha: 0.6)),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.workspace_premium, size: 12, color: color),
+            const SizedBox(width: 4),
+            Text(kDefaultLeaderName, style: TextStyle(fontSize: 11, color: color, fontWeight: FontWeight.bold)),
+          ],
         ),
       ),
     );
@@ -193,6 +233,7 @@ class _ClockInDialogState extends ConsumerState<ClockInDialog> {
   final _instructions = TextEditingController();
   final _teamName = TextEditingController();
   final _cwd = TextEditingController();
+  final _leaderName = TextEditingController();
   Engine _engine = Engine.claude;
   Engine _leaderEngine = Engine.claude;
   String? _teamId;
@@ -215,6 +256,7 @@ class _ClockInDialogState extends ConsumerState<ClockInDialog> {
     _instructions.dispose();
     _teamName.dispose();
     _cwd.dispose();
+    _leaderName.dispose();
     super.dispose();
   }
 
@@ -224,8 +266,10 @@ class _ClockInDialogState extends ConsumerState<ClockInDialog> {
     final name = _name.text.trim();
     final teamName = _teamName.text.trim();
     final cwd = _cwd.text.trim();
+    final leaderName = _leaderName.text.trim();
     setState(() {
-      _nameError = name.isEmpty ? '이름을 입력하세요' : null;
+      // 새 팀이면 팀장이 자동으로 출근하므로(T24) 팀원 이름은 선택 — 비우면 팀장만 있는 빈 사무실.
+      _nameError = !createTeam && name.isEmpty ? '이름을 입력하세요' : null;
       _teamNameError = createTeam && teamName.isEmpty ? '팀 이름을 입력하세요' : null;
       _cwdError = createTeam && cwd.isEmpty ? '작업 폴더 경로를 입력하세요' : null;
       _error = !createTeam && (_teamId == null || !teams.containsKey(_teamId)) ? '팀을 고르세요' : null;
@@ -237,17 +281,28 @@ class _ClockInDialogState extends ConsumerState<ClockInDialog> {
     try {
       var teamId = _teamId;
       if (createTeam) {
-        final r = await client.call('team.create', {'name': teamName, 'cwd': cwd, 'leaderEngine': _leaderEngine.wire});
+        // 결과는 `{ team, leader }` — 팀장이 자동 출근한다(PROTOCOL `team.create`, T24).
+        final r = await client.call('team.create', {
+          'name': teamName,
+          'cwd': cwd,
+          'leaderEngine': _leaderEngine.wire,
+          if (leaderName.isNotEmpty) 'leaderName': leaderName,
+        });
         teamId = ((r['team'] as Map?)?['id'] as String?) ?? (throw const RpcException(-32000, 'team.create 응답에 team.id 없음'));
         ref.read(selectedTeamIdProvider.notifier).select(teamId);
+        // 새 팀에서 처음 고를 멤버는 팀장이다(지시는 팀장에게만 간다).
+        final leaderId = (r['leader'] as Map?)?['id'] as String?;
+        if (leaderId != null) ref.read(selectedMemberIdProvider.notifier).select(leaderId);
       }
       final instructions = _instructions.text.trim();
-      await client.call('member.clockIn', {
-        'teamId': teamId,
-        'engine': _engine.wire,
-        'name': name,
-        if (instructions.isNotEmpty) 'instructions': instructions,
-      });
+      if (!createTeam || name.isNotEmpty) {
+        await client.call('member.clockIn', {
+          'teamId': teamId,
+          'engine': _engine.wire,
+          'name': name,
+          if (instructions.isNotEmpty) 'instructions': instructions,
+        });
+      }
       if (teamId != null) ref.read(selectedTeamIdProvider.notifier).select(teamId);
       if (mounted) Navigator.of(context).pop();
     } catch (e) {
@@ -279,7 +334,13 @@ class _ClockInDialogState extends ConsumerState<ClockInDialog> {
                 controller: _name,
                 autofocus: true,
                 enabled: !_busy,
-                decoration: InputDecoration(labelText: '이름', hintText: '이음', errorText: _nameError, isDense: true),
+                decoration: InputDecoration(
+                  labelText: createTeam ? '팀원 이름 (선택)' : '이름',
+                  hintText: '이음',
+                  helperText: createTeam ? '비워 두면 팀장만 출근합니다' : null,
+                  errorText: _nameError,
+                  isDense: true,
+                ),
               ),
               const SizedBox(height: 12),
               _EngineChooser(key: const Key('clockIn.engine'), value: _engine, enabled: !_busy, onChanged: (e) => setState(() => _engine = e)),
@@ -325,6 +386,12 @@ class _ClockInDialogState extends ConsumerState<ClockInDialog> {
               if (createTeam) ...[
                 const SizedBox(height: 8),
                 Text(teams.isEmpty ? '팀이 없습니다 — 먼저 팀을 만듭니다' : '새 팀 만들기', style: Theme.of(context).textTheme.labelLarge),
+                const SizedBox(height: 4),
+                const Text(
+                  '팀을 만들면 팀장이 자동으로 출근합니다. 지시는 팀장에게만 갑니다.',
+                  key: Key('clockIn.leaderHint'),
+                  style: TextStyle(fontSize: 12, color: Colors.white54),
+                ),
                 const SizedBox(height: 8),
                 TextField(
                   key: const Key('clockIn.teamName'),
@@ -338,6 +405,13 @@ class _ClockInDialogState extends ConsumerState<ClockInDialog> {
                   controller: _cwd,
                   enabled: !_busy,
                   decoration: InputDecoration(labelText: '작업 폴더 (cwd)', hintText: r'D:\myproject\...', errorText: _cwdError, isDense: true),
+                ),
+                const SizedBox(height: 8),
+                TextField(
+                  key: const Key('clockIn.leaderName'),
+                  controller: _leaderName,
+                  enabled: !_busy,
+                  decoration: const InputDecoration(labelText: '팀장 이름', hintText: kDefaultLeaderName, isDense: true),
                 ),
                 const SizedBox(height: 8),
                 Row(
