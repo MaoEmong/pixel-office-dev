@@ -7,13 +7,13 @@ import serialize from '@xterm/addon-serialize';
 import type { Terminal as TerminalType } from '@xterm/headless';
 import type { SerializeAddon as SerializeAddonType } from '@xterm/addon-serialize';
 import { compileTuiMap, isCompiledTuiMap, loadTuiMap } from './tuiMap.js';
-import type { DialogKind, Engine, Key, TuiMap, TuiMapJson } from './tuiMap.js';
+import type { DialogKind, Engine, Key, TuiDialog, TuiMap, TuiMapJson } from './tuiMap.js';
 
 // @xterm/headless 는 CJS 번들이라 named import 가 안 된다(cjs-module-lexer 가 export 를 못 찾음) → default 로 받는다.
 const { Terminal } = xterm;
 const { SerializeAddon } = serialize;
 
-export type { DialogKind, Engine, Key, TuiMap, TuiMapJson } from './tuiMap.js';
+export type { DialogKind, Engine, Key, TuiDialog, TuiMap, TuiMapJson } from './tuiMap.js';
 
 export interface ScreenModelOptions {
   engine: Engine;
@@ -27,8 +27,19 @@ export interface ScreenModelOptions {
 
 export interface DialogDetection {
   kind: DialogKind;
-  /** 다이얼로그를 통과하기 위해 보낼 키 순서. kind 가 'none' 이면 빈 배열. */
+  /** 다이얼로그를 통과하기 위해 보낼 키 순서. kind 가 'none' 또는 'approval-prompt' 면 빈 배열(허가 프롬프트는 자동 통과 금지). */
   suggestedKeys: Key[];
+}
+
+export interface ApprovalPromptDetection {
+  /** CLI 자체 허가 프롬프트(예: Claude "Do you want to proceed?", Codex "Would you like to run the following command?")가 떠 있는가. */
+  visible: boolean;
+  /** 맵의 dialogs[].id. 안 보이면 undefined. */
+  id?: string;
+  /** 허가 키 순서(보통 ['enter'] = 첫 항목 Yes). 안 보이면 []. */
+  allowKeys: Key[];
+  /** 거부 키 순서. 안 보이면 []. */
+  denyKeys: Key[];
 }
 
 export class ScreenModel {
@@ -138,12 +149,24 @@ export class ScreenModel {
     return undefined;
   }
 
-  /** 첫 실행 다이얼로그 감지. 매치되는 첫 항목을 준다(JSON 순서 = 우선순위). */
-  detectDialog(): DialogDetection {
+  /** 화면 전체 텍스트에 dialogs[] 를 순서대로 대어 첫 매치를 준다. */
+  private matchDialog(): { dialog: TuiDialog; lines: string[] } | undefined {
     const ls = this.lines();
     const text = ls.join('\n');
-    for (const d of this.tuiMap.dialogs) {
-      if (!d.all.every((r) => r.test(text))) continue;
+    for (const d of this.tuiMap.dialogs) if (d.all.every((r) => r.test(text))) return { dialog: d, lines: ls };
+    return undefined;
+  }
+
+  /**
+   * 다이얼로그 감지. 매치되는 첫 항목을 준다(JSON 순서 = 우선순위).
+   * kind 가 'approval-prompt' 면 suggestedKeys 는 항상 [] — InputQueue 가 키를 얹지 않고, 앱은 "재지시 필요" 폴백으로 안내한다.
+   * 허가/거부 키는 approvalPrompt() 로 따로 받는다.
+   */
+  detectDialog(): DialogDetection {
+    const m = this.matchDialog();
+    if (m) {
+      const d = m.dialog;
+      const ls = m.lines;
       let keys = d.keys;
       if (d.highlight) {
         const { marker, choices } = d.highlight;
@@ -154,9 +177,19 @@ export class ScreenModel {
           if (c) keys = c.keys;
         }
       }
-      return { kind: d.kind, suggestedKeys: [...keys] };
+      return { kind: d.kind, suggestedKeys: d.kind === 'approval-prompt' ? [] : [...keys] };
     }
     return { kind: 'none', suggestedKeys: [] };
+  }
+
+  /**
+   * CLI 자체 허가 프롬프트(hook 이 없거나 만료된 뒤의 폴백, D-16) 감지 + 허가/거부 키.
+   * 데몬은 이 키를 자동으로 보내지 않는다(정보용). 사용자가 앱에서 "허가"/"거부"를 고르거나 터미널 탭에서 직접 답한다.
+   */
+  approvalPrompt(): ApprovalPromptDetection {
+    const m = this.matchDialog();
+    if (!m || m.dialog.kind !== 'approval-prompt') return { visible: false, allowKeys: [], denyKeys: [] };
+    return { visible: true, id: m.dialog.id, allowKeys: [...(m.dialog.allowKeys ?? [])], denyKeys: [...(m.dialog.denyKeys ?? [])] };
   }
 
   /** 작업 중 표시(스피너 줄 또는 "esc to interrupt" 상태줄). */
@@ -173,13 +206,14 @@ export class ScreenModel {
 
   /**
    * 입력 프롬프트가 지시를 받을 수 있는 상태인가.
-   * 다이얼로그가 떠 있거나 작업 중이면 false. 그 외에 화면 하단(뒤쪽 빈 줄 제외 scanLines 줄)에 준비 문구가 있거나,
-   * (Codex) 입력줄 아래에 상태줄이 보이면 true.
+   * 다이얼로그(허가 프롬프트 포함)가 떠 있거나 작업 중이거나 noneOf(예: Codex 'model: loading')가 보이면 false.
+   * 그 외에 화면 하단(뒤쪽 빈 줄 제외 scanLines 줄)에 준비 문구가 있거나, (Codex) 입력줄 아래에 상태줄이 보이면 true.
    */
   promptReady(): boolean {
     if (this.detectDialog().kind !== 'none') return false;
     if (this.busyIndicator()) return false;
     const pr = this.tuiMap.promptReady;
+    if (pr.noneOf.length && this.lines().some((l) => pr.noneOf.some((r) => r.test(l)))) return false;
     const bottom = this.trimmedLines().slice(-pr.scanLines);
     if (bottom.some((l) => pr.anyOf.some((r) => r.test(l)))) return true;
     if (pr.inputLine) {

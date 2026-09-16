@@ -1,23 +1,29 @@
 {
   "engine": "claude",
   "version": "2.1.270",
-  "source": "dev/spike-0/run3.log run4.log run5.log run7.log run8.log run9.log (2026-09-14, 120x40 ConPTY)",
+  "source": "dev/spike-0/run3.log run4.log run5.log run7.log run8.log run9.log (2026-09-14, 120x40 ConPTY) + test/screen/fixtures/claude/*.txt (T21 실측 2026-09-16, 120x40, `--permission-mode default`, hooks 미등록, 캡처 도구 test/screen/tools/capture-claude.ts)",
   "notes": [
     "정규식 문자열은 JavaScript RegExp(u 플래그). JSON 이므로 백슬래시는 두 번(\\\\s, \\\\?). dialogs[].all 은 화면 전체 텍스트에 m 플래그로 검사.",
-    "verified:false 인 항목은 로그에서 실물을 못 본 추정 패턴 — M0 실기동에서 재확인할 것.",
+    "verified:true 항목은 source 의 픽스처(실제 화면 캡처)로 test/screen/screens.test.ts 가 검사한다. verified:false 는 실물을 못 본 추정 패턴 — 'login-success' 는 스파이크·T21 모두 로그인된 상태라 못 봄.",
     "'fullscreen-renderer' 다이얼로그는 Enter 가 '1. Yes, try it'(alt buffer, flicker-free). 실측 run8 에서 그렇게 통과했음. Esc 면 'Not now'.",
-    "busy: 작업 중에는 상태줄이 '? for shortcuts' 대신 'esc to interrupt' 가 되고, 그 위에 '✢ Newspapering… (6s · ↓ 250 tokens)' 같은 스피너 줄이 있다(run8/run9). '✻ Cogitated for 9s · done' 은 완료 표시라 busy 가 아니다."
+    "busy: 작업 중에는 상태줄이 '? for shortcuts' 대신 'esc to interrupt' 가 되고, 그 위에 '✢ Newspapering… (6s · ↓ 250 tokens)' 같은 스피너 줄이 있다(run8/run9). '✻ Cogitated for 9s · done' 은 완료 표시라 busy 가 아니다.",
+    "허가 프롬프트(approval-prompt, T21 실측): hook 이 없거나 만료되면(D-16) 입력 상자 자리에 ' Bash command' 블록 + 'Do you want to proceed?' + '❯ 1. Yes / 2. Yes, and always allow access to <dir> from this project / 3. Yes, and switch to auto mode · … / 4. No' + 'Esc to cancel · Tab to amend'. 첫 항목 강조 → Enter = 허가. ↓×3 → '❯ 4. No' → Enter = 거부 → 이력에 '⎿  Interrupted · What should Claude do instead?' 가 남고 READY(Ctrl+C 와 같은 화면). 항목 수는 도구 종류에 따라 다를 수 있으니(파일 편집 프롬프트 등) denyKeys 는 Bash 4항목 기준 — 'Esc to cancel' 이 범용 대안(효과 미검증).",
+    "종료: 빈 프롬프트에서 Ctrl+C → 상태줄이 'Press Ctrl-C again to exit' 로 바뀐다(promptReady 는 이 순간 false). T21 캡처에서 1.2초 뒤 두 번째 Ctrl+C 는 종료시키지 못하고 같은 안내가 다시 떴다 — 두 번째 Ctrl+C 는 더 빨리(≤1초) 보내거나 kill 폴백."
   ],
   "promptReady": {
+    "verified": true,
+    "source": "fixtures/claude-ready.txt(run8/run9), fixtures/claude/ready.txt — '⏸ manual mode on · ? for shortcuts · ← for agents'",
     "scanLines": 4,
     "anyOf": ["\\? for shortcuts", "shift\\+tab to cycle"]
   },
   "busy": {
     "verified": true,
+    "source": "fixtures/claude-working.txt(run8/run9), fixtures/claude/working.txt",
     "anyOf": ["esc to interrupt", "^\\s*[✻✢✶✽✳*·]\\s\\S+… \\("]
   },
   "interrupted": {
     "verified": true,
+    "source": "fixtures/claude-interrupted.txt(run9), fixtures/claude/approval-after-deny.txt('4. No' 거부 뒤에도 같은 줄)",
     "anyOf": ["Interrupted · What should Claude do instead\\?"]
   },
   "inputBox": {
@@ -32,20 +38,21 @@
     "shift\\+tab to cycle",
     "· /effort\\s*$",
     "^\\s*Still working\\. Check in from your phone",
-    "^\\s*paste again to expand\\s*$"
+    "^\\s*paste again to expand\\s*$",
+    "^\\s*Press Ctrl-C again to exit\\s*$"
   ],
   "dialogs": [
-    { "id": "theme-picker", "kind": "onboarding-enter", "verified": true,
+    { "id": "theme-picker", "kind": "onboarding-enter", "verified": true, "source": "fixtures/claude-onboarding-theme.txt (run3)",
       "all": ["Choose the text style"], "keys": ["enter"] },
-    { "id": "fullscreen-renderer", "kind": "onboarding-enter", "verified": true,
+    { "id": "fullscreen-renderer", "kind": "onboarding-enter", "verified": true, "source": "fixtures/claude-fullscreen-renderer.txt (run8)",
       "all": ["Try the new fullscreen renderer\\?", "Enter to confirm"], "keys": ["enter"] },
-    { "id": "login-menu", "kind": "login-menu", "verified": true,
+    { "id": "login-menu", "kind": "login-menu", "verified": true, "source": "fixtures/claude-login-menu.txt (run3/run4)",
       "all": ["Select login method"], "keys": ["enter"] },
-    { "id": "login-success", "kind": "onboarding-enter", "verified": false,
+    { "id": "login-success", "kind": "onboarding-enter", "verified": false, "source": "추정 — 어느 로그에도 없음(항상 로그인된 상태)",
       "all": ["Login successful", "Press Enter"], "keys": ["enter"] },
-    { "id": "security-notes", "kind": "security-notes", "verified": true,
+    { "id": "security-notes", "kind": "security-notes", "verified": true, "source": "fixtures/claude-security-notes.txt (run4)",
       "all": ["Security notes", "Press Enter to continue"], "keys": ["enter"] },
-    { "id": "trust-folder", "kind": "trust-folder-claude", "verified": true,
+    { "id": "trust-folder", "kind": "trust-folder-claude", "verified": true, "source": "fixtures/claude-trust-dialog.txt (run4/run5/run6)",
       "all": ["trust this folder"], "keys": ["down", "enter"],
       "highlight": {
         "marker": "^\\s*❯\\s*",
@@ -53,6 +60,10 @@
           { "match": "^Yes, I trust this folder", "keys": ["enter"] },
           { "match": "^No, exit", "keys": ["down", "enter"] }
         ]
-      } }
+      } },
+    { "id": "permission-prompt", "kind": "approval-prompt", "verified": true,
+      "source": "fixtures/claude/approval-prompt.txt (Bash, 4항목) → ↓×3 = fixtures/claude/approval-prompt-no-highlighted.txt('❯ 4. No') → Enter = fixtures/claude/approval-after-deny.txt",
+      "all": ["Do you want to proceed\\?"],
+      "allowKeys": ["enter"], "denyKeys": ["down", "down", "down", "enter"] }
   ]
 }

@@ -1,0 +1,29 @@
+╭────────────────────────────────────────────────────────╮
+│ >_ OpenAI Codex (v0.154.0)                             │
+│                                                        │
+│ model:     gpt-6-astra high   /model to change         │
+│ directory: ~\AppData\Local\Temp\…\scratchpad\codex-cwd │
+╰────────────────────────────────────────────────────────╯
+
+  Tip: Try the Desktop app. Run 'codex app' or visit https://chatgpt.com/codex?app-landing-page=true
+
+⚠ 2 startup issues (1 MCP) · ctrl + t for details
+
+⚠ `--dangerously-bypass-hook-trust` is enabled. Enabled hooks may run without review for this invocation.               
+
+
+› 셸 명령 sleep 8 을 실행해줘
+
+
+■ You've hit your usage limit. Visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at  
+Sep 21st, 2026 1:58 PM.
+
+
+  Approaching rate limits
+  Switch to gpt-5.6-luna for lower credit usage?
+
+› 1. Switch to gpt-5.6-luna                 Fast and affordable agentic coding model.
+  2. Keep current model                                                                                                 
+  3. Keep current model (never show again)  Hide future rate limit reminders about switching models.
+
+  Press enter to confirm or esc to go back                                                                              

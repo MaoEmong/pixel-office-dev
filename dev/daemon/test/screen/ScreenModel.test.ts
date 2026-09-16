@@ -1,4 +1,5 @@
 // ScreenModel 핵심 API: feed/lines/viewport, resize, serialize 왕복, tui-map 로딩·검증.
+import fs from 'node:fs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { ScreenModel } from '../../src/screen/ScreenModel.js';
@@ -118,4 +119,74 @@ test('a custom tuiMap (JSON or compiled) can be injected', async () => {
   assert.equal(sm2.busyIndicator(), true);
   sm.dispose();
   sm2.dispose();
+});
+
+// ---- T21: approval-prompt / noneOf 스키마 검증 ---------------------------------------------------
+
+function minimalMap(over: Partial<TuiMapJson>): TuiMapJson {
+  return {
+    engine: 'codex',
+    version: 'test',
+    promptReady: { anyOf: ['READY'] },
+    busy: { anyOf: ['BUSY'] },
+    interrupted: { anyOf: ['INTERRUPTED'] },
+    skipLines: [],
+    dialogs: [],
+    ...over,
+  };
+}
+
+test('compileTuiMap: approval-prompt needs allowKeys/denyKeys and must not carry keys/highlight', () => {
+  assert.throws(
+    () => compileTuiMap(minimalMap({ dialogs: [{ id: 'a', kind: 'approval-prompt', all: ['proceed'], keys: ['enter'] }] })),
+    /approval-prompt must not have "keys"/,
+  );
+  assert.throws(
+    () => compileTuiMap(minimalMap({ dialogs: [{ id: 'a', kind: 'approval-prompt', all: ['proceed'], allowKeys: ['enter'] }] })),
+    /denyKeys: keys must be a non-empty array/,
+  );
+  assert.throws(
+    () => compileTuiMap(minimalMap({ dialogs: [{ id: 'a', kind: 'approval-prompt', all: ['proceed'], allowKeys: ['enter'], denyKeys: ['bogus' as never] }] })),
+    /unknown key "bogus"/,
+  );
+  const ok = compileTuiMap(minimalMap({ dialogs: [{ id: 'a', kind: 'approval-prompt', all: ['proceed'], allowKeys: ['enter'], denyKeys: ['esc'] }] }));
+  assert.deepEqual(ok.dialogs[0].keys, []);
+  assert.deepEqual(ok.dialogs[0].allowKeys, ['enter']);
+  assert.deepEqual(ok.dialogs[0].denyKeys, ['esc']);
+});
+
+test('compileTuiMap: allowKeys/denyKeys are rejected on non-approval dialogs; plain dialogs still need keys', () => {
+  assert.throws(
+    () => compileTuiMap(minimalMap({ dialogs: [{ id: 'a', kind: 'onboarding-enter', all: ['x'], keys: ['enter'], allowKeys: ['enter'] }] })),
+    /only for kind "approval-prompt"/,
+  );
+  assert.throws(() => compileTuiMap(minimalMap({ dialogs: [{ id: 'a', kind: 'onboarding-enter', all: ['x'] }] })), /keys must be a non-empty array/);
+  assert.throws(() => compileTuiMap(minimalMap({ dialogs: [{ id: 'a', kind: 'model-switch-offer', all: ['x'], keys: [] }] })), /keys must be a non-empty array/);
+});
+
+test('promptReady.noneOf blocks readiness even when a ready phrase is on screen', async () => {
+  const map = compileTuiMap(minimalMap({ promptReady: { anyOf: ['READY'], noneOf: ['LOADING'] } }));
+  const sm = new ScreenModel({ engine: 'codex', cols: 20, rows: 4, tuiMap: map });
+  await sm.feed('LOADING\r\n\r\nREADY');
+  assert.equal(sm.promptReady(), false);
+  await sm.feed('\x1b[1;1H\x1b[2Kloaded');
+  assert.equal(sm.promptReady(), true);
+  assert.deepEqual(sm.approvalPrompt(), { visible: false, allowKeys: [], denyKeys: [] });
+  sm.dispose();
+});
+
+test('built-in maps: every verified pattern names a source; approval-prompt exists for both engines', () => {
+  for (const engine of ['claude', 'codex'] as const) {
+    const m = loadTuiMap(engine);
+    assert.ok(m.dialogs.some((d) => d.kind === 'approval-prompt'), `${engine}: approval-prompt dialog`);
+    assert.ok(m.promptReady.noneOf.length >= (engine === 'codex' ? 1 : 0));
+  }
+  const raw: TuiMapJson[] = [
+    JSON.parse(fs.readFileSync(new URL('../../src/tui-maps/claude-2.1.json', import.meta.url), 'utf8')),
+    JSON.parse(fs.readFileSync(new URL('../../src/tui-maps/codex-0.154.json', import.meta.url), 'utf8')),
+  ];
+  for (const j of raw) {
+    for (const sec of [j.promptReady, j.busy, j.interrupted]) if (sec.verified) assert.ok(sec.source, `${j.engine}: verified section without source`);
+    for (const d of j.dialogs) if (d.verified) assert.ok(d.source, `${j.engine} dialogs[${d.id}]: verified without source`);
+  }
 });

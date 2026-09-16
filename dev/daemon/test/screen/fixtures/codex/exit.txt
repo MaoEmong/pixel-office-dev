@@ -1,0 +1,28 @@
+╭────────────────────────────────────────────────────────╮
+│ >_ OpenAI Codex (v0.154.0)                             │
+│                                                        │
+│ model:     gpt-6-astra high   /model to change         │
+│ directory: ~\AppData\Local\Temp\…\scratchpad\codex-cwd │
+╰────────────────────────────────────────────────────────╯
+
+  Tip: Try the Desktop app. Run 'codex app' or visit https://chatgpt.com/codex?app-landing-page=true
+
+⚠ 2 startup issues (1 MCP) · ctrl + t for details
+
+⚠ `--dangerously-bypass-hook-trust` is enabled. Enabled hooks may run without review for this invocation.               
+
+
+› 셸 명령 sleep 8 을 실행해줘
+
+
+■ You've hit your usage limit. Visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at  
+Sep 21st, 2026 1:58 PM.
+
+
+› 셸 명령 sleep 60 을 실행해줘
+
+
+■ Conversation interrupted - tell the model what to do differently. Something went wrong? Hit `/feedback` to report the 
+issue.
+To continue this session, run:
+  codex resume 01a0a888-dc56-7230-8060-45bf63bd5de1

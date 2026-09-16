@@ -1,25 +1,34 @@
 {
   "engine": "codex",
   "version": "0.154.0",
-  "source": "dev/spike-0/run-codex2.log run-codex3.log run-codex5.log (2026-09-14, 120x40 ConPTY)",
+  "source": "dev/spike-0/run-codex2.log run-codex3.log run-codex5.log (2026-09-14) + test/screen/fixtures/codex/*.txt (T21 실측 2026-09-16, 120x40 ConPTY, ScreenModel 뷰포트 = buffer.active.baseY 기준, 캡처 도구 test/screen/tools/capture-codex.ts)",
   "notes": [
     "정규식 문자열은 JavaScript RegExp(u 플래그). JSON 이므로 백슬래시는 두 번(\\\\s, \\\\?). dialogs[].all 은 화면 전체 텍스트에 m 플래그로 검사.",
-    "verified:false 인 항목은 로그에서 실물을 못 본 추정 패턴 — M3 실기동에서 재확인할 것.",
-    "스파이크의 screen() 헬퍼는 버퍼 0행부터 읽어 Codex(일반 버퍼+스크롤백)에서는 작업 중 화면(스피너·상태줄)이 로그에 안 남았다. busy/interrupted 는 미검증.",
-    "promptReady.inputLine: '› ' 로 시작하는 입력줄 아래 statusWithin 줄 안에 ' · ' 가 있는 상태줄(model reasoning · cwd)이 보이면 준비로 본다(run-codex5 READY 화면)."
+    "verified:true 항목은 source 의 픽스처(실제 화면 캡처)로 test/screen/screens.test.ts 가 검사한다. verified:false 는 실물을 못 본 추정 패턴.",
+    "부팅 직후 헤더가 'model:     loading' 인 동안은 입력 상자('› Ask Codex to do anything')와 상태줄이 보여도 Enter 가 먹지 않는다(T21 1차 실측: 제출한 프롬프트가 입력 상자에 그대로 남고 다음 프롬프트와 이어 붙음) → promptReady.noneOf 로 막는다. 모델명이 뜨기까지 약 4초.",
+    "작업 중: 입력 상자 위에 '• Working (0s • esc to interrupt)' 줄(글리프 •/◦ 교대, 초 카운트). 입력 상자와 상태줄은 작업 중에도 계속 보이므로 busy 가 promptReady 보다 우선한다.",
+    "중단: Ctrl+C(또는 esc) → '■ Conversation interrupted - tell the model what to do differently. Something went wrong? Hit `/feedback` to report the issue.' 줄이 이력에 남고 바로 READY. Claude 와 달리 별도 Stop 없이 프롬프트가 돌아온다.",
+    "종료: 빈 프롬프트에서 Ctrl+C 한 번이면 'To continue this session, run: codex resume <id>' 를 찍고 exit 0 (T21 실측 2회). 02-실측-체크리스트 ④의 'Ctrl+C×2' 는 /quit 뒤였음.",
+    "사용량 한도: 턴이 '■ You've hit your usage limit. … try again at <날짜>.' 로 즉시 끝나고 READY. 그 뒤 'Switch to gpt-5.6-luna for lower credit usage?' 메뉴(model-switch-offer)가 뜰 수 있다 — esc 로 닫으면 현재 모델 유지, READY 복귀(실측).",
+    "승인 프롬프트(approval-prompt)는 실물 캡처를 못 했다: 실측일에 ChatGPT 계정 사용량 한도(2026-09-21 리셋)로 모델이 도구를 호출하지 못함. 문구는 codex.exe 0.154.0 바이너리 문자열에서 뽑았다 — 제목 'Would you like to run the following command?' / '…make the following edits?' / '…grant these permissions?' / 'Do you want to approve network access to \"…\"?' / '<tool> needs your approval.', 항목 'Yes, just this once' / 'Yes, and don't ask again for this command in this session' / 'Yes, and don't ask again for commands that start with `…`' / 'No, continue without running it' / 'No, and tell Codex what to do differently'. 첫 항목 강조 → Enter = 허가, esc = 거부(중단)로 추정. 한도 리셋 후 capture-codex.ts 로 재확인할 것."
   ],
   "promptReady": {
+    "verified": true,
+    "source": "fixtures/codex/ready.txt, fixtures/codex-ready.txt(run-codex5), fixtures/codex-after-stop.txt; noneOf: fixtures/codex/boot-loading.txt",
     "scanLines": 8,
     "anyOf": ["Ask Codex to do anything"],
+    "noneOf": ["^\\s*│ model:\\s+loading\\b"],
     "inputLine": { "prompt": "^\\s*› ", "status": " · ", "statusWithin": 3 }
   },
   "busy": {
-    "verified": false,
-    "anyOf": ["esc to interrupt"]
+    "verified": true,
+    "source": "fixtures/codex/working.txt — '• Working (0s • esc to interrupt)'",
+    "anyOf": ["esc to interrupt", "^\\s*[•◦] Working \\("]
   },
   "interrupted": {
-    "verified": false,
-    "anyOf": ["^\\s*[■•]?\\s*(Conversation interrupted|Interrupted\\b)"]
+    "verified": true,
+    "source": "fixtures/codex/interrupted.txt — '■ Conversation interrupted - tell the model what to do differently.'",
+    "anyOf": ["^\\s*[■•]?\\s*Conversation interrupted\\b"]
   },
   "inputBox": {
     "prompt": "^\\s*›",
@@ -28,10 +37,13 @@
   "skipLines": [
     "^\\s*[─╌═━┄┈]+\\s*$",
     "^\\s*\\S+ (default|minimal|low|medium|high|xhigh) · ",
-    "esc to interrupt"
+    "esc to interrupt",
+    "^\\s*\\? for shortcuts\\s*$",
+    "^\\s*[•◦] Working \\("
   ],
   "dialogs": [
     { "id": "trust-directory", "kind": "trust-folder-codex", "verified": true,
+      "source": "fixtures/codex-trust-dialog.txt (run-codex2)",
       "all": ["Do you trust the contents of this directory\\?"], "keys": ["enter"],
       "highlight": {
         "marker": "^\\s*›\\s*",
@@ -39,6 +51,13 @@
           { "match": "Yes, continue", "keys": ["enter"] },
           { "match": "No, quit", "keys": ["up", "enter"] }
         ]
-      } }
+      } },
+    { "id": "rate-limit-model-switch", "kind": "model-switch-offer", "verified": true,
+      "source": "fixtures/codex/model-switch-offer.txt → esc → fixtures/codex/model-switch-offer-after-esc.txt (READY 복귀)",
+      "all": ["Switch to \\S+ for lower credit usage\\?", "Press enter to confirm or esc to go back"], "keys": ["esc"] },
+    { "id": "approval-exec", "kind": "approval-prompt", "verified": false,
+      "source": "codex.exe 0.154.0 바이너리 문자열(tui approval overlay) — 실물 캡처는 사용량 한도로 보류(notes 참고)",
+      "all": ["Would you like to (run the following command|make the following edits|grant these permissions)\\?|Do you want to approve network access to|needs your approval\\."],
+      "allowKeys": ["enter"], "denyKeys": ["esc"] }
   ]
 }
