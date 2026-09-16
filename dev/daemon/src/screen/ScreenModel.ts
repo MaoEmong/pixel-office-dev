@@ -29,6 +29,13 @@ export interface DialogDetection {
   kind: DialogKind;
   /** 다이얼로그를 통과하기 위해 보낼 키 순서. kind 가 'none' 또는 'approval-prompt' 면 빈 배열(허가 프롬프트는 자동 통과 금지). */
   suggestedKeys: Key[];
+  /**
+   * 그 다이얼로그의 키가 **현재 강조된 항목**에 따라 갈리는가(tui-map 의 `highlight`). true 면 `suggestedKeys` 는
+   * "지금 화면 기준" 이라 확인 키를 붙여 한 번에 보내면 안 된다 — InputQueue 가 이동 키만 먼저 보내고 강조가 원하는
+   * 항목에 온 것을 **다시 확인한 뒤** Enter 를 보낸다(T36 실측: Claude 신뢰 다이얼로그는 뜬 직후 한 번 더 렌더되며
+   * 선택을 'No, exit' 로 되돌린다 — 그때 ↓+Enter 를 붙여 보내면 CLI 가 exit 1 로 죽는다).
+   */
+  highlightDriven: boolean;
 }
 
 export interface ApprovalPromptDetection {
@@ -177,9 +184,9 @@ export class ScreenModel {
           if (c) keys = c.keys;
         }
       }
-      return { kind: d.kind, suggestedKeys: d.kind === 'approval-prompt' ? [] : [...keys] };
+      return { kind: d.kind, suggestedKeys: d.kind === 'approval-prompt' ? [] : [...keys], highlightDriven: d.highlight !== undefined };
     }
-    return { kind: 'none', suggestedKeys: [] };
+    return { kind: 'none', suggestedKeys: [], highlightDriven: false };
   }
 
   /**

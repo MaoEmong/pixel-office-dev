@@ -27,6 +27,7 @@ import { allow, askAnswers, deny, PASS_THROUGH, sessionStartContext } from '../h
 import type { HookPayload } from '../hooks/types.js';
 import type { Store } from '../store/Store.js';
 import type { EventDetail, EventRef, Member, MemberStatus, OfficeEventKind, Pending } from '../store/types.js';
+import { isTurnEndingQuestion } from '../office/derived.js';
 import { questionSummary, toolDetail, truncate, type ToolMapping } from './mapping.js';
 import type { AdapterDeps, ApprovalDecisionInput, HoldLostReason, HooksAdapterEvents, ToolDoneInfo, ToolGateContext } from './types.js';
 
@@ -170,10 +171,20 @@ export abstract class BaseHooksAdapter extends EventEmitter<HooksAdapterEvents> 
   // ---- 후처리 ---------------------------------------------------------------
 
   /**
-   * interrupt / fire / error 공통 후처리(01 §구성 요소 1). 그 멤버의 보류 hook 을 전부 '{}' 로 닫고
-   * open pending 을 expired 로. waiting_* 였으면 status 는 working 으로 되돌린다(CLI 가 다시 주도권을 가짐).
+   * interrupt / fire / error 공통 후처리(01 §구성 요소 1) = `cancelHolds` + `expirePendingFor(all)`.
+   * 그 멤버의 보류 hook 을 전부 '{}' 로 닫고 open pending 을 expired 로.
    */
   expireAllForMember(memberId: string): void {
+    this.cancelHolds(memberId);
+    this.expirePendingFor(memberId);
+  }
+
+  /**
+   * **보류만** 끊는다(T36/D-36). 응답을 아직 안 돌려준 hook 요청(허가·질문)과 셸 게이트 보류를 '{}' 로 닫는다.
+   * pending 행은 건드리지 않는다 — `member.restart` 는 프로세스를 죽이면서도 턴 종료 질문(`ask_user`/`ask_parent`)을
+   * 살려 둬야 하는데(D-19), 보류를 안 끊으면 죽는 CLI 가 응답을 기다리며 멈추기 때문에 이 둘이 갈라져야 한다.
+   */
+  cancelHolds(memberId: string): void {
     for (const [id, entry] of [...this.held]) {
       if (entry.memberId !== memberId) continue;
       this.held.delete(id);
@@ -187,9 +198,33 @@ export abstract class BaseHooksAdapter extends EventEmitter<HooksAdapterEvents> 
         g.abort.abort(); // 게이트(셸 뮤텍스)에 "이 보류는 없어졌다" — 대기 줄에서 빼라(T27)
       }
     }
-    for (const p of this.store.expireAllForMember(memberId)) this.emit('pendingSettled', p);
+  }
+
+  /**
+   * 그 멤버의 열린 pending 을 만료시킨다. `opts.keepTurnEndingQuestions` 면 턴 종료 질문(`ask_user`/`ask_parent`,
+   * `tool_input` 없는 질문)은 남긴다(D-19). waiting_* 였으면 status 는 working 으로 되돌린다(CLI 가 다시 주도권을 가짐) —
+   * 단 살아남은 질문이 있으면 그대로 둔다.
+   */
+  expirePendingFor(memberId: string, opts: { keepTurnEndingQuestions?: boolean } = {}): Pending[] {
+    const out: Pending[] = [];
+    if (opts.keepTurnEndingQuestions) {
+      for (const p of this.store.listOpenPending(memberId)) {
+        if (isTurnEndingQuestion(p)) continue;
+        const final = this.store.expirePending(p.id);
+        if (final?.status !== 'expired') continue;
+        out.push(final);
+        this.emit('pendingSettled', final);
+      }
+    } else {
+      for (const p of this.store.expireAllForMember(memberId)) {
+        out.push(p);
+        this.emit('pendingSettled', p);
+      }
+    }
     const current = this.store.getMember(memberId)?.status;
-    if (current === 'waiting_approval' || current === 'waiting_answer') this.setStatus(memberId, 'working');
+    const stillOpen = this.store.listOpenPending(memberId).length > 0;
+    if (!stillOpen && (current === 'waiting_approval' || current === 'waiting_answer')) this.setStatus(memberId, 'working');
+    return out;
   }
 
   /** HookReceiver 'hold-timeout' 연결점: 그 보류에 걸린 pending 을 expired 로(응답은 receiver 가 이미 '{}' 로 보냄). */

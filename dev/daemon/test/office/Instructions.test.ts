@@ -72,13 +72,19 @@ describe('멤버 지시문 템플릿·주입 (T26b · T34)', () => {
 
   // ---- 기본 템플릿 -------------------------------------------------------------------------
 
-  test('기본값은 직급이 고른다: 부장은 부서 지시문, 팀장은 hire/delegate/dismiss/report/ask_user, 팀원은 report/ask_user', () => {
+  test('기본값은 직급이 고른다(T35 rev 3): 부장 create_team/…/ask_user, 팀장 hire/…/ask_parent, 팀원 report/ask_parent', () => {
     const worker = memberIn('이음');
 
     const boss = office.effectiveInstructions(head.id);
     assert.match(boss, /^# 국장 — 부장 @ alpha\n/);
     assert.match(boss, /- 상사: 사용자\(사람\)/);
     assert.match(boss, /## 부장 지시문/);
+    assert.match(boss, /create_team\(name, leadName, engine\?, instructions\?\)/);
+    assert.match(boss, /delegate\(to_member, task\)/);
+    assert.match(boss, /dismiss_team\(teamId\)/);
+    assert.match(boss, /ask_user\(question, options\?\)/);
+    assert.ok(boss.includes(toolsLine('head')), '부장 도구 이름 줄');
+    assert.ok(boss.includes('mcp__team__create_team') && !boss.includes('mcp__team__ask_parent'));
 
     const lead = office.effectiveInstructions(leader.id);
     assert.match(lead, /^# 반장 — 팀장 @ alpha\n/);
@@ -90,10 +96,12 @@ describe('멤버 지시문 템플릿·주입 (T26b · T34)', () => {
     assert.match(lead, /delegate\(to_member, task\)/);
     assert.match(lead, /dismiss\(memberId\)/);
     assert.match(lead, /\[ALL_REPORTS_IN\]/);
+    assert.match(lead, /ask_parent\(question, options\?\)/);
     // 팀 설정에서 온 숫자
-    assert.match(lead, /팀원 상한은 4명\(팀장 포함\), 쓸 수 있는 엔진은 claude, codex\./);
+    assert.match(lead, /팀 정원은 4명\(팀장 포함\), 쓸 수 있는 엔진은 claude, codex\./);
     assert.ok(lead.includes(toolsLine('lead')), '팀장 도구 이름 줄');
-    assert.ok(lead.includes('mcp__team__hire') && lead.includes('mcp__team__ask_user'));
+    assert.ok(lead.includes('mcp__team__hire') && lead.includes('mcp__team__ask_parent'));
+    assert.ok(!lead.includes('mcp__team__ask_user'), '팀장은 사용자에게 직접 못 묻는다');
 
     const mem = office.effectiveInstructions(worker.id);
     assert.match(mem, /^# 이음 — 팀원 @ alpha\n/);
@@ -101,8 +109,10 @@ describe('멤버 지시문 템플릿·주입 (T26b · T34)', () => {
     assert.match(mem, /## 팀원 지시문/);
     assert.match(mem, /\[TASK#n from 반장\(팀장\)\] 지시를 받으면/);
     assert.match(mem, /report\(taskId, summary, status: done\|blocked\)/);
+    assert.match(mem, /ask_parent\(question, options\?\)/);
     assert.ok(mem.includes(toolsLine('member')), '팀원 도구 이름 줄');
     assert.ok(!mem.includes('mcp__team__hire'), '팀원 템플릿에 팀장 도구가 없다');
+    assert.ok(!mem.includes('mcp__team__ask_user'), '팀원 템플릿에 부장 도구가 없다');
 
     // 파일은 만들어지지 않는다 — 기본값은 부를 때마다 계산한다(템플릿을 고치면 전원에게 바로 반영).
     assert.equal(office.getInstructions(leader.id), '');

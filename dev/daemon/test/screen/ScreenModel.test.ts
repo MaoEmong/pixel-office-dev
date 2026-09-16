@@ -112,7 +112,7 @@ test('a custom tuiMap (JSON or compiled) can be injected', async () => {
   assert.equal(sm.promptReady(), true);
   assert.equal(sm.lastNonEmptyLine(), 'READY>');
   await sm.feed('\x1b[2J\x1b[HContinue?');
-  assert.deepEqual(sm.detectDialog(), { kind: 'security-notes', suggestedKeys: ['esc', 'enter'] });
+  assert.deepEqual(sm.detectDialog(), { kind: 'security-notes', suggestedKeys: ['esc', 'enter'], highlightDriven: false });
   assert.equal(sm.promptReady(), false);
   const sm2 = new ScreenModel({ engine: 'claude', cols: 20, rows: 4, tuiMap: compileTuiMap(json) });
   await sm2.feed('WORKING');

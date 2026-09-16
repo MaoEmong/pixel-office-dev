@@ -57,6 +57,8 @@ export interface CreateTeamParams {
   leadEngine?: Engine;
   /** 자동 출근하는 팀장의 이름. 기본 '팀장'. */
   leadName?: string;
+  /** 자동 출근하는 팀장의 INSTRUCTIONS.md 초안(T35 `create_team` 의 `instructions`). 없으면 기본 팀장 템플릿. */
+  leadInstructions?: string;
   maxMembers?: number;
   allowedEngines?: Engine[];
 }
@@ -125,6 +127,41 @@ export interface TeamHireInput {
   engine?: Engine;
   /** 역할 줄 아래에 붙는 지시문 초안. */
   instructions?: string;
+}
+
+/** TeamTools `create_team` 입력(부장, T35). 부서는 부르는 부장의 부서로 정해진다. */
+export interface TeamCreateTeamInput {
+  name: string;
+  /** 자동 출근하는 팀장의 이름(필수 — 부장이 직접 짓는다). */
+  leadName: string;
+  /** 팀장 엔진. 생략하면 부장과 같은 엔진. */
+  engine?: Engine;
+  /** 팀장의 INSTRUCTIONS.md 초안. */
+  instructions?: string;
+}
+
+/** TeamTools `reply` 입력(부장·팀장, T35). 대상은 살아 있는 직속 부하. */
+export interface TeamReplyInput {
+  toMember: string;
+  text: string;
+}
+
+/** `reply` 결과 — 열린 `ask_parent` 를 닫았으면 그 questionId 가 있다. */
+export interface TeamReplyResult {
+  to: Member;
+  /** 답으로 닫힌 ask_parent pending id. 없으면 그냥 `[MESSAGE from …]` 로 들어갔다. */
+  questionId?: string;
+}
+
+/** `ask_parent` pending 의 payload(T35). `ask_user` 와 같은 모양 + 트리 간선(from/to). */
+export interface AskParentPayload {
+  source: 'ask_parent';
+  question: string;
+  options: string[];
+  /** 물은 멤버(= pending 의 memberId 와 같다. 콘솔·앱이 payload 만 보고도 알 수 있게 싣는다). */
+  from: string;
+  /** 답할 직속 상사 memberId. */
+  to: string;
 }
 
 /** TeamTools `report` 입력. `taskId` 는 그 멤버에게 배정된 task 여야 한다. */

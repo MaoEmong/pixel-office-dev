@@ -9,7 +9,7 @@ import { ScreenModel } from '../../src/screen/ScreenModel.js';
 
 test('claude: onboarding theme picker → onboarding-enter, enter', async () => {
   const sm = await screenFrom('claude', 'claude-onboarding-theme.txt');
-  assert.deepEqual(sm.detectDialog(), { kind: 'onboarding-enter', suggestedKeys: ['enter'] });
+  assert.deepEqual(sm.detectDialog(), { kind: 'onboarding-enter', suggestedKeys: ['enter'], highlightDriven: false });
   assert.equal(sm.promptReady(), false);
   assert.equal(sm.interrupted(), false);
   assert.equal(sm.busyIndicator(), false);
@@ -20,7 +20,7 @@ test('claude: onboarding theme picker → onboarding-enter, enter', async () => 
 
 test('claude: login method menu → login-menu, enter', async () => {
   const sm = await screenFrom('claude', 'claude-login-menu.txt');
-  assert.deepEqual(sm.detectDialog(), { kind: 'login-menu', suggestedKeys: ['enter'] });
+  assert.deepEqual(sm.detectDialog(), { kind: 'login-menu', suggestedKeys: ['enter'], highlightDriven: false });
   assert.equal(sm.promptReady(), false);
   assert.equal(sm.lastNonEmptyLine(), '3. 3rd-party platform · Amazon Bedrock, Microsoft Foundry, or Vertex AI');
   sm.dispose();
@@ -28,7 +28,7 @@ test('claude: login method menu → login-menu, enter', async () => {
 
 test('claude: security notes → security-notes, enter', async () => {
   const sm = await screenFrom('claude', 'claude-security-notes.txt');
-  assert.deepEqual(sm.detectDialog(), { kind: 'security-notes', suggestedKeys: ['enter'] });
+  assert.deepEqual(sm.detectDialog(), { kind: 'security-notes', suggestedKeys: ['enter'], highlightDriven: false });
   assert.equal(sm.promptReady(), false);
   assert.equal(sm.lastNonEmptyLine(), 'Press Enter to continue…');
   sm.dispose();
@@ -36,7 +36,7 @@ test('claude: security notes → security-notes, enter', async () => {
 
 test('claude: trust dialog with "No, exit" highlighted → trust-folder-claude, down+enter', async () => {
   const sm = await screenFrom('claude', 'claude-trust-dialog.txt');
-  assert.deepEqual(sm.detectDialog(), { kind: 'trust-folder-claude', suggestedKeys: ['down', 'enter'] });
+  assert.deepEqual(sm.detectDialog(), { kind: 'trust-folder-claude', suggestedKeys: ['down', 'enter'], highlightDriven: true });
   assert.equal(sm.promptReady(), false);
   assert.equal(sm.busyIndicator(), false);
   // '❯ No, exit' 는 입력 상자가 아니다(윗줄이 괘선이 아님) → 마지막 줄은 안내문
@@ -48,13 +48,13 @@ test('claude: trust dialog with "Yes, I trust this folder" highlighted → enter
   const sm = await screenFrom('claude', 'claude-trust-dialog.txt');
   // 실제로 ↓ 를 누른 뒤의 화면: 강조 마커가 두 번째 항목으로 이동
   await sm.feed('\x1b[14;1H\x1b[2K   No, exit\x1b[15;1H\x1b[2K ❯ Yes, I trust this folder');
-  assert.deepEqual(sm.detectDialog(), { kind: 'trust-folder-claude', suggestedKeys: ['enter'] });
+  assert.deepEqual(sm.detectDialog(), { kind: 'trust-folder-claude', suggestedKeys: ['enter'], highlightDriven: true });
   sm.dispose();
 });
 
 test('claude: fullscreen renderer offer → onboarding-enter, enter (run8)', async () => {
   const sm = await screenFrom('claude', 'claude-fullscreen-renderer.txt');
-  assert.deepEqual(sm.detectDialog(), { kind: 'onboarding-enter', suggestedKeys: ['enter'] });
+  assert.deepEqual(sm.detectDialog(), { kind: 'onboarding-enter', suggestedKeys: ['enter'], highlightDriven: false });
   assert.equal(sm.promptReady(), false);
   sm.dispose();
 });
@@ -63,7 +63,7 @@ test('claude: fullscreen renderer offer → onboarding-enter, enter (run8)', asy
 
 test('claude: READY screen → promptReady, no dialog, last line skips rule/effort/status lines', async () => {
   const sm = await screenFrom('claude', 'claude-ready.txt');
-  assert.deepEqual(sm.detectDialog(), { kind: 'none', suggestedKeys: [] });
+  assert.deepEqual(sm.detectDialog(), { kind: 'none', suggestedKeys: [], highlightDriven: false });
   assert.equal(sm.promptReady(), true);
   assert.equal(sm.busyIndicator(), false);
   assert.equal(sm.interrupted(), false);
@@ -87,7 +87,7 @@ test('claude: working screen → busy, not ready, last line is the spinner', asy
   assert.equal(sm.busyIndicator(), true);
   assert.equal(sm.promptReady(), false);
   assert.equal(sm.interrupted(), false);
-  assert.deepEqual(sm.detectDialog(), { kind: 'none', suggestedKeys: [] });
+  assert.deepEqual(sm.detectDialog(), { kind: 'none', suggestedKeys: [], highlightDriven: false });
   assert.equal(sm.lastNonEmptyLine(), '✢ Newspapering… (6s · ↓ 250 tokens)');
   sm.dispose();
 });
@@ -112,7 +112,7 @@ test('claude: Interrupted screen after ctrl-c → interrupted AND promptReady (n
   assert.equal(sm.interrupted(), true);
   assert.equal(sm.promptReady(), true);
   assert.equal(sm.busyIndicator(), false);
-  assert.deepEqual(sm.detectDialog(), { kind: 'none', suggestedKeys: [] });
+  assert.deepEqual(sm.detectDialog(), { kind: 'none', suggestedKeys: [], highlightDriven: false });
   // 실제 화면은 '⎿' 뒤에 NBSP(U+00A0)가 섞여 있다 → \s 로 맞춘다
   assert.match(sm.lastNonEmptyLine(), /^⎿\s+Interrupted · What should Claude do instead\?$/u);
   sm.dispose();
@@ -141,7 +141,7 @@ test('claude: after Stop the answer text is the last line and the prompt is read
 
 test('codex: trust dialog with "Yes, continue" highlighted → trust-folder-codex, enter', async () => {
   const sm = await screenFrom('codex', 'codex-trust-dialog.txt');
-  assert.deepEqual(sm.detectDialog(), { kind: 'trust-folder-codex', suggestedKeys: ['enter'] });
+  assert.deepEqual(sm.detectDialog(), { kind: 'trust-folder-codex', suggestedKeys: ['enter'], highlightDriven: true });
   assert.equal(sm.promptReady(), false);
   assert.equal(sm.interrupted(), false);
   assert.equal(sm.lastNonEmptyLine(), 'Press enter to continue');
@@ -151,13 +151,13 @@ test('codex: trust dialog with "Yes, continue" highlighted → trust-folder-code
 test('codex: trust dialog with "No, quit" highlighted → up+enter', async () => {
   const sm = await screenFrom('codex', 'codex-trust-dialog.txt');
   await sm.feed('\x1b[6;1H\x1b[2K  1. Yes, continue\x1b[7;1H\x1b[2K› 2. No, quit');
-  assert.deepEqual(sm.detectDialog(), { kind: 'trust-folder-codex', suggestedKeys: ['up', 'enter'] });
+  assert.deepEqual(sm.detectDialog(), { kind: 'trust-folder-codex', suggestedKeys: ['up', 'enter'], highlightDriven: true });
   sm.dispose();
 });
 
 test('codex: READY screen → promptReady via placeholder, no dialog', async () => {
   const sm = await screenFrom('codex', 'codex-ready.txt');
-  assert.deepEqual(sm.detectDialog(), { kind: 'none', suggestedKeys: [] });
+  assert.deepEqual(sm.detectDialog(), { kind: 'none', suggestedKeys: [], highlightDriven: false });
   assert.equal(sm.promptReady(), true);
   assert.equal(sm.busyIndicator(), false);
   assert.equal(sm.interrupted(), false);
@@ -180,14 +180,14 @@ test('codex: boot screen (model loading) is NOT prompt-ready — Enter is swallo
   assert.match(sm.text(), /model:\s+loading/);
   assert.equal(sm.promptReady(), false);
   assert.equal(sm.busyIndicator(), false);
-  assert.deepEqual(sm.detectDialog(), { kind: 'none', suggestedKeys: [] });
+  assert.deepEqual(sm.detectDialog(), { kind: 'none', suggestedKeys: [], highlightDriven: false });
   sm.dispose();
 });
 
 test('codex: working screen (no input line at the bottom) is not ready', async () => {
   const sm = await screenFrom('codex', 'codex-working.txt');
   assert.equal(sm.promptReady(), false);
-  assert.deepEqual(sm.detectDialog(), { kind: 'none', suggestedKeys: [] });
+  assert.deepEqual(sm.detectDialog(), { kind: 'none', suggestedKeys: [], highlightDriven: false });
   assert.equal(sm.lastNonEmptyLine(), '└ hook exited with code 1');
   sm.dispose();
 });
@@ -209,7 +209,7 @@ test('codex(T21): boot-loading screen shows the prompt + status line but is not 
   assert.match(sm.text(), /│ model:\s+loading/);
   assert.match(sm.text(), /› Ask Codex to do anything/);
   assert.equal(sm.promptReady(), false);
-  assert.deepEqual(sm.detectDialog(), { kind: 'none', suggestedKeys: [] });
+  assert.deepEqual(sm.detectDialog(), { kind: 'none', suggestedKeys: [], highlightDriven: false });
   assert.equal(sm.approvalPrompt().visible, false);
   sm.dispose();
 });
@@ -220,7 +220,7 @@ test('codex(T21): READY screen (model loaded, "gpt-… high · cwd" status line)
   assert.equal(sm.promptReady(), true);
   assert.equal(sm.busyIndicator(), false);
   assert.equal(sm.interrupted(), false);
-  assert.deepEqual(sm.detectDialog(), { kind: 'none', suggestedKeys: [] });
+  assert.deepEqual(sm.detectDialog(), { kind: 'none', suggestedKeys: [], highlightDriven: false });
   // 입력 상자·상태줄은 제외 → 마지막 경고 배너
   assert.match(sm.lastNonEmptyLine(), /^⚠ `--dangerously-bypass-hook-trust` is enabled/);
   sm.dispose();
@@ -232,7 +232,7 @@ test('codex(T21): working screen "• Working (0s • esc to interrupt)" → bus
   assert.equal(sm.busyIndicator(), true);
   assert.equal(sm.promptReady(), false);
   assert.equal(sm.interrupted(), false);
-  assert.deepEqual(sm.detectDialog(), { kind: 'none', suggestedKeys: [] });
+  assert.deepEqual(sm.detectDialog(), { kind: 'none', suggestedKeys: [], highlightDriven: false });
   // 'Working' 줄과 입력 상자·상태줄은 건너뛰고 제출한 프롬프트 줄
   assert.equal(sm.lastNonEmptyLine(), '› 셸 명령 sleep 8 을 실행해줘');
   sm.dispose();
@@ -253,7 +253,7 @@ test('codex(T21): interrupted screen after ctrl-c → interrupted AND promptRead
   assert.equal(sm.interrupted(), true);
   assert.equal(sm.promptReady(), true);
   assert.equal(sm.busyIndicator(), false);
-  assert.deepEqual(sm.detectDialog(), { kind: 'none', suggestedKeys: [] });
+  assert.deepEqual(sm.detectDialog(), { kind: 'none', suggestedKeys: [], highlightDriven: false });
   assert.match(sm.text(), /■ Conversation interrupted - tell the model what to do differently\./);
   sm.dispose();
 });
@@ -264,13 +264,13 @@ test('codex(T21): usage-limit banner ends the turn → promptReady, not busy, no
   assert.equal(sm.promptReady(), true);
   assert.equal(sm.busyIndicator(), false);
   assert.equal(sm.interrupted(), false);
-  assert.deepEqual(sm.detectDialog(), { kind: 'none', suggestedKeys: [] });
+  assert.deepEqual(sm.detectDialog(), { kind: 'none', suggestedKeys: [], highlightDriven: false });
   sm.dispose();
 });
 
 test('codex(T21): "Switch to gpt-5.6-luna for lower credit usage?" menu → model-switch-offer, esc; not ready', async () => {
   const sm = await screenFrom('codex', 'codex/model-switch-offer.txt');
-  assert.deepEqual(sm.detectDialog(), { kind: 'model-switch-offer', suggestedKeys: ['esc'] });
+  assert.deepEqual(sm.detectDialog(), { kind: 'model-switch-offer', suggestedKeys: ['esc'], highlightDriven: false });
   assert.equal(sm.promptReady(), false);
   assert.equal(sm.busyIndicator(), false);
   assert.equal(sm.approvalPrompt().visible, false);
@@ -279,7 +279,7 @@ test('codex(T21): "Switch to gpt-5.6-luna for lower credit usage?" menu → mode
 
 test('codex(T21): after esc on the model-switch offer the prompt is ready again', async () => {
   const sm = await screenFrom('codex', 'codex/model-switch-offer-after-esc.txt');
-  assert.deepEqual(sm.detectDialog(), { kind: 'none', suggestedKeys: [] });
+  assert.deepEqual(sm.detectDialog(), { kind: 'none', suggestedKeys: [], highlightDriven: false });
   assert.equal(sm.promptReady(), true);
   sm.dispose();
 });
@@ -288,13 +288,13 @@ test('codex(T21): exit screen after a single ctrl-c at an idle prompt ("codex re
   const sm = await screenFrom('codex', 'codex/exit.txt');
   assert.match(sm.text(), /To continue this session, run:\n\s+codex resume [0-9a-f-]{36}/);
   assert.equal(sm.promptReady(), false);
-  assert.deepEqual(sm.detectDialog(), { kind: 'none', suggestedKeys: [] });
+  assert.deepEqual(sm.detectDialog(), { kind: 'none', suggestedKeys: [], highlightDriven: false });
   sm.dispose();
 });
 
 test('codex(T21): trust dialog fixture is still detected with the reworked map', async () => {
   const sm = await screenFrom('codex', 'codex-trust-dialog.txt');
-  assert.deepEqual(sm.detectDialog(), { kind: 'trust-folder-codex', suggestedKeys: ['enter'] });
+  assert.deepEqual(sm.detectDialog(), { kind: 'trust-folder-codex', suggestedKeys: ['enter'], highlightDriven: true });
   assert.equal(sm.promptReady(), false);
   assert.equal(sm.approvalPrompt().visible, false);
   sm.dispose();
@@ -319,7 +319,7 @@ test('codex: approval prompt (binary-string wording, unverified) → approval-pr
     '  Press enter to confirm or esc to go back',
   ];
   await sm.feed(overlay.map((l, i) => `\x1b[${row + i};1H\x1b[2K${l}`).join(''));
-  assert.deepEqual(sm.detectDialog(), { kind: 'approval-prompt', suggestedKeys: [] });
+  assert.deepEqual(sm.detectDialog(), { kind: 'approval-prompt', suggestedKeys: [], highlightDriven: false });
   assert.deepEqual(sm.approvalPrompt(), { visible: true, id: 'approval-exec', allowKeys: ['enter'], denyKeys: ['esc'] });
   assert.equal(sm.promptReady(), false);
   assert.equal(sm.busyIndicator(), false);
@@ -348,7 +348,7 @@ test('claude(T21): READY screen with placeholder text in the input box → promp
   const sm = await screenFrom('claude', 'claude/ready.txt');
   assert.equal(sm.promptReady(), true);
   assert.equal(sm.busyIndicator(), false);
-  assert.deepEqual(sm.detectDialog(), { kind: 'none', suggestedKeys: [] });
+  assert.deepEqual(sm.detectDialog(), { kind: 'none', suggestedKeys: [], highlightDriven: false });
   assert.equal(sm.approvalPrompt().visible, false);
   sm.dispose();
 });
@@ -363,7 +363,7 @@ test('claude(T21): working screen right after submit → busy, not ready', async
 
 test('claude(T21): Bash permission prompt "Do you want to proceed?" → approval-prompt, NO suggested keys, not ready, not busy', async () => {
   const sm = await screenFrom('claude', 'claude/approval-prompt.txt');
-  assert.deepEqual(sm.detectDialog(), { kind: 'approval-prompt', suggestedKeys: [] });
+  assert.deepEqual(sm.detectDialog(), { kind: 'approval-prompt', suggestedKeys: [], highlightDriven: false });
   assert.deepEqual(sm.approvalPrompt(), { visible: true, id: 'permission-prompt', allowKeys: ['enter'], denyKeys: ['down', 'down', 'down', 'enter'] });
   assert.equal(sm.promptReady(), false);
   assert.equal(sm.busyIndicator(), false);
@@ -383,7 +383,7 @@ test('claude(T21): after ↓×3 the highlight is on "4. No" and it is still the 
   const sm = await screenFrom('claude', 'claude/approval-prompt-no-highlighted.txt');
   assert.match(sm.text(), /^ ❯ 4\. No$/m);
   assert.match(sm.text(), /^   1\. Yes$/m);
-  assert.deepEqual(sm.detectDialog(), { kind: 'approval-prompt', suggestedKeys: [] });
+  assert.deepEqual(sm.detectDialog(), { kind: 'approval-prompt', suggestedKeys: [], highlightDriven: false });
   assert.equal(sm.approvalPrompt().visible, true);
   assert.equal(sm.promptReady(), false);
   sm.dispose();
@@ -393,7 +393,7 @@ test('claude(T21): after Enter on "4. No" → Interrupted line, prompt ready, no
   const sm = await screenFrom('claude', 'claude/approval-after-deny.txt');
   assert.doesNotMatch(sm.text(), /Do you want to proceed\?/);
   assert.equal(sm.approvalPrompt().visible, false);
-  assert.deepEqual(sm.detectDialog(), { kind: 'none', suggestedKeys: [] });
+  assert.deepEqual(sm.detectDialog(), { kind: 'none', suggestedKeys: [], highlightDriven: false });
   assert.equal(sm.interrupted(), true);
   assert.equal(sm.promptReady(), true);
   assert.match(sm.lastNonEmptyLine(), /^✻ Cogitated for \d+s · done/);
@@ -404,7 +404,7 @@ test('claude(T21): "Press Ctrl-C again to exit" status line → not ready (trans
   const sm = await screenFrom('claude', 'claude/exit-hint.txt');
   assert.match(sm.text(), /Press Ctrl-C again to exit/);
   assert.equal(sm.promptReady(), false);
-  assert.deepEqual(sm.detectDialog(), { kind: 'none', suggestedKeys: [] });
+  assert.deepEqual(sm.detectDialog(), { kind: 'none', suggestedKeys: [], highlightDriven: false });
   assert.doesNotMatch(sm.lastNonEmptyLine(), /Press Ctrl-C again to exit/);
   sm.dispose();
 });

@@ -39,6 +39,7 @@ describe('Office ask_user (T17)', () => {
   let receiver: FakeReceiver;
   let office: Office;
   let team: Team;
+  let departmentId: string;
   let events: OfficeEvent[];
   let statuses: Array<[string, string, string]>;
   const clients: Client[] = [];
@@ -55,7 +56,9 @@ describe('Office ask_user (T17)', () => {
     office.on('status', (id, s, d) => statuses.push([id, s, d]));
     await office.start();
     // 팀장 없는 팀(store 직접 생성) — 이 파일은 clockIn/ask_user 를 보므로 team.create 의 팀장 자동 출근(T24)을 끼우지 않는다.
-    team = seedDeptTeam(store, { name: 'alpha', cwd: dataDir, maxMembers: 3 }).team;
+    const seeded = seedDeptTeam(store, { name: 'alpha', cwd: dataDir, maxMembers: 3 });
+    team = seeded.team;
+    departmentId = seeded.department.id;
   });
   afterEach(async () => {
     for (const c of clients.splice(0)) await c.close().catch(() => {});
@@ -64,6 +67,8 @@ describe('Office ask_user (T17)', () => {
   });
 
   const clockIn = (name = 'kim', engine: 'claude' | 'codex' = 'claude') => office.clockIn({ teamId: team.id, engine, name });
+  /** T35: `ask_user` **도구**는 부장 전용이라 MCP 왕복을 보는 테스트는 부장으로 출근시킨다(팀 없는 부서 직속). */
+  const headIn = (name = '부장', engine: 'claude' | 'codex' = 'claude') => office.clockIn({ departmentId, engine, name, rank: 'head' });
   const hook = (m: Member, event: 'SessionStart' | 'UserPromptSubmit' | 'PreToolUse' | 'PostToolUse' | 'Stop', extra: Record<string, unknown> = {}) => {
     const r = fakeReq(m.memberToken, event, { ...base(event), ...extra });
     receiver.emit('hook', r.req);
@@ -97,14 +102,14 @@ describe('Office ask_user (T17)', () => {
   });
 
   test('MCP ask_user over HTTP → pending(question, source ask_user, no tool_input) + asking event + waiting_answer; result text', async () => {
-    const m = clockIn();
+    const m = headIn();
     sessionStart(m);
     const client = await connect(m);
     const { tools } = await client.listTools();
-    // T25 부터 팀원에게도 report 가 보인다(팀장 전용 hire/dismiss/delegate 는 안 보인다).
+    // T35: `ask_user` 는 부장 전용이다. 부장 도구 6종이 보인다(팀원은 report·ask_parent 뿐).
     assert.deepEqual(
       tools.map((t) => t.name).sort(),
-      ['ask_user', 'report'],
+      ['ask_user', 'create_team', 'delegate', 'dismiss_team', 'reply', 'report'],
     );
 
     const seqBefore = events.length;
@@ -292,7 +297,7 @@ describe('Office ask_user (T17)', () => {
   });
 
   test('interrupt expires the open ask_user question; clockOut disposes the MCP entry', async () => {
-    const m = clockIn();
+    const m = headIn();
     sessionStart(m);
     const client = await connect(m);
     await client.callTool({ name: 'ask_user', arguments: { question: QUESTION } });

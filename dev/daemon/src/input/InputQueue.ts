@@ -35,7 +35,7 @@ export interface QueueDeps {
   /** PtySession 의 부분집합. */
   session: { paste(text: string): void; write(text: string): void; sendKeys(k: QueueKey): void };
   /** ScreenModel 의 부분집합. */
-  screen: { promptReady(): boolean; detectDialog(): { kind: string; suggestedKeys: readonly DialogKey[] } };
+  screen: { promptReady(): boolean; detectDialog(): { kind: string; suggestedKeys: readonly DialogKey[]; highlightDriven?: boolean } };
   /** 어댑터 상태가 idle/free 인가(진행 중 턴 없음, 열린 질문 없음). */
   isIdle(): boolean;
   /** 폴링 주기. 기본 500ms. */
@@ -93,7 +93,8 @@ export class InputQueue extends EventEmitter<InputQueueEvents> {
 
   private lastUserTypingAt = Number.NEGATIVE_INFINITY;
   private busyUntil = Number.NEGATIVE_INFINITY;
-  private readonly lastDialogAt = new Map<string, number>();
+  /** 다이얼로그 kind → 마지막으로 보낸 키와 시각. 같은 키를 가드 안에 또 보내지 않기 위한 것(T36). */
+  private readonly lastDialogAt = new Map<string, { at: number; keys: DialogKey[] }>();
   private readonly lastBlockedAt = new Map<BlockReason, number>();
   /** dialogBlocked 를 이미 낸 다이얼로그 kind. 그 다이얼로그가 사라지거나 다른 kind 로 바뀌면 지운다. */
   private blockedDialogKind: string | undefined;
@@ -188,10 +189,17 @@ export class InputQueue extends EventEmitter<InputQueueEvents> {
       this.blockedDialogKind = undefined;
       // 사용자가 터미널 탭에서 직접 다이얼로그를 다루는 중일 수 있다 — 그 위에 키를 얹지 않는다.
       if (this.userTyping(now)) return this.block('user-typing', now);
+      // 강조로 키가 갈리는 다이얼로그(신뢰 폴더)는 **이동 키와 확인 키를 나눠** 보낸다. T36 실측: Claude 2.1 신뢰
+      // 다이얼로그는 뜬 직후 한 번 더 렌더되며 선택을 'No, exit' 로 되돌린다 — ↓와 Enter 를 150ms 간격으로 붙여
+      // 보내면 Enter 가 되돌아온 'No, exit' 에 떨어져 CLI 가 exit 1 로 죽는다(T34 "빈 폴더 함정").
+      // 이동 키만 먼저 보내고, 다음 폴링에서 **강조가 원하는 항목에 와 있는 것을 다시 본 뒤에야** Enter 를 보낸다.
+      const keys = dialog.highlightDriven === true && dialog.suggestedKeys.length > 1 ? dialog.suggestedKeys.slice(0, -1) : dialog.suggestedKeys;
+      // 반복 가드는 **같은 키를 또 보내는 것**만 막는다. 키가 달라졌으면(이동이 먹혀 확인만 남았다) 화면이 실제로
+      // 바뀐 것이므로 바로 보낸다 — 안 그러면 확인이 가드만큼 늦어진다.
       const last = this.lastDialogAt.get(dialog.kind);
-      if (last !== undefined && now - last < TIMING.dialogRepeatGuardMs) return this.block('dialog', now);
-      this.lastDialogAt.set(dialog.kind, now);
-      this.sendKeySequence(dialog.suggestedKeys);
+      if (last && now - last.at < TIMING.dialogRepeatGuardMs && sameKeys(last.keys, keys)) return this.block('dialog', now);
+      this.lastDialogAt.set(dialog.kind, { at: now, keys: [...keys] });
+      this.sendKeySequence(keys);
       this.emit('dialogPassed', dialog.kind);
       return;
     }
@@ -232,7 +240,7 @@ export class InputQueue extends EventEmitter<InputQueueEvents> {
     });
   }
 
-  /** 첫 키는 즉시, 나머지는 keySpacingMs 간격으로 예약. */
+  /** 첫 키는 즉시, 나머지는 keySpacingMs 간격으로 예약. 빈 배열이면 아무것도 안 한다. */
   private sendKeySequence(keys: readonly QueueKey[]): void {
     keys.forEach((k, i) => {
       if (i === 0) this.deps.session.sendKeys(k);
@@ -264,4 +272,9 @@ export class InputQueue extends EventEmitter<InputQueueEvents> {
       s.run(now);
     }
   }
+}
+
+/** 키 순서가 같은가(반복 가드 비교용). */
+function sameKeys(a: readonly DialogKey[], b: readonly DialogKey[]): boolean {
+  return a.length === b.length && a.every((k, i) => k === b[i]);
 }

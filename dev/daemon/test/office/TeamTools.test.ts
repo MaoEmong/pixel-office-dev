@@ -108,7 +108,7 @@ describe('TeamTools 오케스트레이션 (T25)', () => {
     const worker = await hired(leader, '이음');
     assert.throws(
       () => office.teamHire(worker.id, { name: 'x', role: 'y' }),
-      (e: { code: number; message: string }) => e.code === RPC_ERROR.RANK_RULE && /팀장만 할 수 있습니다/.test(e.message),
+      (e: { code: number; message: string }) => e.code === RPC_ERROR.RANK_RULE && /팀원이\(가\) 쓸 수 있는 도구가 아닙니다/.test(e.message),
     );
     assert.throws(
       () => office.teamHire(leader.id, { name: 'x', role: '' }),
@@ -364,7 +364,9 @@ describe('TeamTools 오케스트레이션 (T25)', () => {
     assert.deepEqual(pastesOf(leader), [`[REPORTS task#${t.id} 이음 status=aborted]\n이음 의 작업이 중단됐습니다 (중단(interrupt)).`]);
   });
 
-  test('팀장 퇴근 → 발행한 task 전부 aborted + 그 팀원 interrupt, 팀원 행은 남는다', async () => {
+  // T36: 팀장이 나가면 그 **하위 트리 전체**가 따라 정리된다(01 §rev 3 후처리). T25 때는 팀원을 interrupt 만 하고
+  // 세션을 남겼는데, 트리에서는 받을 사람이 없는 세션이 남는 쪽이 더 이상하다(행은 exited 로 남아 rehire 가능).
+  test('팀장 퇴근 → 발행한 task 전부 aborted + 하위 팀원도 함께 정리(행은 남는다)', async () => {
     const leader = await leaderIn();
     const worker = await hired(leader, '이음');
     const byUser = await memberIn('사용자팀원');
@@ -374,9 +376,9 @@ describe('TeamTools 오케스트레이션 (T25)', () => {
 
     await office.clockOut(leader.id);
     assert.equal(store.getTask(t.id)!.status, 'aborted');
-    assert.deepEqual(pty.session(worker.id).keys.slice(-1), ['ctrl-c'], '맡고 있던 팀원은 interrupt 된다');
-    assert.equal(store.getMember(worker.id)!.status !== 'exited', true, '팀원은 남는다');
-    assert.equal(store.getMember(byUser.id)!.status !== 'exited', true, '사용자가 출근시킨 팀원도 그대로');
+    assert.equal(store.getMember(worker.id)!.status, 'exited', '맡고 있던 팀원도 함께 나간다');
+    assert.equal(store.getMember(byUser.id)!.status, 'exited', '사용자가 출근시킨 팀원도 트리 아래라면 같이 나간다');
+    assert.ok(store.getMember(worker.id), '행 자체는 남는다(rehire 가능)');
     assert.equal(store.liveLeader(team.id), undefined);
   });
 
@@ -418,7 +420,7 @@ describe('TeamTools 오케스트레이션 (T25)', () => {
     const wc = new Client({ name: 't25-worker', version: '0' });
     await wc.connect(new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${office.mcp.port}/mcp/${worker.memberToken}`)));
     clients.push(wc);
-    assert.deepEqual((await wc.listTools()).tools.map((t) => t.name).sort(), ['ask_user', 'report']);
+    assert.deepEqual((await wc.listTools()).tools.map((t) => t.name).sort(), ['ask_parent', 'report']);
     const rep = await wc.callTool({ name: 'report', arguments: { taskId, summary: '썼습니다', status: 'done' } });
     assert.equal(rep.isError ?? false, false);
     assert.equal(store.getTask(taskId)!.status, 'reported');

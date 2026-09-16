@@ -198,10 +198,16 @@ class Cli {
     } else if (ev.kind === 'asking' && ref.questionId) {
       // TeamTools `ask_user`(T17) 는 `asking{tool:'ask_user', summary:<질문>, options?}` — 스냅샷 payload 와 같은
       // 모양을 만들어 두면 refresh 없이도 `pending` 이 질문·옵션을 찍고 `answer <id> <label>` 이 먹는다.
+      // `ask_parent`(T35) 는 여기에 `to`(직속 상사)가 더 붙어 `pending` 이 "이음 → 반장(ask_parent)" 으로 찍힌다.
       const d = ev.detail ?? {};
       const payload =
-        d.tool === 'ask_user' && typeof d.summary === 'string'
-          ? { source: 'ask_user', question: d.summary, options: Array.isArray(d.options) ? d.options : [] }
+        (d.tool === 'ask_user' || d.tool === 'ask_parent') && typeof d.summary === 'string'
+          ? {
+              source: d.tool,
+              question: d.summary,
+              options: Array.isArray(d.options) ? d.options : [],
+              ...(typeof d.to === 'string' ? { from: ev.memberId, to: d.to } : {}),
+            }
           : undefined;
       this.pending.set(ref.questionId, {
         id: ref.questionId,
@@ -661,10 +667,15 @@ class Cli {
         for (const ev of res.events ?? []) this.print(formatEvent(ev, this.nameOf));
         return;
       }
-      case 'tasks':
+      case 'tasks': {
         if (!this.tasks.length) this.print('(아는 task 없음 — 스냅샷 기준)');
         for (const t of this.tasks) this.print(formatTask(t, this.nameOf));
+        // T35: 위로 올라간 질문도 "진행 중인 일" 이다 — 누가 누구에게 물었는지 같이 찍는다.
+        const asks = [...this.pending.values()].filter((p) => p.payload?.source === 'ask_parent');
+        if (asks.length) this.print(`열린 ask_parent ${asks.length}건`);
+        for (const p of asks) this.print('  ' + formatPending(p, this.nameOf));
         return;
+      }
 
       // ---- 지시문 ----
       case 'instr': {

@@ -168,7 +168,8 @@ describe('직무 체계 rev 3 — 트리 동작 (T34)', () => {
     );
   });
 
-  test('부장 퇴근은 부하를 자르지 않는다 — 발행 task 만 거두고 행은 남는다(트리 깊이 정리는 T36)', async () => {
+  // T36: "부장 퇴근 = 부서 전원"(01 §rev 3 후처리). 세션은 잎부터 거두고 **행은 남긴다**(rehire 로 되살릴 수 있다).
+  test('부장 퇴근은 하위 트리 전체를 잎부터 정리한다 — 발행 task 는 거두고 행은 남는다', async () => {
     await ready(head);
     await ready(lead);
     const t = store.createTask({ departmentId: department.id, fromMember: head.id, toMember: lead.id, instruction: '설계', status: 'assigned' });
@@ -176,7 +177,13 @@ describe('직무 체계 rev 3 — 트리 동작 (T34)', () => {
     await office.clockOut(head.id);
 
     assert.equal(store.getMember(head.id)!.status, 'exited');
-    assert.equal(store.getMember(lead.id)!.status, 'idle', '팀장 행은 남는다');
+    assert.equal(store.getMember(lead.id)!.status, 'exited', '팀장도 함께 나간다');
+    assert.ok(store.getMember(lead.id), '팀장 행은 남는다');
+    assert.deepEqual(
+      pty.kills.map((k) => k.memberId),
+      [lead.id, head.id],
+      '잎부터: 팀장이 먼저, 부장이 마지막',
+    );
     assert.equal(store.getTask(t.id)!.status, 'aborted', '받을 사람이 없어진 일은 거둔다');
     assert.equal(store.liveHead(department.id), undefined, '게이트가 열린다');
   });

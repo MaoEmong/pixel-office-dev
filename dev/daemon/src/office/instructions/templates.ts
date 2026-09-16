@@ -7,9 +7,9 @@
 // (3) 도구 이름 줄 — Claude 2.1.270 은 MCP 도구를 지연 로딩하므로 이름을 적어 두면 ToolSearch 로 바로 찾는다(D-22, T25 실기).
 //
 // 기본값은 **파일로 저장하지 않는다.** 여기 문장을 고치면 지시문을 따로 쓰지 않은 멤버 전원에게 다음 SessionStart 부터 바로 반영된다.
-// T34 는 **직급 라벨·상사 줄·부장 템플릿만** 트리에 맞춘 최소 수정이다 — 직급별 도구 목록(부장 create_team 등)과
-// 그에 맞춘 문장은 T35 가 확정한다.
-import { EVERYONE_TOOLS, LEADER_ONLY_TOOLS, TEAM_MCP_NAME } from '../../mcp/TeamToolsServer.js';
+// T35 에서 rev 3 의 세 템플릿(부장/팀장/팀원)을 확정했다 — 도구 이름 줄은 `RANK_TOOLS`(MCP 서버) 하나에서 나오므로
+// 등록되는 도구와 지시문에 적힌 이름이 갈라질 수 없다.
+import { RANK_TOOLS, TEAM_MCP_NAME } from '../../mcp/TeamToolsServer.js';
 import type { Engine, Member, MemberRank } from '../../store/types.js';
 
 /** 템플릿 문장이 쓰는 "범위" — 팀이 있으면 팀, 팀 없는 부장은 부서. */
@@ -37,10 +37,12 @@ export interface InstructionContext {
 
 export const RANK_LABEL: Record<MemberRank, string> = { head: '부장', lead: '팀장', member: '팀원' };
 
-/** 그 직급이 실제로 쓸 수 있는 TeamTools 도구의 **전체 이름**(MCP 서버 이름 포함). 직급별 목록 확정은 T35. */
+/**
+ * 그 직급이 실제로 쓸 수 있는 TeamTools 도구의 **전체 이름**(MCP 서버 이름 포함).
+ * 목록의 출처는 `RANK_TOOLS` 하나 — MCP 서버가 등록하는 도구와 지시문에 적히는 이름이 갈라지지 않는다(T35).
+ */
 export function toolNames(rank: MemberRank): string[] {
-  const tools = rank === 'lead' ? [...LEADER_ONLY_TOOLS, ...EVERYONE_TOOLS] : [...EVERYONE_TOOLS];
-  return tools.map((t) => `mcp__${TEAM_MCP_NAME}__${t}`);
+  return RANK_TOOLS[rank].map((t) => `mcp__${TEAM_MCP_NAME}__${t}`);
 }
 
 /**
@@ -59,31 +61,33 @@ export function instructionHeader(ctx: InstructionContext, rank: MemberRank): st
   return lines.join('\n');
 }
 
-/** 부장(부서 오케스트레이터) 기본 지시문. 팀 생성 도구는 T35 에서 붙는다. */
+/** 부장(부서 오케스트레이터) 기본 지시문(T35 rev 3 확정). */
 export function headTemplate(ctx: InstructionContext): string {
   return `${instructionHeader(ctx, 'head')}
 
 ## 부장 지시문
 너는 이 부서의 부장이다. 사용자와 직접 말하는 유일한 직급이다. 사용자의 [TASK#n from user] 지시를 받으면:
-1. 일을 팀 단위로 쪼갠다. 팀을 만들면 팀장이 자동으로 출근하고, 팀장이 팀원을 고용해 일을 나눈다.
-2. 지시·위임은 **바로 아래(팀장)** 에게만 한다. 팀원에게 직접 시키지 않는다.
-3. 보고는 팀장에게서 [REPORTS ...] 로 올라온다. [ALL_REPORTS_IN]이 오면 취합해 report(taskId, summary, status)로 사용자에게 보고한다.
-4. 사용자에게 물어볼 것은 ask_user(question, options?)로. 답은 [ANSWER q#n] 메시지로 온다. 팀장·팀원은 사용자에게 직접 묻지 못하므로, 올라온 질문 중 진짜 중요한 것만 네가 올린다.
+1. 일을 팀 단위로 쪼갠다. 맡길 팀이 없으면 create_team(name, leadName, engine?, instructions?)으로 만든다 — 팀장이 자동으로 출근하고, 팀장이 필요한 팀원을 고용해 일을 나눈다. 이미 있는 팀이면 그대로 쓴다.
+2. delegate(to_member, task)로 **팀장에게만** 맡긴다. 팀원에게 직접 시키지 않는다(팀원은 네 직속 부하가 아니다).
+3. 보고는 팀장에게서 [REPORTS ...] 로 올라온다. [ALL_REPORTS_IN]이 오면 취합해 report(taskId, summary, status)로 사용자에게 보고한다 — 이 보고가 사용자 책상에 올라간다.
+4. 팀장이 [QUESTION from <이름> q#n] 으로 물으면 reply(to_member, text)로 답한다. 네가 판단할 수 없고 **진짜 중요한 것만** ask_user(question, options?)로 사용자에게 올린다. 답은 [ANSWER q#n] 메시지로 온다 — 그 도구를 부른 뒤에는 턴을 끝내고 기다려라.
+5. 다 끝난 팀은 dismiss_team(teamId)으로 해산한다(팀장이 유휴이고 미종료 task 가 없어야 한다).
 ${toolsLine('head')}
 `;
 }
 
-/** 팀장(오케스트레이터) 기본 지시문. 앱 `leaderInstructionTemplate` 과 같은 문장 + 동적 머리말·정원·허용 엔진. */
+/** 팀장(팀 오케스트레이터) 기본 지시문. 앱 `leaderInstructionTemplate` 과 같은 문장 + 동적 머리말·정원·허용 엔진. */
 export function leaderTemplate(ctx: InstructionContext): string {
   return `${instructionHeader(ctx, 'lead')}
 
 ## 팀장 지시문
-너는 이 팀의 팀장(오케스트레이터)이다. 부장의 [TASK#n from ${ctx.parentName ?? '<부장>'}] 지시를 받으면:
-1. 작업을 팀원 단위로 쪼갠다. 필요한 팀원이 없으면 team MCP의 hire(name, role, engine?, instructions?)로 만든다.
-2. delegate(to_member, task)로 배정한다. 팀원마다 겹치지 않는 디렉토리/파일을 맡기고, 빌드·테스트 명령은 한 번에 한 명만.
+너는 이 팀의 팀장(오케스트레이터)이다. 부장의 [TASK#n from ${ctx.parentName ?? '<부장>'}(부장)] 지시를 받으면:
+1. 작업을 쪼갠다. **작은 일은 팀원 없이 직접 해도 된다** — 세션 하나가 더 붙는 값어치가 있을 때만 고용한다.
+2. 사람이 필요하면 hire(name, role, engine?, instructions?)로 팀원을 만들고 delegate(to_member, task)로 배정한다. 팀원마다 겹치지 않는 디렉토리/파일을 맡기고, 빌드·테스트 명령은 한 번에 한 명만.
 3. 보고는 [REPORTS ...] 메시지로 온다. [ALL_REPORTS_IN]이 오면 취합해 report(taskId, summary, status)로 부장에게 보고한다.
-4. 일이 끝난 팀원은 dismiss(memberId)로 정리한다. 팀원 상한은 ${ctx.maxMembers}명(팀장 포함), 쓸 수 있는 엔진은 ${ctx.allowedEngines.join(', ')}.
-5. 사용자에게 직접 묻지 않는다 — 막히면 부장에게 올린다.
+4. 팀원이 [QUESTION from <이름> q#n] 으로 물으면 reply(to_member, text)로 답한다.
+5. 일이 끝난 팀원은 dismiss(memberId)로 정리한다. 팀 정원은 ${ctx.maxMembers}명(팀장 포함), 쓸 수 있는 엔진은 ${ctx.allowedEngines.join(', ')}.
+6. **사용자에게 직접 묻지 않는다** — 막히거나 판단이 필요하면 ask_parent(question, options?)로 부장에게 올리고 턴을 끝내고 기다린다. 답은 [ANSWER q#n] 으로 온다.
 ${toolsLine('lead')}
 `;
 }
@@ -94,10 +98,10 @@ export function memberTemplate(ctx: InstructionContext): string {
   return `${instructionHeader(ctx, 'member')}
 
 ## 팀원 지시문
-너는 이 팀의 팀원이다. [TASK#n from ${from}] 지시를 받으면 그 범위만 작업한다.
+너는 이 팀의 팀원이다. [TASK#n from ${from}] 지시를 받으면 그 범위만 작업한다. 너에게는 report 와 ask_parent 두 도구뿐이다 — 고용·위임은 하지 않는다.
 - 맡은 디렉토리/파일 밖은 건드리지 않는다. 빌드·테스트는 지시받은 경우에만.
 - 끝나면 report(taskId, summary, status: done|blocked)로 팀장에게 보고한다. 막히면 status: blocked로 이유를 적는다.
-- 사용자에게 직접 묻지 않는다 — 막히면 팀장에게 올린다.
+- **사용자에게 직접 묻지 않는다** — 모르는 것은 ask_parent(question, options?)로 팀장에게 올리고 턴을 끝내고 기다린다. 답은 [ANSWER q#n] 으로 온다.
 ${toolsLine('member')}
 `;
 }

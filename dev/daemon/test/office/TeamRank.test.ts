@@ -255,12 +255,13 @@ describe('부서·직급 트리 (T24 → T34)', () => {
     assert.equal(store.getTask(taskId)!.fromMember, 'user');
   });
 
-  test('member.instruct: 부장이 나가면(exited) 팀장 직접 지시가 열린다', async () => {
+  // 게이트("부장에게만 지시")만 보는 테스트라 부장 행 status 를 직접 내린다. 실제 `clockOut(부장)` 은 T36 부터
+  // 하위 트리까지 함께 정리하므로(01 §rev 3 후처리) 남아 있는 팀장이 없다 — 그 동작은 TreeAfterCare.test.ts.
+  test('member.instruct: 부장이 나가면(exited) 팀장 직접 지시가 열린다', () => {
     const { head, lead } = tree();
     assert.throws(() => office.instruct(lead.id, 'x'), (e: unknown) => code(e) === RPC_ERROR.RANK_RULE);
 
-    await office.clockOut(head.id);
-    assert.equal(store.getMember(head.id)!.status, 'exited');
+    store.updateMember(head.id, { status: 'exited' });
     assert.equal(store.liveHead(lead.departmentId), undefined);
     const taskId = office.instruct(lead.id, '이제 직접 지시');
     assert.equal(store.getTask(taskId)!.toMember, lead.id);

@@ -119,9 +119,10 @@ function labelsOf(raw: unknown): string[] {
 }
 
 /**
- * question payload → {question, options(label[])}. 두 가지 모양을 받는다(PROTOCOL "TeamTools MCP", D-19):
+ * question payload → {question, options(label[])}. 세 가지 모양을 받는다(PROTOCOL "TeamTools MCP", D-19):
  *  - TUI `AskUserQuestion`: `{ questions: [{question, options:[{label}…]}], tool_input }`
  *  - TeamTools `ask_user`(T17): `{ source:'ask_user', question, options: string[] }` — 질문 하나, `tool_input` 없음
+ *  - TeamTools `ask_parent`(T35): 같은 모양 + `{ from, to }`(트리 간선). 답은 보통 상사가 `reply` 로 한다.
  */
 export function questionsOf(payload: Record<string, unknown> | undefined): QuestionItem[] {
   if (!payload) return [];
@@ -140,8 +141,15 @@ export function questionsOf(payload: Record<string, unknown> | undefined): Quest
   return [];
 }
 
+/**
+ * `q_ab12  question  이음 → 반장(ask_parent)  어느 폴더에 …` (T35).
+ * `ask_parent` 질문은 사용자가 아니라 **직속 상사**를 향한다 — 누가 누구에게 물었는지 한 줄에 보인다.
+ */
 export function formatPending(p: LocalPending, nameOf: NameOf): string {
-  return `${p.id}  ${p.type}  ${nameOf(p.memberId)}  ${p.summary}`;
+  const who = nameOf(p.memberId);
+  const to = typeof p.payload?.to === 'string' ? p.payload.to : undefined;
+  const route = p.payload?.source === 'ask_parent' ? `${who} → ${nameOf(to ?? '')}(ask_parent)` : who;
+  return `${p.id}  ${p.type}  ${route}  ${p.summary}`;
 }
 
 function isRecord(v: unknown): v is Record<string, unknown> {

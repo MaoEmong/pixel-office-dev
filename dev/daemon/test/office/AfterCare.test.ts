@@ -11,7 +11,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { Office } from '../../src/office/Office.js';
-import { SETTLE_MATRIX, settleMember, type SettleCtx, type SettleSummary } from '../../src/office/afterCare.js';
+import { SETTLE_MATRIX, keepsQuestion, settleMember, type SettleCtx, type SettleSummary } from '../../src/office/afterCare.js';
 import { derivedStatus } from '../../src/office/derived.js';
 import { Store } from '../../src/store/Store.js';
 import type { Member, OfficeEvent, Team } from '../../src/store/types.js';
@@ -133,7 +133,9 @@ describe('공통 후처리·파생 상태 (T28)', () => {
 
   // ---- 퇴근 / 종료 / 팀 삭제 ----------------------------------------------------------
 
-  test('퇴근(팀장): 발행 task 전부 aborted + 대상 팀원 interrupt + MCP 토큰 정리', async () => {
+  // T36 부터 상위 퇴근은 **하위 트리 전체**를 잎부터 정리한다(01 §"직무 체계 rev 3": 상위가 퇴근하면 하위 트리 전체 정리).
+  // T28 때는 팀원을 interrupt 만 하고 세션은 남겼다 — 트리에서는 받을 사람이 없는 세션을 남기는 쪽이 더 이상하다.
+  test('퇴근(팀장): 발행 task 전부 aborted + 하위 트리 전체 정리 + MCP 토큰 정리', async () => {
     const leader = await leaderIn();
     const a = await memberIn('이음');
     const b = await memberIn('하루');
@@ -145,18 +147,43 @@ describe('공통 후처리·파생 상태 (T28)', () => {
     assert.equal(taskOf(t1.id).status, 'aborted');
     assert.equal(taskOf(t2.id).status, 'aborted');
     for (const m of [a, b]) {
-      assert.ok(keysOf(m).includes('ctrl-c'), `${m.name} 은(는) 중단됐어야 한다`);
+      assert.equal(store.getMember(m.id)!.status, 'exited', `${m.name} 도 함께 퇴근한다`);
+      assert.ok(mcp.disposed.includes(m.memberToken), `${m.name} 토큰 정리`);
       assert.ok(
-        events.some((e) => e.memberId === m.id && e.kind === 'idle' && String(e.detail.summary).includes('팀장 퇴근')),
+        events.some((e) => e.memberId === m.id && e.kind === 'idle' && String(e.detail.summary).includes('상위 정리')),
         `${m.name} 에게 aborted 흔적`,
       );
     }
+    assert.deepEqual(
+      pty.kills.map((k) => k.memberId),
+      [a.id, b.id, leader.id],
+      '잎부터: 팀원 둘이 먼저 나가고 팀장이 마지막',
+    );
     assert.ok(mcp.disposed.includes(leader.memberToken), 'MCP 연결이 끊긴다');
     assert.equal(store.getMember(leader.id)!.status, 'exited');
-    assert.ok(notices.some((n) => n.includes('반장 후처리(퇴근)') && n.includes('팀원 2명 중단')), notices.join('\n'));
+    assert.ok(notices.some((n) => n.includes('반장 후처리(퇴근)') && n.includes('하위 2명 정리')), notices.join('\n'));
   });
 
-  test('프로세스 비정상 종료(error): 퇴근과 같은 표로 정리된다', async () => {
+  test('퇴근(팀장): 하위의 aborted 보고는 나가는 팀장 큐에 밀어 넣지 않는다', async () => {
+    const leader = await leaderIn();
+    const worker = await ready(office.teamHire(leader.id, { name: '이음', role: '빌드' }));
+    const { task } = office.teamDelegate(leader.id, worker.id, '빌드 돌려라');
+    busy(worker);
+    const leaderSession = pty.session(leader.id); // 퇴근하면 FakePty 맵에서 빠지므로 미리 잡아 둔다
+    const before = leaderSession.pastes.length;
+
+    await office.clockOut(leader.id);
+    await sleep(FLUSH_MS);
+
+    assert.equal(taskOf(task.id).status, 'aborted');
+    assert.equal(
+      leaderSession.pastes.slice(before).filter((p) => p.includes('[REPORTS')).length,
+      0,
+      '받을 팀장이 바로 지금 사라지는 중 — 보고는 버린다',
+    );
+  });
+
+  test('프로세스 비정상 종료(error): 퇴근과 같은 표로 정리된다(하위 트리 포함)', async () => {
     const leader = await leaderIn();
     const worker = await memberIn('이음');
     const { task } = office.teamDelegate(leader.id, worker.id, '가');
@@ -167,8 +194,9 @@ describe('공통 후처리·파생 상태 (T28)', () => {
 
     assert.equal(store.getMember(leader.id)!.status, 'error');
     assert.equal(taskOf(task.id).status, 'aborted');
-    assert.ok(keysOf(worker).includes('ctrl-c'));
+    assert.equal(store.getMember(worker.id)!.status, 'exited', '팀원도 따라 정리된다');
     assert.ok(mcp.disposed.includes(leader.memberToken));
+    assert.ok(mcp.disposed.includes(worker.memberToken));
   });
 
   test('team.delete: 팀원 먼저 · 팀장 마지막으로 퇴근시키고 토큰·셸 락을 전부 정리한다', async () => {
@@ -195,7 +223,7 @@ describe('공통 후처리·파생 상태 (T28)', () => {
 
   // ---- 재시작 / 복구 -----------------------------------------------------------------
 
-  test('restart: 열린 보류는 만료되지만 배정된 task 는 같은 세션이 이어 하므로 남는다', async () => {
+  test('restart: 열린 허가는 만료되지만 배정된 task 는 같은 세션이 이어 하므로 남는다', async () => {
     const worker = await memberIn('하루');
     const taskId = office.instruct(worker.id, '문서 정리');
     await sleep(FLUSH_MS);
@@ -205,6 +233,42 @@ describe('공통 후처리·파생 상태 (T28)', () => {
 
     assert.equal(store.getPending(pending.id)?.status, 'expired');
     assert.equal(taskOf(taskId).status, 'assigned');
+  });
+
+  // D-36(T36) — D-31 의 남은 한계를 푼다: `member.restart` 도 턴 종료 질문을 살린다.
+  test('restart: ask_user·ask_parent 질문은 살아남고 허가·TUI 질문만 만료된다(D-36)', async () => {
+    const worker = await memberIn('하루');
+    const askUser = store.createPending({ memberId: worker.id, type: 'question', payload: { source: 'ask_user', question: '어디에 둘까?' } });
+    const askParent = store.createPending({ memberId: worker.id, type: 'question', payload: { source: 'ask_parent', question: '이어서 할까요?' } });
+    const approval = store.createPending({ memberId: worker.id, type: 'approval', payload: { tool_name: 'Bash' } });
+    const tui = store.createPending({ memberId: worker.id, type: 'question', payload: { tool_input: { questions: [] } } });
+
+    await office.restart(worker.id);
+
+    assert.equal(store.getPending(askUser.id)?.status, 'open', 'ask_user 는 턴 종료 상태라 프로세스가 죽어도 유효하다');
+    assert.equal(store.getPending(askParent.id)?.status, 'open', 'ask_parent 도 같다');
+    assert.equal(store.getPending(approval.id)?.status, 'expired');
+    assert.equal(store.getPending(tui.id)?.status, 'expired', 'TUI 메뉴는 프로세스와 함께 사라진다');
+  });
+
+  test('restart: 살아 있는 hook 보류는 끊는다 — 안 끊으면 죽는 CLI 가 응답을 기다리며 멈춘다(D-36)', async () => {
+    const worker = await memberIn('하루');
+    // PermissionRequest(AskUserQuestion) → 어댑터가 hold 하고 question pending 을 연다.
+    const held = fakeReq(worker.memberToken, 'PermissionRequest', {
+      ...base('PermissionRequest'),
+      tool_name: 'AskUserQuestion',
+      tool_input: { questions: [{ question: '어느 걸로?', options: [{ label: 'A' }] }] },
+    } as never);
+    receiver.emit('hook', held.req);
+    await sleep(20);
+    const pending = store.listOpenPending(worker.id)[0]!;
+    assert.equal(held.handle()?.settled, false, '아직 사용자 답을 기다리는 중');
+
+    await office.restart(worker.id);
+
+    assert.deepEqual(held.sent, [{}], '보류는 취소된다');
+    // 이 질문은 TUI 메뉴(tool_input 있음)라 만료된다 — 살아남는 것은 ask_* 뿐(위 테스트).
+    assert.equal(store.getPending(pending.id)?.status, 'expired');
   });
 
   test('표(SETTLE_MATRIX): recover 는 ask_user 질문만 남기고 나머지를 만료 + error 이벤트(D-19·D-15)', () => {
@@ -227,20 +291,31 @@ describe('공통 후처리·파생 상태 (T28)', () => {
     assert.equal(store.getPending(ask.id)?.status, 'expired');
   });
 
-  test('표(SETTLE_MATRIX): 이유별 정책이 설계(01 §공통 후처리)와 같다', () => {
+  test('표(SETTLE_MATRIX): 이유별 정책이 설계(01 §공통 후처리 · rev 3 후처리)와 같다', () => {
     assert.equal(SETTLE_MATRIX.interrupt.issuedTasks, 'keep');
     assert.equal(SETTLE_MATRIX.interrupt.disposeMcp, false);
-    for (const reason of ['clockOut', 'error', 'teamDelete'] as const) {
+    assert.equal(SETTLE_MATRIX.interrupt.subtree, false, 'Ctrl+C 는 그 사람의 턴만 끊는다');
+    for (const reason of ['clockOut', 'error', 'teamDelete', 'departmentDelete'] as const) {
       assert.equal(SETTLE_MATRIX[reason].ownTasks, 'abort');
       assert.equal(SETTLE_MATRIX[reason].issuedTasks, 'abort');
       assert.equal(SETTLE_MATRIX[reason].interruptTargets, true);
       assert.equal(SETTLE_MATRIX[reason].disposeMcp, true);
+      assert.equal(SETTLE_MATRIX[reason].subtree, true, `${reason}: 하위 트리를 잎부터 정리한다`);
     }
     for (const reason of ['restart', 'recover'] as const) {
       assert.equal(SETTLE_MATRIX[reason].ownTasks, 'keep');
       assert.equal(SETTLE_MATRIX[reason].issuedTasks, 'keep');
+      assert.equal(SETTLE_MATRIX[reason].subtree, false, `${reason}: 하위는 되살아난 세션에 그대로 보고한다`);
+      assert.equal(SETTLE_MATRIX[reason].pending, 'keep-ask', `${reason}: 턴 종료 질문은 살아남는다(D-19·D-36)`);
     }
-    assert.equal(SETTLE_MATRIX.recover.pending, 'keep-ask-user');
+    // 보류 취소와 pending 만료가 갈라졌다(D-36): 복구만 보류를 안 끊는다(이전 기동의 보류는 이미 없다).
+    assert.equal(SETTLE_MATRIX.restart.cancelHolds, true);
+    assert.equal(SETTLE_MATRIX.recover.cancelHolds, false);
+    // parentGone: 내 것은 거두되 사라지는 상위에 보고하지 않고, 다시 아래로 내려가지도 않는다(호출자가 이미 잎부터다).
+    assert.equal(SETTLE_MATRIX.parentGone.ownTasks, 'abort');
+    assert.equal(SETTLE_MATRIX.parentGone.reportToIssuer, false);
+    assert.equal(SETTLE_MATRIX.parentGone.subtree, false);
+    assert.equal(SETTLE_MATRIX.parentGone.disposeMcp, true);
   });
 
   // ---- 파생 상태 --------------------------------------------------------------------
@@ -254,6 +329,31 @@ describe('공통 후처리·파생 상태 (T28)', () => {
     store.expirePending(approval.id);
     store.createPending({ memberId: worker.id, type: 'question', payload: { source: 'ask_user', question: '어디?' } });
     assert.equal(derivedStatus(store.getMember(worker.id)!, store), 'waiting_answer');
+  });
+
+  test('파생: ask_parent 질문도 waiting_answer 다(부장 전용 ask_user 와 같은 자리, D-32)', async () => {
+    const leader = await leaderIn();
+    const worker = await memberIn('하루');
+    assert.equal(derivedStatus(store.getMember(worker.id)!, store), 'free');
+
+    const q = store.createPending({ memberId: worker.id, type: 'question', payload: { source: 'ask_parent', question: '이어서 할까요?' } });
+    assert.equal(derivedStatus(store.getMember(worker.id)!, store), 'waiting_answer');
+    assert.equal(derivedStatus(store.getMember(leader.id)!, store), 'free', '상사는 질문 때문에 대기 상태가 되지 않는다');
+    // 턴 종료 질문이라 프로세스가 죽어도 유효하다(D-19 → D-36 에서 ask_parent 까지).
+    assert.equal(keepsQuestion(store.getPending(q.id)!), true);
+    store.answerPending(q.id, { '이어서 할까요?': '응' });
+    assert.equal(derivedStatus(store.getMember(worker.id)!, store), 'free');
+  });
+
+  test('파생: waiting_reports 는 직급을 가리지 않는다 — 부장도 자식이 있으면 같은 상태(T34 검증)', async () => {
+    const leader = await leaderIn();
+    const worker = await memberIn('하루');
+    const head = store.liveHead(team.departmentId);
+    assert.equal(head, undefined, '이 픽스처에는 부장이 없다 — 팀장이 루트다');
+
+    office.teamDelegate(leader.id, worker.id, '가');
+    assert.equal(derivedStatus(store.getMember(leader.id)!, store), 'waiting_reports');
+    assert.equal(derivedStatus(store.getMember(worker.id)!, store), 'idle', '배정 task 가 있으면 free 가 아니다');
   });
 
   test('파생: 나간 멤버(exited/error)는 덮지 않는다', async () => {
@@ -311,6 +411,8 @@ function recordingCtx(): { ctx: SettleCtx; appended: Array<{ memberId: string; k
   const notices: string[] = [];
   const ctx: SettleCtx = {
     expireAllPending: () => {},
+    cancelHolds: () => {},
+    endSession: () => {},
     releaseShellLocks: () => {},
     disposeMcp: () => {},
     isAlive: () => false,

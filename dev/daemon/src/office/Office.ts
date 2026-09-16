@@ -31,7 +31,7 @@ import { ClaudeHooksAdapter } from '../adapters/ClaudeHooksAdapter.js';
 import { CodexHooksAdapter } from '../adapters/CodexHooksAdapter.js';
 import { ScreenModel } from '../screen/ScreenModel.js';
 import { InputQueue } from '../input/InputQueue.js';
-import { ALL_TEAM_TOOLS, TeamToolsServer, TEAM_MCP_NAME } from '../mcp/TeamToolsServer.js';
+import { ALL_TEAM_TOOLS, TeamToolsServer, TEAM_MCP_NAME, canUseTool, rankToolMessage, type TeamToolName } from '../mcp/TeamToolsServer.js';
 import { CHILD_RANK, USER_ACTOR } from '../store/types.js';
 import type {
   Department,
@@ -59,6 +59,7 @@ import { RANK_LABEL, defaultInstructions, type TemplateScope } from './instructi
 import { buildSessionContext, type RosterEntry } from './instructions/context.js';
 import type {
   ApprovalRespondParams,
+  AskParentPayload,
   AskUserParams,
   AskUserPayload,
   AttachResult,
@@ -80,7 +81,10 @@ import type {
   OfficeSnapshot,
   PtyManagerLike,
   ReportLine,
+  TeamCreateTeamInput,
   TeamHireInput,
+  TeamReplyInput,
+  TeamReplyResult,
   TeamReportInput,
   TeamToolsServerLike,
 } from './types.js';
@@ -100,6 +104,11 @@ const RESUMED_INSTRUCTION_CHARS = 80;
 const RESUMED_SUMMARY_CHARS = 60;
 /** 종료된 것으로 보는 멤버 status. */
 const GONE: ReadonlySet<MemberStatus> = new Set(['exited', 'error']);
+/**
+ * 트리 깊이(잎이 0). 정리는 **작은 쪽부터**(팀원 → 팀장 → 부장, `settleOrder`), 복구는 **큰 쪽부터**
+ * (부장 → 팀장 → 팀원, `recoverOrder`). 두 순서가 같은 상수를 본다.
+ */
+const RANK_DEPTH: Record<MemberRank, number> = { member: 0, lead: 1, head: 2 };
 /** 미종료 task(= 아직 보고를 기다리는 것). 파생 상태·dismiss 검사·보고 버퍼 판정이 같은 집합을 본다. */
 const OPEN_TASKS: TaskStatus[] = ['queued', 'assigned'];
 /** `department.create` 가 `headName` 없이 올 때 부장에게 붙는 기본 이름(T34). */
@@ -247,6 +256,8 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
   private readonly reportBuffer = new Map<string, ReportLine[]>();
   /** 멤버별로 마지막에 내보낸 파생 상태(T28). raw 는 그대로인데 파생만 바뀐 것을 알아채는 데 쓴다. */
   private readonly lastDerived = new Map<string, DerivedStatus>();
+  /** 하위 트리 정리(T36)로 끝낸 부하 세션의 종료 대기. `drainChildExits()` 가 비운다. */
+  private readonly childExits: Array<Promise<void>> = [];
   private readonly fallbackWindowMs: number;
   private readonly orphanOps: OrphanOps;
   private info?: DaemonInfo;
@@ -282,8 +293,25 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
             const m = this.store.getMemberByToken(token);
             return m && !GONE.has(m.status) ? { id: m.id, name: m.name, rank: m.rank } : undefined;
           },
-          askUser: (memberId, input) => ({ questionId: this.askUser(memberId, input).id }),
-          // T25: 팀장 오케스트레이션. 직급·소유 검사는 전부 아래 team* 메서드(=store)가 한다.
+          // T35: 직급별 도구. 직급·대상 검사는 전부 아래 team* 메서드(=store)가 한다(MCP 는 목록만 가른다).
+          askUser: (memberId, input) => ({ questionId: this.teamAskUser(memberId, input).id }),
+          askParent: (memberId, input) => {
+            const pending = this.askParent(memberId, input);
+            const parentId = (pending.payload as { to?: string }).to ?? '';
+            return { questionId: pending.id, parentName: this.store.getMember(parentId)?.name ?? '상사' };
+          },
+          createTeam: (memberId, input) => {
+            const r = this.teamCreateTeam(memberId, { ...input, engine: input.engine });
+            return { teamId: r.team.id, teamName: r.team.name, leadName: r.lead.name, leadMemberId: r.lead.id };
+          },
+          dismissTeam: async (memberId, input) => {
+            const r = await this.teamDismissTeam(memberId, input.teamId);
+            return { teamName: r.team.name, dismissed: r.dismissed.map((m) => m.name) };
+          },
+          reply: (memberId, input) => {
+            const r = this.teamReply(memberId, { toMember: input.to_member, text: input.text });
+            return { name: r.to.name, questionId: r.questionId };
+          },
           hire: (memberId, input) => {
             const m = this.teamHire(memberId, input);
             return { memberId: m.id, name: m.name, engine: m.engine };
@@ -496,11 +524,12 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
     const department = this.store.getDepartment(departmentId);
     if (!department) throw notFound('department', departmentId);
     for (const m of this.settleOrder(this.store.listDepartmentMembers(departmentId))) {
-      if (this.runtimes.get(m.id)?.session.alive) await this.clockOut(m.id, { byLeader: true, reason: 'teamDelete' });
-      else this.settle(m.id, 'teamDelete');
+      if (this.runtimes.get(m.id)?.session.alive) await this.clockOut(m.id, { byLeader: true, reason: 'departmentDelete' });
+      else this.settle(m.id, 'departmentDelete');
       this.disposeRuntime(m.id);
       this.lastDerived.delete(m.id);
     }
+    await this.drainChildExits();
     this.store.deleteDepartment(departmentId);
   }
 
@@ -527,8 +556,12 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
 
   /** 잎부터 정리하는 순서(팀원 → 팀장 → 부장). `subtreeOf` 의 깊이 우선 배열을 직급으로 접은 것. */
   private settleOrder(members: Member[]): Member[] {
-    const depth: Record<MemberRank, number> = { member: 0, lead: 1, head: 2 };
-    return [...members].sort((a, b) => depth[a.rank] - depth[b.rank]);
+    return [...members].sort((a, b) => RANK_DEPTH[a.rank] - RANK_DEPTH[b.rank]);
+  }
+
+  /** 뿌리부터 되살리는 순서(부장 → 팀장 → 팀원, T36). 부모가 먼저 떠 있어야 자식 보고를 받을 수 있다. */
+  private recoverOrder(members: Member[]): Member[] {
+    return [...members].sort((a, b) => RANK_DEPTH[b.rank] - RANK_DEPTH[a.rank]);
   }
 
   // ---- 팀 --------------------------------------------------------------------------
@@ -561,7 +594,14 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
     });
     let lead: Member;
     try {
-      lead = this.hireChild({ parentId: head.id, teamId: team.id, name: leadName, rank: 'lead', engine });
+      lead = this.hireChild({
+        parentId: head.id,
+        teamId: team.id,
+        name: leadName,
+        rank: 'lead',
+        engine,
+        instructions: params.leadInstructions,
+      });
     } catch (e) {
       this.store.deleteTeam(team.id);
       throw e;
@@ -582,6 +622,7 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
       this.disposeRuntime(m.id);
       this.lastDerived.delete(m.id);
     }
+    await this.drainChildExits();
     this.store.deleteTeam(teamId);
   }
 
@@ -761,11 +802,11 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
    * 퇴근: 진행 task aborted(+ 발행자에게 `[REPORTS … status=aborted]`), pending expired, 정중히 종료.
    * 행은 남긴다(status exited → rehire 가능).
    *
-   * **팀장이 나가면(T25)** 그 팀장이 발행한 task 를 전부 aborted 하고 맡고 있던 팀원을 interrupt 한다
-   * (01 §"interrupt / fire / error 공통 후처리"). 팀원 자체는 남는다 — 사용자가 출근시킨 팀원은 물론이고
-   * 팀장이 hire 한 팀원도 자르지 않는다(퇴근은 사용자의 권한, 아래 worklog 결정).
-   * `opts.byLeader` 는 TeamTools `dismiss` 경로 표시 — 그때는 `[TEAM]` 알림을 팀장에게 되돌리지 않는다.
-   * 후처리(task·pending·셸 락·팀장 정리·MCP)는 전부 `settle()` 하나가 한다(T28). `opts.reason` 은 팀 삭제 경로 표시.
+   * **상위가 나가면(T25 → T36)** 그가 발행한 task 를 전부 aborted 하고, **하위 트리 전체가 잎부터 따라 정리된다**
+   * (01 §"직무 체계 rev 3" 후처리: 부장 퇴근 = 부서 전원). 부하는 각자 `parentGone` 후처리를 받고 세션이 끝나며
+   * 행은 `exited` 로 남는다 — 되살리려면 `rehire`.
+   * `opts.byLeader` 는 TeamTools `dismiss` 경로 표시 — 그때는 `[TEAM]` 알림을 상사에게 되돌리지 않는다.
+   * 후처리(task·pending·셸 락·하위 트리·MCP)는 전부 `settle()` 하나가 한다(T28). `opts.reason` 은 팀·부서 삭제 경로 표시.
    */
   async clockOut(memberId: string, opts: { byLeader?: boolean; reason?: SettleReason } = {}): Promise<void> {
     const member = this.member(memberId);
@@ -780,11 +821,13 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
     if (!rt?.session.alive) {
       // 프로세스 없이 status 만 살아 있는 행(데몬 재시작 후 등) — 상태만 정리한다.
       this.finishMember(memberId, 'clocked out');
+      await this.drainChildExits();
       this.noticeClockOut(member, opts.byLeader === true);
       return;
     }
     await this.pty.kill(memberId, { graceful: true, timeoutMs: KILL_TIMEOUT_MS });
     this.finishMember(memberId, 'clocked out');
+    await this.drainChildExits(); // 하위 트리 정리로 끝낸 부하 세션까지 다 나간 뒤 반환한다
     this.noticeClockOut(member, opts.byLeader === true);
   }
 
@@ -1021,10 +1064,12 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
    * 질문에 답한다. TUI `AskUserQuestion`(payload.tool_input 있음)은 어댑터가 hook 결정으로 돌려주고,
    * TeamTools `ask_user`(payload.source==='ask_user')는 큐에 `[ANSWER q#<id>]` 시스템 메시지를 넣는다(T17).
    * Codex 질문 폴백(payload.fallback, T22)은 같은 경로지만 봉투 없이 답 본문만 넣는다.
+   * **`ask_parent` 질문(T35)도 같은 경로로 답할 수 있다** — 정식 길은 상사의 `reply` 지만, 상사가 굳었을 때
+   * 사용자가 앱·콘솔에서 대신 끊어 줄 수 있어야 한다(오버라이드, 앱 UI 에 광고하지는 않는다).
    */
   respondQuestion(pendingId: string, answers: Record<string, string>): void {
     const pending = this.openPending(pendingId, 'question');
-    if (isAskUserPayload(pending.payload)) {
+    if (isAskUserPayload(pending.payload) || isAskParentPayload(pending.payload)) {
       this.answerAskUser(pending, answers);
       return;
     }
@@ -1041,6 +1086,20 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
    * payload 에 `tool_input` 을 넣지 않는다(D-19: 재시작 복구가 이 질문을 유효한 것으로 남긴다).
    */
   askUser(memberId: string, input: AskUserParams): Pending {
+    return this.askUserUnchecked(memberId, input);
+  }
+
+  /**
+   * `ask_user` **도구** 경로(T35). 사용자에게 직접 묻는 것은 부장뿐이다(D-32) — 팀장·팀원이 부르면
+   * `ask_parent` 를 쓰라는 -32004. MCP 서버의 도구 목록(첫 겹)과 같은 문장을 쓴다.
+   */
+  teamAskUser(memberId: string, input: AskUserParams): Pending {
+    this.requireToolRank(memberId, 'ask_user');
+    return this.askUserUnchecked(memberId, input);
+  }
+
+  /** 직급 검사 없는 `ask_user` 본체. Codex 질문 폴백(T22)처럼 데몬이 스스로 만드는 질문도 여기를 쓴다. */
+  private askUserUnchecked(memberId: string, input: AskUserParams): Pending {
     const member = this.member(memberId);
     this.liveRuntime(member);
     const question = input.question.trim();
@@ -1076,28 +1135,104 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
     for (const item of waiting) rt.queue.enqueue(item);
   }
 
-  // ---- TeamTools 오케스트레이션 (T25) ------------------------------------------------------
+  // ---- TeamTools 오케스트레이션 (T25 → T35 직급별 도구) --------------------------------------
   //
-  // 01 §TeamTools MCP / §4 팀·직급 모델 / 전제 6. **직급·소유 검사는 전부 여기(=store)에서 한다** — MCP 서버는
+  // 01 §TeamTools MCP / §"직무 체계 rev 3" / 전제 6. **직급·대상 검사는 전부 여기(=store)에서 한다** — MCP 서버는
   // 도구 목록만 직급으로 가르고, 실제 허용 여부는 이 메서드들이 판단해 OfficeError 를 던진다(도구 결과 isError).
-  //   hire     팀장 → 팀원 출근(hiredBy 'leader'), 지시문 첫 줄에 `# 역할: <role>`
-  //   dismiss  팀장 → 팀원 퇴근. 그 팀원이 idle ∧ 미종료 task 0 ∧ hiredBy 'leader' 일 때만
-  //   delegate 팀장 → task 행 + (대상이 유휴면) `[TASK#n from <팀장>(팀장)]`, 아니면 queued → 유휴 감시가 전달
-  //   report   전원 → 자기에게 배정된 task 를 닫는다. 팀원 보고는 버퍼링 후 `[REPORTS …][ALL_REPORTS_IN]`,
-  //            팀장이 사용자 task 를 보고하면 `reporting` 이벤트(= 내 책상 보고)
+  //   create_team  부장 → 팀 + 팀장 출근            dismiss_team 부장 → 팀 해산(팀장 유휴 ∧ 미종료 task 0)
+  //   hire         팀장 → 팀원 출근(hiredBy 'leader'), 지시문 첫 줄에 `# 역할: <role>`
+  //   dismiss      팀장 → 직속 팀원 퇴근(idle ∧ 미종료 task 0 ∧ hiredBy 'leader')
+  //   delegate     부장·팀장 → **직속 부하**에게 task + `[TASK#n from <이름>(<직급>)]`, 바쁘면 queued
+  //   reply        부장·팀장 → 직속 부하의 열린 ask_parent 에 `[ANSWER q#n]`, 없으면 `[MESSAGE from <이름>]`
+  //   report       전원 → 자기에게 배정된 task 를 닫는다. 상사 보고는 버퍼링 후 `[REPORTS …][ALL_REPORTS_IN]`,
+  //                부장이 사용자 task 를 보고하면 `reporting` 이벤트(= 내 책상 보고)
+  //   ask_user     부장만 → 사용자      ask_parent  팀장·팀원 → 직속 상사 큐에 `[QUESTION from <이름> q#n]`
+  //
+  // **규칙은 아래 세 관문 하나씩에만 있다**: `requireToolRank`(그 직급의 도구인가) · `requireChild`(살아 있는 직속
+  // 부하인가) · `requireParent`(직속 상사가 누구인가). 각 도구 메서드는 이 셋을 부르고 자기 일만 한다.
 
-  /** 팀장 전용 도구의 공통 관문. 살아 있는 팀장이 아니면 -32004(도구 결과 isError). */
-  private requireLiveLeader(memberId: string, tool: string): Member {
+  /** 도구 호출자 관문(T35). 살아 있는 멤버이고 **그 직급의 도구**여야 한다. 아니면 -32004(도구 결과 isError). */
+  private requireToolRank(memberId: string, tool: TeamToolName): Member {
     const m = this.member(memberId);
-    if (m.rank !== 'lead' || GONE.has(m.status)) {
-      throw new OfficeError(RPC_ERROR.RANK_RULE, `${tool} 는 팀장만 할 수 있습니다 (${m.name} 은(는) ${RANK_LABEL[m.rank]})`);
-    }
+    if (GONE.has(m.status)) throw new OfficeError(RPC_ERROR.RANK_RULE, `${m.name} 은(는) ${m.status} 입니다`);
+    if (!canUseTool(m.rank, tool)) throw new OfficeError(RPC_ERROR.RANK_RULE, rankToolMessage(tool, m.rank));
     return m;
+  }
+
+  /**
+   * `delegate`/`reply`/`dismiss` 의 대상 = **살아 있는 직속 부하**(D-32 "지시·고용은 바로 아래로만").
+   * 팀이 아니라 `parent_id` 를 본다 — 부장의 부하는 팀장, 팀장의 부하는 자기 팀원이다.
+   */
+  private requireChild(parent: Member, targetId: string, tool: string): Member {
+    const id = targetId.trim();
+    if (!id) throw invalidParams('to_member 가 비었습니다');
+    const target = this.store.getMember(id);
+    if (!target) throw notFound('member', id);
+    if (target.id === parent.id) throw new OfficeError(RPC_ERROR.RANK_RULE, `자기 자신에게는 ${tool} 할 수 없습니다`);
+    if (target.parentId !== parent.id) {
+      const rank = RANK_LABEL[CHILD_RANK[parent.rank] ?? 'member'];
+      throw new OfficeError(RPC_ERROR.RANK_RULE, `${target.name} 은(는) 당신의 직속 부하가 아닙니다 — ${tool} 은 직속 ${rank}에게만 할 수 있습니다`);
+    }
+    if (GONE.has(target.status)) throw badState(`${target.name} 은(는) ${target.status} 입니다`);
+    return target;
+  }
+
+  /** `ask_parent`(그리고 보고 경로)의 상대 = **살아 있는 직속 상사**. 부장은 상사가 사용자라 여기 오지 않는다. */
+  private requireParent(member: Member, tool: string): Member {
+    const parent = member.parentId ? this.store.getMember(member.parentId) : undefined;
+    if (!parent || GONE.has(parent.status)) {
+      throw badState(`${tool} 할 직속 상사가 없습니다 (${member.name}) — 데몬이 트리를 복구할 때까지 report 로만 남기세요`);
+    }
+    return parent;
+  }
+
+  /**
+   * 부장이 부른 `create_team`(T35). 자기 부서에 팀을 만들고 **자기 자식으로** 팀장을 출근시킨다.
+   * 팀장 엔진은 지정하지 않으면 부장과 같은 엔진, `instructions` 는 그 팀장의 INSTRUCTIONS.md 초안이다.
+   */
+  teamCreateTeam(headId: string, input: TeamCreateTeamInput): CreateTeamResult {
+    const head = this.requireToolRank(headId, 'create_team');
+    const name = input.name.trim();
+    if (!name) throw invalidParams('name 이 비었습니다 — 팀 이름을 적으세요');
+    const leadName = (input.leadName ?? '').trim();
+    if (!leadName) throw invalidParams('leadName 이 비었습니다 — 팀장의 이름을 적으세요');
+    return this.createTeam({
+      departmentId: head.departmentId,
+      name,
+      leadEngine: input.engine ?? head.engine,
+      leadName,
+      leadInstructions: input.instructions,
+    });
+  }
+
+  /**
+   * 부장이 부른 `dismiss_team`(T35). **자기 부서의 팀**만, 그 팀장이 유휴이고 팀에 미종료 task 가 없을 때만.
+   * 정리는 `deleteTeam`(팀원 → 팀장 순 잎부터 퇴근 + 행 삭제)이 한다.
+   */
+  async teamDismissTeam(headId: string, teamId: string): Promise<{ team: Team; dismissed: Member[] }> {
+    const head = this.requireToolRank(headId, 'dismiss_team');
+    const id = (teamId ?? '').trim();
+    if (!id) throw invalidParams('teamId 가 비었습니다');
+    const team = this.store.getTeam(id);
+    if (!team) throw notFound('team', id);
+    if (team.departmentId !== head.departmentId) throw new OfficeError(RPC_ERROR.RANK_RULE, `팀 ${team.name} 은(는) 당신의 부서가 아닙니다`);
+    const members = this.store.listMembers(team.id).filter((m) => !GONE.has(m.status));
+    const lead = members.find((m) => m.rank === 'lead');
+    if (lead && lead.parentId !== head.id) throw new OfficeError(RPC_ERROR.RANK_RULE, `팀 ${team.name} 의 팀장은 당신의 직속 부하가 아닙니다`);
+    if (lead && lead.status !== 'idle') {
+      throw badState(`팀장 ${lead.name} 이(가) 아직 ${lead.status} 입니다 — 보고를 기다리거나 먼저 중단시키세요`);
+    }
+    const open = members.flatMap((m) => this.store.listTasks({ toMember: m.id, status: OPEN_TASKS }));
+    if (open.length > 0) {
+      throw badState(`팀 ${team.name} 에 미종료 task 가 ${open.length}건 있습니다 (${open.map((t) => `task#${t.id}`).join(', ')}) — 보고를 기다리세요`);
+    }
+    await this.deleteTeam(team.id);
+    return { team, dismissed: members };
   }
 
   /** 팀장이 부른 `hire`. 역할 줄을 붙인 지시문으로 팀원을 출근시킨다. 정원 초과·허용 안 된 엔진은 throw. */
   teamHire(leaderId: string, input: TeamHireInput): Member {
-    const leader = this.requireLiveLeader(leaderId, 'hire');
+    const leader = this.requireToolRank(leaderId, 'hire');
     const team = leader.teamId ? this.store.getTeam(leader.teamId) : undefined;
     if (!team) throw notFound('team', leader.teamId ?? '(없음)');
     const role = input.role.trim();
@@ -1130,11 +1265,8 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
    * 대상이 idle 이고 미종료 task·열린 pending 이 없을 때만(아니면 먼저 기다리거나 중단시키라고 안내).
    */
   async teamDismiss(leaderId: string, targetId: string): Promise<Member> {
-    const leader = this.requireLiveLeader(leaderId, 'dismiss');
-    const target = this.store.getMember(targetId);
-    if (!target) throw notFound('member', targetId);
-    if (target.teamId !== leader.teamId) throw new OfficeError(RPC_ERROR.RANK_RULE, `${target.name} 은(는) 같은 팀이 아닙니다`);
-    if (target.id === leader.id || target.rank !== 'member') throw new OfficeError(RPC_ERROR.RANK_RULE, '팀장은 dismiss 할 수 없습니다');
+    const leader = this.requireToolRank(leaderId, 'dismiss');
+    const target = this.requireChild(leader, targetId, 'dismiss');
     if (target.hiredBy !== 'leader') {
       throw new OfficeError(RPC_ERROR.RANK_RULE, `사용자가 출근시킨 팀원은 퇴근 버튼으로만 내보낼 수 있습니다 (${target.name})`);
     }
@@ -1154,20 +1286,15 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
   }
 
   /**
-   * 팀장이 부른 `delegate`. 비블로킹 — task 행을 만들고, 대상이 지금 받을 수 있으면(유휴 ∧ 열린 pending 없음) 바로
-   * 입력 큐에 넣어 `assigned`, 아니면 `queued` 로 남겨 유휴 감시(`dispatchQueuedTasks`)가 전달한다.
+   * 부장·팀장이 부른 `delegate`. 대상은 **살아 있는 직속 부하**뿐이다(T35). 비블로킹 — task 행을 만들고, 대상이 지금
+   * 받을 수 있으면(유휴 ∧ 열린 pending 없음) 바로 입력 큐에 넣어 `assigned`, 아니면 `queued` 로 남겨
+   * 유휴 감시(`dispatchQueuedTasks`)가 전달한다.
    */
   teamDelegate(leaderId: string, toMemberId: string, task: string): { task: Task; to: Member; assigned: boolean } {
-    const leader = this.requireLiveLeader(leaderId, 'delegate');
+    const leader = this.requireToolRank(leaderId, 'delegate');
     const text = task.trim();
     if (!text) throw invalidParams('task 가 비었습니다');
-    if (!toMemberId.trim()) throw invalidParams('to_member 가 비었습니다');
-    const target = this.store.getMember(toMemberId.trim());
-    if (!target) throw notFound('member', toMemberId);
-    if (target.teamId !== leader.teamId) throw new OfficeError(RPC_ERROR.RANK_RULE, `${target.name} 은(는) 같은 팀이 아닙니다`);
-    if (target.id === leader.id) throw new OfficeError(RPC_ERROR.RANK_RULE, '자기 자신에게는 위임할 수 없습니다');
-    if (target.rank !== 'member') throw new OfficeError(RPC_ERROR.RANK_RULE, '팀장에게는 위임할 수 없습니다');
-    if (GONE.has(target.status)) throw badState(`${target.name} 은(는) ${target.status} 입니다 — hire 로 새 팀원을 만드세요`);
+    const target = this.requireChild(leader, toMemberId, '위임');
 
     const row = this.store.createTask({
       departmentId: leader.departmentId,
@@ -1188,12 +1315,13 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
   }
 
   /**
-   * `report`. 그 task 가 **부른 사람에게 배정된 것**이어야 한다(아니면 isError — 남의 task 를 닫지 못한다).
-   * 발행자가 사용자면 내 책상 보고(`reporting` 이벤트 + report_text), 팀장이면 버퍼링해서 `[REPORTS …]` 로 올린다.
+   * `report`(전원). 그 task 가 **부른 사람에게 배정된 것**이어야 한다(아니면 isError — 남의 task 를 닫지 못한다).
+   * 발행자가 사용자면 내 책상 보고(`reporting` 이벤트 + report_text — 부장의 보고가 여기로 온다), 상위 멤버면
+   * **그 상위(부모) 단위로** 버퍼링해서 `[REPORTS …]` 로 올린다(T35: 팀장 전용이 아니라 트리 어느 간선이든 같다).
    * 이 도구로 닫힌 task 는 `reported` 가 되므로 턴 종료(`Stop`)의 v1a 보고 승격이 같은 task 를 두 번 보고하지 않는다.
    */
-  teamReport(memberId: string, input: TeamReportInput): { task: Task; to: 'user' | 'leader' } {
-    const member = this.member(memberId);
+  teamReport(memberId: string, input: TeamReportInput): { task: Task; to: 'user' | 'parent' } {
+    const member = this.requireToolRank(memberId, 'report');
     const summary = input.summary.trim();
     if (!summary) throw invalidParams('summary 가 비었습니다');
     if (input.status !== 'done' && input.status !== 'blocked' && input.status !== 'aborted') {
@@ -1214,49 +1342,109 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
     if (input.files?.length) detail.files = input.files;
     this.appendEvent(member, 'reporting', detail, { taskId: task.id });
 
-    const to = task.fromMember === USER_ACTOR ? 'user' : 'leader';
-    if (to === 'leader') this.bufferReport(task.fromMember, { taskId: task.id, name: member.name, status: input.status, body });
+    const to = task.fromMember === USER_ACTOR ? 'user' : 'parent';
+    if (to === 'parent') this.bufferReport(task.fromMember, { taskId: task.id, name: member.name, status: input.status, body });
     // 보고가 끝나면 내(=보고자) 파생 상태도 바뀐다(배정 task 0 → free).
     this.emitStatus(member.id, this.store.getMember(member.id)?.status ?? member.status);
     return { task: this.store.getTask(task.id)!, to };
   }
 
   /**
-   * 팀원 보고를 팀장에게 올리는 버퍼(01 §TeamTools). `blocked` 는 즉시 단독 전달, 그 외는 모아 두었다가
-   * **그 팀장이 발행한 미종료 task 가 0 이 되는 순간** 한 덩어리 + `[ALL_REPORTS_IN]`.
+   * `ask_parent`(팀장·팀원, T35). `ask_user` 와 같은 모양의 pending(question) 을 만들되 받는 쪽이 사용자가 아니라
+   * **직속 상사**다: payload `{source:'ask_parent', question, options, from, to}` + `asking{tool:'ask_parent'}` +
+   * status `waiting_answer`(파생), 그리고 상사 입력 큐에 `[QUESTION from <이름> q#<id>]` 시스템 메시지.
+   * 비블로킹 — 답은 상사의 `reply` 가(또는 사용자가 앱에서 `question.respond` 로 대신) `[ANSWER q#<id>]` 로 넣는다.
+   */
+  askParent(memberId: string, input: AskUserParams): Pending {
+    const member = this.requireToolRank(memberId, 'ask_parent');
+    this.liveRuntime(member);
+    const parent = this.requireParent(member, 'ask_parent');
+    const question = input.question.trim();
+    if (!question) throw invalidParams('question is empty');
+    const options = (input.options ?? []).map((o) => o.trim()).filter((o) => o.length > 0);
+    const payload: AskParentPayload = { source: 'ask_parent', question, options, from: member.id, to: parent.id };
+    const pending = this.store.createPending({ memberId, type: 'question', payload: { ...payload } });
+    const detail: OfficeEvent['detail'] = { tool: 'ask_parent', summary: question, to: parent.id, toName: parent.name };
+    if (options.length > 0) detail.options = options;
+    this.appendEvent(member, 'asking', detail, { questionId: pending.id });
+    this.setStatus(memberId, 'waiting_answer');
+    const rt = this.runtimes.get(parent.id);
+    if (rt?.session.alive) rt.queue.enqueue({ kind: 'system', text: buildQuestionText(pending.id, member.name, question, options) });
+    else this.notice('warn', `질문을 전달할 상사가 없습니다 — q#${pending.id} (${parent.name})`);
+    this.emitStatus(parent.id, this.store.getMember(parent.id)?.status ?? parent.status);
+    return pending;
+  }
+
+  /**
+   * `reply`(부장·팀장, T35). 대상은 **살아 있는 직속 부하**. 그 부하가 나에게 물어 둔 `ask_parent` 질문이 열려 있으면
+   * 그것을 답으로 닫고(`[ANSWER q#<id>]`, T17 과 같은 큐 규칙 — 답이 게이트를 먼저 연다), 없으면 그냥
+   * `[MESSAGE from <나>]` 로 넣는다(새 일을 시키는 것은 `delegate`).
+   */
+  teamReply(parentId: string, input: TeamReplyInput): TeamReplyResult {
+    const parent = this.requireToolRank(parentId, 'reply');
+    const text = input.text.trim();
+    if (!text) throw invalidParams('text 가 비었습니다');
+    const target = this.requireChild(parent, input.toMember, '답장');
+    this.liveRuntime(target);
+    const open = this.store
+      .listOpenPending(target.id)
+      .find((p) => p.type === 'question' && isAskParentPayload(p.payload) && p.payload.to === parent.id);
+    if (open && isAskParentPayload(open.payload)) {
+      this.answerAskUser(open, { [open.payload.question]: text });
+      return { to: target, questionId: open.id };
+    }
+    const rt = this.runtimes.get(target.id)!;
+    rt.queue.enqueue({ kind: 'system', text: buildMessageText(parent.name, text) });
+    return { to: target };
+  }
+
+  /**
+   * 상위 멤버에게 올라가는 보고 버퍼(01 §TeamTools, T35 에서 팀장 전용 → **부모 단위**로 일반화).
+   * `blocked` 는 즉시 단독 전달, 그 외는 모아 두었다가 **그 부모가 발행한 미종료 task 가 0 이 되는 순간**
+   * 한 덩어리 + `[ALL_REPORTS_IN]`. 팀원 → 팀장 → 부장 어느 간선이든 같은 규칙이다.
    */
   private bufferReport(leaderId: string, line: ReportLine): void {
     if (line.status === 'blocked') {
       this.deliverReports(leaderId, [line], false);
+      // T35: `blocked` 가 **마지막** 미종료 task 였으면 버퍼에 쌓여 있던 done 보고가 갈 곳을 잃는다 — 이어서 흘린다.
+      this.flushReportBuffer(leaderId);
       return;
     }
     const buf = this.reportBuffer.get(leaderId) ?? [];
     buf.push(line);
     this.reportBuffer.set(leaderId, buf);
+    this.flushReportBuffer(leaderId);
+  }
+
+  /** 그 부모가 발행한 미종료 task 가 0 이면 버퍼를 한 덩어리 + `[ALL_REPORTS_IN]` 로 흘린다. 아니면 그대로 둔다. */
+  private flushReportBuffer(leaderId: string): void {
+    const buf = this.reportBuffer.get(leaderId);
+    if (!buf?.length) return;
     if (this.store.openTasksIssuedBy(leaderId).length > 0) return; // 아직 기다릴 보고가 남았다
     this.reportBuffer.delete(leaderId);
     this.deliverReports(leaderId, buf, true);
   }
 
-  /** 보고 덩어리를 팀장 입력 큐에 넣는다. 팀장이 없거나 이미 나갔으면 알림만(보고는 tasks 에 남아 있다). */
+  /** 보고 덩어리를 그 task 를 발행한 상사의 입력 큐에 넣는다. 상사가 없거나 이미 나갔으면 알림만(보고는 tasks 에 남아 있다). */
   private deliverReports(leaderId: string, lines: ReportLine[], allIn: boolean): void {
     if (lines.length === 0) return;
     const leader = this.store.getMember(leaderId);
     const rt = this.runtimes.get(leaderId);
     if (!leader || GONE.has(leader.status) || !rt?.session.alive) {
-      this.notice('warn', `보고를 전달할 팀장이 없습니다 — ${lines.map((l) => `task#${l.taskId}`).join(', ')} (${leaderId})`);
+      this.notice('warn', `보고를 전달할 상사가 없습니다 — ${lines.map((l) => `task#${l.taskId}`).join(', ')} (${leaderId})`);
       return;
     }
     rt.queue.enqueue({ kind: 'system', text: buildReportsText(lines, allIn) });
     this.emitStatus(leaderId, leader.status); // derived: 남은 발행 task 가 0 이면 waiting_reports 가 풀린다
   }
 
-  // ---- 내부: 공통 후처리(T28) ------------------------------------------------------------
+  // ---- 내부: 공통 후처리(T28 → T36 트리) ---------------------------------------------------
   //
-  // interrupt / 퇴근 / 비정상 종료 / 재시작 / 팀 삭제 / 데몬 복구는 전부 이 문 하나로 들어간다. 이유별로 무엇이 다른지는
-  // afterCare.ts 의 SETTLE_MATRIX 표에만 적혀 있다(01 §"interrupt / fire / error 공통 후처리").
+  // interrupt / 퇴근 / 비정상 종료 / 재시작 / 팀·부서 삭제 / 상위 정리 / 데몬 복구는 전부 이 문 하나로 들어간다.
+  // 이유별로 무엇이 다른지는 afterCare.ts 의 SETTLE_MATRIX 표에만 적혀 있다
+  // (01 §"interrupt / fire / error 공통 후처리" + §"직무 체계 rev 3" 후처리).
 
-  /** 후처리 한 번. `opts.expireQuestions` 는 `recover` 에서 되살릴 세션이 아예 없는 멤버용(ask_user 질문까지 만료). */
+  /** 후처리 한 번. `opts.expireQuestions` 는 `recover` 에서 되살릴 세션이 아예 없는 멤버용(`ask_*` 질문까지 만료). */
   private settle(memberId: string, reason: SettleReason, opts: { expireQuestions?: boolean } = {}): SettleSummary {
     return settleMember(this.store, this.settleCtx(), memberId, reason, opts);
   }
@@ -1265,6 +1453,8 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
   private settleCtx(): SettleCtx {
     return {
       expireAllPending: (id) => this.adapterOf(id).expireAllForMember(id),
+      cancelHolds: (id) => this.adapterOf(id).cancelHolds(id),
+      endSession: (id) => this.endChildSession(id),
       releaseShellLocks: (id) => this.releaseShellLocks(id),
       disposeMcp: (id) => this.disposeMcp(id),
       isAlive: (id) => this.runtimes.get(id)?.session.alive === true,
@@ -1276,6 +1466,32 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
       syncDerived: (id) => this.syncDerived(id),
       notice: (level, message) => this.notice(level, message),
     };
+  }
+
+  /**
+   * 하위 트리 정리(T36)에서 부하 하나의 세션을 끝낸다. 후처리(`parentGone`)는 `settleMember` 가 이미 마쳤고
+   * 여기서는 프로세스만 거둔다: 큐를 비우고 정중히 종료 → `exited`. 종료 대기는 `childExits` 에 모아 두고
+   * 퇴근·삭제 경로가 반환 전에 기다린다(팀·부서 행을 지우기 전에 자식이 다 나가 있어야 한다).
+   * `[TEAM] -<이름>` 알림은 내지 않는다 — 받을 상사가 바로 지금 사라지는 중이다.
+   */
+  private endChildSession(memberId: string): void {
+    const rt = this.runtimes.get(memberId);
+    if (rt?.session.alive) {
+      rt.exitMode = 'clockOut';
+      rt.queue.clear();
+      rt.queue.stop();
+      this.childExits.push(
+        this.pty.kill(memberId, { graceful: true, timeoutMs: KILL_TIMEOUT_MS }).catch((err) => {
+          this.notice('warn', `${this.memberLabel(memberId)} 종료 실패(상위 정리): ${errMsg(err)}`);
+        }),
+      );
+    }
+    this.finishMember(memberId, 'clocked out (상위 정리)');
+  }
+
+  /** `endChildSession` 이 띄운 종료를 전부 기다린다. 퇴근·팀/부서 삭제가 반환 전에 부른다. */
+  private async drainChildExits(): Promise<void> {
+    while (this.childExits.length > 0) await this.childExits.shift();
   }
 
   /** task 하나를 입력 큐에 넣는다(대상이 지금 받을 수 있을 때만). 넣었으면 true. */
@@ -1302,8 +1518,9 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
   private enqueueTask(rt: MemberRuntime, task: Task): void {
     this.inFlight.add(task.id);
     const fromUser = task.fromMember === USER_ACTOR;
-    const fromName = fromUser ? USER_ACTOR : (this.store.getMember(task.fromMember)?.name ?? task.fromMember);
-    rt.queue.enqueue({ kind: fromUser ? 'instruct' : 'system', text: taskMessage(task, fromName), id: String(task.id) });
+    const from = fromUser ? undefined : this.store.getMember(task.fromMember);
+    const fromName = fromUser ? USER_ACTOR : (from?.name ?? task.fromMember);
+    rt.queue.enqueue({ kind: fromUser ? 'instruct' : 'system', text: taskMessage(task, fromName, from?.rank), id: String(task.id) });
   }
 
   /**
@@ -1509,15 +1726,18 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
    *   - status 가 starting/idle/working/waiting_* 인 멤버: session_id 있으면 `--resume` 재스폰 + [RESUMED](진행 task·최근 이벤트 요약)
    *     + queued task 를 id 순으로 다시 큐에. 없으면 error(재고용으로 새 세션).
    *   - 열린 approval 은 전부 expired(hook 프로세스가 죽었으므로), 열린 question 은 TUI AskUserQuestion(payload.tool_input)만 expired
-   *     — M2 `ask_user`(턴 종료 상태) 질문은 그대로 유효.
+   *     — M2 `ask_user`/`ask_parent`(턴 종료 상태) 질문은 그대로 유효.
    *   - assigned task 는 그대로(멤버가 이어서 진행), queued 는 재큐잉.
+   *   - **트리 순서**(부장 → 팀장 → 팀원, T36)로 되살린다. 부하가 먼저 깨어나 보고를 올리면 받을 상사가 아직 없다.
+   *     상사가 되살아나지 못한(`exited`/`error`) 부하는 `error{summary:'restart: parent gone'}` 로 두고 재스폰하지 않는다 —
+   *     받을 사람 없는 세션을 깨워 봐야 보고가 갈 곳이 없다. 사용자가 부서를 다시 세우거나 `rehire` 로 되살린다.
    * 멤버 하나가 실패해도 나머지는 계속한다. 절대 throw 하지 않는다.
    */
   private recover(): RecoveryResult {
     const result: RecoveryResult = { resumed: [], failed: [], expired: [], requeued: [], orphansKilled: [] };
     let members: Member[];
     try {
-      members = this.store.listMembers().filter((m) => RECOVERABLE.has(m.status));
+      members = this.recoverOrder(this.store.listMembers().filter((m) => RECOVERABLE.has(m.status)));
     } catch (err) {
       console.error('[office] recover: listMembers failed:', err);
       return result;
@@ -1541,19 +1761,33 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
 
   private recoverMember(member: Member, result: RecoveryResult): void {
     this.reapOrphanOf(member, result);
+    // 트리 순서 복구(T36): 내 상사가 이미 되살아나지 못했으면 나도 깨우지 않는다 — 보고가 갈 곳이 없다.
+    const parent = member.parentId ? this.store.getMember(member.parentId) : undefined;
+    const parentGone = member.parentId !== null && (!parent || GONE.has(parent.status));
     // 요약은 복구가 새 이벤트를 쓰기 전(=죽기 직전 모습)에 뜬다.
     const assigned = this.store.listTasks({ toMember: member.id, status: 'assigned' });
     const queued = this.store.listTasks({ toMember: member.id, status: 'queued' });
     const recent = this.store.eventsQuery({ memberId: member.id, limit: RESUMED_EVENT_COUNT });
-    const expired = this.expirePendingForRestart(member, !member.sessionId);
+    const expired = this.expirePendingForRestart(member, !member.sessionId || parentGone);
     result.expired.push(...expired.map((p) => p.id));
 
+    if (parentGone) {
+      this.markRecoveryFailure(member, 'restart: parent gone', result);
+      return;
+    }
     if (!member.sessionId) {
       this.markRecoveryFailure(member, 'restart: no session id to resume', result);
       return;
     }
 
-    const resumedText = buildResumedText({ assigned, events: recent, expiredCount: expired.length });
+    // 상위 직급의 [RESUMED] 에는 "내가 낸 일 + 직속 부하" 가 같이 실린다 — 깨어나자마자 누구를 기다리는지 알아야 한다.
+    const resumedText = buildResumedText({
+      assigned,
+      events: recent,
+      expiredCount: expired.length,
+      issued: this.store.openTasksIssuedBy(member.id),
+      children: this.store.childrenOf(member.id),
+    });
     let rt: MemberRuntime;
     try {
       rt = this.spawnMember(member, true);
@@ -1665,8 +1899,11 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
     if (rt && !mode && this.tryResumeFallback(rt, info)) return;
     this.store.updateMember(memberId, { childPid: null });
     if (mode === 'clockOut' || mode === 'restart') {
-      // 데몬이 의도한 종료: error 이벤트 없이 status 만.
-      this.adapterOf(memberId).expireAllForMember(memberId);
+      // 데몬이 의도한 종료: error 이벤트 없이 status 만. 재시작은 곧 같은 세션이 돌아오므로 턴 종료 질문
+      // (`ask_user`/`ask_parent`)을 살려 둔다(D-36) — 보류만 끊는다. 퇴근은 되살릴 세션이 없으니 전부 만료.
+      const adapter = this.adapterOf(memberId);
+      adapter.cancelHolds(memberId);
+      adapter.expirePendingFor(memberId, { keepTurnEndingQuestions: mode === 'restart' });
       this.setStatus(memberId, 'exited');
       return;
     }
@@ -1844,8 +2081,11 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
       if (rt) rt.lastText = undefined;
       return;
     }
-    // T25(실기에서 잡은 함정): 팀장이 delegate 해 놓고 **보고를 기다리려고** 턴을 끝낸 것은 "끝난 작업"이 아니다.
-    // 그대로 승격하면 사용자 task 가 중간 인사말로 닫혀 버리고, 나중에 진짜 `report` 가 "이미 보고됐습니다" 로 거절된다.
+    // T29 결함 ②(T35): **열린 질문으로 끝낸 턴도 "끝난 작업"이 아니다.** `ask_user`/`ask_parent` 를 부르고 답을 기다리려고
+    // 턴을 끝냈는데 그대로 승격하면 사용자 task 가 "질문했습니다" 한마디로 닫혀 버리고, 답을 받은 뒤의 진짜 `report` 가
+    // "이미 보고됐습니다" 로 거절된다(v1a 시연에서 실제로 났다). 답이 들어오면 pending 이 닫히므로 그다음 턴에서 승격된다.
+    if (this.store.listOpenPending(ev.memberId).some((p) => p.type === 'question')) return;
+    // T25(실기에서 잡은 함정, D-29): 상위가 delegate 해 놓고 **보고를 기다리려고** 턴을 끝낸 것도 "끝난 작업"이 아니다.
     // 발행한 미종료 task 가 하나라도 있으면 건너뛴다 — `[ALL_REPORTS_IN]` 뒤 턴에서 닫히거나 `report` 도구가 닫는다.
     if (this.store.openTasksIssuedBy(ev.memberId).length > 0) return;
     for (const task of this.store.listTasks({ toMember: ev.memberId, status: 'assigned' })) {
@@ -1957,27 +2197,66 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
 }
 
 /**
- * 재시작 복구의 [RESUMED] 본문(01 §데몬 재시작 복구). 한 문단 — bracketed paste 로 한 프롬프트에 들어간다.
+ * 재시작 복구의 [RESUMED] 본문(01 §데몬 재시작 복구 + T36 트리). 한 문단 — bracketed paste 로 한 프롬프트에 들어간다.
  *   [RESUMED] 데몬이 재시작됐다. 진행 중이던 작업: task#12: <instruction 첫 80자> / 없음.
+ *   [맡긴 일(보고 대기): task#13 → <이름>: …] [직속 부하: <이름>(팀장), …]
  *   마지막 확인된 행동: <kind summary>; … (최근 5건, 오래된 것부터) / 없음. [만료된 허가·질문: N건(필요하면 다시 요청하라).]
  *   현재 상태를 점검하고 이어서 진행하라.
+ *
+ * 가운데 두 칸은 **자식이 있는 직급**(부장·팀장)에만 붙는다 — 되살아난 상사가 "누구를 기다리는 중이었나" 를 모르면
+ * 곧 도착할 `[REPORTS …]` 를 문맥 없이 받는다. 잎(팀원)은 배정 task 만 실린다(T09 그대로).
  */
-export function buildResumedText(input: { assigned: Task[]; events: OfficeEvent[]; expiredCount?: number }): string {
+export function buildResumedText(input: {
+  assigned: Task[];
+  events: OfficeEvent[];
+  expiredCount?: number;
+  /** 내가 발행해 아직 안 닫힌 task(= 부하 보고 대기). */
+  issued?: Task[];
+  /** 살아 있는 직속 부하. */
+  children?: Member[];
+}): string {
   const tasks = input.assigned.length
     ? input.assigned.map((t) => `task#${t.id}: ${oneLine(truncate(t.instruction, RESUMED_INSTRUCTION_CHARS))}`).join(', ')
     : '없음';
   const recent = input.events.slice(-RESUMED_EVENT_COUNT);
   const events = recent.length ? recent.map(describeEvent).join('; ') : '없음';
   const expired = input.expiredCount ? ` 만료된 허가·질문: ${input.expiredCount}건(필요하면 다시 요청하라).` : '';
-  return `[RESUMED] 데몬이 재시작됐다. 진행 중이던 작업: ${tasks}. 마지막 확인된 행동: ${events}.${expired} 현재 상태를 점검하고 이어서 진행하라.`;
+  const issued = (input.issued ?? []).length
+    ? ` 맡긴 일(보고 대기): ${input.issued!.map((t) => `task#${t.id} → ${oneLine(truncate(t.instruction, RESUMED_INSTRUCTION_CHARS))}`).join(', ')}.`
+    : '';
+  const children = (input.children ?? []).length
+    ? ` 직속 부하: ${input.children!.map((m) => `${m.name}(${RESUMED_RANK_LABEL[m.rank]})`).join(', ')}.`
+    : '';
+  return `[RESUMED] 데몬이 재시작됐다. 진행 중이던 작업: ${tasks}.${issued}${children} 마지막 확인된 행동: ${events}.${expired} 현재 상태를 점검하고 이어서 진행하라.`;
 }
+
+/** `[RESUMED]` 의 "직속 부하" 줄에 쓰는 직급 라벨(cli/format.ts · templates.ts 와 같은 말). */
+const RESUMED_RANK_LABEL: Record<MemberRank, string> = { head: '부장', lead: '팀장', member: '팀원' };
 
 // ---- TeamTools 문구 빌더 (T25) ------------------------------------------------------------
 
-/** `[TASK#n from user]` / `[TASK#n from <팀장 이름>(팀장)]` + 본문. 위임과 사용자 지시가 같은 봉투를 쓴다. */
-export function taskMessage(task: Task, fromName: string): string {
-  const from = task.fromMember === USER_ACTOR ? USER_ACTOR : `${fromName}(팀장)`;
+/**
+ * `[TASK#n from user]` / `[TASK#n from <이름>(<직급>)]` + 본문. 위임과 사용자 지시가 같은 봉투를 쓴다.
+ * 직급 라벨은 발행자의 rank 에서 온다(T35: 부장 → 팀장 위임이면 `(부장)`).
+ */
+export function taskMessage(task: Task, fromName: string, fromRank?: MemberRank): string {
+  const label = fromRank ? RANK_LABEL[fromRank] : '팀장';
+  const from = task.fromMember === USER_ACTOR ? USER_ACTOR : `${fromName}(${label})`;
   return `[TASK#${task.id} from ${from}]\n${task.instruction}`;
+}
+
+/**
+ * `[QUESTION from <이름> q#<id>]\n<질문>\n(옵션: a | b)` — `ask_parent` 가 **상사 큐**에 넣는 시스템 메시지(T35).
+ * 상사는 `reply(to_member, text)` 로 답하고, 그 답은 물은 쪽 큐에 `[ANSWER q#<id>]` 로 들어간다.
+ */
+export function buildQuestionText(questionId: string, fromName: string, question: string, options: string[] = []): string {
+  const head = `[QUESTION from ${fromName} q#${questionId}]\n${question}`;
+  return options.length > 0 ? `${head}\n(옵션: ${options.join(' | ')})` : head;
+}
+
+/** `[MESSAGE from <상사 이름>]\n<본문>` — 열린 질문이 없을 때 `reply` 가 넣는 시스템 메시지(T35). */
+export function buildMessageText(fromName: string, text: string): string {
+  return `[MESSAGE from ${fromName}]\n${text}`;
 }
 
 /**
@@ -2053,6 +2332,16 @@ export function answerBody(answers: Record<string, string>): string {
 /** `ask_user` pending 인가(D-19: tool_input 없음 + source 표식). */
 export function isAskUserPayload(payload: Record<string, unknown>): payload is Record<string, unknown> & AskUserPayload {
   return payload.source === 'ask_user' && typeof payload.question === 'string' && payload.tool_input === undefined;
+}
+
+/** `ask_parent` pending 인가(T35). `ask_user` 와 같은 모양 + `from`/`to` 트리 간선. */
+export function isAskParentPayload(payload: Record<string, unknown>): payload is Record<string, unknown> & AskParentPayload {
+  return (
+    payload.source === 'ask_parent' &&
+    typeof payload.question === 'string' &&
+    typeof payload.to === 'string' &&
+    payload.tool_input === undefined
+  );
 }
 
 /** 이벤트 한 건 → "kind 요약". 요약은 detail.summary → text → cmd → path → tool 순으로 있는 것. */
