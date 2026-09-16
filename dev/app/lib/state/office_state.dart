@@ -10,7 +10,7 @@
 //  rpcClientProvider, daemonConnectorProvider, officeProvider(전체 OfficeState),
 //  connectionStateProvider, daemonVersionProvider, daemonPidProvider, reconnectAttemptsProvider, lastSeqProvider,
 //  teamsProvider, membersProvider, memberProvider(id), memberStatusProvider(id), derivedStatusProvider(id),
-//  membersOfTeamProvider(teamId), openPendingProvider, openTasksProvider,
+//  membersOfTeamProvider(teamId), liveLeadersProvider, liveLeaderProvider(teamId), openPendingProvider, openTasksProvider,
 //  globalEventsProvider, memberEventsProvider(id), latestEventProvider(id), noticesProvider.
 
 import 'dart:async';
@@ -435,6 +435,30 @@ final derivedStatusProvider =
     Provider.family<DerivedStatus?, String>((ref, id) => ref.watch(officeProvider.select((s) => s.derived[id])));
 final membersOfTeamProvider = Provider.family<List<Member>, String>(
   (ref, teamId) => ref.watch(membersProvider).values.where((m) => m.teamId == teamId).toList(growable: false),
+);
+
+/// 팀 id → **살아 있는 팀장**. 데몬 `Store.liveLeader` 와 같은 규칙: `rank == leader` 이고 status 가 exited/error 가
+/// 아닌 첫 멤버(createdAt 순). `Team.leaderId` 는 팀장이 나가도 남으므로 그것으로 판정하면 안 된다
+/// (PROTOCOL "팀·직급 (T24)"). 지시 게이트(-32004)의 클라이언트 쪽 기준이다.
+Map<String, Member> liveLeadersByTeam(Iterable<Member> members) {
+  final sorted = members.where((m) => m.rank == MemberRank.leader && !m.status.isGone).toList(growable: false)
+    ..sort((a, b) {
+      final c = a.createdAt.compareTo(b.createdAt);
+      return c != 0 ? c : a.id.compareTo(b.id);
+    });
+  final byTeam = <String, Member>{};
+  for (final m in sorted) {
+    byTeam.putIfAbsent(m.teamId, () => m);
+  }
+  return byTeam;
+}
+
+/// 팀 id → 살아 있는 팀장(없는 팀은 키 없음).
+final liveLeadersProvider = Provider<Map<String, Member>>((ref) => liveLeadersByTeam(ref.watch(membersProvider).values));
+
+/// 그 팀의 살아 있는 팀장(없으면 null). teamId 가 null 이면 null.
+final liveLeaderProvider = Provider.family<Member?, String?>(
+  (ref, teamId) => teamId == null ? null : ref.watch(liveLeadersProvider)[teamId],
 );
 
 final openPendingProvider = Provider<Map<String, Pending>>((ref) => ref.watch(officeProvider.select((s) => s.pending)));

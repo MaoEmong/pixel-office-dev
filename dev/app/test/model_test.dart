@@ -76,6 +76,15 @@ void main() {
     expect(DerivedStatus.fromStatus(MemberStatus.idle, hasAssignedTask: true), DerivedStatus.idle);
     expect(DerivedStatus.fromStatus(MemberStatus.working, hasAssignedTask: false), DerivedStatus.working);
     expect(DerivedStatus.parse('waiting_reports'), DerivedStatus.waitingReports);
+    // T24b: `waiting_reports`(팀장이 위임하고 보고를 기다리는 중) 는 사용자 응답 대기가 아니다 — 줄에 세우지 않는다.
+    expect(DerivedStatus.waitingReports.wire, 'waiting_reports');
+    expect(DerivedStatus.waitingReports.isWaiting, isFalse);
+    // 스냅샷에는 derived 가 없다 — v1a 규칙만으로는 waiting_reports 가 나오지 않는다(데몬 알림으로만 온다).
+    expect(DerivedStatus.fromStatus(MemberStatus.idle, hasAssignedTask: true), isNot(DerivedStatus.waitingReports));
+    expect(
+      MemberStatusNotice.fromJson({'memberId': 'mL', 'status': 'idle', 'derived': 'waiting_reports'}).derived,
+      DerivedStatus.waitingReports,
+    );
   });
 
   test('OfficeEvent.fromJson (설계문서 §2 예시) + kind 11종', () {

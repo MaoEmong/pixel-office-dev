@@ -4,8 +4,8 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:pixel_office/main.dart' show selectedMemberIdProvider;
 import 'package:pixel_office/rpc/rpc_client.dart';
+import 'package:pixel_office/state/selection.dart';
 import 'package:pixel_office/topbar/top_bar.dart';
 
 import 'fake_rpc_client.dart';

@@ -1,11 +1,18 @@
 // T12 테스트 공용 픽스처: Member / OfficeEvent / Pending 생성 헬퍼.
 import 'package:pixel_office/model/models.dart';
 
-Member member(String id, {String? name, MemberStatus status = MemberStatus.idle, Engine engine = Engine.claude, String? createdAt, String teamId = 't1'}) => Member(
+Member member(String id,
+        {String? name,
+        MemberStatus status = MemberStatus.idle,
+        Engine engine = Engine.claude,
+        String? createdAt,
+        String teamId = 't1',
+        MemberRank rank = MemberRank.member}) =>
+    Member(
       id: id,
       teamId: teamId,
       name: name ?? id,
-      rank: MemberRank.member,
+      rank: rank,
       engine: engine,
       sessionId: null,
       childPid: null,

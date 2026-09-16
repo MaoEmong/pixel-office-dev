@@ -8,12 +8,11 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-// 선택 멤버 provider 는 main.dart 에 있다(T11). 팀 만들기 직후 팀장을 고르려면 여기서 써야 한다 —
-// Dart 는 순환 import 를 허용하지만, provider 를 lib/state/ 로 옮기는 정리는 T24b 로 넘긴다.
-import '../main.dart' show selectedMemberIdProvider;
 import '../model/models.dart';
 import '../rpc/rpc_client.dart';
 import '../state/office_state.dart';
+// 팀 만들기 직후 팀장을 고르려고 쓴다. T24 때는 main.dart 에 있어 순환 import 였고, T24b 에서 상태 층으로 옮겼다.
+import '../state/selection.dart';
 import 'selected_team.dart';
 
 export 'selected_team.dart';

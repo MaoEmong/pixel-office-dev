@@ -10,6 +10,7 @@ import 'office/office_view.dart';
 import 'panel/right_panel.dart';
 import 'rpc/rpc_client.dart';
 import 'state/office_state.dart';
+import 'state/selection.dart';
 import 'topbar/daemon_launcher.dart';
 import 'topbar/notices.dart';
 import 'topbar/top_bar.dart';
@@ -18,22 +19,8 @@ void main() {
   runApp(const ProviderScope(child: PixelOfficeApp()));
 }
 
-/// 사무실에서 클릭해 선택한 멤버. 오른쪽 패널·지시 바·상단 바 퇴근 버튼이 공유한다.
-final selectedMemberIdProvider = NotifierProvider<SelectedMemberId, String?>(SelectedMemberId.new);
-
-class SelectedMemberId extends Notifier<String?> {
-  @override
-  String? build() {
-    // 선택된 멤버가 사라지면(퇴근·팀 삭제) 선택 해제.
-    ref.listen(membersProvider, (_, members) {
-      final id = state;
-      if (id != null && !members.containsKey(id)) state = null;
-    });
-    return null;
-  }
-
-  void select(String? id) => state = id;
-}
+// 선택 멤버 provider(`selectedMemberIdProvider`)는 T24b 에서 `lib/state/selection.dart` 로 옮겼다 —
+// 상단 바·지시 바가 쓰면서 main.dart 와 순환 import 가 됐기 때문(T24 함정 4).
 
 class PixelOfficeApp extends StatelessWidget {
   const PixelOfficeApp({super.key});

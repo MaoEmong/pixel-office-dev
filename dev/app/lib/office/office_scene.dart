@@ -7,6 +7,7 @@
 //         idle → "(대기)", waiting_approval → "❗ 허가 대기", asking → "❓ 질문", error → "⚠ 오류",
 //         text → "💬 <text>", delegating → "→ 위임", reporting → "📋 보고"
 //   이벤트 없음 → status 로: starting "(출근 중)", idle "(대기)", working "…", waiting_* 는 위와 동일.
+//   파생 status 가 waiting_reports 면 "📨 보고 대기"(팀장이 위임하고 팀원 보고를 기다리는 중 — M4).
 //   파생 status 가 waiting_answer/waiting_approval 이면 이벤트보다 "❓ 질문"/"❗ 허가 대기" 가 앞선다
 //   (`ask_user` 는 질문이 열린 채 raw status 가 idle 로 돌아간다 — PROTOCOL `member.status.derived`, T19 함정 1).
 
@@ -18,6 +19,12 @@ const int bubbleMaxChars = 28;
 /// running 요약에 쓰는 명령 최대 글자 수.
 const int cmdMaxChars = 40;
 
+/// 책상 배지에 붙는 팀장 표시(T24b).
+const String leaderBadgeLabel = '팀장';
+
+/// 파생 상태 `waiting_reports`(팀장이 위임하고 팀원 보고를 기다리는 중 — 01 §3, M4) 의 모니터·말풍선 문구.
+const String waitingReportsSummary = '📨 보고 대기';
+
 /// 캐릭터 한 명이 화면에 필요한 값.
 class SceneMember {
   const SceneMember({
@@ -28,6 +35,7 @@ class SceneMember {
     required this.deskIndex,
     required this.summary,
     required this.isAlert,
+    this.rank = MemberRank.member,
     this.queueIndex,
     this.eventKind,
     this.eventSeq,
@@ -37,6 +45,9 @@ class SceneMember {
   final String name;
   final Engine engine;
   final MemberStatus status;
+
+  /// 직급(T24). 팀장은 책상 배지 "팀장" + 캐릭터 금색 링으로 표시한다.
+  final MemberRank rank;
 
   /// 책상 번호(0부터). 라벨은 `책상 ${deskIndex + 1}`.
   final int deskIndex;
@@ -55,6 +66,9 @@ class SceneMember {
   final int? eventSeq;
 
   bool get isQueued => queueIndex != null;
+
+  /// 팀장인가(사용자 지시는 팀장에게만 간다 — 01 §4).
+  bool get isLeader => rank == MemberRank.leader;
 
   /// 회색 처리(exited / error).
   bool get isGone => status.isGone;
@@ -78,6 +92,7 @@ class SceneMember {
       other.name == name &&
       other.engine == engine &&
       other.status == status &&
+      other.rank == rank &&
       other.deskIndex == deskIndex &&
       other.summary == summary &&
       other.isAlert == isAlert &&
@@ -86,7 +101,7 @@ class SceneMember {
       other.eventSeq == eventSeq;
 
   @override
-  int get hashCode => Object.hash(id, name, engine, status, deskIndex, summary, isAlert, queueIndex, eventKind, eventSeq);
+  int get hashCode => Object.hash(id, name, engine, status, rank, deskIndex, summary, isAlert, queueIndex, eventKind, eventSeq);
 
   @override
   String toString() => 'SceneMember($id $name desk=$deskIndex queue=$queueIndex "$summary")';
@@ -182,6 +197,7 @@ class OfficeScene {
           name: sorted[i].name,
           engine: sorted[i].engine,
           status: sorted[i].status,
+          rank: sorted[i].rank,
           deskIndex: i,
           summary: summarize(sorted[i].status, latestEvents[sorted[i].id], derived: derived[sorted[i].id]),
           isAlert: isAlertFor(sorted[i].status, latestEvents[sorted[i].id], derived: derived[sorted[i].id]),
@@ -238,6 +254,8 @@ String summarize(MemberStatus status, OfficeEvent? event, {DerivedStatus? derive
   if (status == MemberStatus.error) return '⚠ 오류';
   if (derived == DerivedStatus.waitingAnswer) return '❓ 질문';
   if (derived == DerivedStatus.waitingApproval) return '❗ 허가 대기';
+  // 팀장이 위임 후 idle 인데 미종료 task 가 남았다 — 마지막 이벤트("(대기)")보다 이게 사실에 가깝다(01 §3, M4).
+  if (derived == DerivedStatus.waitingReports) return waitingReportsSummary;
   if (event == null) return _statusSummary(status);
   final d = event.detail;
   return switch (event.kind) {

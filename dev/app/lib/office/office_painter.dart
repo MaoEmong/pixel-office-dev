@@ -1,5 +1,7 @@
 // 사무실 CustomPainter(D-09). 외부 에셋 없이 평면 도형 + TextPainter 로 그린다.
 // 그리는 것: 바둑판 바닥, 문, 책상(라벨·엔진 배지·모니터), 내 책상(제목·대기 목록), 캐릭터(원 + 이름 첫 글자), 말풍선.
+// T24b: 팀장은 책상에 "팀장" 배지(엔진 배지 왼쪽)와 캐릭터 금색 링([OfficeColors.leaderMark])이 붙는다 — 그림만 바뀌고
+//   히트 테스트 반경(OfficeLayout.charRadius + 4)은 그대로다.
 // 기하는 전부 OfficeLayout, 텍스트는 전부 OfficeScene 에서 온다 — 여기엔 색·글꼴·그리기 순서만.
 // T16: 캐릭터 위치는 [placements] 로 밖(OfficeMotion)에서 받을 수 있다(null 이면 레이아웃의 즉시 배치).
 //   [bob] 은 작업 중 흔들림(id → dy), [bubbleOverrides] 는 보고 방문 등 말풍선 덮어쓰기(항상 alert 스타일).
@@ -19,6 +21,9 @@ abstract final class OfficeColors {
   static const deskLabel = Color(0xFFAAB2C8);
   static const badgeClaude = Color(0xFFE0956E);
   static const badgeCodex = Color(0xFF8FB4FF);
+
+  /// 팀장 표시(책상 "팀장" 배지 + 캐릭터 금색 링). T24b.
+  static const leaderMark = Color(0xFFFFD166);
   static const monitorFill = Color(0xFF10141D);
   static const monitorBorder = Color(0xFF3A4258);
   static const monitorText = Color(0xFF9BE7A1);
@@ -168,10 +173,27 @@ class OfficePainter extends CustomPainter {
           ..strokeWidth = 1);
     badge.paint(canvas, Offset(badgeRect.left + 3, badgeRect.top + 1));
 
+    // 팀장 배지(엔진 배지 왼쪽). 사용자 지시는 이 책상으로만 간다(01 §4, T24).
+    var labelRight = badgeRect.left;
+    if (m.isLeader) {
+      final leaderStyle = TextStyle(color: OfficeColors.leaderMark, fontSize: 9 * fs, fontWeight: FontWeight.w600);
+      final leaderText = _layoutText(leaderBadgeLabel, leaderStyle);
+      final leaderRect = Rect.fromLTWH(
+          badgeRect.left - 4 * layout.scale - leaderText.width - 6, badgeRect.top, leaderText.width + 6, badgeRect.height);
+      canvas.drawRRect(
+          RRect.fromRectAndRadius(leaderRect, const Radius.circular(3)),
+          Paint()
+            ..color = OfficeColors.leaderMark
+            ..style = PaintingStyle.stroke
+            ..strokeWidth = 1);
+      leaderText.paint(canvas, Offset(leaderRect.left + 3, leaderRect.top + 1));
+      labelRight = leaderRect.left;
+    }
+
     _text(canvas, m.deskLabel, Offset(d.left + 6 * layout.scale, d.top + pad),
         style: TextStyle(color: OfficeColors.deskLabel, fontSize: 11 * fs),
         anchor: Alignment.topLeft,
-        maxWidth: badgeRect.left - d.left - 8 * layout.scale);
+        maxWidth: labelRight - d.left - 8 * layout.scale);
 
     // 모니터.
     final mon = layout.monitorRect(m.deskIndex);
@@ -250,6 +272,16 @@ class OfficePainter extends CustomPainter {
   void _paintCharacter(Canvas canvas, OfficeLayout layout, SceneMember m, CharacterPlacement p) {
     final r = layout.charRadius;
     final c = p.center + Offset(0, bob[m.id] ?? 0);
+    // 팀장 링(금색). 선택 링(흰색, r+4)보다 안쪽이라 둘 다 보인다. 히트 테스트 반경(charRadius+4)은 그대로.
+    if (m.isLeader && !m.isGone) {
+      canvas.drawCircle(
+          c,
+          r + 2,
+          Paint()
+            ..color = OfficeColors.leaderMark
+            ..style = PaintingStyle.stroke
+            ..strokeWidth = 2);
+    }
     if (m.id == selectedMemberId) {
       canvas.drawCircle(
           c,
@@ -351,7 +383,8 @@ class OfficePainter extends CustomPainter {
                   ? Rect.fromCircle(center: placements[i].center, radius: layout.charRadius)
                   : layout.deskRect(scene.members[i].deskIndex),
               properties: SemanticsProperties(
-                label: '${scene.members[i].deskLabel} · ${scene.members[i].engineLabel} · ${scene.members[i].summary}'
+                label: '${scene.members[i].deskLabel} · ${scene.members[i].engineLabel}'
+                    '${scene.members[i].isLeader ? ' · $leaderBadgeLabel' : ''} · ${scene.members[i].summary}'
                     '${scene.members[i].isQueued ? ' · 내 책상 줄' : bubbleOverrides.containsKey(scene.members[i].id) ? ' · ${bubbleOverrides[scene.members[i].id]}' : ''}',
                 selected: scene.members[i].id == selectedMemberId,
                 button: true,

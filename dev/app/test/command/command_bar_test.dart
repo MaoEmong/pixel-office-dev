@@ -24,11 +24,24 @@ Future<void> pump2(WidgetTester tester) async {
   await tester.pump();
 }
 
-/// 연결 + 멤버 2명(m1 idle, m2 exited) 스냅샷.
+/// 연결 + 멤버 2명(m1 idle, m2 exited) 스냅샷. 팀장은 없다(= 팀장이 나간 팀과 같은 구성).
 Future<void> connect(WidgetTester tester, FakeRpcClient fake) async {
   fake.emitHello(
     teams: [fakeTeam('t1')],
     members: [fakeMember('m1', name: '이음'), fakeMember('m2', name: '하루', status: 'exited')],
+  );
+  await pump2(tester);
+}
+
+/// 연결 + 팀장이 있는 팀 t1(mL 반장 leader, m1 이음 member) + 팀장 없는 팀 t2(m9 나래).
+Future<void> connectWithLeader(WidgetTester tester, FakeRpcClient fake, {String leaderStatus = 'idle'}) async {
+  fake.emitHello(
+    teams: [fakeTeam('t1', leaderId: 'mL'), fakeTeam('t2', name: 'other')],
+    members: [
+      fakeMember('mL', name: '반장', rank: 'leader', status: leaderStatus),
+      fakeMember('m1', name: '이음'),
+      fakeMember('m9', name: '나래', teamId: 't2'),
+    ],
   );
   await pump2(tester);
 }
@@ -141,6 +154,73 @@ void main() {
     await tester.pump();
     expect(tester.widget<TextField>(input).enabled, isFalse);
     expect(find.text('하루 은(는) 퇴근했습니다'), findsOneWidget);
+  });
+
+  // ---- T24b 팀장 게이트 ---------------------------------------------------------------
+
+  testWidgets('T24b: 팀장이 있으면 팀원을 골라도 지시는 팀장에게 간다', (tester) async {
+    await tester.pumpWidget(app(fake, selected: 'm1')); // 사무실에서 팀원을 골랐다
+    await connectWithLeader(tester, fake);
+
+    expect(find.text(commandBarHint('반장')), findsOneWidget);
+    await tester.enterText(input, '보고서 취합해줘');
+    await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+    await tester.pump();
+    expect(fake.callList, [['member.instruct', {'memberId': 'mL', 'text': '보고서 취합해줘'}]]);
+    await tester.pump(commandBarBadgeDuration);
+  });
+
+  testWidgets('T24b: 드롭다운에서 같은 팀 팀원은 비활성 + 툴팁, 팀장 없는 다른 팀은 그대로', (tester) async {
+    await tester.pumpWidget(app(fake, selected: null));
+    await connectWithLeader(tester, fake);
+
+    await tester.tap(find.byKey(const Key('commandBar.target')));
+    await tester.pumpAndSettle();
+    final items = tester.widgetList<DropdownMenuItem<String>>(find.byType(DropdownMenuItem<String>)).toList();
+    expect(items.map((i) => (i.value, i.enabled)), containsAll([('mL', true), ('m1', false), ('m9', true)]));
+    expect(find.byTooltip(commandBarLeaderOnlyTooltip), findsWidgets);
+    expect(find.text('반장 [claude] · 팀장'), findsWidgets);
+  });
+
+  testWidgets('T24b: 팀장이 퇴근하면 게이트가 열려 팀원에게 직접 지시된다', (tester) async {
+    await tester.pumpWidget(app(fake, selected: 'm1'));
+    await connectWithLeader(tester, fake);
+    expect(find.text(commandBarHint('반장')), findsOneWidget);
+
+    fake.pushNotification('member.status', {'memberId': 'mL', 'status': 'exited', 'derived': 'exited'});
+    await pump2(tester);
+    expect(find.text(commandBarHint('이음')), findsOneWidget);
+
+    await tester.enterText(input, '직접 지시');
+    await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+    await tester.pump();
+    expect(fake.callList, [['member.instruct', {'memberId': 'm1', 'text': '직접 지시'}]]);
+    await tester.pump(commandBarBadgeDuration);
+  });
+
+  testWidgets('T24b: -32004 는 데몬 문구를 그대로 띄우고 대상을 팀장으로 되돌린다(force 안 씀)', (tester) async {
+    // 앱이 아직 팀장 복귀를 모르는 상태(로컬로는 mL 이 exited) — 그래서 팀원에게 지시가 나간다.
+    fake.responder = (m, p) => throw const RpcException(
+          RpcException.rankRule,
+          '팀장에게만 지시할 수 있습니다 (leader: 반장)',
+          {'leaderId': 'mL'},
+        );
+    await tester.pumpWidget(app(fake, selected: 'm1'));
+    await connectWithLeader(tester, fake, leaderStatus: 'exited');
+    expect(find.text(commandBarHint('이음')), findsOneWidget);
+
+    await tester.enterText(input, '이거 해줘');
+    await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+    await tester.pump();
+
+    // force 는 콘솔 전용 디버그 탈출구 — 앱은 다시 보내지 않는다.
+    expect(fake.callList, [['member.instruct', {'memberId': 'm1', 'text': '이거 해줘'}]]);
+    expect(find.byKey(const Key('commandBar.error')), findsOneWidget);
+    expect(find.text('팀장에게만 지시할 수 있습니다 (leader: 반장)'), findsOneWidget);
+    // data.leaderId 로 대상을 되돌린다(입력은 지우지 않는다 — 그대로 다시 보낼 수 있게).
+    final dropdown = tester.widget<DropdownButtonFormField<String>>(find.byKey(const Key('commandBar.target')));
+    expect(dropdown.initialValue, 'mL');
+    expect(tester.widget<TextField>(input).controller!.text, '이거 해줘');
   });
 
   testWidgets('중단 버튼 → member.interrupt; RPC 오류는 빨간 글씨', (tester) async {
