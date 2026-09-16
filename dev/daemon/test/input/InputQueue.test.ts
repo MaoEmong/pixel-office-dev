@@ -12,6 +12,8 @@ interface Harness {
   flushed: InputItem[];
   blocked: BlockReason[];
   dialogs: string[];
+  /** dialogBlocked(kind) — 권장 키가 없어 통과할 수 없는 다이얼로그. */
+  blockedDialogs: string[];
   advance(ms: number): void;
   now(): number;
 }
@@ -34,10 +36,12 @@ function harness(opts: { graceMs?: number; useRealClock?: boolean } = {}): Harne
   const flushed: InputItem[] = [];
   const blocked: BlockReason[] = [];
   const dialogs: string[] = [];
+  const blockedDialogs: string[] = [];
   q.on('flushed', (i) => flushed.push(i));
   q.on('blocked', (r) => blocked.push(r));
   q.on('dialogPassed', (k) => dialogs.push(k));
-  return { q, calls, state, flushed, blocked, dialogs, advance: (ms) => (t += ms), now: () => t };
+  q.on('dialogBlocked', (k) => blockedDialogs.push(k));
+  return { q, calls, state, flushed, blocked, dialogs, blockedDialogs, advance: (ms) => (t += ms), now: () => t };
 }
 
 const instruct = (text: string, id?: string): InputItem => ({ kind: 'instruct', text, id });
@@ -221,6 +225,73 @@ describe('dialog pass-through', () => {
     assert.deepEqual(h.calls, ['key:enter']);
     assert.deepEqual(h.dialogs, ['trust-folder-codex']);
     assert.deepEqual(h.blocked, []);
+  });
+
+  test('empty suggestedKeys (CLI approval prompt): no keys, no dialogPassed — blocked(dialog) + one dialogBlocked(kind) (D-26)', () => {
+    const h = harness();
+    h.state.dialog = { kind: 'approval-prompt', suggestedKeys: [] };
+    h.q.enqueue(instruct('나중에'));
+    assert.deepEqual(h.calls, [], '키도 paste 도 나가지 않는다');
+    assert.deepEqual(h.dialogs, [], '"통과했다" 가 아니다');
+    assert.deepEqual(h.blockedDialogs, ['approval-prompt']);
+    assert.deepEqual(h.blocked, ['dialog']);
+    assert.equal(h.q.size(), 1);
+    assert.equal(h.q.pendingActions(), 0);
+
+    // 2초(기존 재전송 가드)·5초(blocked 계량)를 넘겨도 dialogBlocked 는 그대로 한 번뿐이다(T23 함정 2 의 2초 스팸 방지).
+    for (let i = 0; i < 24; i++) {
+      h.advance(500);
+      h.q.tick();
+    }
+    assert.deepEqual(h.calls, []);
+    assert.deepEqual(h.dialogs, []);
+    assert.deepEqual(h.blockedDialogs, ['approval-prompt']);
+    assert.deepEqual(h.blocked, ['dialog', 'dialog', 'dialog'], 'blocked 는 이유별 5초 계량 그대로');
+  });
+
+  test('dialogBlocked repeats only after the dialog clears (or a different kind shows up)', () => {
+    const h = harness();
+    h.state.dialog = { kind: 'approval-prompt', suggestedKeys: [] };
+    h.q.tick();
+    assert.deepEqual(h.blockedDialogs, ['approval-prompt']);
+    assert.deepEqual(h.blocked, [], '큐가 비어 있으면 blocked 는 내지 않는다(기존 규칙)');
+
+    // 다른 kind 로 바뀌면 그건 새 사건이다
+    h.state.dialog = { kind: 'approval-exec', suggestedKeys: [] };
+    h.advance(500);
+    h.q.tick();
+    assert.deepEqual(h.blockedDialogs, ['approval-prompt', 'approval-exec']);
+
+    // 사라졌다가 다시 뜨면 다시 한 번
+    h.state.dialog = { kind: 'none', suggestedKeys: [] };
+    h.advance(500);
+    h.q.tick();
+    h.state.dialog = { kind: 'approval-exec', suggestedKeys: [] };
+    h.advance(500);
+    h.q.tick();
+    assert.deepEqual(h.blockedDialogs, ['approval-prompt', 'approval-exec', 'approval-exec']);
+    assert.deepEqual(h.calls, []);
+    assert.deepEqual(h.dialogs, []);
+
+    // 통과할 수 있는 다이얼로그로 바뀌면 다시 평소대로 통과한다
+    h.state.dialog = { kind: 'trust-folder-claude', suggestedKeys: ['enter'] };
+    h.advance(500);
+    h.q.tick();
+    assert.deepEqual(h.calls, ['key:enter']);
+    assert.deepEqual(h.dialogs, ['trust-folder-claude']);
+    assert.deepEqual(h.blockedDialogs, ['approval-prompt', 'approval-exec', 'approval-exec']);
+  });
+
+  test('a blocked dialog keeps the queue intact — it flushes as soon as the prompt returns', () => {
+    const h = harness();
+    h.state.dialog = { kind: 'approval-prompt', suggestedKeys: [] };
+    h.q.enqueue(instruct('허가 끝나고'));
+    h.advance(500);
+    h.q.tick();
+    assert.equal(h.q.size(), 1);
+    h.state.dialog = { kind: 'none', suggestedKeys: [] };
+    h.q.tick();
+    assert.deepEqual(h.calls, ['paste:허가 끝나고']);
   });
 
   test('does not auto-pass a dialog while the user is typing (they may be answering it themselves)', () => {

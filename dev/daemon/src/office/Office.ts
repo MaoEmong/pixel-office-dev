@@ -9,6 +9,8 @@
 //   PtyManager  'exit'            → adapter.onSessionExit(예상 못 한 종료) / status exited(퇴근·재시작·셧다운)
 //   adapter     'event'/'status'  → 'event' / 'status' 이벤트(전 클라이언트)
 //   InputQueue  isIdle            = member.status === 'idle' ∧ 열린 pending 없음
+//   InputQueue  'dialogBlocked'   → daemon.notice{warn} (자동 통과 불가 다이얼로그 = CLI 허가 프롬프트, D-26 T23b)
+//   화면 감시                      watchBootReady(Codex 부팅 D-24) / watchInterrupted(Ctrl+C) / watchScreenIdle(턴 종료 hook 없음 D-25)
 //   TeamToolsServer(T17) ask_user  → askUser(): pending(question, source:'ask_user') + asking + waiting_answer
 //   respondQuestion(ask_user)     → answerPending(게이트 해제) → 큐에 `[ANSWER q#<id>]\n<답>`(system) — 답이 열린 pending 을
 //                                   먼저 닫으므로 isIdle 게이트를 그대로 통과한다(bypass 플래그 없음, 아래 answerAskUser)
@@ -79,6 +81,20 @@ const INTERRUPT_WATCH_STEP_MS = 250;
  */
 const BOOT_WATCH_MS = 180_000;
 const BOOT_WATCH_STEP_MS = 500;
+/**
+ * 화면 기반 idle 폴백(T23b, D-25). 턴 종료 hook 없이 프롬프트로 돌아오는 화면이 있다 — Codex 사용량 한도 안내(T23 함정 1)가
+ * 대표적이고, Claude 도 턴이 이상하게 끊기면 `Stop` 이 안 온다. 그러면 멤버가 `working` 에 갇혀 사무실 표시가 틀리고
+ * InputQueue 의 isIdle 게이트가 안 열려 다음 지시가 큐에 머문다.
+ * → `watchBootReady` 와 같은 모양으로 화면을 본다: 열린 pending 이 없고 화면이 계속 prompt ready(다이얼로그 없음·busy 아님)인
+ *   상태가 IDLE_SCREEN_STABLE_MS 동안 이어지고 그 사이 새 hook 이 없으면 `idle{summary:'screen-idle'}`.
+ * 보류(허가·질문)가 열려 있거나 busy 표시가 있으면 절대 발화하지 않는다.
+ */
+const IDLE_SCREEN_STABLE_MS = 3000;
+const IDLE_SCREEN_STEP_MS = 500;
+/** 화면 기반 idle 폴백이 붙는 status(진행 중으로 표시되지만 턴 종료 hook 을 기다리는 상태). */
+const IDLE_SCREEN_STATUSES: ReadonlySet<MemberStatus> = new Set(['working', 'waiting_approval', 'waiting_answer']);
+/** 화면 기반 idle 폴백이 남기는 요약(PROTOCOL.md "데몬이 만드는 이벤트"). */
+export const SCREEN_IDLE_SUMMARY = 'screen-idle';
 /** 정중한 종료 대기(Claude `/exit`). */
 const KILL_TIMEOUT_MS = 8000;
 const COLS_RANGE = [20, 500] as const;
@@ -137,6 +153,12 @@ interface MemberRuntime {
   interruptWatch?: NodeJS.Timeout;
   /** Codex 부팅 감시(SessionStart 가 늦게 오는 엔진용). */
   bootWatch?: NodeJS.Timeout;
+  /** 화면 기반 idle 폴백 감시(T23b, D-25). 세션 내내 돈다. */
+  idleWatch?: NodeJS.Timeout;
+  /** 화면이 "조용한 prompt ready" 가 된 시각. 조건이 깨지면 undefined. */
+  screenIdleSince?: number;
+  /** 이 멤버의 마지막 hook 도착 시각(화면 기반 idle 폴백의 "그 사이 새 hook 없음" 판정). */
+  lastHookAt?: number;
   /**
    * 재시작 복구로 `--resume` 한 세션. 이 창 안에 0 이 아닌 코드로 죽으면(세션 파일 없음 증상) 새 세션으로 한 번 폴백하고
    * 같은 [RESUMED]·queued task 를 다시 큐에 넣는다.
@@ -722,13 +744,27 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
       if (task?.status === 'queued') this.store.updateTask(task.id, { status: 'assigned' });
     });
     queue.on('dialogPassed', (kind) => this.notice('info', `${member.name}: passed first-run dialog (${kind})`));
+    // 통과할 수 없는 다이얼로그(CLI 자체 허가 프롬프트 등, D-26). InputQueue 가 kind 당 한 번만 내므로 알림도 한 번이다.
+    queue.on('dialogBlocked', (kind) => this.noticeDialogBlocked(member.id, kind));
     queue.start();
 
     this.store.updateMember(member.id, { childPid: session.pid, status: 'starting' });
     this.emitStatus(member.id, 'starting');
     // Codex 는 SessionStart 가 첫 프롬프트 때 오므로(T20 실측) 화면으로 부팅 완료를 판정한다.
     if (member.engine === 'codex') this.watchBootReady(rt);
+    // 턴 종료 hook 없이 프롬프트로 돌아오는 화면(T23 함정 1)의 idle 폴백. 엔진 공통, 세션 내내.
+    this.watchScreenIdle(rt);
     return rt;
+  }
+
+  /** 자동 통과할 수 없는 다이얼로그가 떠 있다는 알림(D-26). 허가 프롬프트는 사용자가 카드나 터미널 탭에서 답해야 한다. */
+  private noticeDialogBlocked(memberId: string, kind: string): void {
+    const name = this.store.getMember(memberId)?.name ?? memberId;
+    if (kind === 'approval-prompt') {
+      this.notice('warn', `${name}: CLI 허가 프롬프트가 떠 있음 — 카드로 답하거나 터미널에서 직접 답하세요`);
+      return;
+    }
+    this.notice('warn', `${name}: 자동 통과할 수 없는 다이얼로그(${kind}) — 터미널에서 직접 답하세요`);
   }
 
   /**
@@ -755,6 +791,54 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
     }, BOOT_WATCH_STEP_MS);
     timer.unref();
     rt.bootWatch = timer;
+  }
+
+  /**
+   * 화면 기반 idle 폴백(T23b, D-25 — IDLE_SCREEN_STABLE_MS 주석 참고). `watchBootReady` 와 같은 모양으로 IDLE_SCREEN_STEP_MS
+   * 마다 화면을 본다. 발화 조건(전부 만족이 IDLE_SCREEN_STABLE_MS 이상 연속):
+   *   - status 가 working / waiting_approval / waiting_answer 이고
+   *   - 그 멤버에게 열린 pending(허가·질문)이 하나도 없고 — 보류 중에는 절대 발화하지 않는다
+   *   - 화면에 다이얼로그가 없고 busy 표시도 없고 prompt ready 이고
+   *   - 그 창 안에 그 멤버의 새 hook 이 도착하지 않았다(hook 이 오면 창을 다시 연다)
+   * 조건이 하나라도 깨지면 창을 닫는다(다음에 처음부터 다시 잰다). 세션이 끝나면(프로세스 종료·퇴근) 타이머를 멈춘다.
+   */
+  private watchScreenIdle(rt: MemberRuntime): void {
+    if (rt.idleWatch) clearInterval(rt.idleWatch);
+    rt.screenIdleSince = undefined;
+    const stop = () => {
+      clearInterval(timer);
+      rt.idleWatch = undefined;
+      rt.screenIdleSince = undefined;
+    };
+    const timer = setInterval(() => {
+      const member = this.store.getMember(rt.memberId);
+      if (!member || !rt.session.alive) return stop();
+      const now = Date.now();
+      if (!this.screenLooksIdle(member, rt)) {
+        rt.screenIdleSince = undefined;
+        return;
+      }
+      // 창이 열려 있는 동안 hook 이 왔으면(턴이 살아 있다) 처음부터 다시.
+      if (rt.screenIdleSince === undefined || (rt.lastHookAt !== undefined && rt.lastHookAt >= rt.screenIdleSince)) {
+        rt.screenIdleSince = now;
+        return;
+      }
+      if (now - rt.screenIdleSince < IDLE_SCREEN_STABLE_MS) return;
+      rt.screenIdleSince = undefined;
+      this.appendEvent(member, 'idle', { summary: SCREEN_IDLE_SUMMARY });
+      this.setStatus(member.id, 'idle');
+    }, IDLE_SCREEN_STEP_MS);
+    timer.unref();
+    rt.idleWatch = timer;
+  }
+
+  /** 화면 기반 idle 폴백의 한 번 판정(status·보류·화면). 테스트가 조건을 하나씩 뒤집어 본다. */
+  private screenLooksIdle(member: Member, rt: MemberRuntime): boolean {
+    if (!IDLE_SCREEN_STATUSES.has(member.status)) return false;
+    if (this.store.listOpenPending(member.id).length > 0) return false;
+    if (rt.screen.detectDialog().kind !== 'none') return false;
+    if (rt.screen.busyIndicator()) return false;
+    return rt.screen.promptReady();
   }
 
   // ---- 내부: 재시작 복구(T09) ----------------------------------------------------------------
@@ -1013,6 +1097,9 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
         this.notice('warn', `hook ${req.event} from unknown member token ${req.memberToken.slice(0, 8)}…`);
         return;
       }
+      // 화면 기반 idle 폴백(D-25)의 "그 사이 새 hook 없음" 판정용 — 어댑터가 status 를 어떻게 바꾸든 도착 자체를 기록한다.
+      const rt = this.runtimes.get(member.id);
+      if (rt) rt.lastHookAt = Date.now();
       // T20: 멤버의 engine 으로 어댑터를 고른다(Codex 는 명령 휴리스틱 매핑 + Interrupt hook).
       this.adapterFor(member.engine).handleHook(req, member);
     });
@@ -1187,12 +1274,15 @@ function oneLine(s: string): string {
   return s.replace(/\s+/g, ' ').trim();
 }
 
-/** 런타임에 걸린 화면 감시 타이머(interrupt·Codex 부팅)를 모두 정리한다. */
+/** 런타임에 걸린 화면 감시 타이머(interrupt·Codex 부팅·화면 idle 폴백)를 모두 정리한다. */
 function clearWatches(rt: MemberRuntime): void {
   if (rt.interruptWatch) clearInterval(rt.interruptWatch);
   rt.interruptWatch = undefined;
   if (rt.bootWatch) clearInterval(rt.bootWatch);
   rt.bootWatch = undefined;
+  if (rt.idleWatch) clearInterval(rt.idleWatch);
+  rt.idleWatch = undefined;
+  rt.screenIdleSince = undefined;
 }
 
 function checkSize(cols: number, rows: number): void {

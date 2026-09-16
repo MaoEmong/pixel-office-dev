@@ -39,7 +39,7 @@
 | `snapshot` | `{ seq, teams, members, pending, tasks }` — `hello` 응답에 포함되지만 데몬이 필요 시 재전송 가능. `pending` 은 `status:'open'` 만, `tasks` 는 `queued|assigned` 만. |
 | `term` | `{ memberId, data }` — attach한 클라이언트에만, 비영속 |
 | `member.status` | `{ memberId, status, derived, member? }` — `status` 는 `starting|idle|working|waiting_approval|waiting_answer|exited|error`, `derived` 는 파생 상태(v1a: idle 인데 열린 질문 pending 이 있으면 `waiting_answer`(T17 — `ask_user` 는 턴이 끝난 뒤에도 질문이 열려 있다), idle 이고 배정 task 없으면 `free`, 그 외는 status 와 같음; `waiting_reports` 는 M4). `member` 는 그 시점의 Member 행(새 멤버 출근을 다른 클라이언트가 알 수 있게; 행이 삭제됐으면 생략). status 값이 실제로 바뀔 때만 온다 — 예외: `ask_user` 질문에 답하면 status 가 그대로여도 `derived` 갱신을 위해 한 번 더 온다. |
-| `daemon.notice` | `{ level: 'info'\|'warn'\|'error', message }` — 예: hook 보류 타임아웃, 알 수 없는 멤버 토큰, 첫 실행 다이얼로그 자동 통과, 자동 allow, 데몬 종료 |
+| `daemon.notice` | `{ level: 'info'\|'warn'\|'error', message }` — 예: hook 보류 타임아웃, 알 수 없는 멤버 토큰, 첫 실행 다이얼로그 자동 통과, 자동 allow, 데몬 종료. **자동 통과할 수 없는 다이얼로그**(CLI 자체 허가 프롬프트 `approval-prompt`, D-23/D-26)는 `{level:'warn', message:'<이름>: CLI 허가 프롬프트가 떠 있음 — 카드로 답하거나 터미널에서 직접 답하세요'}` 로 **한 번만** 나온다(그 다이얼로그가 사라졌다 다시 뜨면 다시 한 번). 데몬은 이때 키를 보내지 않는다 — 사용자가 "재지시 필요" 카드나 터미널 탭에서 답해야 한다. |
 
 ## 오피스 이벤트
 
@@ -51,6 +51,7 @@ v1a 에서 데몬이 만드는 이벤트(어댑터 표는 worklog T04 참고):
 - `asking{tool:'ask_user', summary:<question>, options?:string[]}` ref `{questionId}` — TeamTools `ask_user` 호출(T17). TUI `AskUserQuestion` 의 `asking{tool:'AskUserQuestion'}` 과 `detail.tool` 로 구분. 답이 들어가면 `thinking{text:'[ANSWER q#<id>]\n…'}` 로 보인다.
 - `reporting{summary}` ref `{taskId}` — `Stop` 시점에 그 멤버의 `assigned` task 를 `reported` 로 닫으면서(report_text = 직전 `text`), 내 책상 "보고".
 - `idle{summary:'interrupted'}` — `member.interrupt` 후 화면 준비 문구로 idle 판정.
+- `idle{summary:'screen-idle'}` — **턴 종료 hook 없이 프롬프트로 돌아온 화면**의 폴백(T23b, D-25). 멤버가 `working`/`waiting_approval`/`waiting_answer` 인데 ① 열린 pending 이 하나도 없고 ② 화면에 다이얼로그·busy 표시가 없고 prompt ready 이고 ③ 그 사이 새 hook 이 오지 않은 상태가 **3초 연속**이면 데몬이 이 이벤트를 내고 status 를 `idle` 로 내린다(500ms 폴링, 멤버당 타이머 하나, 세션이 끝나면 정지). 실제 사례: Codex 사용량 한도 안내는 화면에만 뜨고 `Stop` 을 내지 않아 멤버가 `working` 에 갇혔다. 보류(허가·질문)가 열려 있거나 busy 표시가 있으면 절대 나오지 않는다.
 - `idle{summary:'clocked out'}` — `member.clockOut`.
 - `error{summary:'process exited (code N)', exitCode}` — 데몬이 의도하지 않은 프로세스 종료(사용자 `/exit`·크래시). clockOut/restart/shutdown 에는 없음.
 - 재시작 복구(T09, 아래 "재시작 복구")가 만드는 이벤트:

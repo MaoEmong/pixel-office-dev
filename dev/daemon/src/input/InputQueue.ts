@@ -4,6 +4,8 @@
 // 같은 pty 를 쓰므로 한 곳에서 순서를 정한다. 자동 타이핑은 (a) 어댑터가 idle 이고(진행 중 턴·열린 질문 없음),
 // (b) ScreenModel 이 prompt ready 이고, (c) 사용자가 직접 치는 중이 아닐 때(마지막 typeRaw 후 grace 경과)만 flush 한다.
 // 첫 실행 다이얼로그(온보딩·폴더 신뢰)는 ScreenModel 감지 + 권장 키로 통과한다(실측 ①④ — 설정 선주입은 안 먹힘).
+// 권장 키가 없는 다이얼로그(CLI 자체 허가 프롬프트 `approval-prompt`, D-23)는 통과 대상이 아니다 — 키를 보내지 않고
+// blocked('dialog') + dialogBlocked(kind) 로만 알린다(D-26, T23b).
 //
 // 시간은 전부 주입된 now() 기준이고, 지연 동작(키 간격·paste→Enter·busy 창)은 내부 스케줄러에 "언제 실행"으로 적어 두고
 // tick() 에서 만기된 것을 실행한다. 그래서 테스트는 setInterval/setTimeout 없이 now() 를 밀고 tick() 만 불러 검증할 수 있다.
@@ -51,6 +53,11 @@ export type InputQueueEvents = {
   blocked: [reason: BlockReason];
   /** 다이얼로그를 감지해 권장 키를 보냈다. */
   dialogPassed: [kind: string];
+  /**
+   * 통과할 수 없는 다이얼로그가 떠 있다(권장 키가 비어 있음 — CLI 자체 허가 프롬프트 `approval-prompt` 등, D-23/D-26).
+   * 키는 보내지 않는다. 같은 kind 에 대해 그 다이얼로그가 사라질 때까지 한 번만 낸다.
+   */
+  dialogBlocked: [kind: string];
 };
 
 /** 내부 타이밍 상수. 테스트에서 참조. */
@@ -88,6 +95,8 @@ export class InputQueue extends EventEmitter<InputQueueEvents> {
   private busyUntil = Number.NEGATIVE_INFINITY;
   private readonly lastDialogAt = new Map<string, number>();
   private readonly lastBlockedAt = new Map<BlockReason, number>();
+  /** dialogBlocked 를 이미 낸 다이얼로그 kind. 그 다이얼로그가 사라지거나 다른 kind 로 바뀌면 지운다. */
+  private blockedDialogKind: string | undefined;
 
   constructor(deps: QueueDeps) {
     super();
@@ -165,7 +174,18 @@ export class InputQueue extends EventEmitter<InputQueueEvents> {
     const now = this.now();
 
     const dialog = this.deps.screen.detectDialog();
+    if (dialog.kind === 'none') this.blockedDialogKind = undefined;
     if (dialog.kind !== 'none') {
+      // 권장 키가 없는 다이얼로그(= CLI 자체 허가 프롬프트, D-23)는 통과 대상이 아니다. 키도 안 보내고 "통과했다"고도 하지 않는다.
+      // 큐가 막힌 이유(blocked)는 다른 이유와 같은 계량으로, 어떤 다이얼로그인지(dialogBlocked)는 사라질 때까지 한 번만 알린다(D-26).
+      if (dialog.suggestedKeys.length === 0) {
+        if (this.blockedDialogKind !== dialog.kind) {
+          this.blockedDialogKind = dialog.kind;
+          this.emit('dialogBlocked', dialog.kind);
+        }
+        return this.block('dialog', now);
+      }
+      this.blockedDialogKind = undefined;
       // 사용자가 터미널 탭에서 직접 다이얼로그를 다루는 중일 수 있다 — 그 위에 키를 얹지 않는다.
       if (this.userTyping(now)) return this.block('user-typing', now);
       const last = this.lastDialogAt.get(dialog.kind);
