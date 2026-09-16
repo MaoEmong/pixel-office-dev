@@ -131,8 +131,13 @@ Future<ProviderContainer> pumpPanel(
   return ProviderScope.containerOf(key.currentContext!);
 }
 
+/// [pumpUntil] 이 실제로 기다리는 시간의 상한. 조건이 차면 바로 돌아오므로 통과하는 실행은 이 값에 영향받지 않는다
+/// — 실패를 빨리 내려고 5초로 두었더니 머신이 잠깐 멈출 때(전체 suite 동시 실행·디스크 스캔 등) 멀쩡한 테스트가
+/// `pumpUntil timeout` 으로 깨졌다(T18: `test/panel/` 한 판이 3~4초 대신 9초 걸리며 1건 실패). 20초로 올린다.
+const Duration pumpUntilTimeout = Duration(seconds: 20);
+
 /// `runAsync` 안에서: 조건이 참이 될 때까지 pump + 실시간 대기.
-Future<void> pumpUntil(WidgetTester tester, bool Function() cond, {Duration timeout = const Duration(seconds: 5), String? reason}) async {
+Future<void> pumpUntil(WidgetTester tester, bool Function() cond, {Duration timeout = pumpUntilTimeout, String? reason}) async {
   final deadline = DateTime.now().add(timeout);
   while (true) {
     await tester.pump();

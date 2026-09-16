@@ -56,7 +56,10 @@ void main() {
       daemon.emitEvent(ev(31, kind: 'thinking', detail: {'text': '[TASK#8 from user]\n문서도 고쳐줘'}));
       daemon.emitEvent(ev(32, kind: 'text', detail: {'text': '문서 갱신 완료'}));
       daemon.emitEvent({...ev(33, kind: 'reporting', detail: {'summary': '문서 갱신 완료'}), 'ref': {'taskId': 8}});
-      await pumpUntil(tester, () => find.byType(ReportCard).evaluate().length == 3, reason: 'three reports');
+      // 카드 수(3)로 기다리면 안 된다 — text(32) 만 와도 "작업 없음" 카드로 3장이 되어,
+      // reporting(33) 이 그 카드를 task#8 로 합치기 전에 조건이 참이 된다(간헐 실패 [32, 24, 4]).
+      // 33 이 들어와야만 생기는 것(task#8 제목)으로 기다린다.
+      await pumpUntil(tester, () => find.text('task#8').evaluate().isNotEmpty, reason: 'task#8 report');
       final seqs = tester.widgetList<ReportCard>(find.byType(ReportCard)).map((w) => w.report.seq).toList();
       expect(seqs, [33, 24, 4]);
       expect(find.text('task#8'), findsOneWidget);

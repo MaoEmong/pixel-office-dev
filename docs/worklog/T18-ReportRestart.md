@@ -33,19 +33,43 @@
 - `lib/panel/terminal_tab.dart` — Terminal 을 State 가 아니라 캐시에서 받는다. 탭이 보이면 attach(현재 화면을 `\x1b[H\x1b[2J` 뒤에 써서 뷰포트만 비우고 스크롤백은 유지), 숨겨지면/멤버가 바뀌면 detach — 데몬 쪽 구독만 오간다. 세대 번호·재접속 재attach·오류 배너는 T13 그대로.
 - `lib/panel/right_panel.dart` — 헤더 아래에 `MemberGoneBanner` → `RecoveryHint` → (카드 영역 `pendingCardsMaxHeight`=320 안에) `RedoCards` + `PendingCards` → `TabBar` 순. `_TabRequestListener`. 배럴 export 에 T18 심볼 추가(`RightPanelTab`/`PanelTabRequest`/`panelTabRequestProvider`, `RedoCards`/`RedoCard`/`redoNeededProvider`/`redoInstructionProvider`/`describeRedoSummary`, `ReportTab`/`ReportCard`/`MemberReport`/`memberReportsProvider`/`taskInstructionsProvider`/`parseTaskPrompt`, `MemberGoneBanner`/`RecoveryHint`/`memberFailureEventsProvider`/`recoveryExpiredCountProvider`, `terminalCacheProvider`/`TerminalCache`/`CachedTerminal`).
 - 테스트(신규 `report_tab_test.dart` 3 · `redo_card_test.dart` 3 · `member_gone_banner_test.dart` 3, `terminal_tab_test.dart` +1, `right_panel_test.dart` 의 보고서 자리 테스트를 T18 동작으로 갱신) — `test/panel/` 합계 40건.
+- 간헐 실패 2건 수정(아래 "발견한 함정") — `test/panel/report_tab_test.dart` 의 대기 조건을 카드 개수 대신 `task#8` 제목으로(경합 제거), `test/panel/panel_harness.dart` 의 `pumpUntil` 기본 상한 5초 → 20초(`pumpUntilTimeout`). 제품 코드(`lib/`)는 바뀌지 않았다.
 
 ## 검증
 
 ```
 $ cd dev/app && flutter analyze
 Analyzing app...
-No issues found! (ran in 4.1s)
+No issues found! (ran in 3.6s)
 
 $ flutter test test/panel/          (3회 연속)
-__PANEL_RUNS__
+00:03 +40: All tests passed!
+00:03 +40: All tests passed!
+00:03 +40: All tests passed!
 
-$ flutter test                      (전체, 6회 연속 — 아래 "발견한 함정" 의 간헐 실패 추적)
-__FULL_RUNS__
+$ flutter test                      (전체, 6회 연속)
+00:11 +134 ~1: All tests passed!
+00:10 +134 ~1: All tests passed!
+00:11 +134 ~1: All tests passed!
+00:10 +134 ~1: All tests passed!
+00:10 +134 ~1: All tests passed!
+00:11 +134 ~1: All tests passed!
+```
+
+간헐 실패 추적(아래 "발견한 함정") 은 수정 **전**에 돌린 것이다:
+
+```
+$ flutter test                      (수정 전 3회 — 지시받은 대로)
+00:11 +134 ~1: All tests passed!
+00:11 +133 ~1 -1: Some tests failed.      ← 재현
+00:12 +134 ~1: All tests passed!
+
+$ flutter test --reporter expanded  (실패할 때까지 반복 — 2판째에 실패, 문구 확보)
+run 1 rc=0 00:11 +134 ~1: All tests passed!
+run 2 rc=1 00:11 +133 ~1 -1: Some tests failed.
+
+$ flutter test test/panel/ --reporter expanded   (두 번째 함정 재현 시도, 20판)
+panel run 1..20 rc=0  00:03~00:04 +40: All tests passed!   (재현 안 됨)
 ```
 
 `~1` 은 `test/office/office_preview_test.dart` 의 `OFFICE_PREVIEW_OUT` 미설정 skip(T12).
@@ -73,6 +97,8 @@ __FULL_RUNS__
   타이머·timeout 문제가 아니라 **대기 조건이 헐거워서 생긴 경합**이다. 테스트가 라이브 이벤트 4개(`text{resumed}`(30) · `thinking[TASK#8]`(31) · `text{문서 갱신 완료}`(32) · `reporting ref taskId 8`(33))를 연달아 밀어 넣고 `ReportCard` **개수가 3** 이 되기를 기다렸는데, `text`(32) 만 도착해도 그게 "보고(작업 없음)" 카드가 되어 이미 3장이다. 그 틈에 조건이 참이 되면 맨 위 카드 seq 가 33 이 아니라 32 다(33 이 오면 32 를 흡수해 개수는 그대로 3). 소켓 4건이 한 프레임 안에 다 들어오면 통과하고, 32 와 33 사이에 pump 가 끼면 실패 — 부하에 따라 갈렸다.
   고친 방법: 개수 대신 **33 이 와야만 생기는 것**(`task#8` 제목)이 나타날 때까지 기다린다. `pumpUntil(… find.text('task#8') …)`. 실제 타이밍에 의존하지 않고 최종 상태를 기다리므로 결정적이다.
   같은 패턴(개수로 기다리기)이 다른 곳에도 있는지 훑었다 — `right_panel_test.dart` 보고서 탭과 `report_tab_test.dart` 두 번째 테스트, `redo_card_test.dart` 는 모두 **마지막 이벤트로만 생기는 내용**(`최신 응답입니다`, `task#9 done`, RedoCard 유무)을 기다려서 같은 경합이 없다. `test/command/notices_test.dart` 는 `tester.pump(Duration)` 만 써서 실시간과 무관(수정 없음).
+
+- **두 번째(훨씬 드문) 간헐 실패 — `pumpUntil` 의 5초 상한이 짧았다.** 위 수정 뒤 `flutter test test/panel/` 을 돌리다 한 판이 `+39 -1` 로 깨졌는데, **그 판만 3~4초가 아니라 9초** 걸렸다(정상 3~4초 + 타임아웃 5초). 실패 문구를 잡으려고 `test/panel/` 을 20판 더 돌렸지만 재현되지 않았다(전부 `+40`). 특정 테스트의 논리 문제라면 즉시 깨지지 `+5초` 가 붙지 않으므로, 머신이 잠깐 멈춘 사이(전체 suite 동시 실행 · 디스크 스캔 등) 실제 소켓 왕복이 5초를 넘긴 것으로 본다. 이 테스트들은 가짜 데몬에 **진짜 소켓**으로 붙으므로 실시간 대기를 없앨 수는 없다 — 대신 `panel_harness.dart` 의 `pumpUntil` 기본 상한을 **5초 → 20초**(`pumpUntilTimeout`)로 올렸다. 조건이 차면 즉시 돌아오므로 통과하는 실행은 전혀 느려지지 않고(20판 모두 3~4초 유지), 잠깐의 멈춤이 멀쩡한 테스트를 깨뜨리지만 않게 된다. 진짜로 조건이 안 차면 여전히 `pumpUntil timeout: <reason>` 으로 20초 뒤 실패한다.
 - **`text{summary:'resumed'}` 를 턴 경계로 세면 재시작 카드가 뜨자마자 사라진다** — 재시작 복구는 `error{재지시 필요}` 들을 먼저 쓰고 되살린 세션의 `SessionStart(resume)` 이 `text{resumed}` 를 남긴다. 그래서 경계는 `idle` 또는 **본문 있는** `text` 만. 보고서 탭도 같은 이유로 본문 없는 text 를 무시한다.
 - **`reporting` 이 오면 상태 층이 `openTasks` 에서 그 task 를 지운다**(T11 규칙) → 보고 카드의 지시문은 열린 task 만 보면 사라진다. `thinking{[TASK#N from user]}` 이벤트(UserPromptSubmit, 200자 절단)를 함께 보되 열린 동안은 전문이 덮어쓰게 했다.
 - **Terminal 을 캐시로 옮기면 `onResize` 가 detach 된 뒤에도 불린다**(뷰가 다시 붙을 때 크기가 잡히며). attach 되기 전의 resize 는 데몬이 "마지막 attach 클라이언트" 검사에서 무시하지만 헛 RPC 라 `CachedTerminal.attached` 로 걸렀다. TerminalTab 이 attach 성공에 true, detach/끊김/dispose 에 false.
