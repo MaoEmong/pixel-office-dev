@@ -26,7 +26,7 @@ export interface PtyManagerConfig {
 
 export interface KillOptions {
   /**
-   * true 면 먼저 정중한 종료를 시도한다 — Claude `/exit`, Codex Ctrl+C×2 (실측 "종료").
+   * true 면 먼저 정중한 종료를 시도한다 — Claude `/exit`, Codex Ctrl+C(안 죽으면 2초 뒤 한 번 더). 실측 "종료".
    * timeoutMs 안에 안 죽으면 강제 종료.
    */
   graceful?: boolean;
@@ -46,6 +46,53 @@ export const KEY_BYTES: Record<KeyName, string> = {
 /** bracketed paste 구분자 (실측 ①: 세 줄이 한 프롬프트로 들어감). */
 export const PASTE_START = '\x1b[200~';
 export const PASTE_END = '\x1b[201~';
+
+/**
+ * Codex 정중한 종료에서 **두 번째** Ctrl+C 를 보내기 전에 기다리는 시간.
+ * 실측(T20/T21): 프롬프트가 idle 이면 Ctrl+C **한 번**으로 exit 0 이 되고 `codex resume <id>` 안내가 찍힌다.
+ * 턴이 도는 중이면 첫 Ctrl+C 는 그 턴만 끊으므로 안 죽었을 때만 한 번 더 보낸다.
+ */
+export const CODEX_SECOND_CTRL_C_WAIT_MS = 2000;
+
+/** gracefulQuit 가 건드리는 세션의 최소 모양(테스트에서 가짜로 대체). */
+export type QuitTarget = Pick<PtySession, 'engine' | 'alive' | 'write' | 'sendKeys'>;
+
+/** 종료를 ms 만큼 기다려 죽었으면 true. PtyManager 는 exit 이벤트로, 테스트는 가짜로 준다. */
+export type ExitWaiter = (ms: number) => Promise<boolean>;
+
+/** 엔진별 첫 종료 입력. Claude `/exit`+Enter, Codex Ctrl+C. 이미 죽은 세션의 예외는 삼킨다. */
+function sendQuitInput(session: QuitTarget): void {
+  try {
+    if (session.engine === 'claude') session.write('/exit' + KEY_BYTES.enter);
+    else session.sendKeys('ctrl-c');
+  } catch {
+    // write 실패(이미 죽음)는 무시 — 호출자가 강제 종료로 이어간다.
+  }
+}
+
+/**
+ * "정중한 종료" 한 판. 죽었으면 true, timeoutMs 안에 안 죽으면 false(호출자가 강제 종료).
+ *   claude: `/exit` + Enter 한 번 → 끝까지 대기
+ *   codex : Ctrl+C 한 번 → 최대 CODEX_SECOND_CTRL_C_WAIT_MS 대기 → 아직 살아 있으면 Ctrl+C 한 번 더 → 남은 시간 대기
+ * (실측 ④ 는 "Ctrl+C ×2" 였지만 그건 턴이 돌던 중이었다 — idle 프롬프트에서는 한 번이면 끝난다. 그래서 무조건 두 번 보내지 않는다:
+ *  이미 죽은 뒤의 두 번째 Ctrl+C 는 다음 세션이나 사용자 터미널로 새어 나갈 수 있다.)
+ */
+export async function gracefulQuit(session: QuitTarget, waitExit: ExitWaiter, opts: { firstWaitMs?: number; timeoutMs?: number } = {}): Promise<boolean> {
+  const total = opts.timeoutMs ?? 5000;
+  sendQuitInput(session);
+  if (session.engine !== 'codex') return waitExit(total);
+
+  const first = Math.min(opts.firstWaitMs ?? CODEX_SECOND_CTRL_C_WAIT_MS, total);
+  if (await waitExit(first)) return true;
+  if (session.alive) {
+    try {
+      session.sendKeys('ctrl-c');
+    } catch {
+      // 그 사이 죽었으면 무시.
+    }
+  }
+  return waitExit(Math.max(total - first, 0));
+}
 
 export type PtyManagerEvents = {
   /** pty 출력 바이트(string). ScreenModel 과 attach 된 클라이언트에 그대로 흘린다. */
@@ -168,8 +215,7 @@ export class PtyManager extends EventEmitter<PtyManagerEvents> {
 
     const exited = this.waitExit(memberId);
     if (opts.graceful) {
-      this.sendQuitSequence(session);
-      const done = await withTimeout(exited, opts.timeoutMs ?? 5000);
+      const done = await gracefulQuit(session, (ms) => withTimeout(exited, ms), { timeoutMs: opts.timeoutMs ?? 5000 });
       if (done) return;
     }
     session.kill();
@@ -188,40 +234,44 @@ export class PtyManager extends EventEmitter<PtyManagerEvents> {
     });
   }
 
-  /** 실측 "종료": Claude 는 `/exit`, Codex 는 `/quit` 만으로는 안 끝나고 Ctrl+C×2. */
-  private sendQuitSequence(session: PtySessionImpl): void {
-    try {
-      if (session.engine === 'claude') {
-        session.write('/exit' + KEY_BYTES.enter);
-      } else {
-        session.sendKeys('ctrl-c');
-        setTimeout(() => {
-          if (session.alive) session.sendKeys('ctrl-c');
-        }, 300);
-      }
-    } catch {
-      // write 실패(이미 죽음)는 무시 — 이어서 강제 종료·exit 대기로 간다.
-    }
-  }
-
-  /** 엔진별 실행 파일·인자와 hook 설정 파일 준비. */
+  /** 엔진별 실행 파일·인자와 hook 설정 파일 준비. 경고(남의 hooks.json)는 warn 이벤트로. */
   private prepareCommand(opts: SpawnOptions): { file: string; args: string[] } {
-    if (opts.engine === 'claude') {
-      const settingsPath = writeClaudeSessionSettings(this.cfg.dataDir, opts.memberId, opts.hookScriptPath, opts.hookPort);
-      return {
-        file: this.cfg.claudeExe,
-        args: buildClaudeArgs(settingsPath, opts.resumeSessionId, opts.extraArgs, { mcpConfigPath: opts.mcpConfigPath }),
-      };
-    }
-    const result = ensureCodexHooksFile(opts.cwd, opts.hookScriptPath, opts.hookPort);
-    if (!result.written) this.warn(opts.memberId, result.reason ?? `did not write ${result.path}`);
-    return { file: this.cfg.codexExe, args: buildCodexArgs(opts.resumeSessionId, opts.extraArgs) };
+    const { file, args, warn } = prepareSpawnCommand(this.cfg, opts);
+    if (warn) this.warn(opts.memberId, warn);
+    return { file, args };
   }
 
   private warn(memberId: string, message: string): void {
     if (this.listenerCount('warn') > 0) this.emit('warn', memberId, message);
     else console.warn(`[pty:${memberId}] ${message}`);
   }
+}
+
+export interface SpawnCommand {
+  file: string;
+  args: string[];
+  /** 치명적이지 않은 경고(남이 쓴 `.codex/hooks.json` 을 건드리지 않았다 등). */
+  warn?: string;
+}
+
+/**
+ * 엔진별 실행 파일·인자 + hook 설정 파일 준비(부작용: 설정 파일 쓰기). spawn 없이 검증할 수 있게 밖으로 뺐다.
+ *   claude: `<dataDir>/sessions/<memberId>/claude-settings.json` 을 쓰고 `--settings …`(+ --resume, --mcp-config)
+ *   codex : `<cwd>/.codex/hooks.json`(pixel-office 마커, 남의 파일이면 건드리지 않고 warn) +
+ *           `[resume <id>] --dangerously-bypass-hook-trust -c approval_policy="on-request" -c sandbox_mode="workspace-write"` (실측 ④)
+ */
+export function prepareSpawnCommand(cfg: Pick<PtyManagerConfig, 'claudeExe' | 'codexExe' | 'dataDir'>, opts: SpawnOptions): SpawnCommand {
+  if (opts.engine === 'claude') {
+    const settingsPath = writeClaudeSessionSettings(cfg.dataDir, opts.memberId, opts.hookScriptPath, opts.hookPort);
+    return {
+      file: cfg.claudeExe,
+      args: buildClaudeArgs(settingsPath, opts.resumeSessionId, opts.extraArgs, { mcpConfigPath: opts.mcpConfigPath }),
+    };
+  }
+  const result = ensureCodexHooksFile(opts.cwd, opts.hookScriptPath, opts.hookPort);
+  const cmd: SpawnCommand = { file: cfg.codexExe, args: buildCodexArgs(opts.resumeSessionId, opts.extraArgs) };
+  if (!result.written) cmd.warn = result.reason ?? `did not write ${result.path}`;
+  return cmd;
 }
 
 /** promise 가 ms 안에 끝나면 true, 아니면 false. 타이머는 정리한다. */

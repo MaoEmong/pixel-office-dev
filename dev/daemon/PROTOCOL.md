@@ -61,6 +61,25 @@ v1a 에서 데몬이 만드는 이벤트(어댑터 표는 worklog T04 참고):
   - `error{summary:'resume failed; started fresh session', exitCode, sessionId}` — `--resume` 직후(10초 안) 0 이 아닌 코드로 죽음(세션 파일 없음 증상) → `session_id` 를 지우고 새 세션으로 한 번 더 스폰. task 는 그대로.
   - `text{summary:'resumed'}` — 되살린 세션의 `SessionStart(source=resume)`(어댑터, T04).
 
+## 엔진별 동작 차이 (T20)
+
+같은 오피스 이벤트·pending·RPC 를 쓰지만, 엔진(`member.engine`)에 따라 데몬 안에서 다르게 처리되는 것들이다. 클라이언트가 알아야 할 것만 적는다.
+
+| | Claude Code 2.1 | Codex CLI 0.154 |
+|---|---|---|
+| hook 주입 | `--settings <세션 json>` | `<cwd>/.codex/hooks.json` + `--dangerously-bypass-hook-trust` (같은 cwd 의 팀원들이 공유, 멤버 식별은 `PIXEL_MEMBER`). 남이 쓴 파일이면 덮어쓰지 않고 `daemon.notice{warn}` |
+| 스폰 인자 | `--permission-mode default` (+ `--mcp-config`) | `-c approval_policy="on-request" -c sandbox_mode="workspace-write"`, 재개는 `resume <id>` 서브커맨드 |
+| `reading`/`editing`/`running` | `PreToolUse` 의 **도구 이름**(Read/Edit/Bash …) | 도구는 `Bash` 하나뿐 → **명령 문자열 휴리스틱**. `cat`·`rg`·`ls`·`sed -n`·`type`·`Get-Content`·`git diff\|log\|status` 등만 `reading`, `apply_patch` 는 `editing`, 나머지는 `running`. 애매하면 `running` |
+| `waiting_approval` detail | `{tool, path\|cmd, summary?}` | `{tool:'Bash', cmd, summary}` — `summary` 는 Codex 가 보내는 한국어 승인 문구(`tool_input.description`) |
+| 질문(`asking`) | TUI `AskUserQuestion` + TeamTools `ask_user` | **TUI 질문이 없다.** `asking` 은 TeamTools `ask_user` 뿐 → `question.respond` 는 항상 `[ANSWER q#<id>]` 주입 경로 |
+| 첫 `idle` | `SessionStart` hook(기동 직후) | **`SessionStart` 가 첫 프롬프트 제출 때 온다**(실측 T20). 데몬이 화면 준비(prompt ready)를 보고 `starting → idle` 로 올린다 — 클라이언트에는 그냥 `member.status idle` 로 보인다 |
+| 중단 | `Ctrl+C` → Stop hook 없음 → 화면으로 `idle{summary:'interrupted'}` | `Ctrl+C` → **`Interrupt` hook**(3초 클램프) → 같은 `idle{summary:'interrupted'}` |
+| 퇴근(`member.clockOut`) | `/exit` + Enter | `Ctrl+C`(idle 이면 한 번에 exit 0). 2초 안에 안 죽으면 `Ctrl+C` 한 번 더, 그래도 안 죽으면 강제 종료 |
+| 첫 실행 다이얼로그 | 온보딩 + 폴더 신뢰(↓+Enter) | 폴더 신뢰 "Do you trust the contents of this directory?" → Enter (ScreenModel 감지, InputQueue 가 통과 → `daemon.notice{info}`) |
+| TeamTools MCP | `--mcp-config` 로 주입 | M3(아직 주입 안 함) — Codex 멤버는 `ask_user` 를 쓸 수 없다 |
+
+`SessionEnd` 의 `reason` 이 `clear`/`resume` 이면 두 엔진 모두 종료로 보지 않는다(같은 프로세스에서 새 `SessionStart` 가 따라온다).
+
 ## 재시작 복구
 
 데몬이 기동할 때(`daemon.json` 기록 직후, WS 서버가 열리기 전) 이전 기동이 DB 에 남긴 멤버를 되살린다. 클라이언트는 아무것도 요청하지 않아도 된다 — `hello` 때 스냅샷과 `since` replay 로 결과를 본다.

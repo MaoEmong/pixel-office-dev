@@ -38,7 +38,8 @@ export interface ToolDoneInfo {
 /** 보류가 어댑터 결정 없이 닫힌 이유(HookReceiver 'hold-timeout' / 'hold-closed'). */
 export type HoldLostReason = 'timeout' | 'closed';
 
-export interface ClaudeHooksAdapterEvents {
+/** 어댑터가 내는 이벤트(엔진 공통 — Claude/Codex 어댑터가 같은 이름·같은 인자로 낸다). */
+export interface HooksAdapterEvents {
   /** store.appendEvent 를 거친 오피스 이벤트(seq 포함). */
   event: [event: OfficeEvent];
   /** 멤버 status 가 바뀜(store 반영 후). 같은 값이면 안 낸다. */
@@ -52,3 +53,6 @@ export interface ClaudeHooksAdapterEvents {
   /** handleHook 안에서 throw — 삼키고 여기로 낸다(응답은 '{}'). */
   'handler-error': [err: unknown, memberId: string, event: string];
 }
+
+/** T04 이름(호환용 별칭). 새 코드는 HooksAdapterEvents 를 쓴다. */
+export type ClaudeHooksAdapterEvents = HooksAdapterEvents;

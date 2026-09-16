@@ -1,9 +1,9 @@
-// Office — 데몬 하나에 하나. Store(T06)·PtyManager(T01)·HookReceiver(T03)·ClaudeHooksAdapter(T04)를 소유하고,
+// Office — 데몬 하나에 하나. Store(T06)·PtyManager(T01)·HookReceiver(T03)·엔진별 hook 어댑터(T04 Claude / T20 Codex)를 소유하고,
 // 멤버마다 ScreenModel(T02)·InputQueue(T05)를 붙여 "출근 → 지시 → 허가/질문 → 퇴근" 을 한 객체의 메서드로 만든다.
 // RpcServer(T07)는 OfficeApi 인터페이스만 보고 JSON-RPC 로 옮긴다(PROTOCOL.md). 설계: 01 §구성 요소 1.
 //
 // 배선(설계 §구성 요소 1 + 각 worklog 의 "남은 것"):
-//   HookReceiver 'hook'           → store.getMemberByToken → adapter.handleHook
+//   HookReceiver 'hook'           → store.getMemberByToken → adapterFor(member.engine).handleHook (T20)
 //   HookReceiver 'hold-timeout'   → adapter.onHoldTimeout   / 'hold-closed' → adapter.onHoldClosed
 //   PtyManager  'data'            → ScreenModel.feed + 'term' 이벤트(attach 한 클라이언트)
 //   PtyManager  'exit'            → adapter.onSessionExit(예상 못 한 종료) / status exited(퇴근·재시작·셧다운)
@@ -23,12 +23,14 @@ import { PtyManager } from '../pty/PtyManager.js';
 import { toForwardSlashes } from '../pty/hookSettings.js';
 import type { ExitInfo, PtySession } from '../pty/types.js';
 import { HookReceiver } from '../hooks/HookReceiver.js';
+import type { BaseHooksAdapter } from '../adapters/BaseHooksAdapter.js';
 import { ClaudeHooksAdapter } from '../adapters/ClaudeHooksAdapter.js';
+import { CodexHooksAdapter } from '../adapters/CodexHooksAdapter.js';
 import { ScreenModel } from '../screen/ScreenModel.js';
 import { InputQueue } from '../input/InputQueue.js';
 import { TeamToolsServer, TEAM_MCP_NAME } from '../mcp/TeamToolsServer.js';
 import { USER_ACTOR } from '../store/types.js';
-import type { EventsQueryInput, Member, MemberStatus, OfficeEvent, Pending, Snapshot, Task, Team } from '../store/types.js';
+import type { Engine, EventsQueryInput, Member, MemberStatus, OfficeEvent, Pending, Snapshot, Task, Team } from '../store/types.js';
 import { OfficeError, RPC_ERROR, badState, invalidParams, notFound } from './errors.js';
 import { defaultOrphanOps, reapOrphan, type OrphanOps } from './orphans.js';
 import type {
@@ -68,6 +70,14 @@ const INTERRUPT_GUARD_MS = 1500;
 /** interrupt 후 화면 준비 문구로 idle 을 판정하는 감시 시간·주기(실측: Ctrl+C 에는 Stop hook 이 없다). */
 const INTERRUPT_WATCH_MS = 8000;
 const INTERRUPT_WATCH_STEP_MS = 250;
+/**
+ * Codex 부팅 감시(T20 실측). Claude 는 기동하자마자 `SessionStart` hook 을 보내지만 **Codex 는 첫 프롬프트를 제출할 때**
+ * 보낸다(dev/spike-0/run-codex6.log: spawn 09:47:00 → 프롬프트 입력 09:47:08.6 → SessionStart 09:47:09.4).
+ * 그래서 hook 만 기다리면 status 가 starting 에 머물고 InputQueue 의 isIdle 게이트가 안 열려 **첫 지시가 영영 안 나간다.**
+ * → 화면이 prompt ready 가 되면(다이얼로그 없음) idle 로 올린다. 그 사이 SessionStart 가 오면 감시를 멈춘다.
+ */
+const BOOT_WATCH_MS = 180_000;
+const BOOT_WATCH_STEP_MS = 500;
 /** 정중한 종료 대기(Claude `/exit`). */
 const KILL_TIMEOUT_MS = 8000;
 const COLS_RANGE = [20, 500] as const;
@@ -124,6 +134,8 @@ interface MemberRuntime {
   exitMode?: 'clockOut' | 'restart' | 'shutdown';
   lastInterruptAt?: number;
   interruptWatch?: NodeJS.Timeout;
+  /** Codex 부팅 감시(SessionStart 가 늦게 오는 엔진용). */
+  bootWatch?: NodeJS.Timeout;
   /**
    * 재시작 복구로 `--resume` 한 세션. 이 창 안에 0 이 아닌 코드로 죽으면(세션 파일 없음 증상) 새 세션으로 한 번 폴백하고
    * 같은 [RESUMED]·queued task 를 다시 큐에 넣는다.
@@ -142,7 +154,12 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
   readonly pty: PtyManagerLike;
   readonly receiver: HookReceiverLike;
   readonly mcp: TeamToolsServerLike;
+  /** Claude 멤버의 hook 어댑터(T04). 엔진별 라우팅은 adapterFor(). */
   readonly adapter: ClaudeHooksAdapter;
+  /** Codex 멤버의 hook 어댑터(T20). */
+  readonly codexAdapter: CodexHooksAdapter;
+  /** engine → 어댑터. hook·pending·종료 처리는 전부 이 표를 거친다. */
+  private readonly adapters: Record<Engine, BaseHooksAdapter>;
 
   private readonly runtimes = new Map<string, MemberRuntime>();
   /** `alwaysThisSession` 로 자동 allow 할 도구(멤버별, 데몬 메모리에만). */
@@ -185,11 +202,36 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
           askUser: (memberId, input) => ({ questionId: this.askUser(memberId, input).id }),
         },
       });
-    this.adapter = new ClaudeHooksAdapter({
+    const adapterDeps = {
       store: this.store,
-      getInstructions: (memberId) => this.readInstructions(memberId) || undefined,
-    });
+      getInstructions: (memberId: string) => this.readInstructions(memberId) || undefined,
+    };
+    this.adapter = new ClaudeHooksAdapter(adapterDeps);
+    this.codexAdapter = new CodexHooksAdapter(adapterDeps);
+    this.adapters = { claude: this.adapter, codex: this.codexAdapter };
     this.wire();
+  }
+
+  /** 엔진의 hook 어댑터. */
+  adapterFor(engine: Engine): BaseHooksAdapter {
+    return this.adapters[engine] ?? this.adapter;
+  }
+
+  /** 멤버의 hook 어댑터. 멤버 행이 없으면(삭제 후 늦게 온 이벤트) Claude 쪽으로 — 어느 쪽이든 no-op 이다. */
+  private adapterOf(memberId: string): BaseHooksAdapter {
+    const engine = this.store.getMember(memberId)?.engine;
+    return engine ? this.adapterFor(engine) : this.adapter;
+  }
+
+  /** 모든 엔진 어댑터(배선용). */
+  private allAdapters(): BaseHooksAdapter[] {
+    return [...new Set(Object.values(this.adapters))];
+  }
+
+  /** memberToken 의 어댑터(hook 보류 만료 라우팅). 멤버를 못 찾으면 Claude — 그쪽에도 보류가 없으면 no-op. */
+  private adapterForToken(memberToken: string): BaseHooksAdapter {
+    const engine = this.store.getMemberByToken(memberToken)?.engine;
+    return engine ? this.adapterFor(engine) : this.adapter;
   }
 
   // ---- 수명 ------------------------------------------------------------------------
@@ -258,7 +300,7 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
     for (const rt of this.runtimes.values()) {
       rt.exitMode = 'shutdown';
       rt.queue.stop();
-      if (rt.interruptWatch) clearInterval(rt.interruptWatch);
+      clearWatches(rt);
     }
     await Promise.all(
       this.pty.list().map((s) =>
@@ -373,7 +415,7 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
     rt.exitMode = 'clockOut';
     rt.queue.clear();
     rt.queue.stop();
-    this.adapter.expireAllForMember(memberId);
+    this.adapterOf(memberId).expireAllForMember(memberId);
     this.store.abortTasksFor(memberId);
     await this.pty.kill(memberId, { graceful: true, timeoutMs: KILL_TIMEOUT_MS });
     this.finishMember(memberId, 'clocked out');
@@ -399,7 +441,7 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
       rt.exitMode = 'restart';
       rt.queue.clear();
       rt.queue.stop();
-      this.adapter.expireAllForMember(memberId);
+      this.adapterOf(memberId).expireAllForMember(memberId);
       await this.pty.kill(memberId, { graceful: true, timeoutMs: KILL_TIMEOUT_MS });
     }
     const fresh = this.spawnMember(this.store.getMember(memberId)!, true);
@@ -445,7 +487,7 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
     rt.lastInterruptAt = now;
     rt.queue.clear();
     rt.queue.interrupt();
-    this.adapter.expireAllForMember(memberId);
+    this.adapterOf(memberId).expireAllForMember(memberId);
     this.store.abortTasksFor(memberId);
     this.watchInterrupted(rt);
   }
@@ -525,7 +567,7 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
 
   respondApproval(pendingId: string, decision: ApprovalRespondParams): void {
     const pending = this.openPending(pendingId, 'approval');
-    const ok = this.adapter.resolveApproval(pendingId, {
+    const ok = this.adapterOf(pending.memberId).resolveApproval(pendingId, {
       behavior: decision.behavior,
       updatedInput: decision.updatedInput,
       message: decision.message,
@@ -547,7 +589,9 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
       this.answerAskUser(pending, answers);
       return;
     }
-    if (!this.adapter.resolveQuestion(pendingId, answers)) throw badState(`pending ${pendingId} is no longer held (hook already closed)`);
+    if (!this.adapterOf(pending.memberId).resolveQuestion(pendingId, answers)) {
+      throw badState(`pending ${pendingId} is no longer held (hook already closed)`);
+    }
   }
 
   // ---- TeamTools ask_user (T17) ------------------------------------------------------------------
@@ -627,7 +671,7 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
     if (typeof tool !== 'string' || !this.autoAllow.get(pending.memberId)?.has(tool)) return;
     setImmediate(() => {
       if (this.store.getPending(pending.id)?.status !== 'open') return;
-      if (this.adapter.resolveApproval(pending.id, { behavior: 'allow' })) {
+      if (this.adapterOf(pending.memberId).resolveApproval(pending.id, { behavior: 'allow' })) {
         this.notice('info', `auto-allowed ${tool} for ${pending.memberId} (always this session)`);
       }
     });
@@ -673,7 +717,35 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
 
     this.store.updateMember(member.id, { childPid: session.pid, status: 'starting' });
     this.emitStatus(member.id, 'starting');
+    // Codex 는 SessionStart 가 첫 프롬프트 때 오므로(T20 실측) 화면으로 부팅 완료를 판정한다.
+    if (member.engine === 'codex') this.watchBootReady(rt);
     return rt;
+  }
+
+  /**
+   * starting → (화면이 prompt ready) → idle. Codex 전용(BOOT_WATCH_MS 주석 참고). SessionStart hook 이 먼저 와서
+   * status 가 바뀌면 바로 멈춘다. 첫 실행 다이얼로그가 떠 있는 동안은 ready 로 보지 않는다(InputQueue 가 통과시킨다).
+   */
+  private watchBootReady(rt: MemberRuntime): void {
+    if (rt.bootWatch) clearInterval(rt.bootWatch);
+    const deadline = Date.now() + BOOT_WATCH_MS;
+    const stop = () => {
+      clearInterval(timer);
+      rt.bootWatch = undefined;
+    };
+    const timer = setInterval(() => {
+      const member = this.store.getMember(rt.memberId);
+      if (!member || !rt.session.alive || member.status !== 'starting') return stop();
+      if (Date.now() > deadline) {
+        this.notice('warn', `${member.name}: CLI 가 준비 화면에 도달하지 못했습니다(터미널 탭을 확인하세요)`);
+        return stop();
+      }
+      if (rt.screen.detectDialog().kind !== 'none' || !rt.screen.promptReady()) return;
+      this.setStatus(member.id, 'idle');
+      stop();
+    }, BOOT_WATCH_STEP_MS);
+    timer.unref();
+    rt.bootWatch = timer;
   }
 
   // ---- 내부: 재시작 복구(T09) ----------------------------------------------------------------
@@ -815,7 +887,7 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
     if (!fb || info.exitCode === 0 || Date.now() > fb.until) return false;
     const member = this.store.getMember(rt.memberId);
     if (!member) return false;
-    this.adapter.expireAllForMember(member.id);
+    this.adapterOf(member.id).expireAllForMember(member.id);
     this.store.updateMember(member.id, { childPid: null, sessionId: null });
     this.appendEvent(member, 'error', { summary: 'resume failed; started fresh session', exitCode: info.exitCode, sessionId: member.sessionId });
     const queued = this.store.listTasks({ toMember: member.id, status: 'queued' });
@@ -839,7 +911,7 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
     if (rt) {
       rt.queue.stop();
       rt.queue.clear();
-      if (rt.interruptWatch) clearInterval(rt.interruptWatch);
+      clearWatches(rt);
     }
     this.disposeMcp(memberId);
     const mode = rt?.exitMode;
@@ -848,12 +920,12 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
     this.store.updateMember(memberId, { childPid: null });
     if (mode === 'clockOut' || mode === 'restart') {
       // 데몬이 의도한 종료: error 이벤트 없이 status 만.
-      this.adapter.expireAllForMember(memberId);
+      this.adapterOf(memberId).expireAllForMember(memberId);
       this.setStatus(memberId, 'exited');
       return;
     }
     // 예상 못 한 종료(사용자 /exit, 크래시): 어댑터가 error 이벤트 + exited/error, pending 만료. task 는 여기서 aborted.
-    this.adapter.onSessionExit(memberId, info.exitCode);
+    this.adapterOf(memberId).onSessionExit(memberId, info.exitCode);
     this.store.abortTasksFor(memberId);
   }
 
@@ -872,7 +944,7 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
     const rt = this.runtimes.get(memberId);
     if (!rt) return;
     rt.queue.stop();
-    if (rt.interruptWatch) clearInterval(rt.interruptWatch);
+    clearWatches(rt);
     rt.screen.dispose();
     this.runtimes.delete(memberId);
   }
@@ -913,13 +985,16 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
   // ---- 내부: 배선 -------------------------------------------------------------------------
 
   private wire(): void {
-    this.adapter.on('event', (ev) => {
-      this.emit('event', ev);
-      this.afterOfficeEvent(ev);
-    });
-    this.adapter.on('status', (memberId, status) => this.emitStatus(memberId, status));
-    this.adapter.on('pendingCreated', (p) => this.maybeAutoAllow(p));
-    this.adapter.on('handler-error', (err, memberId, event) => this.notice('error', `hook ${event} handler failed for ${memberId}: ${errMsg(err)}`));
+    // 엔진 어댑터는 같은 이벤트를 낸다(HooksAdapterEvents) — 배선도 같다.
+    for (const adapter of this.allAdapters()) {
+      adapter.on('event', (ev) => {
+        this.emit('event', ev);
+        this.afterOfficeEvent(ev);
+      });
+      adapter.on('status', (memberId, status) => this.emitStatus(memberId, status));
+      adapter.on('pendingCreated', (p) => this.maybeAutoAllow(p));
+      adapter.on('handler-error', (err, memberId, event) => this.notice('error', `hook ${event} handler failed for ${memberId}: ${errMsg(err)}`));
+    }
 
     this.receiver.on('hook', (req) => {
       const member = this.store.getMemberByToken(req.memberToken);
@@ -928,13 +1003,14 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
         this.notice('warn', `hook ${req.event} from unknown member token ${req.memberToken.slice(0, 8)}…`);
         return;
       }
-      this.adapter.handleHook(req, member);
+      // T20: 멤버의 engine 으로 어댑터를 고른다(Codex 는 명령 휴리스틱 매핑 + Interrupt hook).
+      this.adapterFor(member.engine).handleHook(req, member);
     });
     this.receiver.on('hold-timeout', (h) => {
-      this.adapter.onHoldTimeout(h.memberToken, h.event);
+      this.adapterForToken(h.memberToken).onHoldTimeout(h.memberToken, h.event);
       this.notice('warn', `hook ${h.event} hold timed out for ${this.memberName(h.memberToken)}; answer in terminal`);
     });
-    this.receiver.on('hold-closed', (h) => this.adapter.onHoldClosed(h.memberToken, h.event));
+    this.receiver.on('hold-closed', (h) => this.adapterForToken(h.memberToken).onHoldClosed(h.memberToken, h.event));
     this.receiver.on('bad-payload', (info) => this.notice('warn', `hook ${info.event}: bad payload (${info.error})`));
     this.receiver.on('handler-error', (err, req) => this.notice('error', `hook ${req.event} listener threw: ${errMsg(err)}`));
 
@@ -1064,6 +1140,14 @@ function describeEvent(ev: OfficeEvent): string {
 
 function oneLine(s: string): string {
   return s.replace(/\s+/g, ' ').trim();
+}
+
+/** 런타임에 걸린 화면 감시 타이머(interrupt·Codex 부팅)를 모두 정리한다. */
+function clearWatches(rt: MemberRuntime): void {
+  if (rt.interruptWatch) clearInterval(rt.interruptWatch);
+  rt.interruptWatch = undefined;
+  if (rt.bootWatch) clearInterval(rt.bootWatch);
+  rt.bootWatch = undefined;
 }
 
 function checkSize(cols: number, rows: number): void {

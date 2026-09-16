@@ -3,6 +3,7 @@
 import { EventEmitter } from 'node:events';
 import type { HookReceiverLike, PtyManagerLike } from '../../src/office/types.js';
 import type { ExitInfo, KeyName, PtySession, SpawnOptions } from '../../src/pty/types.js';
+import { gracefulQuit } from '../../src/pty/PtyManager.js';
 import type { DecisionHandle, HookReceiverEvents, HookRequest } from '../../src/hooks/HookReceiver.js';
 import type { HookEvent, HookPayload } from '../../src/hooks/types.js';
 
@@ -45,6 +46,8 @@ export class FakePty extends EventEmitter<PtyEvents> implements PtyManagerLike {
   readonly sessions = new Map<string, FakeSession>();
   /** memberId 별로 spawn 을 실패시킨다(복구가 throw 를 삼키는지 검증). */
   readonly failSpawnFor = new Set<string>();
+  /** 첫 종료 입력으로 안 죽는 멤버(정중한 종료의 두 번째 Ctrl+C 를 보게 한다). */
+  readonly stubborn = new Set<string>();
   private nextPid = 1000;
   spawn(opts: SpawnOptions): PtySession {
     const existing = this.sessions.get(opts.memberId);
@@ -61,11 +64,16 @@ export class FakePty extends EventEmitter<PtyEvents> implements PtyManagerLike {
   list(): PtySession[] {
     return [...this.sessions.values()];
   }
+  /**
+   * graceful 이면 진짜 종료 시퀀스(PtyManager.gracefulQuit)를 세션에 보낸다 — Claude `/exit`, Codex Ctrl+C.
+   * 기본 세션은 첫 종료 입력에 죽는다(실측: idle Codex 는 Ctrl+C 한 번이면 끝). stubborn 에 넣은 멤버는 안 죽어
+   * 두 번째 Ctrl+C 까지 받는다(턴 진행 중 시나리오).
+   */
   async kill(memberId: string, opts: { graceful?: boolean } = {}): Promise<void> {
     this.kills.push({ memberId, graceful: opts.graceful });
     const s = this.sessions.get(memberId);
     if (!s?.alive) return;
-    if (opts.graceful) s.writes.push('/exit\r');
+    if (opts.graceful) await gracefulQuit(s, () => Promise.resolve(!this.stubborn.has(memberId)), { firstWaitMs: 0, timeoutMs: 0 });
     this.exit(memberId, 0);
   }
   /** 자식 종료 시뮬레이션(PtyManager 처럼 map 에서 지우고 exit 을 낸다). */
