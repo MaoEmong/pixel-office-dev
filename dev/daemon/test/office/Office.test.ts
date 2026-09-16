@@ -466,9 +466,14 @@ describe('Office', () => {
     const after = store.getMember(m.id)!;
     assert.equal(after.status, 'error');
     assert.equal(after.childPid, null);
-    assert.equal(events.at(-1)!.kind, 'error');
-    assert.equal(events.at(-1)!.detail.exitCode, 1);
+    const err = [...events].reverse().find((e) => e.kind === 'error')!;
+    assert.equal(err.detail.exitCode, 1);
     assert.equal(store.getTask(1)!.status, 'aborted');
+    // T25 후처리: 중단된 task 의 발행자(여기선 사용자)에게 aborted 보고가 바로 간다 — 내 책상 카드용.
+    const aborted = events.at(-1)!;
+    assert.equal(aborted.kind, 'reporting');
+    assert.equal(aborted.detail.status, 'aborted');
+    assert.equal(aborted.ref.taskId, 1);
     assert.throws(() => office.typeRaw(m.id, 'x'), (e: { code: number }) => e.code === RPC_ERROR.BAD_STATE);
   });
 

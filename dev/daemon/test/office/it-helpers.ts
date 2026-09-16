@@ -127,6 +127,39 @@ export class Client {
     return this.notifications.filter((n) => n.method === 'event').map((n) => n.params as unknown as OfficeEvent);
   }
 
+  /**
+   * 멤버를 가리지 않고 모든 허가 요청을 자동 allow(T25 통합 테스트 — 팀장이 도중에 hire 한 팀원의 Bash 허가까지 받는다).
+   * 리스너 해제 함수를 돌려준다.
+   */
+  autoApproveAll(): () => void {
+    let stopped = false;
+    const loop = async () => {
+      let seen = 0;
+      while (!stopped) {
+        const ev = await this.waitFor(
+          'approval(any member)',
+          (n) => {
+            if (n.method !== 'event') return false;
+            const e = n.params as unknown as OfficeEvent;
+            return e.kind === 'waiting_approval' && e.seq > seen;
+          },
+          3_600_000,
+        ).catch(() => undefined);
+        if (!ev || stopped) return;
+        const e = ev.params as unknown as OfficeEvent;
+        seen = e.seq;
+        const pendingId = e.ref.approvalId;
+        if (!pendingId) continue;
+        console.log(`[IT:${this.tag}] auto-approve ${pendingId} (${String(e.detail.tool)} ${String(e.detail.cmd ?? e.detail.path ?? '')})`);
+        await this.call('approval.respond', { pendingId, behavior: 'allow' }).catch((err) => console.log(`[IT:${this.tag}] approval.respond failed: ${String(err)}`));
+      }
+    };
+    void loop();
+    return () => {
+      stopped = true;
+    };
+  }
+
   /** 모든 허가 요청을 자동 allow(통합 테스트용 — MCP 도구 첫 호출 등). 리스너 해제 함수를 돌려준다. */
   autoApprove(memberId: string): () => void {
     let stopped = false;

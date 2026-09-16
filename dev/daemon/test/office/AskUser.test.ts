@@ -101,9 +101,10 @@ describe('Office ask_user (T17)', () => {
     sessionStart(m);
     const client = await connect(m);
     const { tools } = await client.listTools();
+    // T25 부터 팀원에게도 report 가 보인다(팀장 전용 hire/dismiss/delegate 는 안 보인다).
     assert.deepEqual(
-      tools.map((t) => t.name),
-      ['ask_user'],
+      tools.map((t) => t.name).sort(),
+      ['ask_user', 'report'],
     );
 
     const seqBefore = events.length;

@@ -13,8 +13,8 @@
 | `events.query` | `{ teamId?, memberId?, beforeSeq?, limit? }` | `{ events: OfficeEvent[] }` (seq 내림차순 아님 — 오름차순 반환. `beforeSeq` 미만 중 최신 `limit`(기본 200)건; 다음 페이지는 첫 건 seq 를 `beforeSeq` 로) |
 | `team.create` | `{ name, cwd, leaderEngine: 'claude'\|'codex', leaderName?, maxMembers?, allowedEngines? }` | `{ team, leader: Member }` — **팀장이 자동 출근한다(T24)**: 팀 행 → 팀장 멤버(`rank:'leader'`, `hiredBy:'user'`, 이름 `leaderName ?? '팀장'`, 엔진 `leaderEngine`) → CLI 스폰 → `team.leaderId` 기록. 팀장도 정원(`maxMembers`, 기본 4)의 한 자리다. 팀장 출근은 `member.clockIn` 과 같은 경로라 `member.status{starting, member}` 알림이 다른 클라이언트에도 나간다. `leaderEngine:'codex'` 도 허용하지만 `daemon.notice{warn}` 로 "v1 권장은 claude" 를 알린다. 오류: `cwd` 가 폴더가 아님·모르는 엔진·`allowedEngines` 에 없는 `leaderEngine`·`maxMembers < 1` → -32602. 팀장 스폰이 실패하면 팀 행도 되돌린다(팀장 없는 팀을 남기지 않는다). |
 | `team.delete` | `{ teamId }` | `{}` — 팀장 포함 멤버 전부 clockOut 후 삭제 |
-| `member.clockIn` | `{ teamId, engine, name, instructions?, rank?: 'member'\|'leader' }` | `{ member }` — CLI 스폰(문으로 입장). 팀 정원(`maxMembers`) 초과 -32003, 팀에서 허용 안 된 엔진 -32602. `rank` 기본 `'member'`, `hiredBy` 는 항상 `'user'`(사용자가 출근시킨 팀원은 팀장이 `dismiss` 할 수 없다). `rank:'leader'` 는 **그 팀에 살아 있는 팀장이 없을 때만**(팀장이 exited/error 로 나간 뒤의 교체) — 이미 있으면 -32003, 성공하면 `team.leaderId` 가 새 팀장으로 갱신된다. `rank` 가 두 값이 아니면 -32602. |
-| `member.clockOut` | `{ memberId }` | `{}` — 진행 task aborted 후처리, 프로세스 종료(Claude `/exit`). 행은 `status:'exited'` 로 남는다(rehire 가능). 이미 exited/error 면 -32003. |
+| `member.clockIn` | `{ teamId, engine, name, instructions?, rank?: 'member'\|'leader' }` | `{ member }` — CLI 스폰(문으로 입장). 팀원을 출근시키면 살아 있는 팀장 큐에 `[TEAM] 팀원 변경: +<이름>(<engine>[, 역할: …])`(T25, 아래 "TeamTools MCP"). 팀 정원(`maxMembers`) 초과 -32003, 팀에서 허용 안 된 엔진 -32602. `rank` 기본 `'member'`, `hiredBy` 는 항상 `'user'`(사용자가 출근시킨 팀원은 팀장이 `dismiss` 할 수 없다). `rank:'leader'` 는 **그 팀에 살아 있는 팀장이 없을 때만**(팀장이 exited/error 로 나간 뒤의 교체) — 이미 있으면 -32003, 성공하면 `team.leaderId` 가 새 팀장으로 갱신된다. `rank` 가 두 값이 아니면 -32602. |
+| `member.clockOut` | `{ memberId }` | `{}` — 진행 task aborted 후처리(발행자에게 `[REPORTS … status=aborted]` 즉시 전달, T25), 프로세스 종료(Claude `/exit`). 행은 `status:'exited'` 로 남는다(rehire 가능). 이미 exited/error 면 -32003. **팀원을 퇴근시키면** 팀장 큐에 `[TEAM] 팀원 변경: -<이름>`. **팀장을 퇴근시키면** 그 팀장이 낸 미종료 task 가 전부 aborted 되고 맡고 있던 팀원이 interrupt 된다(팀원 행은 남는다) — 아래 "TeamTools MCP". |
 | `member.rehire` | `{ memberId }` | `{ member }` — exited/error 멤버를 같은 설정으로 재스폰(`--resume` 시도). 아직 살아 있으면 -32003(→ `member.restart`). |
 | `member.restart` | `{ memberId }` | `{ member }` — 지시문 즉시 반영용 재스폰(`--resume`) 후 큐에 `[RESUMED] …` 시스템 메시지. 종료된 멤버에도 허용. |
 | `member.instruct` | `{ memberId, text, force?: boolean }` | `{ taskId }` — `tasks(from:'user', status:'queued')` 생성 후 입력 큐에 `[TASK#n from user]\n<text>` 타이핑. 실제로 pty 에 들어가면 `assigned`, 그 턴의 `Stop` 에서 `reported`(report_text = 마지막 assistant 메시지, v1a 보고). 종료된 멤버 -32003. **"팀장에게만 지시"(T24):** 대상이 팀원(`rank:'member'`)이고 그 팀에 살아 있는 팀장이 있으면 **-32004** `"팀장에게만 지시할 수 있습니다 (leader: <팀장 이름>)"`(`data: { leaderId }`) — task 는 만들어지지 않는다. 팀장이 exited/error 로 나가면 게이트가 열려 팀원 직접 지시가 허용된다. `force: true` 는 이 게이트를 넘는 **디버그 탈출구**로, 앱은 보내지 않는다. 터미널 탭 직접 타이핑(`member.type`)은 "지시"가 아니라 게이트와 무관하다. |
@@ -38,7 +38,7 @@
 | `event` | `OfficeEvent` — `{ seq, ts, teamId, memberId, kind, detail, ref }` (영속, 전역 단조 seq) |
 | `snapshot` | `{ seq, teams, members, pending, tasks }` — `hello` 응답에 포함되지만 데몬이 필요 시 재전송 가능. `pending` 은 `status:'open'` 만, `tasks` 는 `queued|assigned` 만. |
 | `term` | `{ memberId, data }` — attach한 클라이언트에만, 비영속 |
-| `member.status` | `{ memberId, status, derived, member? }` — `status` 는 `starting|idle|working|waiting_approval|waiting_answer|exited|error`, `derived` 는 파생 상태(v1a: idle 인데 열린 질문 pending 이 있으면 `waiting_answer`(T17 — `ask_user` 는 턴이 끝난 뒤에도 질문이 열려 있다), idle 이고 배정 task 없으면 `free`, 그 외는 status 와 같음; `waiting_reports` 는 M4). `member` 는 그 시점의 Member 행(새 멤버 출근을 다른 클라이언트가 알 수 있게; 행이 삭제됐으면 생략). status 값이 실제로 바뀔 때만 온다 — 예외: `ask_user` 질문에 답하면 status 가 그대로여도 `derived` 갱신을 위해 한 번 더 온다. |
+| `member.status` | `{ memberId, status, derived, member? }` — `status` 는 `starting|idle|working|waiting_approval|waiting_answer|exited|error`, `derived` 는 파생 상태(v1a: idle 인데 열린 질문 pending 이 있으면 `waiting_answer`(T17 — `ask_user` 는 턴이 끝난 뒤에도 질문이 열려 있다), **팀장이 idle 인데 자기가 `delegate` 로 낸 미종료 task 가 있으면 `waiting_reports`**(T25 — 팀원 보고를 기다리는 중), idle 이고 배정 task 없으면 `free`, 그 외는 status 와 같음). `member` 는 그 시점의 Member 행(새 멤버 출근을 다른 클라이언트가 알 수 있게; 행이 삭제됐으면 생략). status 값이 실제로 바뀔 때만 온다 — 예외: `ask_user` 질문에 답하면 status 가 그대로여도 `derived` 갱신을 위해 한 번 더 온다. |
 | `daemon.notice` | `{ level: 'info'\|'warn'\|'error', message }` — 예: hook 보류 타임아웃, 알 수 없는 멤버 토큰, 첫 실행 다이얼로그 자동 통과, 자동 allow, 데몬 종료. **자동 통과할 수 없는 다이얼로그**(CLI 자체 허가 프롬프트 `approval-prompt`, D-23/D-26)는 `{level:'warn', message:'<이름>: CLI 허가 프롬프트가 떠 있음 — 카드로 답하거나 터미널에서 직접 답하세요'}` 로 **한 번만** 나온다(그 다이얼로그가 사라졌다 다시 뜨면 다시 한 번). 데몬은 이때 키를 보내지 않는다 — 사용자가 "재지시 필요" 카드나 터미널 탭에서 답해야 한다. |
 
 ## 팀·직급 (T24)
@@ -58,6 +58,8 @@
 v1a 에서 데몬이 만드는 이벤트(어댑터 표는 worklog T04 참고):
 - `asking{tool:'ask_user', summary:<question>, options?:string[]}` ref `{questionId}` — TeamTools `ask_user` 호출(T17). TUI `AskUserQuestion` 의 `asking{tool:'AskUserQuestion'}` 과 `detail.tool` 로 구분. 답이 들어가면 `thinking{text:'[ANSWER q#<id>]\n…'}` 로 보인다.
 - `reporting{summary}` ref `{taskId}` — `Stop` 시점에 그 멤버의 `assigned` task 를 `reported` 로 닫으면서(report_text = 직전 `text`), 내 책상 "보고".
+- `reporting{summary, status:'done'|'blocked'|'aborted', files?}` ref `{taskId}` — TeamTools `report` 호출(T25). 발행자가 사용자인 task 면 이것이 내 책상 "보고"이고, 팀장이 낸 task 면 팀장에게 `[REPORTS …]` 가 따로 들어간다(아래 "TeamTools MCP"). 중단 후처리(`interrupt`/퇴근/비정상 종료)도 사용자 task 에 `reporting{status:'aborted'}` 를 남긴다.
+- `delegating{tool:'delegate', summary:<task>, to:<memberId>, toName, status:'assigned'|'queued'}` ref `{taskId}` — 팀장이 `delegate` 로 팀원에게 일을 넘겼다(T25). 이벤트는 **팀장**에게 붙는다(사무실에서 "위임" 표시). `status:'queued'` 면 그 팀원이 바빠서 줄을 선 것이고, 유휴가 되면 데몬이 전달한다(따로 이벤트를 내지 않는다 — `thinking{text:'[TASK#n from …]'}` 으로 보인다).
 - `idle{summary:'interrupted'}` — `member.interrupt` 후 화면 준비 문구로 idle 판정.
 - `idle{summary:'screen-idle'}` — **턴 종료 hook 없이 프롬프트로 돌아온 화면**의 폴백(T23b, D-25). 멤버가 `working`/`waiting_approval`/`waiting_answer` 인데 ① 열린 pending 이 하나도 없고 ② 화면에 다이얼로그·busy 표시가 없고 prompt ready 이고 ③ 그 사이 새 hook 이 오지 않은 상태가 **3초 연속**이면 데몬이 이 이벤트를 내고 status 를 `idle` 로 내린다(500ms 폴링, 멤버당 타이머 하나, 세션이 끝나면 정지). 실제 사례: Codex 사용량 한도 안내는 화면에만 뜨고 `Stop` 을 내지 않아 멤버가 `working` 에 갇혔다. 보류(허가·질문)가 열려 있거나 busy 표시가 있으면 절대 나오지 않는다.
 - `running{cmd?, summary:'셸 대기 중 (락: <이름>)', waiting:'shell-lock', holder:<memberId>}` — **팀 셸 뮤텍스**(T27, 아래 "팀 셸 뮤텍스")에서 다른 멤버가 락을 쥐고 있어 이 멤버의 셸 명령이 줄을 섰다. 그 도구의 보통 `running{tool, cmd}` **바로 뒤에** 대기 한 번당 한 번만 나온다(말풍선이 "대기 중"으로 끝난다). `member.status` 는 `working` 그대로 — CLI 는 도구를 부른 채 데몬 응답을 기다린다. 락을 받으면 이벤트를 따로 내지 않는다(앞의 `running` 이 그대로 유효).
@@ -116,7 +118,7 @@ v1a 에서 데몬이 만드는 이벤트(어댑터 표는 worklog T04 참고):
 8. **알림:** 복구가 끝나면 `daemon.notice{level:'info', message:'복구: N명 재개, M건 만료[, K명 재개 불가][, 유령 J개 정리]'}` 를 내고 같은 문구를 콘솔(`[office] 복구: …`)에 남긴다. 되살릴 것이 없으면 알림 없음. 이 알림은 WS 서버가 열리기 전에 나가므로 보통 클라이언트는 받지 못한다 — 결과는 스냅샷(`members.status`, `pending`, `tasks`)과 `error`/`text{resumed}` 이벤트로 본다.
 9. 복구는 멤버 단위로 실패를 삼킨다(한 멤버가 실패해도 나머지 진행, 실패한 멤버는 status `error`). `daemon.json` 처리는 그대로(기동 시 덮어쓰고 정상 종료 시 삭제).
 
-## TeamTools MCP (T17: `ask_user`)
+## TeamTools MCP (T17 `ask_user` · T25 `hire`/`dismiss`/`delegate`/`report`)
 
 데몬이 CLI 세션에 노출하는 MCP 서버. 클라이언트(앱)가 부르는 것이 아니라 **멤버의 CLI 가 도구로 부른다.**
 
@@ -131,6 +133,78 @@ v1a 에서 데몬이 만드는 이벤트(어댑터 표는 worklog T04 참고):
   멤버가 실행 중이 아니거나 question 이 비면 `isError` 결과.
 - **답 주입:** `question.respond{pendingId, answers}` → pending `answered`(answer = answers) → 그 멤버 입력 큐에 시스템 메시지 `[ANSWER q#<id>]\n<답>` — 답이 하나면 label 만, 여럿이면 `<question>: <label>` 줄마다. 큐 규칙은 다른 자동 타이핑과 같다(idle ∧ 프롬프트 준비 ∧ 사용자 타이핑 아님): 답이 pending 을 먼저 닫으므로 "열린 질문 없음" 게이트가 그 순간 열린다. **질문이 열린 동안 쌓인 항목(`[TASK#n]`, `[RESUMED]`)보다 답이 먼저 들어간다.** 같은 멤버에 열린 질문이 둘이면 둘 다 답해야 흐른다. 턴이 아직 진행 중(`waiting_answer`)에 답하면 status 는 `working` 으로 두고 `Stop` 뒤에 흘린다.
 - **만료:** `member.interrupt`/`clockOut`/프로세스 종료는 다른 pending 과 같이 `expired`. 재시작 복구는 `ask_user` 질문을 **열린 채** 둔다(위 "재시작 복구" 3) — 되살린 세션의 `[RESUMED]` 는 답이 올 때까지 큐에 머물고, 답하면 `[ANSWER]` → `[RESUMED]` 순으로 들어간다.
+
+### 도구 목록과 직급 (T25)
+
+| 도구 | 직급 | 인자 | 결과 텍스트 |
+|---|---|---|---|
+| `hire` | **팀장만** | `{ name, role, engine?: 'claude'\|'codex', instructions? }` | `팀원 <name> (<memberId>) 출근. 엔진 <engine>.` |
+| `dismiss` | **팀장만** | `{ memberId }` | `팀원 <name> (<memberId>) 퇴근. 자리가 하나 비었다.` |
+| `delegate` | **팀장만** | `{ to_member, task }` | `task#<id> → <name> (assigned\|queued) …` |
+| `report` | 전원 | `{ taskId, summary, files?, status: 'done'\|'blocked'\|'aborted' }` | `task#<id> 보고 접수(status=<s>). 팀장/사용자 책상(으)로 올라간다.` |
+| `ask_user` | 전원 | `{ question, options? }` | 위 T17 참고 |
+
+**직급은 데몬이 강제한다(01 §TeamTools, D-06). 모델이 주장하는 직급은 보지 않는다 — 요청마다 store 의 `members.rank` 를 다시 읽는다.** 두 겹이다:
+
+1. **도구 목록이 직급별로 다르다.** 팀원의 `tools/list` 에는 `report`·`ask_user` 만 나온다(팀장 전용 도구는 등록되지 않으므로 이름으로 불러도 `-32602 Tool hire not found`). 팀장은 5개 전부.
+2. **호출 시점에 한 번 더 본다.** 목록을 받은 뒤 직급이 바뀌거나 멤버가 사라지면 `isError` + 한국어 사유(`hire 실패: hire 는 팀장만 쓸 수 있는 도구입니다. 팀원은 report 와 ask_user 만 쓸 수 있습니다.` / `… 멤버를 찾을 수 없습니다(이미 퇴근했을 수 있습니다).`).
+
+도구가 실패할 때는 **턴을 죽이지 않고** `isError:true` + `"<도구> 실패: <한국어 사유>"` 텍스트를 돌려준다. 사유는 Office 가 던진 오류 문구 그대로다:
+
+- `hire`: `hire 는 팀장만 할 수 있습니다 (<이름> 은(는) 팀원)` / `team <팀> is full (N/M)`(정원) / `팀 <팀> 에서 허용되지 않은 엔진: codex (허용: claude)` / `role 이 비었습니다 …`
+- `dismiss`: `사용자가 출근시킨 팀원은 퇴근 버튼으로만 내보낼 수 있습니다 (<이름>)` / `팀장은 dismiss 할 수 없습니다` / `<이름> 은(는) 같은 팀이 아닙니다` / `<이름> 이(가) 아직 working 입니다 — 보고를 기다리거나 먼저 중단시키세요` / `<이름> 에게 미종료 task 가 N건 있습니다 (task#12) — 보고를 기다리세요` / `<이름> 에게 열린 허가·질문이 있습니다 — 먼저 처리하세요`
+- `delegate`: `<이름> 은(는) 같은 팀이 아닙니다` / `자기 자신에게는 위임할 수 없습니다` / `팀장에게는 위임할 수 없습니다` / `<이름> 은(는) exited 입니다 — hire 로 새 팀원을 만드세요`
+- `report`: `task#<id> 은(는) 당신에게 배정된 작업이 아닙니다 — 받은 [TASK#n] 의 번호로 보고하세요` / `task#<id> 은(는) 이미 보고됐습니다` / `task#<id> 은(는) 중단된 작업입니다` / `task not found: #<id>`
+
+### `hire` (팀장 전용)
+
+`member.clockIn` 과 같은 경로로 CLI 를 띄우되 **`hiredBy:'leader'`**(그래서 팀장이 `dismiss` 할 수 있다), `rank:'member'`, 엔진은 지정하지 않으면 **팀장과 같은 엔진 → `claude` → 팀 허용 목록 첫 번째** 순으로 고른다. 지시문은 `# 역할: <role>` 한 줄로 시작하고 `instructions` 가 있으면 그 아래에 붙는다(`${dataDir}/teams/<teamId>/members/<memberId>/INSTRUCTIONS.md`, 사용자가 앱에서 덮어쓸 수 있다). 정원(`maxMembers`, 팀장도 한 자리)을 넘으면 `isError`. **팀장 자신이 한 일이므로 `[TEAM]` 알림은 가지 않는다.**
+
+### `delegate` (팀장 전용)
+
+1. `tasks(from=<팀장 id>, to=<팀원 id>, status:'queued')` 행 생성.
+2. 대상이 **지금 받을 수 있으면**(멤버 status `idle` ∧ 열린 pending 없음 ∧ 프로세스 살아 있음) 그 팀원 입력 큐에 시스템 메시지 `[TASK#<id> from <팀장 이름>(팀장)]\n<task>` 를 넣고 `assigned` 로 바꾼다. 아니면 `queued` 로 남는다.
+3. `delegating{tool:'delegate', summary:<task 300자>, to:<memberId>, toName, status:'assigned'|'queued'}` ref `{taskId}` 이벤트(팀장에게 붙는다 — 사무실의 "위임" 표시).
+4. **유휴 감시:** `queued` 로 남은 task 는 그 팀원의 status 가 `idle` 이 되는 순간 데몬이 같은 모양으로 전달한다(`member.status` 알림 직후). 같은 task 가 두 번 들어가지 않는다.
+
+### `report` (전원)
+
+`taskId` 는 **그 멤버에게 배정된** task 여야 한다(남의 task 는 `isError`). task 는 `reported` + `report_status` + `report_text`(= `summary`, `files` 가 있으면 `\n파일: a, b` 가 붙는다)가 되고 보고자에게 `reporting{summary, status, files?}` ref `{taskId}` 이벤트가 남는다. 올라가는 곳은 발행자에 따라 다르다.
+
+- **발행자가 사용자**(`tasks.from_member = 'user'`, 즉 `member.instruct` 로 만들어진 task — 보통 팀장이 받는다): 그걸로 끝이다. `reporting` 이벤트 + `report_text` 가 곧 내 책상 "보고"다.
+- **발행자가 팀장**(= `delegate` 로 만들어진 task): **버퍼링**한다.
+  - `status:'done'|'aborted'` → 팀장별 버퍼에 쌓아 두고, **그 팀장이 발행한 미종료(`queued|assigned`) task 가 0 이 되는 순간** 한 덩어리로 팀장 입력 큐에 넣는다:
+
+    ```
+    [REPORTS task#12 하루 status=done]
+    A 끝
+    파일: a.txt
+
+    [REPORTS task#13 이음 status=done]
+    B 끝
+
+    [ALL_REPORTS_IN]
+    ```
+
+  - `status:'blocked'` → **버퍼를 건너뛰고 즉시** 단독 전달(`[ALL_REPORTS_IN]` 없음). 팀장이 바로 손을 쓸 수 있어야 하기 때문.
+  - 팀장이 이미 나갔으면 전달하지 않고 `daemon.notice{warn}` 만 낸다(보고는 `tasks.report_text` 에 남아 있다).
+- **`report` 를 안 부르고 턴만 끝낸 경우**(v1a 보고 승격, 엔진 공통): `Stop` 의 마지막 메시지로 `assigned` task 를 닫는 기존 경로가 **같은 버퍼를 탄다**(`status=done`). 그래서 팀원이 도구를 잊어도 팀장이 `[ALL_REPORTS_IN]` 을 영영 못 받고 굳는 일은 없다. 반대로 `report` 로 이미 닫힌 task 는 `assigned` 가 아니므로 **두 번 보고되지 않는다.**
+- **보고를 기다리는 턴 종료는 승격하지 않는다(D-29).** 그 멤버가 `delegate` 로 낸 미종료 task 가 하나라도 있으면 `Stop` 승격을 건너뛴다 — 팀장이 "맡겼고 기다리는 중" 이라고 말하며 턴을 끝낸 것을 완료로 오해해 사용자 task 를 닫아 버리면, 나중의 진짜 `report` 가 "이미 보고됐습니다" 로 거절된다. 그 task 는 `[ALL_REPORTS_IN]` 뒤 턴의 승격이나 `report` 도구가 닫는다.
+
+### 후처리 (T25, 01 §"interrupt / fire / error 공통 후처리")
+
+- **팀원 중단·퇴근·비정상 종료** → 그 멤버의 `queued|assigned` task 가 전부 `aborted`(+`report_status:'aborted'`) 되고, 발행자에게 **즉시** `[REPORTS task#n <이름> status=aborted]\n<이름> 의 작업이 중단됐습니다 (…).` 가 간다(버퍼를 안 탄다). 발행자가 사용자면 대신 `reporting{status:'aborted'}` 이벤트.
+- **팀장 퇴근·비정상 종료** → 팀장이 발행한 미종료 task 를 전부 `aborted` 로 만들고 그 task 를 맡고 있던 팀원을 `interrupt` 한다(`idle{summary:'task#n aborted (팀장 퇴근)'}` 이벤트). **팀원 자체는 남는다** — 팀장이 `hire` 한 팀원도 자르지 않는다(퇴근은 사용자 권한). 팀장의 보고 버퍼도 비운다.
+- 셸 락 해제·pending 만료는 기존과 같다(T27, T17).
+
+### 사용자 개입 알림 `[TEAM]` (T25, 01 §4)
+
+사용자가 **팀원을** 출근·퇴근시키면(앱의 "출근"/"퇴근" = `member.clockIn` / `member.clockOut`) 살아 있는 팀장의 입력 큐에 시스템 메시지가 들어간다:
+
+- `[TEAM] 팀원 변경: +<이름>(<engine>, 역할: <role>)` — `역할` 은 그 팀원 지시문 첫 줄이 `# 역할: …` 일 때만 붙는다.
+- `[TEAM] 팀원 변경: -<이름>`
+
+팀장이 스스로 부른 `hire`/`dismiss` 에는 알림이 가지 않는다(자기가 한 일이다). 팀장 자신의 출근·퇴근에도 가지 않는다.
 
 ## Codex 폴백 (T22)
 

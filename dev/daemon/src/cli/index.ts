@@ -59,7 +59,7 @@ const HELP: Array<[string, string]> = [
   ['answer <pending> <question>=<label> ...', '질문 답 (question.respond). 질문이 하나면 answer <pending> <label>'],
   ['events [n]', '최근 수신 이벤트 n건 (기본 20)'],
   ['query <team|-> [beforeSeq] [limit]', '과거 이벤트 조회 (events.query)'],
-  ['tasks', '스냅샷의 열린 task'],
+  ['tasks', 'task 목록 (스냅샷의 열린 task + 이번 세션에 본 위임·보고)'],
   ['instr get <member>', '지시문 보기'],
   ['instr set <member> [text]', '지시문 편집 (text 생략 시 여러 줄 입력, `.` 한 줄로 종료)'],
   ['refresh', '재접속해 스냅샷을 다시 받는다'],
@@ -173,7 +173,42 @@ class Cli {
         payload,
       });
     }
+    this.applyTaskEvent(ev);
     for (const w of this.idleWaiters) w({ memberId: ev.memberId, kind: 'event', idle: ev.kind === 'idle' });
+  }
+
+  /**
+   * T25: 스냅샷의 `tasks` 는 열린 것(queued|assigned)뿐이라 위임·보고가 실시간으로 안 보인다.
+   * `delegating`(팀장이 낸 task)과 `reporting`(보고)으로 로컬 표를 갱신해 `tasks` 가 from/to/status/보고를 보여주게 한다.
+   */
+  private applyTaskEvent(ev: OfficeEvent): void {
+    const taskId = ev.ref?.taskId;
+    if (taskId === undefined || taskId === null) return;
+    const d = ev.detail ?? {};
+    const known = this.tasks.find((t) => t.id === taskId);
+    if (ev.kind === 'delegating') {
+      const row: Task = known ?? {
+        id: taskId,
+        teamId: ev.teamId,
+        fromMember: ev.memberId,
+        toMember: typeof d.to === 'string' ? d.to : '?',
+        instruction: typeof d.summary === 'string' ? d.summary : '',
+        status: 'queued',
+        reportText: null,
+        reportStatus: null,
+        createdAt: ev.ts,
+        updatedAt: ev.ts,
+      };
+      row.status = d.status === 'assigned' ? 'assigned' : 'queued';
+      if (!known) this.tasks.push(row);
+      this.tasks.sort((a, b) => a.id - b.id);
+      return;
+    }
+    if (ev.kind !== 'reporting' || !known) return;
+    known.status = d.status === 'aborted' ? 'aborted' : 'reported';
+    known.reportStatus = (typeof d.status === 'string' ? d.status : 'done') as Task['reportStatus'];
+    known.reportText = typeof d.summary === 'string' ? d.summary : known.reportText;
+    known.updatedAt = ev.ts;
   }
 
   applySnapshot(s: Snapshot): void {
@@ -529,7 +564,7 @@ class Cli {
         return;
       }
       case 'tasks':
-        if (!this.tasks.length) this.print('(열린 task 없음 — 스냅샷 기준)');
+        if (!this.tasks.length) this.print('(아는 task 없음 — 스냅샷 기준)');
         for (const t of this.tasks) this.print(formatTask(t, this.nameOf));
         return;
 

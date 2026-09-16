@@ -271,7 +271,7 @@ describe('Office restart recovery (T09)', () => {
     pty.exit(s.a.id, 1);
     assert.equal(pty.spawns.length, 2);
     assert.equal(store.getMember(s.a.id)!.status, 'error');
-    assert.equal(events.at(-1)!.detail.summary, 'process exited (code 1)');
+    assert.equal([...events].reverse().find((e) => e.kind === 'error')!.detail.summary, 'process exited (code 1)'); // T25: 그 뒤에 aborted 보고 이벤트가 하나 더 붙는다
     assert.equal(store.getTask(s.assigned.id)!.status, 'aborted');
   });
 
@@ -284,7 +284,7 @@ describe('Office restart recovery (T09)', () => {
     assert.equal(pty.spawns.length, 1, 'no second spawn after the window');
     assert.equal(store.getMember(s.a.id)!.status, 'error');
     assert.equal(store.getMember(s.a.id)!.sessionId, 'sess-A');
-    assert.equal(events.at(-1)!.detail.summary, 'process exited (code 1)');
+    assert.equal([...events].reverse().find((e) => e.kind === 'error')!.detail.summary, 'process exited (code 1)'); // T25: 그 뒤에 aborted 보고 이벤트가 하나 더 붙는다
 
     // code 0 안에서 죽으면(사용자 /exit) 일반 exited 처리
     await office.shutdown();

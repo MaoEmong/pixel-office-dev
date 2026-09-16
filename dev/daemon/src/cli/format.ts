@@ -57,10 +57,14 @@ export function formatTeam(t: Team, memberCount: number): string {
   return `${t.id}  ${t.name}  ${t.cwd}  leader=${t.leaderId ?? '-'}  members=${memberCount}/${t.maxMembers}`;
 }
 
+/** `task#12 assigned 반장→이음: <지시>  ↩ done <보고>` — 보고가 있으면 뒤에 붙는다(T25). */
 export function formatTask(t: Task, nameOf: NameOf): string {
   const to = t.toMember === 'user' ? 'user' : nameOf(t.toMember);
   const from = t.fromMember === 'user' ? 'user' : nameOf(t.fromMember);
-  return `task#${t.id} ${t.status} ${from}→${to}: ${truncate(oneLine(t.instruction), 80)}`;
+  const head = `task#${t.id} ${t.status} ${from}→${to}: ${truncate(oneLine(t.instruction), 80)}`;
+  if (!t.reportStatus && !t.reportText) return head;
+  const body = t.reportText ? ` ${truncate(oneLine(t.reportText), 80)}` : '';
+  return `${head}  ↩ ${t.reportStatus ?? '?'}${body}`;
 }
 
 export interface LocalPending {

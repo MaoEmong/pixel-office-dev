@@ -31,9 +31,21 @@ import { ClaudeHooksAdapter } from '../adapters/ClaudeHooksAdapter.js';
 import { CodexHooksAdapter } from '../adapters/CodexHooksAdapter.js';
 import { ScreenModel } from '../screen/ScreenModel.js';
 import { InputQueue } from '../input/InputQueue.js';
-import { TeamToolsServer, TEAM_MCP_NAME } from '../mcp/TeamToolsServer.js';
+import { ALL_TEAM_TOOLS, TeamToolsServer, TEAM_MCP_NAME } from '../mcp/TeamToolsServer.js';
 import { USER_ACTOR } from '../store/types.js';
-import type { Engine, EventsQueryInput, Member, MemberRank, MemberStatus, OfficeEvent, Pending, Snapshot, Task, Team } from '../store/types.js';
+import type {
+  Engine,
+  EventsQueryInput,
+  Member,
+  MemberRank,
+  MemberStatus,
+  OfficeEvent,
+  Pending,
+  Snapshot,
+  Task,
+  TaskStatus,
+  Team,
+} from '../store/types.js';
 import { OfficeError, RPC_ERROR, badState, invalidParams, notFound } from './errors.js';
 import { CODEX_FALLBACK, detectQuestion, isFallbackQuestion, type FallbackQuestionPayload } from './codexFallback.js';
 import { defaultOrphanOps, reapOrphan, type OrphanOps } from './orphans.js';
@@ -55,6 +67,9 @@ import type {
   OfficeApi,
   OfficeEvents,
   PtyManagerLike,
+  ReportLine,
+  TeamHireInput,
+  TeamReportInput,
   TeamToolsServerLike,
 } from './types.js';
 
@@ -73,6 +88,8 @@ const RESUMED_INSTRUCTION_CHARS = 80;
 const RESUMED_SUMMARY_CHARS = 60;
 /** 종료된 것으로 보는 멤버 status. */
 const GONE: ReadonlySet<MemberStatus> = new Set(['exited', 'error']);
+/** 미종료 task(= 아직 보고를 기다리는 것). 파생 상태·dismiss 검사·보고 버퍼 판정이 같은 집합을 본다. */
+const OPEN_TASKS: TaskStatus[] = ['queued', 'assigned'];
 /** `team.create` 가 `leaderName` 없이 올 때 팀장에게 붙는 기본 이름(T24). */
 export const DEFAULT_LEADER_NAME = '팀장';
 /** "팀장에게만 지시" 게이트(-32004)의 문구. PROTOCOL.md 와 같은 문자열이어야 한다(T24). */
@@ -199,6 +216,17 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
   private readonly runtimes = new Map<string, MemberRuntime>();
   /** `alwaysThisSession` 로 자동 allow 할 도구(멤버별, 데몬 메모리에만). */
   private readonly autoAllow = new Map<string, Set<string>>();
+  /**
+   * 입력 큐에 **이미 들어가 있는**(아직 flush 되지 않은) task id(T25). task 는 pty 에 들어갈 때까지 `queued` 라서
+   * 유휴 감시(`dispatchQueuedTasks`)가 같은 task 를 두 번 넣을 수 있다 — 이 집합이 그걸 막는다.
+   */
+  private readonly inFlight = new Set<number>();
+  /**
+   * 팀장별 보고 버퍼(T25, 01 §TeamTools "보고는 버퍼링"). 팀원의 `report(done|aborted)` 를 모아 두고,
+   * **그 팀장이 발행한 미종료 task 가 0 이 되는 순간** 한 덩어리 + `[ALL_REPORTS_IN]` 로 흘린다.
+   * `blocked` 는 버퍼를 건너뛰고 즉시 단독 전달.
+   */
+  private readonly reportBuffer = new Map<string, ReportLine[]>();
   private readonly fallbackWindowMs: number;
   private readonly orphanOps: OrphanOps;
   private info?: DaemonInfo;
@@ -232,9 +260,26 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
         host: {
           resolveMember: (token) => {
             const m = this.store.getMemberByToken(token);
-            return m && !GONE.has(m.status) ? { id: m.id, name: m.name } : undefined;
+            return m && !GONE.has(m.status) ? { id: m.id, name: m.name, rank: m.rank } : undefined;
           },
           askUser: (memberId, input) => ({ questionId: this.askUser(memberId, input).id }),
+          // T25: 팀장 오케스트레이션. 직급·소유 검사는 전부 아래 team* 메서드(=store)가 한다.
+          hire: (memberId, input) => {
+            const m = this.teamHire(memberId, input);
+            return { memberId: m.id, name: m.name, engine: m.engine };
+          },
+          dismiss: async (memberId, input) => {
+            const m = await this.teamDismiss(memberId, input.memberId);
+            return { memberId: m.id, name: m.name };
+          },
+          delegate: (memberId, input) => {
+            const r = this.teamDelegate(memberId, input.to_member, input.task);
+            return { taskId: r.task.id, name: r.to.name, status: r.assigned ? 'assigned' : 'queued' };
+          },
+          report: (memberId, input) => {
+            const r = this.teamReport(memberId, input);
+            return { taskId: r.task.id, status: input.status, to: r.to };
+          },
         },
       });
     const adapterDeps: AdapterDeps = {
@@ -290,7 +335,7 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
     };
     this.writeDaemonInfo();
     this.started = true;
-    console.log(`[office] mcp       : http://127.0.0.1:${mcpPort}/mcp/<memberToken> (TeamTools: ask_user)`);
+    console.log(`[office] mcp       : http://127.0.0.1:${mcpPort}/mcp/<memberToken> (TeamTools: ${ALL_TEAM_TOOLS.join(', ')})`);
     try {
       const pruned = this.store.pruneEvents();
       if (pruned > 0) console.log(`[office] pruned ${pruned} old events`);
@@ -441,6 +486,9 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
   /**
    * 출근(사용자): 멤버 행 생성 → (지시문 저장) → CLI 스폰. 기본 rank 'member', hiredBy 는 항상 'user'
    * (사용자가 출근시킨 팀원은 팀장이 `dismiss` 할 수 없다 — 01 §4). `rank:'leader'` 는 팀장이 없는 팀에만(T24).
+   *
+   * **팀장에게 알린다(T25, 01 §4 "팀원 구성이 바뀌면 …"):** 살아 있는 팀장이 있으면 그 팀장 입력 큐에
+   * `[TEAM] 팀원 변경: +<이름>(<엔진>[, 역할: …])`. 팀장이 스스로 부른 `hire` 에는 내지 않는다(자기가 한 일이다).
    */
   clockIn(params: ClockInParams): Member {
     this.ensureStarted();
@@ -460,6 +508,7 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
       instructions: params.instructions,
     });
     if (rank === 'leader') this.store.updateTeam(team.id, { leaderId: member.id });
+    else this.notifyTeamChange(team.id, teamJoinText(member.name, member.engine, roleOf(params.instructions)), member.id);
     return member;
   }
 
@@ -509,14 +558,24 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
     return this.store.getMember(member.id)!;
   }
 
-  /** 퇴근: 진행 task aborted, pending expired, 정중히 종료. 행은 남긴다(status exited → rehire 가능). */
-  async clockOut(memberId: string): Promise<void> {
+  /**
+   * 퇴근: 진행 task aborted(+ 발행자에게 `[REPORTS … status=aborted]`), pending expired, 정중히 종료.
+   * 행은 남긴다(status exited → rehire 가능).
+   *
+   * **팀장이 나가면(T25)** 그 팀장이 발행한 task 를 전부 aborted 하고 맡고 있던 팀원을 interrupt 한다
+   * (01 §"interrupt / fire / error 공통 후처리"). 팀원 자체는 남는다 — 사용자가 출근시킨 팀원은 물론이고
+   * 팀장이 hire 한 팀원도 자르지 않는다(퇴근은 사용자의 권한, 아래 worklog 결정).
+   * `opts.byLeader` 는 TeamTools `dismiss` 경로 표시 — 그때는 `[TEAM]` 알림을 팀장에게 되돌리지 않는다.
+   */
+  async clockOut(memberId: string, opts: { byLeader?: boolean } = {}): Promise<void> {
     const member = this.member(memberId);
     const rt = this.runtimes.get(memberId);
+    if (member.rank === 'leader') this.abortTasksIssuedBy(member, '팀장 퇴근');
     if (!rt?.session.alive) {
       if (GONE.has(member.status)) throw badState(`member ${memberId} already ${member.status}`);
       // 프로세스 없이 status 만 살아 있는 행(데몬 재시작 후 등) — 상태만 정리한다.
       this.finishMember(memberId, 'clocked out');
+      this.noticeClockOut(member, opts.byLeader === true);
       return;
     }
     rt.exitMode = 'clockOut';
@@ -524,9 +583,16 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
     rt.queue.stop();
     this.adapterOf(memberId).expireAllForMember(memberId);
     this.releaseShellLocks(memberId); // T27 후처리
-    this.store.abortTasksFor(memberId);
+    this.abortTasksAndReport(memberId, '퇴근');
     await this.pty.kill(memberId, { graceful: true, timeoutMs: KILL_TIMEOUT_MS });
     this.finishMember(memberId, 'clocked out');
+    this.noticeClockOut(member, opts.byLeader === true);
+  }
+
+  /** 사용자가 팀원을 퇴근시키면 팀장에게 `[TEAM] 팀원 변경: -<이름>`(팀장 자신의 dismiss 는 제외). */
+  private noticeClockOut(member: Member, byLeader: boolean): void {
+    if (byLeader || member.rank === 'leader') return;
+    this.notifyTeamChange(member.teamId, teamLeaveText(member.name), member.id);
   }
 
   /** exited/error 멤버를 같은 설정으로 재스폰(session_id 있으면 --resume). */
@@ -582,7 +648,7 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
       instruction: text,
       status: 'queued',
     });
-    rt.queue.enqueue({ kind: 'instruct', text: `[TASK#${task.id} from user]\n${text}`, id: String(task.id) });
+    this.enqueueTask(rt, task);
     return task.id;
   }
 
@@ -608,7 +674,7 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
     rt.queue.interrupt();
     this.adapterOf(memberId).expireAllForMember(memberId);
     this.releaseShellLocks(memberId); // T27 후처리 — 중단한 명령이 쥔 락을 팀에 돌려준다
-    this.store.abortTasksFor(memberId);
+    this.abortTasksAndReport(memberId, '중단(interrupt)'); // T25: 발행자에게 aborted 보고가 즉시 간다
     this.watchInterrupted(rt);
   }
 
@@ -758,6 +824,252 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
     for (const item of waiting) rt.queue.enqueue(item);
   }
 
+  // ---- TeamTools 오케스트레이션 (T25) ------------------------------------------------------
+  //
+  // 01 §TeamTools MCP / §4 팀·직급 모델 / 전제 6. **직급·소유 검사는 전부 여기(=store)에서 한다** — MCP 서버는
+  // 도구 목록만 직급으로 가르고, 실제 허용 여부는 이 메서드들이 판단해 OfficeError 를 던진다(도구 결과 isError).
+  //   hire     팀장 → 팀원 출근(hiredBy 'leader'), 지시문 첫 줄에 `# 역할: <role>`
+  //   dismiss  팀장 → 팀원 퇴근. 그 팀원이 idle ∧ 미종료 task 0 ∧ hiredBy 'leader' 일 때만
+  //   delegate 팀장 → task 행 + (대상이 유휴면) `[TASK#n from <팀장>(팀장)]`, 아니면 queued → 유휴 감시가 전달
+  //   report   전원 → 자기에게 배정된 task 를 닫는다. 팀원 보고는 버퍼링 후 `[REPORTS …][ALL_REPORTS_IN]`,
+  //            팀장이 사용자 task 를 보고하면 `reporting` 이벤트(= 내 책상 보고)
+
+  /** 팀장 전용 도구의 공통 관문. 살아 있는 팀장이 아니면 -32004(도구 결과 isError). */
+  private requireLiveLeader(memberId: string, tool: string): Member {
+    const m = this.member(memberId);
+    if (m.rank !== 'leader' || GONE.has(m.status)) {
+      throw new OfficeError(RPC_ERROR.RANK_RULE, `${tool} 는 팀장만 할 수 있습니다 (${m.name} 은(는) 팀원)`);
+    }
+    return m;
+  }
+
+  /** 팀장이 부른 `hire`. 역할 줄을 붙인 지시문으로 팀원을 출근시킨다. 정원 초과·허용 안 된 엔진은 throw. */
+  teamHire(leaderId: string, input: TeamHireInput): Member {
+    const leader = this.requireLiveLeader(leaderId, 'hire');
+    const team = this.store.getTeam(leader.teamId);
+    if (!team) throw notFound('team', leader.teamId);
+    const role = input.role.trim();
+    if (!role) throw invalidParams('role 이 비었습니다 — 그 팀원이 맡을 역할을 한 줄로 적으세요');
+    const engine = this.pickHireEngine(team, leader, input.engine);
+    return this.hireByLeader({
+      leaderId,
+      name: input.name,
+      engine,
+      instructions: buildRoleInstructions(role, input.instructions),
+    });
+  }
+
+  /** hire 의 엔진 결정: 지정하면 그것(팀 허용 목록 안에서), 없으면 팀장과 같은 엔진 → claude → 허용 목록 첫 번째. */
+  private pickHireEngine(team: Team, leader: Member, requested?: Engine): Engine {
+    if (requested !== undefined) {
+      if (requested !== 'claude' && requested !== 'codex') throw invalidParams(`모르는 엔진: ${String(requested)}`);
+      if (!team.allowedEngines.includes(requested)) {
+        throw invalidParams(`팀 ${team.name} 에서 허용되지 않은 엔진: ${requested} (허용: ${team.allowedEngines.join(', ')})`);
+      }
+      return requested;
+    }
+    if (team.allowedEngines.includes(leader.engine)) return leader.engine;
+    if (team.allowedEngines.includes('claude')) return 'claude';
+    return team.allowedEngines[0] ?? 'claude';
+  }
+
+  /**
+   * 팀장이 부른 `dismiss`. 사용자가 출근시킨 팀원(`hiredBy:'user'`)은 팀장이 자를 수 없다(01 §4) — 사용자의 "퇴근" 만.
+   * 대상이 idle 이고 미종료 task·열린 pending 이 없을 때만(아니면 먼저 기다리거나 중단시키라고 안내).
+   */
+  async teamDismiss(leaderId: string, targetId: string): Promise<Member> {
+    const leader = this.requireLiveLeader(leaderId, 'dismiss');
+    const target = this.store.getMember(targetId);
+    if (!target) throw notFound('member', targetId);
+    if (target.teamId !== leader.teamId) throw new OfficeError(RPC_ERROR.RANK_RULE, `${target.name} 은(는) 같은 팀이 아닙니다`);
+    if (target.id === leader.id || target.rank === 'leader') throw new OfficeError(RPC_ERROR.RANK_RULE, '팀장은 dismiss 할 수 없습니다');
+    if (target.hiredBy !== 'leader') {
+      throw new OfficeError(RPC_ERROR.RANK_RULE, `사용자가 출근시킨 팀원은 퇴근 버튼으로만 내보낼 수 있습니다 (${target.name})`);
+    }
+    if (GONE.has(target.status)) throw badState(`${target.name} 은(는) 이미 ${target.status} 입니다`);
+    if (target.status !== 'idle') {
+      throw badState(`${target.name} 이(가) 아직 ${target.status} 입니다 — 보고를 기다리거나 먼저 중단시키세요`);
+    }
+    const open = this.store.listTasks({ toMember: target.id, status: OPEN_TASKS });
+    if (open.length > 0) {
+      throw badState(`${target.name} 에게 미종료 task 가 ${open.length}건 있습니다 (${open.map((t) => `task#${t.id}`).join(', ')}) — 보고를 기다리세요`);
+    }
+    if (this.store.listOpenPending(target.id).length > 0) {
+      throw badState(`${target.name} 에게 열린 허가·질문이 있습니다 — 먼저 처리하세요`);
+    }
+    await this.clockOut(target.id, { byLeader: true });
+    return this.store.getMember(target.id)!;
+  }
+
+  /**
+   * 팀장이 부른 `delegate`. 비블로킹 — task 행을 만들고, 대상이 지금 받을 수 있으면(유휴 ∧ 열린 pending 없음) 바로
+   * 입력 큐에 넣어 `assigned`, 아니면 `queued` 로 남겨 유휴 감시(`dispatchQueuedTasks`)가 전달한다.
+   */
+  teamDelegate(leaderId: string, toMemberId: string, task: string): { task: Task; to: Member; assigned: boolean } {
+    const leader = this.requireLiveLeader(leaderId, 'delegate');
+    const text = task.trim();
+    if (!text) throw invalidParams('task 가 비었습니다');
+    if (!toMemberId.trim()) throw invalidParams('to_member 가 비었습니다');
+    const target = this.store.getMember(toMemberId.trim());
+    if (!target) throw notFound('member', toMemberId);
+    if (target.teamId !== leader.teamId) throw new OfficeError(RPC_ERROR.RANK_RULE, `${target.name} 은(는) 같은 팀이 아닙니다`);
+    if (target.id === leader.id) throw new OfficeError(RPC_ERROR.RANK_RULE, '자기 자신에게는 위임할 수 없습니다');
+    if (target.rank === 'leader') throw new OfficeError(RPC_ERROR.RANK_RULE, '팀장에게는 위임할 수 없습니다');
+    if (GONE.has(target.status)) throw badState(`${target.name} 은(는) ${target.status} 입니다 — hire 로 새 팀원을 만드세요`);
+
+    const row = this.store.createTask({
+      teamId: leader.teamId,
+      fromMember: leader.id,
+      toMember: target.id,
+      instruction: text,
+      status: 'queued',
+    });
+    const assigned = this.dispatchTask(row.id);
+    this.appendEvent(
+      leader,
+      'delegating',
+      { tool: 'delegate', summary: truncate(oneLine(text), 300), to: target.id, toName: target.name, status: assigned ? 'assigned' : 'queued' },
+      { taskId: row.id },
+    );
+    this.emitStatus(leader.id, leader.status); // derived: 팀장이 idle 이면 waiting_reports 로 바뀐다
+    return { task: this.store.getTask(row.id)!, to: target, assigned };
+  }
+
+  /**
+   * `report`. 그 task 가 **부른 사람에게 배정된 것**이어야 한다(아니면 isError — 남의 task 를 닫지 못한다).
+   * 발행자가 사용자면 내 책상 보고(`reporting` 이벤트 + report_text), 팀장이면 버퍼링해서 `[REPORTS …]` 로 올린다.
+   * 이 도구로 닫힌 task 는 `reported` 가 되므로 턴 종료(`Stop`)의 v1a 보고 승격이 같은 task 를 두 번 보고하지 않는다.
+   */
+  teamReport(memberId: string, input: TeamReportInput): { task: Task; to: 'user' | 'leader' } {
+    const member = this.member(memberId);
+    const summary = input.summary.trim();
+    if (!summary) throw invalidParams('summary 가 비었습니다');
+    if (input.status !== 'done' && input.status !== 'blocked' && input.status !== 'aborted') {
+      throw invalidParams(`모르는 status: ${String(input.status)} (done|blocked|aborted)`);
+    }
+    const task = this.store.getTask(input.taskId);
+    if (!task) throw notFound('task', `#${input.taskId}`);
+    if (task.toMember !== memberId) {
+      throw new OfficeError(RPC_ERROR.RANK_RULE, `task#${task.id} 은(는) 당신에게 배정된 작업이 아닙니다 — 받은 [TASK#n] 의 번호로 보고하세요`);
+    }
+    if (task.status === 'reported') throw badState(`task#${task.id} 은(는) 이미 보고됐습니다`);
+    if (task.status === 'aborted') throw badState(`task#${task.id} 은(는) 중단된 작업입니다`);
+
+    const body = reportBody(summary, input.files);
+    this.store.updateTask(task.id, { status: 'reported', reportStatus: input.status, reportText: body });
+    this.inFlight.delete(task.id);
+    const detail: OfficeEvent['detail'] = { summary: truncate(body, 300), status: input.status };
+    if (input.files?.length) detail.files = input.files;
+    this.appendEvent(member, 'reporting', detail, { taskId: task.id });
+
+    const to = task.fromMember === USER_ACTOR ? 'user' : 'leader';
+    if (to === 'leader') this.bufferReport(task.fromMember, { taskId: task.id, name: member.name, status: input.status, body });
+    // 보고가 끝나면 내(=보고자) 파생 상태도 바뀐다(배정 task 0 → free).
+    this.emitStatus(member.id, this.store.getMember(member.id)?.status ?? member.status);
+    return { task: this.store.getTask(task.id)!, to };
+  }
+
+  /**
+   * 팀원 보고를 팀장에게 올리는 버퍼(01 §TeamTools). `blocked` 는 즉시 단독 전달, 그 외는 모아 두었다가
+   * **그 팀장이 발행한 미종료 task 가 0 이 되는 순간** 한 덩어리 + `[ALL_REPORTS_IN]`.
+   */
+  private bufferReport(leaderId: string, line: ReportLine): void {
+    if (line.status === 'blocked') {
+      this.deliverReports(leaderId, [line], false);
+      return;
+    }
+    const buf = this.reportBuffer.get(leaderId) ?? [];
+    buf.push(line);
+    this.reportBuffer.set(leaderId, buf);
+    if (this.store.openTasksIssuedBy(leaderId).length > 0) return; // 아직 기다릴 보고가 남았다
+    this.reportBuffer.delete(leaderId);
+    this.deliverReports(leaderId, buf, true);
+  }
+
+  /** 보고 덩어리를 팀장 입력 큐에 넣는다. 팀장이 없거나 이미 나갔으면 알림만(보고는 tasks 에 남아 있다). */
+  private deliverReports(leaderId: string, lines: ReportLine[], allIn: boolean): void {
+    if (lines.length === 0) return;
+    const leader = this.store.getMember(leaderId);
+    const rt = this.runtimes.get(leaderId);
+    if (!leader || GONE.has(leader.status) || !rt?.session.alive) {
+      this.notice('warn', `보고를 전달할 팀장이 없습니다 — ${lines.map((l) => `task#${l.taskId}`).join(', ')} (${leaderId})`);
+      return;
+    }
+    rt.queue.enqueue({ kind: 'system', text: buildReportsText(lines, allIn) });
+    this.emitStatus(leaderId, leader.status); // derived: 남은 발행 task 가 0 이면 waiting_reports 가 풀린다
+  }
+
+  /** 중단·퇴근·비정상 종료 후처리: 그 멤버의 미종료 task 를 aborted 로 만들고 발행자에게 즉시 알린다(01 §공통 후처리). */
+  private abortTasksAndReport(memberId: string, why: string): Task[] {
+    const member = this.store.getMember(memberId);
+    const aborted = this.store.abortTasksFor(memberId);
+    for (const task of aborted) {
+      this.inFlight.delete(task.id);
+      const body = `${member?.name ?? memberId} 의 작업이 중단됐습니다 (${why}).`;
+      if (task.fromMember === USER_ACTOR) {
+        if (member) this.appendEvent(member, 'reporting', { summary: body, status: 'aborted' }, { taskId: task.id });
+      } else {
+        this.deliverReports(task.fromMember, [{ taskId: task.id, name: member?.name ?? memberId, status: 'aborted', body }], false);
+      }
+    }
+    return aborted;
+  }
+
+  /** 팀장이 나갈 때: 그가 발행한 미종료 task 를 전부 aborted 하고 맡고 있던 팀원을 interrupt 한다(팀원 자체는 남는다). */
+  private abortTasksIssuedBy(leader: Member, why: string): void {
+    this.reportBuffer.delete(leader.id);
+    for (const task of this.store.openTasksIssuedBy(leader.id)) {
+      this.store.updateTask(task.id, { status: 'aborted', reportStatus: 'aborted' });
+      this.inFlight.delete(task.id);
+      const target = this.store.getMember(task.toMember);
+      if (target) this.appendEvent(target, 'idle', { summary: `task#${task.id} aborted (${why})` }, { taskId: task.id });
+      if (this.runtimes.get(task.toMember)?.session.alive) {
+        try {
+          this.interrupt(task.toMember);
+        } catch (err) {
+          this.notice('warn', `${target?.name ?? task.toMember} 중단 실패(${why}): ${errMsg(err)}`);
+        }
+      }
+    }
+  }
+
+  /** task 하나를 입력 큐에 넣는다(대상이 지금 받을 수 있을 때만). 넣었으면 true. */
+  private dispatchTask(taskId: number): boolean {
+    const task = this.store.getTask(taskId);
+    if (!task || task.status !== 'queued' || this.inFlight.has(taskId)) return false;
+    const rt = this.runtimes.get(task.toMember);
+    if (!rt?.session.alive) return false;
+    if (!this.isIdle(task.toMember)) return false; // 진행 중이거나 열린 허가·질문이 있다
+    this.enqueueTask(rt, task);
+    this.store.updateTask(task.id, { status: 'assigned' });
+    return true;
+  }
+
+  /**
+   * 유휴 감시(T25): 멤버가 idle 이 되는 순간 그 멤버 앞으로 밀려 있던 `queued` task 를 id 순으로 큐에 넣는다.
+   * `emitStatus`(status → idle)에서 부른다 — 어댑터가 store 를 먼저 갱신하고 emit 하므로 여기서 본 상태가 최신이다.
+   */
+  private dispatchQueuedTasks(memberId: string): void {
+    for (const task of this.store.listTasks({ toMember: memberId, status: 'queued' })) this.dispatchTask(task.id);
+  }
+
+  /** 입력 큐에 task 를 넣고 inFlight 에 등록. 사용자 지시는 `instruct`, 위임은 `system` 항목이다. */
+  private enqueueTask(rt: MemberRuntime, task: Task): void {
+    this.inFlight.add(task.id);
+    const fromUser = task.fromMember === USER_ACTOR;
+    const fromName = fromUser ? USER_ACTOR : (this.store.getMember(task.fromMember)?.name ?? task.fromMember);
+    rt.queue.enqueue({ kind: fromUser ? 'instruct' : 'system', text: taskMessage(task, fromName), id: String(task.id) });
+  }
+
+  /** 팀원 구성이 바뀌었다고 팀장에게 알린다(01 §4). 팀장 본인이 한 일(hire/dismiss)에는 부르지 않는다. */
+  private notifyTeamChange(teamId: string, text: string, exceptMemberId?: string): void {
+    const leader = this.store.liveLeader(teamId);
+    if (!leader || leader.id === exceptMemberId) return;
+    const rt = this.runtimes.get(leader.id);
+    if (!rt?.session.alive) return;
+    rt.queue.enqueue({ kind: 'system', text });
+  }
+
   /** `${dataDir}/sessions/<memberId>/mcp.json` — Claude `--mcp-config` 용. 스폰 때마다 다시 쓴다(포트·토큰이 바뀔 수 있다). */
   mcpConfigPath(memberId: string): string {
     return path.join(this.cfg.dataDir, 'sessions', memberId, 'mcp.json');
@@ -836,8 +1148,12 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
     this.runtimes.set(member.id, rt);
 
     queue.on('flushed', (item) => {
-      if (item.kind !== 'instruct' || !item.id) return;
-      const task = this.store.getTask(Number(item.id));
+      // id 는 task 번호(instruct·위임 system) 또는 pending id(`[ANSWER q#…]`) — 숫자인 것만 task 다.
+      if ((item.kind !== 'instruct' && item.kind !== 'system') || !item.id) return;
+      const taskId = Number(item.id);
+      if (!Number.isInteger(taskId)) return;
+      this.inFlight.delete(taskId);
+      const task = this.store.getTask(taskId);
       if (task?.status === 'queued') this.store.updateTask(task.id, { status: 'assigned' });
     });
     queue.on('dialogPassed', (kind) => this.notice('info', `${member.name}: passed first-run dialog (${kind})`));
@@ -1026,12 +1342,13 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
     }
   }
 
-  /** [RESUMED] 를 먼저, 그 뒤에 queued task 를 id 순으로(원래 `instruct` 와 같은 모양이라 flush 시 assigned 가 된다). */
+  /**
+   * [RESUMED] 를 먼저, 그 뒤에 queued task 를 id 순으로(원래 `instruct` 와 같은 모양이라 flush 시 assigned 가 된다).
+   * 발행자가 팀장인 task(위임, T25)는 `[TASK#n from <팀장>(팀장)]` 봉투로 들어간다.
+   */
   private enqueueResumed(rt: MemberRuntime, resumedText: string, queued: Task[]): void {
     rt.queue.enqueue({ kind: 'system', text: resumedText });
-    for (const task of [...queued].sort((a, b) => a.id - b.id)) {
-      rt.queue.enqueue({ kind: 'instruct', text: `[TASK#${task.id} from user]\n${task.instruction}`, id: String(task.id) });
-    }
+    for (const task of [...queued].sort((a, b) => a.id - b.id)) this.enqueueTask(rt, task);
   }
 
   /**
@@ -1117,7 +1434,10 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
     }
     // 예상 못 한 종료(사용자 /exit, 크래시): 어댑터가 error 이벤트 + exited/error, pending 만료. task 는 여기서 aborted.
     this.adapterOf(memberId).onSessionExit(memberId, info.exitCode);
-    this.store.abortTasksFor(memberId);
+    // T25: 팀장이 죽었으면 그가 발행한 task 도 전부 정리한다(01 §"interrupt / fire / error 공통 후처리").
+    const gone = this.store.getMember(memberId);
+    if (gone?.rank === 'leader') this.abortTasksIssuedBy(gone, '팀장 종료');
+    this.abortTasksAndReport(memberId, '세션 종료');
   }
 
   /** 퇴근 마무리: 흔적 이벤트 + status exited. MCP 연결도 끊는다(프로세스 없이 status 만 살아 있던 행 포함). */
@@ -1125,7 +1445,7 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
     const member = this.store.getMember(memberId);
     if (!member) return;
     this.disposeMcp(memberId);
-    this.store.abortTasksFor(memberId);
+    this.abortTasksAndReport(memberId, '퇴근');
     this.appendEvent(member, 'idle', { summary });
     this.setStatus(memberId, 'exited');
     this.store.updateMember(memberId, { childPid: null });
@@ -1288,10 +1608,19 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
       if (rt) rt.lastText = undefined;
       return;
     }
+    // T25(실기에서 잡은 함정): 팀장이 delegate 해 놓고 **보고를 기다리려고** 턴을 끝낸 것은 "끝난 작업"이 아니다.
+    // 그대로 승격하면 사용자 task 가 중간 인사말로 닫혀 버리고, 나중에 진짜 `report` 가 "이미 보고됐습니다" 로 거절된다.
+    // 발행한 미종료 task 가 하나라도 있으면 건너뛴다 — `[ALL_REPORTS_IN]` 뒤 턴에서 닫히거나 `report` 도구가 닫는다.
+    if (this.store.openTasksIssuedBy(ev.memberId).length > 0) return;
     for (const task of this.store.listTasks({ toMember: ev.memberId, status: 'assigned' })) {
       const reportText = rt?.lastText ?? null;
       this.store.updateTask(task.id, { status: 'reported', reportStatus: 'done', reportText });
       this.appendEvent(member, 'reporting', { summary: reportText ? truncate(reportText, 300) : `task#${task.id} done` }, { taskId: task.id });
+      // T25: 위임받은 task 를 `report` 도구 없이 턴만 끝낸 경우에도 팀장에게는 보고가 올라가야 한다 — 같은 버퍼를 탄다.
+      // (팀장이 `[ALL_REPORTS_IN]` 을 영영 못 받고 굳는 것을 막는 안전망. `report` 로 이미 닫힌 task 는 여기 오지 않는다.)
+      if (task.fromMember !== USER_ACTOR) {
+        this.bufferReport(task.fromMember, { taskId: task.id, name: member.name, status: 'done', body: reportText ?? `task#${task.id} done` });
+      }
     }
   }
 
@@ -1325,17 +1654,21 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
 
   /**
    * 파생 상태(01 §2): idle 인데 열린 질문이 있으면 `waiting_answer`(ask_user 는 턴이 끝난 뒤에도 질문이 열려 있다, T17),
+   * **팀장이 idle 인데 자기가 발행한 미종료 task 가 있으면 `waiting_reports`**(T25 — 팀원 보고를 기다리는 중),
    * idle 이고 배정 task 없으면 `free`.
    */
   private derived(memberId: string, status: MemberStatus): DerivedStatus {
     if (status !== 'idle') return status;
     if (this.store.listOpenPending(memberId).some((p) => p.type === 'question')) return 'waiting_answer';
-    const open = this.store.listTasks({ toMember: memberId, status: ['queued', 'assigned'] });
+    if (this.store.getMember(memberId)?.rank === 'leader' && this.store.openTasksIssuedBy(memberId).length > 0) return 'waiting_reports';
+    const open = this.store.listTasks({ toMember: memberId, status: OPEN_TASKS });
     return open.length === 0 ? 'free' : 'idle';
   }
 
   private emitStatus(memberId: string, status: MemberStatus): void {
     this.emit('status', memberId, status, this.derived(memberId, status));
+    // T25 유휴 감시: 유휴가 되는 순간 밀려 있던 위임(queued)을 전달한다. 게이트는 dispatchTask 가 다시 본다.
+    if (status === 'idle') this.dispatchQueuedTasks(memberId);
   }
 
   private setStatus(memberId: string, status: MemberStatus): void {
@@ -1391,6 +1724,58 @@ export function buildResumedText(input: { assigned: Task[]; events: OfficeEvent[
   const events = recent.length ? recent.map(describeEvent).join('; ') : '없음';
   const expired = input.expiredCount ? ` 만료된 허가·질문: ${input.expiredCount}건(필요하면 다시 요청하라).` : '';
   return `[RESUMED] 데몬이 재시작됐다. 진행 중이던 작업: ${tasks}. 마지막 확인된 행동: ${events}.${expired} 현재 상태를 점검하고 이어서 진행하라.`;
+}
+
+// ---- TeamTools 문구 빌더 (T25) ------------------------------------------------------------
+
+/** `[TASK#n from user]` / `[TASK#n from <팀장 이름>(팀장)]` + 본문. 위임과 사용자 지시가 같은 봉투를 쓴다. */
+export function taskMessage(task: Task, fromName: string): string {
+  const from = task.fromMember === USER_ACTOR ? USER_ACTOR : `${fromName}(팀장)`;
+  return `[TASK#${task.id} from ${from}]\n${task.instruction}`;
+}
+
+/**
+ * 팀원 보고 덩어리. `allIn` 이면 마지막에 `[ALL_REPORTS_IN]` 을 붙인다 — 팀장은 그 표시를 보고 "이제 전부 모였다"를 안다.
+ *   [REPORTS task#12 이음 status=done]
+ *   <요약>
+ *
+ *   [REPORTS task#13 하루 status=done]
+ *   <요약>
+ *
+ *   [ALL_REPORTS_IN]
+ */
+export function buildReportsText(lines: ReportLine[], allIn: boolean): string {
+  const blocks = lines.map((l) => `[REPORTS task#${l.taskId} ${l.name} status=${l.status}]\n${l.body}`);
+  return allIn ? `${blocks.join('\n\n')}\n\n[ALL_REPORTS_IN]` : blocks.join('\n\n');
+}
+
+/** report 의 저장·전달 본문. `files` 가 있으면 한 줄 덧붙인다(tasks 에 파일 칸이 따로 없다). */
+export function reportBody(summary: string, files?: string[]): string {
+  const list = (files ?? []).map((f) => f.trim()).filter((f) => f.length > 0);
+  return list.length > 0 ? `${summary}\n파일: ${list.join(', ')}` : summary;
+}
+
+/** hire 의 지시문: 첫 줄이 `# 역할: <role>`, 그 아래에 팀장이 준 초안(있으면). */
+export function buildRoleInstructions(role: string, body?: string): string {
+  const rest = (body ?? '').trim();
+  return rest ? `# 역할: ${role}\n\n${rest}\n` : `# 역할: ${role}\n`;
+}
+
+/** 지시문 첫 줄의 `# 역할: <role>` 을 되읽는다(`[TEAM]` 알림에 역할을 싣기 위해). */
+export function roleOf(instructions?: string): string | undefined {
+  const first = (instructions ?? '').split(/\r?\n/, 1)[0] ?? '';
+  const m = /^#\s*역할:\s*(.+)$/.exec(first.trim());
+  return m ? m[1]!.trim() : undefined;
+}
+
+/** `[TEAM] 팀원 변경: +<이름>(<엔진>[, 역할: …])` — 사용자가 팀원을 출근시켰다(01 §4). */
+export function teamJoinText(name: string, engine: Engine, role?: string): string {
+  return `[TEAM] 팀원 변경: +${name}(${engine}${role ? `, 역할: ${role}` : ''})`;
+}
+
+/** `[TEAM] 팀원 변경: -<이름>` — 사용자가 팀원을 퇴근시켰다. */
+export function teamLeaveText(name: string): string {
+  return `[TEAM] 팀원 변경: -${name}`;
 }
 
 /**

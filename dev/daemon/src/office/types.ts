@@ -4,7 +4,7 @@ import type { EventEmitter } from 'node:events';
 import type { ExitInfo, PtySession, SpawnOptions } from '../pty/types.js';
 import type { HookReceiverEvents } from '../hooks/HookReceiver.js';
 import type { ApprovalDecisionInput } from '../adapters/types.js';
-import type { Engine, EventsQueryInput, Member, MemberRank, MemberStatus, OfficeEvent, Snapshot, Team } from '../store/types.js';
+import type { Engine, EventsQueryInput, Member, MemberRank, MemberStatus, OfficeEvent, ReportStatus, Snapshot, Team } from '../store/types.js';
 
 // ---- 데몬 기록 파일 ----------------------------------------------------------
 
@@ -59,6 +59,35 @@ export interface HireByLeaderParams {
 /** `member.instruct` 옵션. `force` 는 "팀장에게만 지시" 게이트를 넘는 디버그 탈출구(T24). */
 export interface InstructOptions {
   force?: boolean;
+}
+
+// ---- TeamTools 오케스트레이션(T25) — RPC 가 아니라 MCP 도구가 부르는 Office 메서드의 입력 -----------
+
+/** TeamTools `hire` 입력. `role` 은 그 팀원 지시문의 첫 줄(`# 역할: <role>`)이 된다. */
+export interface TeamHireInput {
+  name: string;
+  role: string;
+  /** 생략하면 팀 기본(팀장과 같은 엔진 → claude → 팀 허용 목록 첫 번째). */
+  engine?: Engine;
+  /** 역할 줄 아래에 붙는 지시문 초안. */
+  instructions?: string;
+}
+
+/** TeamTools `report` 입력. `taskId` 는 그 멤버에게 배정된 task 여야 한다. */
+export interface TeamReportInput {
+  taskId: number;
+  summary: string;
+  files?: string[];
+  status: ReportStatus;
+}
+
+/** 팀장에게 올라갈 보고 한 건(버퍼의 원소). `body` = summary(+ `파일:` 줄). */
+export interface ReportLine {
+  taskId: number;
+  /** 보고한 팀원 이름. */
+  name: string;
+  status: ReportStatus;
+  body: string;
 }
 
 export interface AttachResult {
