@@ -6,18 +6,35 @@ import path from 'node:path';
 import { Store } from '../../src/store/Store.js';
 import type { OfficeEventKind } from '../../src/store/types.js';
 
+/**
+ * T34 기준 최소 트리: 부서 → 부장 → 팀/팀장 → 팀원.
+ * 옛 `seedTeam` 이 주던 `{team, leader, member}` 는 그대로 쓸 수 있게 이름을 남겼다(leader = 팀장 rank 'lead').
+ */
 function seedTeam(store: Store) {
-  const team = store.createTeam({ name: 'alpha', cwd: 'D:/proj/alpha' });
-  const leader = store.createMember({
-    teamId: team.id,
-    name: '팀장',
-    rank: 'leader',
+  const department = store.createDepartment({ name: 'alpha', cwd: 'D:/proj/alpha' });
+  const team = store.createTeam({ departmentId: department.id, name: 'alpha', cwd: department.cwd });
+  const head = store.createMember({
+    departmentId: department.id,
+    name: '부장',
+    rank: 'head',
     engine: 'claude',
-    cwd: team.cwd,
+    cwd: department.cwd,
     hiredBy: 'user',
   });
-  const member = store.createMember({
+  const leader = store.createMember({
+    departmentId: department.id,
     teamId: team.id,
+    parentId: head.id,
+    name: '팀장',
+    rank: 'lead',
+    engine: 'claude',
+    cwd: team.cwd,
+    hiredBy: 'leader',
+  });
+  const member = store.createMember({
+    departmentId: department.id,
+    teamId: team.id,
+    parentId: leader.id,
     name: '이음',
     rank: 'member',
     engine: 'codex',
@@ -25,8 +42,9 @@ function seedTeam(store: Store) {
     hiredBy: 'leader',
     status: 'idle',
   });
+  store.updateDepartment(department.id, { headId: head.id });
   store.updateTeam(team.id, { leaderId: leader.id });
-  return { team: store.getTeam(team.id)!, leader, member };
+  return { department: store.getDepartment(department.id)!, team: store.getTeam(team.id)!, head, leader, member };
 }
 
 describe('Store (in-memory)', () => {
@@ -57,8 +75,11 @@ describe('Store (in-memory)', () => {
     assert.deepEqual(
       store.listMembers(team.id).map((m) => m.id),
       [leader.id, member.id],
+      '팀에 속한 것은 팀장·팀원뿐 — 부장은 부서 직속(team_id null)',
     );
-    assert.equal(store.listMembers().length, 2);
+    assert.equal(store.listMembers().length, 3);
+    assert.equal(store.getMember(leader.id)!.teamId, team.id);
+    assert.equal(store.listMembers().find((m) => m.rank === 'head')!.teamId, null);
 
     const updated = store.updateMember(member.id, { status: 'working', sessionId: 'sess-1', childPid: 4242 });
     assert.equal(updated?.status, 'working');
@@ -70,22 +91,85 @@ describe('Store (in-memory)', () => {
     assert.deepEqual(t2?.allowedEngines, ['claude']);
     assert.equal(t2?.maxMembers, 2);
 
-    // 삭제: members / pending / tasks cascade
+    // 팀 삭제: 그 팀의 멤버(팀장·팀원)와 그들의 pending 은 cascade.
+    // **task 는 남는다** — T34 부터 task 는 부서 소유라(팀이 아니라) 팀을 지워도 보고 이력이 사라지지 않는다.
     store.createPending({ memberId: member.id, type: 'approval', payload: { tool: 'Bash' } });
-    store.createTask({ teamId: team.id, fromMember: 'user', toMember: leader.id, instruction: 'x' });
+    store.createTask({ departmentId: team.departmentId, fromMember: 'user', toMember: leader.id, instruction: 'x' });
     assert.equal(store.deleteTeam(team.id), true);
     assert.equal(store.deleteTeam(team.id), false);
     assert.equal(store.getTeam(team.id), undefined);
-    assert.equal(store.listMembers().length, 0);
+    assert.deepEqual(store.listMembers().map((m) => m.rank), ['head'], '부서 직속인 부장은 남는다');
     assert.equal(store.listOpenPending().length, 0);
+    assert.equal(store.listTasks().length, 1);
+
+    // 부서 삭제는 teams·members·tasks 를 전부 거둔다.
+    assert.equal(store.deleteDepartment(team.departmentId), true);
+    assert.equal(store.deleteDepartment(team.departmentId), false);
+    assert.equal(store.listDepartments().length, 0);
+    assert.equal(store.listMembers().length, 0);
     assert.equal(store.listTasks().length, 0);
+  });
+
+  // ---- T34 트리 질의 -------------------------------------------------------------------
+
+  test('departments: create / get / list / update / liveHead / listTeams(departmentId)', () => {
+    const { department, team, head, leader } = seedTeam(store);
+    assert.equal(department.cwd, 'D:/proj/alpha');
+    assert.equal(department.headId, head.id);
+    assert.equal(store.getDepartment(department.id)!.name, 'alpha');
+    assert.equal(store.listDepartments().length, 1);
+    assert.equal(store.updateDepartment(department.id, { name: 'alpha2' })!.name, 'alpha2');
+
+    assert.equal(store.liveHead(department.id)!.id, head.id);
+    // 나간 부장은 "살아 있는 부장" 이 아니다 — head_id 는 그대로 남는다.
+    store.updateMember(head.id, { status: 'exited' });
+    assert.equal(store.liveHead(department.id), undefined);
+    assert.equal(store.getDepartment(department.id)!.headId, head.id);
+
+    // 팀 목록은 부서로 거른다.
+    const other = store.createDepartment({ name: 'beta', cwd: 'D:/proj/beta' });
+    store.createTeam({ departmentId: other.id, name: 'beta', cwd: other.cwd });
+    assert.deepEqual(store.listTeams(department.id).map((t) => t.id), [team.id]);
+    assert.equal(store.listTeams().length, 2);
+    assert.equal(store.liveLead(team.id)!.id, leader.id);
+    assert.equal(store.liveLeader(team.id)!.id, leader.id, 'liveLeader 는 liveLead 의 별칭');
+  });
+
+  test('tree: childrenOf(살아 있는 자식만) / parentOf / subtreeOf(깊이 우선)', () => {
+    const { department, head, leader, member } = seedTeam(store);
+    const second = store.createMember({
+      departmentId: department.id,
+      teamId: leader.teamId,
+      parentId: leader.id,
+      name: '나루',
+      rank: 'member',
+      engine: 'claude',
+      cwd: 'D:/proj/alpha',
+      hiredBy: 'leader',
+    });
+
+    assert.deepEqual(store.childrenOf(head.id).map((m) => m.id), [leader.id]);
+    assert.deepEqual(store.childrenOf(leader.id).map((m) => m.id), [member.id, second.id]);
+    assert.deepEqual(store.childrenOf(member.id), []);
+    assert.equal(store.parentOf(member.id)!.id, leader.id);
+    assert.equal(store.parentOf(head.id), undefined);
+
+    // subtreeOf 는 자기 자신부터 깊이 우선. 뒤에서부터 훑으면 잎부터 정리된다(후처리 순서).
+    assert.deepEqual(store.subtreeOf(head.id).map((m) => m.name), ['부장', '팀장', '이음', '나루']);
+    assert.deepEqual(store.subtreeOf(leader.id).map((m) => m.id), [leader.id, member.id, second.id]);
+    assert.deepEqual(store.subtreeOf('m_nope'), []);
+
+    // childrenOf 는 살아 있는 자식만(후처리·로스터가 이 기준을 쓴다), subtreeOf 는 나간 행도 포함.
+    store.updateMember(member.id, { status: 'exited' });
+    assert.deepEqual(store.childrenOf(leader.id).map((m) => m.id), [second.id]);
+    assert.equal(store.subtreeOf(leader.id).length, 3);
   });
 
   test('deleteMember cascades pending but keeps tasks/events', () => {
     const { team, member } = seedTeam(store);
     store.createPending({ memberId: member.id, type: 'question', payload: { q: '?' } });
-    store.createTask({ teamId: team.id, fromMember: 'user', toMember: member.id, instruction: 'x' });
-    store.appendEvent({ teamId: team.id, memberId: member.id, kind: 'idle' });
+    store.createTask({ departmentId: team.departmentId, fromMember: 'user', toMember: member.id, instruction: 'x' });
+    store.appendEvent({ departmentId: team.departmentId, teamId: team.id, memberId: member.id, kind: 'idle' });
     assert.equal(store.deleteMember(member.id), true);
     assert.equal(store.listOpenPending().length, 0);
     assert.equal(store.listTasks().length, 1);
@@ -98,6 +182,7 @@ describe('Store (in-memory)', () => {
     const seqs: number[] = [];
     for (let i = 0; i < 10; i++) {
       const ev = store.appendEvent({
+        departmentId: team.departmentId,
         teamId: team.id,
         memberId: i % 2 === 0 ? leader.id : member.id,
         kind: kinds[i % kinds.length]!,
@@ -174,7 +259,9 @@ describe('Store (in-memory)', () => {
   test('tasks lifecycle, listTasks filters, openTasksIssuedBy, abortTasksFor', () => {
     const { team, leader, member } = seedTeam(store);
     const m2 = store.createMember({
+      departmentId: team.departmentId,
       teamId: team.id,
+      parentId: leader.id,
       name: '둘',
       rank: 'member',
       engine: 'claude',
@@ -182,21 +269,21 @@ describe('Store (in-memory)', () => {
       hiredBy: 'leader',
     });
 
-    const userTask = store.createTask({ teamId: team.id, fromMember: 'user', toMember: leader.id, instruction: '기능 만들어' });
+    const userTask = store.createTask({ departmentId: team.departmentId, fromMember: 'user', toMember: leader.id, instruction: '기능 만들어' });
     assert.equal(userTask.id, 1);
     assert.equal(userTask.status, 'queued');
     assert.equal(userTask.reportText, null);
 
-    const d1 = store.createTask({ teamId: team.id, fromMember: leader.id, toMember: member.id, instruction: 'A', status: 'assigned' });
-    const d2 = store.createTask({ teamId: team.id, fromMember: leader.id, toMember: m2.id, instruction: 'B' });
-    const d3 = store.createTask({ teamId: team.id, fromMember: leader.id, toMember: member.id, instruction: 'C' });
+    const d1 = store.createTask({ departmentId: team.departmentId, fromMember: leader.id, toMember: member.id, instruction: 'A', status: 'assigned' });
+    const d2 = store.createTask({ departmentId: team.departmentId, fromMember: leader.id, toMember: m2.id, instruction: 'B' });
+    const d3 = store.createTask({ departmentId: team.departmentId, fromMember: leader.id, toMember: member.id, instruction: 'C' });
 
     assert.deepEqual(store.openTasksIssuedBy(leader.id).map((t) => t.id), [d1.id, d2.id, d3.id]);
     assert.deepEqual(store.openTasksIssuedBy(member.id), []);
     assert.deepEqual(store.listTasks({ toMember: member.id }).map((t) => t.id), [d1.id, d3.id]);
     assert.deepEqual(store.listTasks({ fromMember: 'user' }).map((t) => t.id), [userTask.id]);
     assert.deepEqual(store.listTasks({ status: 'assigned' }).map((t) => t.id), [d1.id]);
-    assert.deepEqual(store.listTasks({ teamId: team.id, status: ['queued', 'assigned'] }).length, 4);
+    assert.deepEqual(store.listTasks({ departmentId: team.departmentId, status: ['queued', 'assigned'] }).length, 4);
 
     // report
     const reported = store.updateTask(d2.id, { status: 'reported', reportText: '끝', reportStatus: 'done' });
@@ -220,31 +307,34 @@ describe('Store (in-memory)', () => {
 
   test('snapshot shape: seq + teams + members + open pending + open tasks', () => {
     const { team, leader, member } = seedTeam(store);
-    store.appendEvent({ teamId: team.id, memberId: leader.id, kind: 'thinking' });
-    store.appendEvent({ teamId: team.id, memberId: leader.id, kind: 'idle' });
+    store.appendEvent({ departmentId: team.departmentId, teamId: team.id, memberId: leader.id, kind: 'thinking' });
+    store.appendEvent({ departmentId: team.departmentId, teamId: team.id, memberId: leader.id, kind: 'idle' });
     const p = store.createPending({ memberId: member.id, type: 'approval', payload: {} });
     const pClosed = store.createPending({ memberId: member.id, type: 'question', payload: {} });
     store.answerPending(pClosed.id, 'x');
-    const t1 = store.createTask({ teamId: team.id, fromMember: 'user', toMember: leader.id, instruction: 'a' });
-    const t2 = store.createTask({ teamId: team.id, fromMember: leader.id, toMember: member.id, instruction: 'b', status: 'assigned' });
-    const t3 = store.createTask({ teamId: team.id, fromMember: leader.id, toMember: member.id, instruction: 'c' });
+    const t1 = store.createTask({ departmentId: team.departmentId, fromMember: 'user', toMember: leader.id, instruction: 'a' });
+    const t2 = store.createTask({ departmentId: team.departmentId, fromMember: leader.id, toMember: member.id, instruction: 'b', status: 'assigned' });
+    const t3 = store.createTask({ departmentId: team.departmentId, fromMember: leader.id, toMember: member.id, instruction: 'c' });
     store.updateTask(t3.id, { status: 'reported', reportText: 'ok', reportStatus: 'done' });
 
     const snap = store.snapshot();
-    assert.deepEqual(Object.keys(snap).sort(), ['members', 'pending', 'seq', 'tasks', 'teams']);
+    assert.deepEqual(Object.keys(snap).sort(), ['departments', 'members', 'pending', 'seq', 'tasks', 'teams']);
+    assert.deepEqual(snap.departments.map((d) => d.id), [team.departmentId]);
     assert.equal(snap.seq, 2);
     assert.deepEqual(snap.teams.map((t) => t.id), [team.id]);
-    assert.deepEqual(snap.members.map((m) => m.id), [leader.id, member.id]);
+    assert.deepEqual(snap.members.map((m) => m.name), ['부장', '팀장', '이음']);
     assert.deepEqual(snap.pending.map((x) => x.id), [p.id]);
     assert.deepEqual(snap.tasks.map((x) => x.id), [t1.id, t2.id]);
   });
 
-  test('pruneEvents keeps newest keepPerTeam per team; seq does not reset', () => {
+  // T34: 파티션이 팀이 아니라 **부서**다 — 부서 둘을 만들어 각각 남는지 본다.
+  test('pruneEvents keeps newest keepPerTeam per department; seq does not reset', () => {
     const { team, leader } = seedTeam(store);
-    const team2 = store.createTeam({ name: 'beta', cwd: 'D:/proj/beta' });
-    const m2 = store.createMember({ teamId: team2.id, name: 'b', rank: 'leader', engine: 'claude', cwd: team2.cwd, hiredBy: 'user' });
-    for (let i = 0; i < 10; i++) store.appendEvent({ teamId: team.id, memberId: leader.id, kind: 'idle' });
-    for (let i = 0; i < 3; i++) store.appendEvent({ teamId: team2.id, memberId: m2.id, kind: 'idle' });
+    const dept2 = store.createDepartment({ name: 'beta', cwd: 'D:/proj/beta' });
+    const team2 = store.createTeam({ departmentId: dept2.id, name: 'beta', cwd: dept2.cwd });
+    const m2 = store.createMember({ departmentId: dept2.id, teamId: team2.id, name: 'b', rank: 'lead', engine: 'claude', cwd: team2.cwd, hiredBy: 'user' });
+    for (let i = 0; i < 10; i++) store.appendEvent({ departmentId: team.departmentId, teamId: team.id, memberId: leader.id, kind: 'idle' });
+    for (let i = 0; i < 3; i++) store.appendEvent({ departmentId: team2.departmentId, teamId: team2.id, memberId: m2.id, kind: 'idle' });
 
     const deleted = store.pruneEvents({ keepPerTeam: 4 });
     assert.equal(deleted, 6);
@@ -255,7 +345,7 @@ describe('Store (in-memory)', () => {
     // 전부 지워도 seq 는 이어진다
     assert.equal(store.pruneEvents({ keepPerTeam: 0 }), 7);
     assert.equal(store.lastSeq(), 13);
-    assert.equal(store.appendEvent({ teamId: team.id, memberId: leader.id, kind: 'idle' }).seq, 14);
+    assert.equal(store.appendEvent({ departmentId: team.departmentId, teamId: team.id, memberId: leader.id, kind: 'idle' }).seq, 14);
   });
 });
 
@@ -272,7 +362,7 @@ describe('Store (file, WAL, reopen)', () => {
     const dbPath = path.join(dir, 'nested', 'pixel-office.db');
     const s1 = new Store(dbPath);
     const { team, leader } = seedTeam(s1);
-    const first = [1, 2, 3].map(() => s1.appendEvent({ teamId: team.id, memberId: leader.id, kind: 'reading' }).seq);
+    const first = [1, 2, 3].map(() => s1.appendEvent({ departmentId: team.departmentId, teamId: team.id, memberId: leader.id, kind: 'reading' }).seq);
     assert.deepEqual(first, [1, 2, 3]);
     s1.pruneEvents({ keepPerTeam: 0 }); // 전부 삭제 — 재시작 후 seq 가 1 로 돌아가면 안 된다
     s1.close();
@@ -283,7 +373,8 @@ describe('Store (file, WAL, reopen)', () => {
     assert.equal(s2.lastSeq(), 3);
     assert.equal(s2.getTeam(team.id)?.name, 'alpha');
     assert.equal(s2.listMembers(team.id).length, 2);
-    const next = s2.appendEvent({ teamId: team.id, memberId: leader.id, kind: 'idle' });
+    assert.equal(s2.listDepartmentMembers(team.departmentId).length, 3, '부장까지 셋');
+    const next = s2.appendEvent({ departmentId: team.departmentId, teamId: team.id, memberId: leader.id, kind: 'idle' });
     assert.equal(next.seq, 4);
     assert.deepEqual(s2.eventsSince(0).map((e) => e.seq), [4]);
     s2.close();

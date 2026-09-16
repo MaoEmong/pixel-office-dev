@@ -6,6 +6,7 @@ import type { ExitInfo, KeyName, PtySession, SpawnOptions } from '../../src/pty/
 import { gracefulQuit } from '../../src/pty/PtyManager.js';
 import type { DecisionHandle, HookReceiverEvents, HookRequest } from '../../src/hooks/HookReceiver.js';
 import type { HookEvent, HookPayload } from '../../src/hooks/types.js';
+import type { Department, Engine, Member, Team } from '../../src/store/types.js';
 
 export class FakeSession implements PtySession {
   alive = true;
@@ -172,4 +173,78 @@ export function fakeReq(memberToken: string, event: HookEvent, payload: HookPayl
     },
   };
   return { req, sent, handle: () => handle };
+}
+
+// ---- T34 트리 픽스처 -------------------------------------------------------------
+//
+// T34 에서 루트가 팀이 아니라 **부서**가 됐다(D-32). 옛 테스트들이 쓰던
+//   store.createTeam({name, cwd})            → seedDeptTeam(store, {name, cwd})
+//   office.createTeam({name, cwd, leaderEngine}) → makeTree(office, {name, cwd, engine})
+// 두 자리를 메우는 헬퍼. 의도(팀 하나 + 그 팀의 오케스트레이터 + 팀원들)는 그대로 두고 그 위에 부서·부장만 얹는다.
+
+/** store 에 부서 + 그 부서의 팀 하나를 만든다(멤버는 만들지 않는다). */
+export function seedDeptTeam(
+  store: StoreLike,
+  input: { name?: string; cwd: string; maxMembers?: number; allowedEngines?: Engine[]; departmentName?: string },
+): { department: Department; team: Team } {
+  const name = input.name ?? 'alpha';
+  const department = store.createDepartment({ name: input.departmentName ?? name, cwd: input.cwd });
+  const team = store.createTeam({
+    departmentId: department.id,
+    name,
+    cwd: input.cwd,
+    maxMembers: input.maxMembers,
+    allowedEngines: input.allowedEngines,
+  });
+  return { department, team };
+}
+
+/** Store 중 픽스처가 쓰는 부분(진짜 Store 를 받는다). */
+interface StoreLike {
+  createDepartment(input: { name: string; cwd: string }): Department;
+  createTeam(input: { departmentId: string; name: string; cwd: string; maxMembers?: number; allowedEngines?: Engine[] }): Team;
+}
+
+/** 부서(부장 자동 출근) + 팀(팀장 자동 출근)까지 한 번에. 스폰은 **두 번** 일어난다(부장·팀장). */
+export function makeTree(
+  office: OfficeLike,
+  input: {
+    name?: string;
+    cwd: string;
+    engine?: Engine;
+    headName?: string;
+    leadName?: string;
+    teamName?: string;
+    maxMembers?: number;
+    allowedEngines?: Engine[];
+  },
+): { department: Department; head: Member; team: Team; lead: Member } {
+  const engine = input.engine ?? 'claude';
+  const { department, head } = office.createDepartment({
+    name: input.name ?? 'alpha',
+    cwd: input.cwd,
+    headEngine: engine,
+    headName: input.headName,
+  });
+  const { team, lead } = office.createTeam({
+    departmentId: department.id,
+    name: input.teamName ?? input.name ?? 'alpha',
+    leadEngine: engine,
+    leadName: input.leadName,
+    maxMembers: input.maxMembers,
+    allowedEngines: input.allowedEngines,
+  });
+  return { department, head, team, lead };
+}
+
+interface OfficeLike {
+  createDepartment(params: { name: string; cwd: string; headEngine: Engine; headName?: string }): { department: Department; head: Member };
+  createTeam(params: {
+    departmentId: string;
+    name: string;
+    leadEngine?: Engine;
+    leadName?: string;
+    maxMembers?: number;
+    allowedEngines?: Engine[];
+  }): { team: Team; lead: Member };
 }

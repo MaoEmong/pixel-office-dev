@@ -5,7 +5,7 @@
 //                                                 명령을 순서대로 실행 → (선택) 멤버가 idle 될 때까지 대기 → 종료
 //   옵션: --url ws://127.0.0.1:7420  --token <t>  --timeout <ms>(wait-idle 상한, 기본 10분)
 import readline from 'node:readline';
-import type { Member, OfficeEvent, Snapshot, Task, Team } from '../store/types.js';
+import type { Department, Member, OfficeEvent, Snapshot, Task, Team } from '../store/types.js';
 import { RpcClient, RpcError, readDaemonInfo, daemonInfoPath, type HelloResult } from './RpcClient.js';
 import {
   CliError,
@@ -14,6 +14,7 @@ import {
   parseEngine,
   parseIntArg,
   parseLine,
+  resolveDepartment,
   resolveMember,
   resolvePendingId,
   resolveTeam,
@@ -21,7 +22,9 @@ import {
   unescapeTyped,
 } from './parse.js';
 import {
+  RANK_LABEL,
   detailSummary,
+  formatDepartment,
   formatEvent,
   formatMember,
   formatPending,
@@ -36,12 +39,43 @@ import {
 const EVENT_BUFFER = 500;
 const SPAWN_TIMEOUT_MS = 60_000;
 
+/** `department.tree` 결과 한 그루(데몬 office/types.ts DepartmentTree 의 와이어 모양). */
+interface TreeNode {
+  department: Department;
+  head?: Member & { derived?: string };
+  teams: Array<{ team: Team; lead?: Member & { derived?: string }; members: Array<Member & { derived?: string }> }>;
+  orphans: Array<Member & { derived?: string }>;
+}
+
+/** `tree` 출력. 부서 → 부장 → 팀/팀장 → 팀원. */
+export function treeLines(nodes: TreeNode[]): string[] {
+  const who = (m: (Member & { derived?: string }) | undefined, fallback: string): string =>
+    m ? `${RANK_LABEL[m.rank]} ${m.name} [${m.engine}] ${m.derived ?? m.status} (${m.id})` : fallback;
+  const out: string[] = [];
+  for (const n of nodes) {
+    out.push(`${n.department.name} (${n.department.id})  ${n.department.cwd}`);
+    out.push(`  └ ${who(n.head, '부장 (없음)')}`);
+    for (const t of n.teams) {
+      out.push(`     ├ 팀 ${t.team.name} (${t.team.id})  정원 ${t.members.length + (t.lead ? 1 : 0)}/${t.team.maxMembers}`);
+      out.push(`     │  └ ${who(t.lead, '팀장 (없음)')}`);
+      for (const m of t.members) out.push(`     │     └ ${who(m, '')}`);
+    }
+    if (n.teams.length === 0) out.push('     ├ (팀 없음)');
+    for (const m of n.orphans) out.push(`     ! 팀 없는 멤버: ${who(m, '')}`);
+  }
+  return out;
+}
+
 const HELP: Array<[string, string]> = [
+  ['depts', '부서 목록'],
+  ['dept create <name> <cwd> [claude|codex] [부장이름]', '부서 생성 + 부장 자동 출근 (엔진 기본 claude, 이름 기본 부장)'],
+  ['dept delete <dept>', '부서 삭제 (하위 트리 전원 퇴근)'],
+  ['tree', '부서 → 부장 → 팀/팀장 → 팀원 트리'],
   ['teams', '팀 목록'],
-  ['team create <name> <cwd> [claude|codex] [팀장이름]', '팀 생성 + 팀장 자동 출근 (엔진 기본 claude, 이름 기본 팀장)'],
-  ['team delete <team>', '팀 삭제 (멤버 전원 퇴근)'],
+  ['team create <dept> <name> [claude|codex] [팀장이름]', '[디버그] 팀 생성 + 팀장 자동 출근 (force:true — 정식 경로는 부장 도구)'],
+  ['team delete <team>', '팀 삭제 (팀장·팀원 퇴근)'],
   ['members', '멤버 목록'],
-  ['hire <team> <claude|codex> <name>', '멤버 출근 (member.clockIn)'],
+  ['hire <parent> <claude|codex> <name>', '[디버그] 상사 아래로 출근 (member.clockIn{force:true})'],
   ['fire <member>', '멤버 퇴근 (member.clockOut)'],
   ['rehire <member>', 'exited/error 멤버 재출근 (member.rehire)'],
   ['restart <member>', '지시문 즉시 반영 재시작 (member.restart)'],
@@ -76,6 +110,7 @@ interface MultiLine {
 
 class Cli {
   readonly client: RpcClient;
+  readonly departments = new Map<string, Department>();
   readonly teams = new Map<string, Team>();
   readonly members = new Map<string, Member>();
   readonly pending = new Map<string, LocalPending>();
@@ -112,8 +147,10 @@ class Cli {
   private readonly tty = Boolean(process.stdin.isTTY && process.stdout.isTTY);
 
   nameOf = (memberId: string): string => this.members.get(memberId)?.name ?? memberId.slice(0, 8);
-  teamNameOf(teamId: string): string {
-    return this.teams.get(teamId)?.name ?? teamId;
+  /** 멤버가 보이는 범위 이름 — 팀이 있으면 팀, 없으면(부장) 부서. */
+  scopeNameOf(m: Member): string {
+    if (m.teamId) return this.teams.get(m.teamId)?.name ?? m.teamId;
+    return this.departments.get(m.departmentId)?.name ?? m.departmentId;
   }
 
   // ---- 알림 배선 ---------------------------------------------------------------
@@ -190,7 +227,7 @@ class Cli {
     if (ev.kind === 'delegating') {
       const row: Task = known ?? {
         id: taskId,
-        teamId: ev.teamId,
+        departmentId: ev.departmentId,
         fromMember: ev.memberId,
         toMember: typeof d.to === 'string' ? d.to : '?',
         instruction: typeof d.summary === 'string' ? d.summary : '',
@@ -213,6 +250,8 @@ class Cli {
   }
 
   applySnapshot(s: Snapshot): void {
+    this.departments.clear();
+    for (const d of s.departments ?? []) this.departments.set(d.id, d);
     this.teams.clear();
     for (const t of s.teams ?? []) this.teams.set(t.id, t);
     this.members.clear();
@@ -261,13 +300,15 @@ class Cli {
   private printSummary(res: HelloResult): void {
     const s = res.snapshot;
     this.print(`데몬 v${res.daemon.version} (pid ${res.daemon.pid}) 연결됨 — ${this.client.url}  seq=${s.seq}`);
+    this.print(`부서 ${this.departments.size}개`);
+    for (const d of this.departments.values()) this.print('  ' + this.departmentLine(d));
     this.print(`팀 ${this.teams.size}개`);
     for (const t of this.teams.values()) {
       const count = [...this.members.values()].filter((m) => m.teamId === t.id).length;
       this.print('  ' + formatTeam(t, count));
     }
     this.print(`멤버 ${this.members.size}명`);
-    for (const m of this.members.values()) this.print('  ' + formatMember(m, this.teamNameOf(m.teamId)));
+    for (const m of this.members.values()) this.print('  ' + formatMember(m, this.scopeNameOf(m)));
     this.print(`열린 pending ${this.pending.size}건`);
     for (const p of this.pending.values()) this.print('  ' + formatPending(p, this.nameOf));
     if (this.tasks.length) {
@@ -345,6 +386,12 @@ class Cli {
     }
   }
 
+  private departmentLine(d: Department): string {
+    const teams = [...this.teams.values()].filter((t) => t.departmentId === d.id).length;
+    const members = [...this.members.values()].filter((m) => m.departmentId === d.id).length;
+    return formatDepartment(d, teams, members);
+  }
+
   /** 한 줄 실행. 실패해도 throw 하지 않고 출력만(대화형). 비대화 모드용으로는 성공 여부를 반환. */
   async run(line: string): Promise<boolean> {
     try {
@@ -373,6 +420,47 @@ class Cli {
         for (const [usage, desc] of HELP) this.print(`  ${usage.padEnd(44)} ${desc}`);
         return;
 
+      // ---- 부서 (T34) ----
+      case 'depts':
+      case 'departments':
+        if (!this.departments.size) this.print('(부서 없음)');
+        for (const d of this.departments.values()) this.print(this.departmentLine(d));
+        return;
+      case 'dept':
+      case 'department': {
+        const sub = args[0];
+        if (sub === 'create') {
+          const [, name, cwd, engine, headName] = args;
+          if (!name || !cwd) throw new CliError('사용법: dept create <name> <cwd> [claude|codex] [부장이름]');
+          const res = (await c.call(
+            'department.create',
+            { name, cwd, headEngine: parseEngine(engine), ...(headName ? { headName } : {}) },
+            SPAWN_TIMEOUT_MS,
+          )) as { department: Department; head?: Member };
+          this.departments.set(res.department.id, res.department);
+          if (res.head) this.members.set(res.head.id, res.head);
+          this.print(`부서 생성: ${formatDepartment(res.department, 0, res.head ? 1 : 0)}`);
+          if (res.head) this.print(`부장: ${formatMember(res.head, res.department.name)}`);
+          return;
+        }
+        if (sub === 'delete') {
+          const dept = resolveDepartment(this.departments.values(), args[1] ?? '');
+          await c.call('department.delete', { departmentId: dept.id }, SPAWN_TIMEOUT_MS);
+          this.departments.delete(dept.id);
+          for (const t of [...this.teams.values()]) if (t.departmentId === dept.id) this.teams.delete(t.id);
+          for (const m of [...this.members.values()]) if (m.departmentId === dept.id) this.members.delete(m.id);
+          this.print(`부서 삭제: ${dept.name}`);
+          return;
+        }
+        throw new CliError('사용법: dept create <name> <cwd> [claude|codex] [부장이름] | dept delete <dept>');
+      }
+      case 'tree': {
+        const res = (await c.call('department.tree', {})) as { departments: TreeNode[] };
+        if (!res.departments?.length) this.print('(부서 없음)');
+        for (const line of treeLines(res.departments ?? [])) this.print(line);
+        return;
+      }
+
       // ---- 팀 ----
       case 'teams':
         if (!this.teams.size) this.print('(팀 없음)');
@@ -384,17 +472,25 @@ class Cli {
       case 'team': {
         const sub = args[0];
         if (sub === 'create') {
-          const [, name, cwd, engine, leaderName] = args;
-          if (!name || !cwd) throw new CliError('사용법: team create <name> <cwd> [claude|codex] [팀장이름]');
+          const [, deptRef, name, engine, leadName] = args;
+          if (!deptRef || !name) throw new CliError('사용법: team create <dept> <name> [claude|codex] [팀장이름]');
+          const dept = resolveDepartment(this.departments.values(), deptRef);
+          // team.create 는 T34 부터 디버그 전용(force:true) — 정식 경로는 부장의 create_team 도구(T35).
           const res = (await c.call(
             'team.create',
-            { name, cwd, leaderEngine: parseEngine(engine), ...(leaderName ? { leaderName } : {}) },
+            {
+              departmentId: dept.id,
+              name,
+              force: true,
+              ...(engine ? { leadEngine: parseEngine(engine) } : {}),
+              ...(leadName ? { leadName } : {}),
+            },
             SPAWN_TIMEOUT_MS,
-          )) as { team: Team; leader?: Member };
+          )) as { team: Team; lead?: Member };
           this.teams.set(res.team.id, res.team);
-          if (res.leader) this.members.set(res.leader.id, res.leader);
-          this.print(`팀 생성: ${formatTeam(res.team, res.leader ? 1 : 0)}`);
-          if (res.leader) this.print(`팀장: ${formatMember(res.leader, res.team.name)}`);
+          if (res.lead) this.members.set(res.lead.id, res.lead);
+          this.print(`팀 생성: ${formatTeam(res.team, res.lead ? 1 : 0)}`);
+          if (res.lead) this.print(`팀장: ${formatMember(res.lead, res.team.name)}`);
           return;
         }
         if (sub === 'delete') {
@@ -405,25 +501,26 @@ class Cli {
           this.print(`팀 삭제: ${team.name}`);
           return;
         }
-        throw new CliError('사용법: team create <name> <cwd> [claude|codex] [팀장이름] | team delete <team>');
+        throw new CliError('사용법: team create <dept> <name> [claude|codex] [팀장이름] | team delete <team>');
       }
 
       // ---- 멤버 ----
       case 'members':
         if (!this.members.size) this.print('(멤버 없음)');
-        for (const m of this.members.values()) this.print(formatMember(m, this.teamNameOf(m.teamId)));
+        for (const m of this.members.values()) this.print(formatMember(m, this.scopeNameOf(m)));
         return;
       case 'hire': {
-        const [teamRef, engine, name] = args;
-        if (!teamRef || !engine || !name) throw new CliError('사용법: hire <team> <claude|codex> <name>');
-        const team = resolveTeam(this.teams.values(), teamRef);
+        const [parentRef, engine, name] = args;
+        if (!parentRef || !engine || !name) throw new CliError('사용법: hire <parent> <claude|codex> <name>');
+        const parent = this.member(parentRef);
+        // 사용자 직접 출근은 T34 부터 디버그 전용(force:true, D-32) — 상사 아래 직급으로 들어간다.
         const res = (await c.call(
           'member.clockIn',
-          { teamId: team.id, engine: parseEngine(engine), name },
+          { parentId: parent.id, engine: parseEngine(engine), name, force: true },
           SPAWN_TIMEOUT_MS,
         )) as { member: Member };
         this.members.set(res.member.id, res.member);
-        this.print(`출근: ${formatMember(res.member, team.name)}`);
+        this.print(`출근: ${formatMember(res.member, this.scopeNameOf(res.member))}`);
         return;
       }
       case 'fire': {
@@ -439,7 +536,7 @@ class Cli {
           member: Member;
         };
         this.members.set(res.member.id, res.member);
-        this.print(`${cmd === 'rehire' ? '재출근' : '재시작'}: ${formatMember(res.member, this.teamNameOf(res.member.teamId))}`);
+        this.print(`${cmd === 'rehire' ? '재출근' : '재시작'}: ${formatMember(res.member, this.scopeNameOf(res.member))}`);
         return;
       }
       // 팀장이 있는 팀에서 팀원에게 say 하면 데몬이 -32004 를 돌려준다(T24) — printError 가
@@ -556,7 +653,7 @@ class Cli {
       }
       case 'query': {
         const params: Record<string, unknown> = {};
-        if (args[0] && args[0] !== '-') params.teamId = resolveTeam(this.teams.values(), args[0]).id;
+        if (args[0] && args[0] !== '-') params.departmentId = resolveDepartment(this.departments.values(), args[0]).id;
         if (args[1] !== undefined) params.beforeSeq = parseIntArg(args[1], 'beforeSeq');
         if (args[2] !== undefined) params.limit = parseIntArg(args[2], 'limit');
         const res = (await c.call('events.query', params)) as { events: OfficeEvent[] };

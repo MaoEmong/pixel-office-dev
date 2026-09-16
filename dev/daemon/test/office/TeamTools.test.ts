@@ -19,7 +19,7 @@ import { RPC_ERROR } from '../../src/office/errors.js';
 import { Store } from '../../src/store/Store.js';
 import type { Member, OfficeEvent, Team } from '../../src/store/types.js';
 import { loadFixture } from '../screen/helpers.js';
-import { FakePty, FakeReceiver, fakeReq } from './fakes.js';
+import { FakePty, FakeReceiver, fakeReq, seedDeptTeam } from './fakes.js';
 
 const SID = 'sess-0001';
 const base = (event: string) => ({ session_id: SID, hook_event_name: event, cwd: 'D:\\x' });
@@ -56,7 +56,7 @@ describe('TeamTools 오케스트레이션 (T25)', () => {
     office.on('notice', (l, m) => notices.push(`${l}: ${m}`));
     await office.start();
     // 팀장은 아래 leaderIn() 으로 직접 출근시킨다(team.create 는 TeamRank.test.ts 담당).
-    team = store.createTeam({ name: 'alpha', cwd: dataDir, maxMembers: 4, allowedEngines: ['claude'] });
+    team = seedDeptTeam(store, { name: 'alpha', cwd: dataDir, maxMembers: 4, allowedEngines: ['claude'] }).team;
   });
   afterEach(async () => {
     for (const c of clients.splice(0)) await c.close().catch(() => {});
@@ -79,7 +79,7 @@ describe('TeamTools 오케스트레이션 (T25)', () => {
   const busy = (m: Member) => hook(m, 'UserPromptSubmit', { prompt: 'x' });
   const stop = (m: Member, lastText?: string) => hook(m, 'Stop', lastText === undefined ? {} : { last_assistant_message: lastText });
 
-  const leaderIn = async (name = '반장') => ready(office.clockIn({ teamId: team.id, engine: 'claude', name, rank: 'leader' }));
+  const leaderIn = async (name = '반장') => ready(office.clockIn({ teamId: team.id, engine: 'claude', name, rank: 'lead' }));
   const memberIn = async (name: string, instructions?: string) =>
     ready(office.clockIn({ teamId: team.id, engine: 'claude', name, instructions }));
   const hired = async (leader: Member, name: string, role = '파일 작성') =>
@@ -168,7 +168,7 @@ describe('TeamTools 오케스트레이션 (T25)', () => {
   test('delegate: 같은 팀이 아니거나 팀장·자기 자신이면 -32004, 팀원이 부르면 -32004', async () => {
     const leader = await leaderIn();
     const worker = await hired(leader, '이음');
-    const other = store.createTeam({ name: 'beta', cwd: dataDir });
+    const other = seedDeptTeam(store, { name: 'beta', cwd: dataDir, departmentName: 'beta-dept' }).team;
     const stranger = await ready(office.clockIn({ teamId: other.id, engine: 'claude', name: '남' }));
 
     const rank = (e: { code: number }) => e.code === RPC_ERROR.RANK_RULE;
@@ -177,7 +177,7 @@ describe('TeamTools 오케스트레이션 (T25)', () => {
     assert.throws(() => office.teamDelegate(worker.id, worker.id, 'x'), rank);
     assert.throws(() => office.teamDelegate(leader.id, 'm_nope', 'x'), (e: { code: number }) => e.code === RPC_ERROR.NOT_FOUND);
     assert.throws(() => office.teamDelegate(leader.id, worker.id, '   '), (e: { code: number }) => e.code === RPC_ERROR.INVALID_PARAMS);
-    assert.equal(store.listTasks({ teamId: team.id }).length, 0);
+    assert.equal(store.listTasks({ departmentId: team.departmentId }).length, 0);
   });
 
   // ---- report -----------------------------------------------------------------------------
@@ -429,9 +429,9 @@ describe('TeamTools 오케스트레이션 (T25)', () => {
   // ---- 문구 빌더 ---------------------------------------------------------------------------
 
   test('문구 빌더: taskMessage / buildReportsText / reportBody / buildRoleInstructions / teamJoinText', () => {
-    const t = store.createTask({ teamId: team.id, fromMember: 'user', toMember: 'm1', instruction: '해라' });
+    const t = store.createTask({ departmentId: team.departmentId, fromMember: 'user', toMember: 'm1', instruction: '해라' });
     assert.equal(taskMessage(t, 'user'), `[TASK#${t.id} from user]\n해라`);
-    const t2 = store.createTask({ teamId: team.id, fromMember: 'm_lead', toMember: 'm1', instruction: '해라' });
+    const t2 = store.createTask({ departmentId: team.departmentId, fromMember: 'm_lead', toMember: 'm1', instruction: '해라' });
     assert.equal(taskMessage(t2, '반장'), `[TASK#${t2.id} from 반장(팀장)]\n해라`);
 
     assert.equal(buildReportsText([{ taskId: 1, name: '하루', status: 'blocked', body: '막힘' }], false), '[REPORTS task#1 하루 status=blocked]\n막힘');

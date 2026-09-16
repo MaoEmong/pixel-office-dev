@@ -13,7 +13,7 @@ import { ShellMutex, shellLockCommand, isShellTool, DEFAULT_MAX_HOLD_MS } from '
 import { Store } from '../../src/store/Store.js';
 import type { Member, OfficeEvent, Team } from '../../src/store/types.js';
 import type { HookEvent, HookPayload } from '../../src/hooks/types.js';
-import { FakePty, FakeReceiver, fakeReq } from './fakes.js';
+import { FakePty, FakeReceiver, fakeReq, makeTree } from './fakes.js';
 
 /** 마이크로태스크가 다 돌게 한다(게이트 프라미스 → hook 응답). */
 const tick = () => new Promise<void>((r) => setImmediate(r));
@@ -173,6 +173,9 @@ describe('Office 배선: 팀 셸 뮤텍스 (T27)', () => {
   let office: Office;
   let team: Team;
   let other: Team;
+  // T34: 셸 락 범위는 팀이 아니라 **부서**다(D-32 — 한 부서의 팀들은 같은 cwd 를 쓴다).
+  let deptId: string;
+  let otherDeptId: string;
   let events: OfficeEvent[];
   let notices: string[];
   let 하루: Member;
@@ -190,14 +193,17 @@ describe('Office 배선: 팀 셸 뮤텍스 (T27)', () => {
     office.on('event', (e) => events.push(e));
     office.on('notice', (level, message) => notices.push(`${level}: ${message}`));
     await office.start();
-    // T24: 팀 생성 시 팀장이 자동 출근한다 — 그 팀장을 그대로 첫 멤버로 쓴다.
-    const demo = office.createTeam({ name: 'demo', cwd: dataDir, leaderEngine: 'claude', leaderName: '하루', allowedEngines: ['claude', 'codex'] });
-    const others = office.createTeam({ name: 'other', cwd: dataDir, leaderEngine: 'claude', leaderName: '남', allowedEngines: ['claude', 'codex'] });
+    // T34: 부서를 만들면 부장이, 팀을 만들면 팀장이 자동 출근한다 — 그 팀장을 그대로 첫 멤버로 쓴다.
+    // 락이 부서 단위이므로 "서로 막지 않는" 짝은 다른 **부서**로 만든다.
+    const demo = makeTree(office, { name: 'demo', cwd: dataDir, headName: '데모부장', leadName: '하루', allowedEngines: ['claude', 'codex'] });
+    const others = makeTree(office, { name: 'other', cwd: dataDir, headName: '남부장', leadName: '남', allowedEngines: ['claude', 'codex'] });
     team = demo.team;
     other = others.team;
-    하루 = demo.leader;
-    남 = others.leader;
-    이음 = office.clockIn({ teamId: team.id, engine: 'claude', name: '이음' });
+    deptId = demo.department.id;
+    otherDeptId = others.department.id;
+    하루 = demo.lead;
+    남 = others.lead;
+    이음 = office.clockIn({ parentId: 하루.id, engine: 'claude', name: '이음' });
   });
 
   afterEach(async () => {
@@ -222,12 +228,12 @@ describe('Office 배선: 팀 셸 뮤텍스 (T27)', () => {
     const a = send(하루, 'PreToolUse', pre('flutter test', 'u1'));
     await tick();
     assert.deepEqual(a.sent, [{}], '앞 명령은 바로 지나간다(pass-through)');
-    assert.equal(office.shell.holder(team.id)?.memberId, 하루.id);
+    assert.equal(office.shell.holder(deptId)?.memberId, 하루.id);
 
     const b = send(이음, 'PreToolUse', pre('echo x > y.txt', 'u2'));
     await tick();
     assert.deepEqual(b.sent, [], '두 번째 셸의 hook 응답은 아직 안 나갔다 — CLI 가 기다린다');
-    assert.equal(office.shell.queueLength(team.id), 1);
+    assert.equal(office.shell.queueLength(deptId), 1);
     assert.equal(store.getMember(이음.id)!.status, 'working', '대기 중에도 status 는 working');
 
     // 대기 이벤트는 그 도구의 running 이벤트 **뒤에** 한 번(말풍선이 "대기 중" 으로 끝나야 한다).
@@ -245,7 +251,7 @@ describe('Office 배선: 팀 셸 뮤텍스 (T27)', () => {
     send(하루, 'PostToolUse', post('u1'));
     await tick();
     assert.deepEqual(b.sent, [{}], 'PostToolUse 가 두 번째를 풀어 준다');
-    assert.equal(office.shell.holder(team.id)?.memberId, 이음.id);
+    assert.equal(office.shell.holder(deptId)?.memberId, 이음.id);
     assert.equal(waitEventsOf(이음).length, 1, '대기 이벤트는 한 번만');
   });
 
@@ -256,9 +262,9 @@ describe('Office 배선: 팀 셸 뮤텍스 (T27)', () => {
     const r = send(이음, 'PreToolUse', pre('cat notes.txt', 'u2'));
     await tick();
     assert.deepEqual(r.sent, [{}], 'cat 은 즉시 통과');
-    assert.equal(office.shell.queueLength(team.id), 0);
+    assert.equal(office.shell.queueLength(deptId), 0);
     assert.equal(waitEventsOf(이음).length, 0);
-    assert.equal(office.shell.holder(team.id)?.memberId, 하루.id, '락 주인은 그대로');
+    assert.equal(office.shell.holder(deptId)?.memberId, 하루.id, '락 주인은 그대로');
   });
 
   test('PostToolUseFailure 도 락을 푼다 (실측 02 §②: 실패 시 PostToolUse 는 안 온다)', async () => {
@@ -271,7 +277,7 @@ describe('Office 배선: 팀 셸 뮤텍스 (T27)', () => {
     send(하루, 'PostToolUseFailure', postFail('u1'));
     await tick();
     assert.deepEqual(b.sent, [{}]);
-    assert.equal(office.shell.holder(team.id)?.memberId, 이음.id);
+    assert.equal(office.shell.holder(deptId)?.memberId, 이음.id);
   });
 
   test('앞 멤버를 interrupt 하면 락이 풀려 다음 사람이 들어간다', async () => {
@@ -284,7 +290,7 @@ describe('Office 배선: 팀 셸 뮤텍스 (T27)', () => {
     office.interrupt(하루.id);
     await tick();
     assert.deepEqual(b.sent, [{}], 'interrupt 후처리(01 §공통 후처리)가 락을 돌려준다');
-    assert.equal(office.shell.holder(team.id)?.memberId, 이음.id);
+    assert.equal(office.shell.holder(deptId)?.memberId, 이음.id);
   });
 
   test('턴 종료(Stop)·퇴근도 안전망으로 락을 푼다', async () => {
@@ -293,22 +299,22 @@ describe('Office 배선: 팀 셸 뮤텍스 (T27)', () => {
     // PostToolUse 가 유실된 채 턴이 끝난 경우.
     send(하루, 'Stop', { hook_event_name: 'Stop', last_assistant_message: '끝' } as HookPayload);
     await tick();
-    assert.equal(office.shell.holder(team.id), undefined, 'Stop 이 락을 회수한다');
+    assert.equal(office.shell.holder(deptId), undefined, 'Stop 이 락을 회수한다');
 
     send(이음, 'PreToolUse', pre('npm run build', 'u2'));
     await tick();
-    assert.equal(office.shell.holder(team.id)?.memberId, 이음.id);
+    assert.equal(office.shell.holder(deptId)?.memberId, 이음.id);
     await office.clockOut(이음.id);
-    assert.equal(office.shell.holder(team.id), undefined, '퇴근도 회수한다');
+    assert.equal(office.shell.holder(deptId), undefined, '퇴근도 회수한다');
   });
 
-  test('다른 팀은 서로 막지 않는다', async () => {
+  test('다른 부서는 서로 막지 않는다 (T34: 락 범위가 부서)', async () => {
     send(하루, 'PreToolUse', pre('flutter test', 'u1'));
     await tick();
     const n = send(남, 'PreToolUse', pre('flutter test', 'u9'));
     await tick();
-    assert.deepEqual(n.sent, [{}], '다른 팀 멤버는 즉시 통과');
-    assert.equal(office.shell.holder(other.id)?.memberId, 남.id);
+    assert.deepEqual(n.sent, [{}], '다른 부서 멤버는 즉시 통과');
+    assert.equal(office.shell.holder(otherDeptId)?.memberId, 남.id);
     assert.equal(waitEventsOf(남).length, 0);
   });
 
@@ -317,17 +323,17 @@ describe('Office 배선: 팀 셸 뮤텍스 (T27)', () => {
     await tick();
     const b = send(이음, 'PreToolUse', pre('npm run build', 'u2'));
     await tick();
-    assert.equal(office.shell.queueLength(team.id), 1);
+    assert.equal(office.shell.queueLength(deptId), 1);
 
     // hook 프로세스가 끊김 → receiver 가 이미 '{}' 를 보냈다고 치고 보류를 닫는다.
     b.handle()!.cancel();
     receiver.emit('hold-closed', { memberToken: 이음.memberToken, event: 'PreToolUse', since: Date.now() });
     await tick();
-    assert.equal(office.shell.queueLength(team.id), 0, '아무도 안 기다리는 자리는 남기지 않는다');
+    assert.equal(office.shell.queueLength(deptId), 0, '아무도 안 기다리는 자리는 남기지 않는다');
 
     // 그 뒤 하루가 끝나도 락은 이음에게 안 넘어간다(그 명령은 이미 pass-through 로 실행됐다).
     send(하루, 'PostToolUse', post('u1'));
     await tick();
-    assert.equal(office.shell.holder(team.id), undefined);
+    assert.equal(office.shell.holder(deptId), undefined);
   });
 });

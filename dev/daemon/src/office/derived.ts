@@ -7,8 +7,9 @@
 //
 //   waiting_approval  열린 허가 pending 이 있다(raw 가 무엇이든)
 //   waiting_answer    열린 질문 pending 이 있다(raw 가 무엇이든 — `ask_user` 는 raw idle 에서도 열려 있다)
-//   waiting_reports   팀장이 raw idle 인데 자기가 발행한 미종료 task 가 있다(T25 — 팀원 보고를 기다리는 중)
-//   free              raw idle + 열린 pending 없음 + 배정된 미종료 task 없음(팀장은 발행 task 도 없을 때)
+//   waiting_reports   raw idle 인데 자기가 발행한 미종료 task 가 있다(T25 — 부하 보고를 기다리는 중).
+//                     T34 부터 **직급을 가리지 않는다** — 부장도 팀장도 자식이 있으면 같은 상태다(D-32 "자식이 있는 모든 직급에").
+//   free              raw idle + 열린 pending 없음 + 배정·발행 미종료 task 없음(= 잎이 한가함)
 //   그 외              raw 그대로(starting / working / idle / exited / error)
 //
 // exited·error 는 어떤 경우에도 덮지 않는다 — 나간 멤버의 pending 이 정리 전이라도 "질문 대기" 로 보이면 안 된다.
@@ -37,8 +38,8 @@ export function derivedStatus(member: Member, store: DerivedStore, status: Membe
   if (open.some((p) => p.type === 'approval')) return 'waiting_approval';
   if (open.some((p) => p.type === 'question')) return 'waiting_answer';
   if (status !== 'idle') return status;
-  // 팀장은 발행한 보고를 기다리는 동안 "한가함" 이 아니다(T25).
-  if (member.rank === 'leader' && store.openTasksIssuedBy(member.id).length > 0) return 'waiting_reports';
+  // 부하에게 낸 일의 보고를 기다리는 동안은 "한가함" 이 아니다(T25 → T34: 직급 무관).
+  if (store.openTasksIssuedBy(member.id).length > 0) return 'waiting_reports';
   const mine = store.listTasks({ toMember: member.id, status: [...OPEN_TASKS] });
   return mine.length === 0 ? 'free' : 'idle';
 }

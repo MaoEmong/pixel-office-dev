@@ -1,5 +1,5 @@
 // 콘솔 출력 포맷 (T08). ANSI 제거·이벤트 한 줄 요약·멤버/팀/pending 표.
-import type { EventDetail, Member, OfficeEvent, Pending, Task, Team } from '../store/types.js';
+import type { Department, EventDetail, Member, OfficeEvent, Pending, Task, Team } from '../store/types.js';
 
 // CSI / OSC / DCS / 2-byte ESC 시퀀스 / 나머지 C0 제어문자(\t \n \r 제외).
 const ANSI_RE =
@@ -47,14 +47,21 @@ export function formatEvent(ev: OfficeEvent, nameOf: NameOf): string {
   return `#${ev.seq} ${ev.kind} ${nameOf(ev.memberId)}${tail ? ' ' + tail : ''}`;
 }
 
-export function formatMember(m: Member, teamName?: string): string {
-  const team = teamName ?? m.teamId;
+/** 직급 한글 라벨(데몬 templates.ts 의 RANK_LABEL 과 같은 말). */
+export const RANK_LABEL: Record<Member['rank'], string> = { head: '부장', lead: '팀장', member: '팀원' };
+
+export function formatMember(m: Member, scopeName?: string): string {
+  const scope = scopeName ?? m.teamId ?? m.departmentId;
   const pid = m.childPid ? ` pid=${m.childPid}` : '';
-  return `${m.id}  ${m.name} [${m.engine}] ${m.status}  ${m.rank} team=${team}${pid}`;
+  return `${m.id}  ${m.name} [${m.engine}] ${m.status}  ${RANK_LABEL[m.rank]}(${m.rank}) @${scope}${pid}`;
 }
 
 export function formatTeam(t: Team, memberCount: number): string {
-  return `${t.id}  ${t.name}  ${t.cwd}  leader=${t.leaderId ?? '-'}  members=${memberCount}/${t.maxMembers}`;
+  return `${t.id}  ${t.name}  dept=${t.departmentId}  ${t.cwd}  lead=${t.leaderId ?? '-'}  members=${memberCount}/${t.maxMembers}`;
+}
+
+export function formatDepartment(d: Department, teamCount: number, memberCount: number): string {
+  return `${d.id}  ${d.name}  ${d.cwd}  head=${d.headId ?? '-'}  팀 ${teamCount}개  멤버 ${memberCount}명`;
 }
 
 /** `task#12 assigned 반장→이음: <지시>  ↩ done <보고>` — 보고가 있으면 뒤에 붙는다(T25). */

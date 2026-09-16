@@ -18,7 +18,7 @@ import { TeamToolsServer, askUserResultText } from '../../src/mcp/TeamToolsServe
 import { Store } from '../../src/store/Store.js';
 import type { Member, OfficeEvent, Team } from '../../src/store/types.js';
 import { loadFixture } from '../screen/helpers.js';
-import { FakePty, FakeReceiver, fakeReq } from './fakes.js';
+import { FakePty, FakeReceiver, fakeReq, seedDeptTeam } from './fakes.js';
 
 const SID = 'sess-0001';
 const base = (event: string) => ({ session_id: SID, hook_event_name: event, cwd: 'D:\\x' });
@@ -55,7 +55,7 @@ describe('Office ask_user (T17)', () => {
     office.on('status', (id, s, d) => statuses.push([id, s, d]));
     await office.start();
     // 팀장 없는 팀(store 직접 생성) — 이 파일은 clockIn/ask_user 를 보므로 team.create 의 팀장 자동 출근(T24)을 끼우지 않는다.
-    team = store.createTeam({ name: 'alpha', cwd: dataDir, maxMembers: 3 });
+    team = seedDeptTeam(store, { name: 'alpha', cwd: dataDir, maxMembers: 3 }).team;
   });
   afterEach(async () => {
     for (const c of clients.splice(0)) await c.close().catch(() => {});
@@ -91,7 +91,7 @@ describe('Office ask_user (T17)', () => {
     assert.ok(office.mcp.port > 0);
     assert.equal(office.daemonInfo!.mcpPort, office.mcp.port);
 
-    const codexTeam = store.createTeam({ name: 'cx', cwd: dataDir, allowedEngines: ['codex'] });
+    const codexTeam = seedDeptTeam(store, { name: 'cx', cwd: dataDir, allowedEngines: ['codex'] }).team;
     office.clockIn({ teamId: codexTeam.id, engine: 'codex', name: 'cdx' });
     assert.equal(pty.spawns[1]!.mcpConfigPath, undefined);
   });
@@ -250,8 +250,8 @@ describe('Office ask_user (T17)', () => {
   test('restart recovery: ask_user pending stays open, [RESUMED] waits for the answer; respond → [ANSWER] then [RESUMED]', async () => {
     // 이전 기동이 남긴 행: 답을 기다리다 죽은 멤버
     const seededStore = new Store(':memory:');
-    const t = seededStore.createTeam({ name: 'r', cwd: dataDir });
-    const prev = seededStore.createMember({ teamId: t.id, name: 'R', rank: 'member', engine: 'claude', cwd: dataDir, hiredBy: 'user', status: 'waiting_answer', sessionId: 'sess-R' });
+    const t = seedDeptTeam(seededStore, { name: 'r', cwd: dataDir }).team;
+    const prev = seededStore.createMember({ departmentId: t.departmentId, teamId: t.id, name: 'R', rank: 'member', engine: 'claude', cwd: dataDir, hiredBy: 'user', status: 'waiting_answer', sessionId: 'sess-R' });
     const q = seededStore.createPending({ memberId: prev.id, type: 'question', payload: { source: 'ask_user', question: QUESTION, options: ['빨강', '파랑'] } });
     const pty2 = new FakePty();
     const receiver2 = new FakeReceiver();

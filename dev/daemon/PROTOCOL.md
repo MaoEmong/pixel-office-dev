@@ -10,14 +10,17 @@
 | method | params | result |
 |---|---|---|
 | `hello` | `{ token, since?: number, client: { name, version } }` | `{ daemon: { version, pid }, snapshot }` 후 `seq > since` 인 `event` 알림 replay(응답이 먼저, replay 는 오름차순). `since` 없으면 스냅샷만. |
-| `events.query` | `{ teamId?, memberId?, beforeSeq?, limit? }` | `{ events: OfficeEvent[] }` (seq 내림차순 아님 — 오름차순 반환. `beforeSeq` 미만 중 최신 `limit`(기본 200)건; 다음 페이지는 첫 건 seq 를 `beforeSeq` 로) |
-| `team.create` | `{ name, cwd, leaderEngine: 'claude'\|'codex', leaderName?, maxMembers?, allowedEngines? }` | `{ team, leader: Member }` — **팀장이 자동 출근한다(T24)**: 팀 행 → 팀장 멤버(`rank:'leader'`, `hiredBy:'user'`, 이름 `leaderName ?? '팀장'`, 엔진 `leaderEngine`) → CLI 스폰 → `team.leaderId` 기록. 팀장도 정원(`maxMembers`, 기본 4)의 한 자리다. 팀장 출근은 `member.clockIn` 과 같은 경로라 `member.status{starting, member}` 알림이 다른 클라이언트에도 나간다. `leaderEngine:'codex'` 도 허용하지만 `daemon.notice{warn}` 로 "v1 권장은 claude" 를 알린다. 오류: `cwd` 가 폴더가 아님·모르는 엔진·`allowedEngines` 에 없는 `leaderEngine`·`maxMembers < 1` → -32602. 팀장 스폰이 실패하면 팀 행도 되돌린다(팀장 없는 팀을 남기지 않는다). |
-| `team.delete` | `{ teamId }` | `{}` — 팀장 포함 멤버 전부 clockOut 후 삭제 |
-| `member.clockIn` | `{ teamId, engine, name, instructions?, rank?: 'member'\|'leader' }` | `{ member }` — CLI 스폰(문으로 입장). 팀원을 출근시키면 살아 있는 팀장 큐에 `[TEAM] 팀원 변경: +<이름>(<engine>[, 역할: …])`(T25, 아래 "TeamTools MCP"). 팀 정원(`maxMembers`) 초과 -32003, 팀에서 허용 안 된 엔진 -32602. `rank` 기본 `'member'`, `hiredBy` 는 항상 `'user'`(사용자가 출근시킨 팀원은 팀장이 `dismiss` 할 수 없다). `rank:'leader'` 는 **그 팀에 살아 있는 팀장이 없을 때만**(팀장이 exited/error 로 나간 뒤의 교체) — 이미 있으면 -32003, 성공하면 `team.leaderId` 가 새 팀장으로 갱신된다. `rank` 가 두 값이 아니면 -32602. |
-| `member.clockOut` | `{ memberId }` | `{}` — 진행 task aborted 후처리(발행자에게 `[REPORTS … status=aborted]` 즉시 전달, T25), 프로세스 종료(Claude `/exit`). 행은 `status:'exited'` 로 남는다(rehire 가능). 이미 exited/error 면 -32003. **팀원을 퇴근시키면** 팀장 큐에 `[TEAM] 팀원 변경: -<이름>`. **팀장을 퇴근시키면** 그 팀장이 낸 미종료 task 가 전부 aborted 되고 맡고 있던 팀원이 interrupt 된다(팀원 행은 남는다) — 아래 "TeamTools MCP". |
+| `events.query` | `{ departmentId?, teamId?, memberId?, beforeSeq?, limit? }` | `{ events: OfficeEvent[] }` (seq 내림차순 아님 — 오름차순 반환. `beforeSeq` 미만 중 최신 `limit`(기본 200)건; 다음 페이지는 첫 건 seq 를 `beforeSeq` 로) |
+| `department.create` | `{ name, cwd, headEngine: 'claude'\|'codex', headName? }` | `{ department, head: Member }` — **사용자가 하는 유일한 생성**(T34, D-32). 부서 행 → 부장 멤버(`rank:'head'`, `parentId:null`, `teamId:null`, `hiredBy:'user'`, 이름 `headName ?? '부장'`, 엔진 `headEngine`) → CLI 스폰 → `department.headId` 기록. 부장 출근은 보통 멤버와 같은 경로라 `member.status{starting}` 알림이 다른 클라이언트에도 나간다. `headEngine:'codex'` 도 허용하지만 `daemon.notice{warn}` 로 "v1 권장은 claude". 오류: `cwd` 가 폴더가 아님·모르는 엔진·빈 이름 → -32602. 부장 스폰이 실패하면 부서 행도 되돌린다. |
+| `department.delete` | `{ departmentId }` | `{}` — 하위 트리 전체(팀원 → 팀장 → 부장, **잎부터**)를 후처리·퇴근시키고 부서·팀·멤버·task 행을 지운다. events 는 남는다. 없는 부서 -32002. |
+| `department.tree` | `{}` | `{ departments: [{ department, head?, teams: [{ team, lead?, members: [] }], orphans: [] }] }` — 읽기 전용 트리. 멤버 행에는 스냅샷과 같은 `derived` 가 붙는다. `orphans` 는 어느 팀에도 안 붙은(부장 이외) 멤버 — 디버그 경로로만 생긴다. 콘솔 `tree`. |
+| `team.create` | `{ departmentId, name, leadEngine?, leadName?, maxMembers?, allowedEngines?, force: true }` | `{ team, lead: Member }` — **T34 부터 디버그 전용**: `force:true` 가 없으면 -32004(정식 경로는 부장의 `create_team` 도구, T35). 팀은 부서 안에서만 만들어지고 **cwd 는 부서 cwd** 다(D-32 "한 부서 안의 팀들은 같은 cwd"). 팀장 멤버(`rank:'lead'`, `parentId` = 그 부서의 살아 있는 부장, `hiredBy:'leader'`, 이름 `leadName ?? '팀장'`, 엔진 `leadEngine ?? 부장 엔진`)가 자동 출근하고 `team.leaderId` 가 채워진다. 팀장도 정원(`maxMembers`, 기본 4)의 한 자리다. 오류: 없는 부서 -32002, 살아 있는 부장 없음 -32003, 모르는 엔진·`allowedEngines` 밖·`maxMembers < 1` -32602. 팀장 스폰이 실패하면 팀 행도 되돌린다. |
+| `team.delete` | `{ teamId }` | `{}` — 그 팀의 팀원 → 팀장 순으로 퇴근시키고 팀·멤버 행 삭제. 부장과 task 행은 남는다(task 는 부서 소유). |
+| `member.clockIn` | `{ parentId?, departmentId?, teamId?, engine, name, instructions?, rank?: 'head'\|'lead'\|'member', force: true }` | `{ member }` — **T34 부터 디버그 전용**: `force:true` 가 없으면 -32004(사용자는 부서를 만들어 부장만 임명한다, D-32). `hiredBy` 는 항상 `'user'` 라 상위가 `dismiss` 할 수 없다. 두 갈래다. **`parentId` 를 주면** 정식 고용 경로와 같은 직급 사슬 검사를 받는다(head → lead → member, 어긋나면 -32004). **주지 않으면** `departmentId`/`teamId` 로 바로 꽂는 디버그 경로이고, 살아 있는 상사가 있으면 자동으로 그 아래로 붙는다. `rank` 기본값은 부모가 있으면 부모 아래 직급, 없으면 `teamId` 가 있으면 `'member'`·없으면 `'head'`. 정원 초과·부장/팀장 중복 -32003, 없는 부서·팀 -32002, 모르는 rank·엔진 -32602. 상사가 있으면 그 상사 큐에 `[TEAM] 팀원 변경: +<이름>(<engine>[, 역할: …])`. |
+| `member.clockOut` | `{ memberId }` | `{}` — **누구든 내보낼 수 있는 비상구**(T34: 사용자가 팀장·팀원을 직접 출근시키는 기능은 없앴지만 퇴근은 남겼다 — 굳은 세션을 사용자가 치울 길이 없으면 안 된다). 진행 task aborted 후처리(발행자에게 `[REPORTS … status=aborted]` 즉시 전달, T25), 프로세스 종료(Claude `/exit`). 행은 `status:'exited'` 로 남는다(rehire 가능). 이미 exited/error 면 -32003. 그 멤버의 **직속 상사** 큐에 `[TEAM] 팀원 변경: -<이름>`. **상위(부장·팀장)를 퇴근시키면** 그가 낸 미종료 task 가 전부 aborted 되고 그 일을 맡고 있던 부하가 interrupt 된다(부하 행은 남는다 — 하위 트리까지 따라 내려가는 정리는 T36). |
 | `member.rehire` | `{ memberId }` | `{ member }` — exited/error 멤버를 같은 설정으로 재스폰(`--resume` 시도). 아직 살아 있으면 -32003(→ `member.restart`). |
 | `member.restart` | `{ memberId }` | `{ member }` — 지시문 즉시 반영용 재스폰(`--resume`) 후 큐에 `[RESUMED] …` 시스템 메시지. 종료된 멤버에도 허용. |
-| `member.instruct` | `{ memberId, text, force?: boolean }` | `{ taskId }` — `tasks(from:'user', status:'queued')` 생성 후 입력 큐에 `[TASK#n from user]\n<text>` 타이핑. 실제로 pty 에 들어가면 `assigned`, 그 턴의 `Stop` 에서 `reported`(report_text = 마지막 assistant 메시지, v1a 보고). 종료된 멤버 -32003. **"팀장에게만 지시"(T24):** 대상이 팀원(`rank:'member'`)이고 그 팀에 살아 있는 팀장이 있으면 **-32004** `"팀장에게만 지시할 수 있습니다 (leader: <팀장 이름>)"`(`data: { leaderId }`) — task 는 만들어지지 않는다. 팀장이 exited/error 로 나가면 게이트가 열려 팀원 직접 지시가 허용된다. `force: true` 는 이 게이트를 넘는 **디버그 탈출구**로, 앱은 보내지 않는다. 터미널 탭 직접 타이핑(`member.type`)은 "지시"가 아니라 게이트와 무관하다. |
+| `member.instruct` | `{ memberId, text, force?: boolean }` | `{ taskId }` — `tasks(from:'user', status:'queued')` 생성 후 입력 큐에 `[TASK#n from user]\n<text>` 타이핑. 실제로 pty 에 들어가면 `assigned`, 그 턴의 `Stop` 에서 `reported`(report_text = 마지막 assistant 메시지, v1a 보고). 종료된 멤버 -32003. **"부장에게만 지시"(T34, D-32):** 대상이 부장이 아니고 **그 부서에** 살아 있는 부장이 있으면 **-32004** `"부장에게만 지시할 수 있습니다 (head: <부장 이름>)"`(`data: { headId }`) — task 는 만들어지지 않는다. 부장이 exited/error 로 나가면 게이트가 열려 팀장·팀원 직접 지시가 허용된다. `force: true` 는 이 게이트를 넘는 **디버그 탈출구**로, 앱은 보내지 않는다. 터미널 탭 직접 타이핑(`member.type`)은 "지시"가 아니라 게이트와 무관하다. |
 | `member.type` | `{ memberId, data }` | `{}` — 터미널 탭 직접 타이핑 (raw bytes, 큐 우선). 빈 문자열 허용. |
 | `member.attach` | `{ memberId, cols, rows }` | `{ screen: string(ANSI serialize), cols, rows }` 이후 `term` 알림 구독. attach 한 클라이언트가 "마지막 attach 클라이언트"가 되어 그 크기로 즉시 resize. cols 20~500, rows 5~300 밖은 -32602. 이 데몬 세션에서 한 번도 스폰되지 않은 멤버(재시작 전 멤버 등)는 -32003. |
 | `member.detach` | `{ memberId }` | `{}` — 연결이 끊기면 자동 detach. |
@@ -30,14 +33,14 @@
 | `question.respond` | `{ pendingId, answers: Record<string,string> }` | `{}` — `answers` 는 `{ "<question>": "<label>" }`(자유 답도 `label` 자리에). 오류 코드는 approval.respond 와 동일. **출처별 처리(T17):** TUI `AskUserQuestion`(payload 에 `tool_input` 있음)은 hook 결정으로 돌려주고, TeamTools `ask_user`(payload `source:'ask_user'`)는 pending 을 answered 로 닫은 뒤 그 멤버 입력 큐에 `[ANSWER q#<pendingId>]\n<답>` 시스템 메시지를 넣는다(아래 "TeamTools MCP"). **Codex 질문 폴백**(payload 에 `fallback:'codex-stop'`, 아래 "Codex 폴백")은 봉투 없이 답 본문만 넣는다. 값이 전부 빈 문자열이면 -32602. 멤버가 실행 중이 아니면 -32003. |
 | `daemon.shutdown` | `{}` | `{}` — 응답 후 `daemon.notice{level:'info'}` 를 보내고 전원 정중히 종료(`/exit`) → 모든 소켓 close code 1001 → 프로세스 종료. 멤버 status 는 바꾸지 않는다(T09 재시작 복구용). |
 
-에러 코드: `-32001` 인증 실패, `-32002` 없는 멤버/팀/pending, `-32003` 상태 오류(예: 이미 종료, 정원 초과, 팀장 중복), `-32004` 직급 규칙 위반(T24 "팀장에게만 지시", M4 TeamTools 의 팀장 전용 도구), `-32602` 파라미터. 그 외 JSON-RPC 표준: `-32700` JSON 파싱 실패(id null), `-32600` 봉투 오류(`jsonrpc:"2.0"`·`method` 누락), `-32601` 없는 메서드, `-32000` 내부 오류. 에러 객체는 `{ code, message, data? }`.
+에러 코드: `-32001` 인증 실패, `-32002` 없는 멤버/팀/부서/pending, `-32003` 상태 오류(예: 이미 종료, 정원 초과, 부장·팀장 중복), `-32004` 직급 규칙 위반(T34 "부장에게만 지시", 고용 사슬 위반, TeamTools 의 직급 전용 도구, **디버그 전용 메서드를 `force` 없이 부름**), `-32602` 파라미터. 그 외 JSON-RPC 표준: `-32700` JSON 파싱 실패(id null), `-32600` 봉투 오류(`jsonrpc:"2.0"`·`method` 누락), `-32601` 없는 메서드, `-32000` 내부 오류. 에러 객체는 `{ code, message, data? }`.
 
 ## 데몬 → 클라이언트 (알림)
 
 | method | params |
 |---|---|
-| `event` | `OfficeEvent` — `{ seq, ts, teamId, memberId, kind, detail, ref }` (영속, 전역 단조 seq) |
-| `snapshot` | `{ seq, teams, members, pending, tasks }` — `hello` 응답에 포함되지만 데몬이 필요 시 재전송 가능. `pending` 은 `status:'open'` 만, `tasks` 는 `queued|assigned` 만. **`members[]` 의 각 행에는 Member 칼럼 + `derived`(그 시점의 파생 상태, 아래 표)가 같이 온다(T28)** — 클라이언트가 파생 규칙을 다시 구현하지 않아도 재접속 직후 화면이 맞는다. |
+| `event` | `OfficeEvent` — `{ seq, ts, departmentId, teamId, memberId, kind, detail, ref }` (영속, 전역 단조 seq). `departmentId` 는 T34 부터, `teamId` 는 팀이 없는 부장의 이벤트에서 `''`. |
+| `snapshot` | `{ seq, departments, teams, members, pending, tasks }` — `hello` 응답에 포함되지만 데몬이 필요 시 재전송 가능. `pending` 은 `status:'open'` 만, `tasks` 는 `queued|assigned` 만. **`members[]` 의 각 행에는 Member 칼럼 + `derived`(그 시점의 파생 상태, 아래 표)가 같이 온다(T28)** — 클라이언트가 파생 규칙을 다시 구현하지 않아도 재접속 직후 화면이 맞는다. |
 | `term` | `{ memberId, data }` — attach한 클라이언트에만, 비영속 |
 | `member.status` | `{ memberId, status, derived, member? }` — `status` 는 raw(`starting\|idle\|working\|waiting_approval\|waiting_answer\|exited\|error`), `derived` 는 **파생 상태**(아래 표). `member` 는 그 시점의 Member 행(새 멤버 출근을 다른 클라이언트가 알 수 있게; 행이 삭제됐으면 생략). **status 값이 바뀔 때 + `derived` 만 바뀔 때** 온다(T28 — 예: 팀장이 raw `idle` 인 채로 `delegate` 하면 `free → waiting_reports`). 둘 다 그대로면 오지 않는다. |
 | `daemon.notice` | `{ level: 'info'\|'warn'\|'error', message }` — 예: hook 보류 타임아웃, 알 수 없는 멤버 토큰, 첫 실행 다이얼로그 자동 통과, 자동 allow, 데몬 종료. **자동 통과할 수 없는 다이얼로그**(CLI 자체 허가 프롬프트 `approval-prompt`, D-23/D-26)는 `{level:'warn', message:'<이름>: CLI 허가 프롬프트가 떠 있음 — 카드로 답하거나 터미널에서 직접 답하세요'}` 로 **한 번만** 나온다(그 다이얼로그가 사라졌다 다시 뜨면 다시 한 번). 데몬은 이때 키를 보내지 않는다 — 사용자가 "재지시 필요" 카드나 터미널 탭에서 답해야 한다. |
@@ -52,17 +55,28 @@ raw `status` 는 "CLI 프로세스가 어떤 상태인가" 일 뿐이다 — `id
 | `waiting_approval` | 열린 `pending(approval)` 이 있다 — raw 가 무엇이든 |
 | `waiting_answer` | 열린 `pending(question)` 이 있다 — raw 가 무엇이든(`ask_user` 는 raw `idle` 에서도 열려 있다, T17) |
 | raw 값 그대로 | raw 가 `idle` 이 아니다(`starting` / `working`) |
-| `waiting_reports` | 팀장 + raw `idle` + 자기가 `delegate` 로 낸 미종료 task 가 있다(T25) |
-| `free` | raw `idle` + 열린 pending 없음 + 자기에게 배정된 미종료 task 없음(팀장은 발행 task 도 없을 때) |
+| `waiting_reports` | raw `idle` + 자기가 낸(발행한) 미종료 task 가 있다 — **직급 무관**(T34: 부장도 팀장도 부하 보고를 기다리면 같은 상태) |
+| `free` | raw `idle` + 열린 pending 없음 + 자기에게 배정된 미종료 task 없음 + 발행한 미종료 task 도 없을 때(= 잎이 한가함) |
 | `idle` | 그 외(= raw `idle` 인데 아직 `queued\|assigned` task 를 들고 있다) |
 
-## 팀·직급 (T24)
+## 부서·팀·직급 트리 (T34, D-32 "직무 체계 rev 3")
 
-직급은 **팀장/팀원 2단**(01 §4, D-06). 클라이언트가 보는 필드는 스냅샷·`member.status.member` 에 그대로 실린다.
+```
+사용자 ──부서 생성·부장 임명──▶ 부장(head) ──팀 생성·팀장 배치──▶ 팀장(lead) ──팀원 고용──▶ 팀원(member)
+   ◀── 보고·ask_user (부장만) ──┘        ◀── 보고·ask_parent ──┘         ◀── 보고·ask_parent ──┘
+```
 
-- `Member.rank`: `'leader' | 'member'` — 팀장은 팀당 최대 한 명(살아 있는 기준). `Member.hiredBy`: `'user' | 'leader'` — 사용자가 출근시킨 팀원은 팀장이 `dismiss` 할 수 없다(M4 TeamTools).
-- `Team.leaderId`: 그 팀 팀장의 `memberId`(없으면 `null`). `team.create` 가 채우고, 팀장이 나간 뒤 `member.clockIn{rank:'leader'}` 로 교체하면 갱신된다. 팀장이 exited/error 가 돼도 `leaderId` 는 그대로 남으므로 **"살아 있는 팀장"은 `members` 에서 `rank:'leader' ∧ status ∉ {exited, error}` 로 판정한다** — 데몬도 같은 기준(`Store.liveLeader`)을 쓴다.
-- **지시 대상:** 살아 있는 팀장이 있으면 사용자 지시는 팀장에게만(`member.instruct` -32004, 위 표). 앱의 지시 바는 선택 멤버가 팀원이면 팀장으로 돌리거나 비활성화한다. 팀장이 없는 팀(팀장이 나간 경우)은 아무 멤버에게나 지시할 수 있다.
+직급은 **부장/팀장/팀원 3단 트리**다(01 §"직무 체계 rev 3"). 클라이언트가 보는 필드는 스냅샷·`member.status.member` 에 그대로 실린다.
+
+- `Department`: `{ id, name, cwd, headId, createdAt }` — **부서 = 프로젝트(cwd)**. 한 부서의 팀·멤버는 모두 이 폴더에서 일한다(팀별 worktree 분리는 v2).
+- `Team`: `{ id, departmentId, name, cwd, leaderId, maxMembers, allowedEngines, createdAt }` — `cwd` 는 당분간 부서 cwd 와 같다.
+- `Member.rank`: `'head' | 'lead' | 'member'` — 부장은 부서당 한 명, 팀장은 팀당 한 명(둘 다 살아 있는 기준).
+- `Member.departmentId` / `Member.teamId` / `Member.parentId`: 부장은 `teamId: null`·`parentId: null`(부서 직속), 팀장은 자기 팀 + `parentId` = 부장, 팀원은 팀장의 팀 + `parentId` = 팀장.
+- `Member.hiredBy`: `'user' | 'leader'` — `'leader'` 는 "상위 멤버가 고용" 이라는 뜻(v1 값을 그대로 쓴다). 사용자가 출근시킨 멤버는 상위가 `dismiss` 할 수 없다.
+- **살아 있는 부장·팀장** 판정은 `headId`/`leaderId` 가 아니라 `members` 에서 `rank ∧ status ∉ {exited, error}` 로 한다(나간 뒤에도 id 는 남는다). 데몬도 같은 기준(`Store.liveHead` / `Store.liveLead`).
+- **고용·해고·지시는 바로 아래로만, 보고·질문은 바로 위로만.** 사슬을 건너뛰는 고용(부장 → 팀원 등)은 -32004.
+- **지시 대상:** 살아 있는 부장이 있으면 사용자 지시는 부장에게만(`member.instruct` -32004). 앱의 지시 바는 선택 멤버가 부장이 아니면 부장으로 돌리거나 비활성화한다(T37). 부장이 없는 부서는 아무 멤버에게나 지시할 수 있다.
+- **사용자가 직접 할 수 있는 것은 부서 생성(부장 임명)·퇴근·중단·재시작·터미널 타이핑뿐이다.** 팀 생성(`team.create`)과 멤버 출근(`member.clockIn`)은 `force:true` 디버그 경로로만 남아 있다.
 
 ## 오피스 이벤트
 
@@ -108,15 +122,15 @@ v1a 에서 데몬이 만드는 이벤트(어댑터 표는 worklog T04 참고):
 
 `SessionEnd` 의 `reason` 이 `clear`/`resume` 이면 두 엔진 모두 종료로 보지 않는다(같은 프로세스에서 새 `SessionStart` 가 따라온다).
 
-## 팀 셸 뮤텍스 (T27)
+## 셸 뮤텍스 (T27 · T34 에서 범위가 부서로)
 
-같은 팀의 멤버 둘이 동시에 빌드·테스트·쓰기 명령을 돌리지 않도록 **팀당 셸 락 하나**를 둔다(01 §구성 요소 1). 클라이언트가 호출하는 RPC 는 없다 — 데몬이 hook 단계에서 처리하고, 클라이언트는 이벤트·알림으로만 본다.
+같은 폴더에서 일하는 멤버 둘이 동시에 빌드·테스트·쓰기 명령을 돌리지 않도록 **부서당 셸 락 하나**를 둔다(01 §구성 요소 1). 클라이언트가 호출하는 RPC 는 없다 — 데몬이 hook 단계에서 처리하고, 클라이언트는 이벤트·알림으로만 본다.
 
 - **언제 잡나:** 셸 도구(`Bash`/`PowerShell`, Codex 의 셸 도구 포함)의 `PreToolUse`. 허가(`PermissionRequest`) 여부와 무관하다 — 읽기 명령은 허가 없이 실행되기 때문(실측 02 §②). **읽기 전용 명령(`cat`·`ls`·`git status`·`sed -n` …)은 잡지 않는다**(D-27): 서로 부딪히지 않는데 팀 전체를 직렬화하게 된다. 판정은 엔진 공통(`isReadOnlyCommand`), 애매하면 "쓰기"로 보고 잡는다.
 - **기다리는 동안:** 두 번째 셸의 `PreToolUse` **응답을 보류**한다(그 CLI 는 도구 실행 전에 멈춰 있다). 클라이언트에는 위 `running{waiting:'shell-lock'}` 이벤트 하나로 보인다. 줄은 FIFO(hook 도착 순).
 - **언제 푸나(01 §해제 표 + 실측):** ① `PostToolUse` **또는 `PostToolUseFailure`**(실패 때는 `PostToolUse` 가 안 온다) — `tool_use_id` 로 짝을 맞춘다. ② 그 멤버의 `Stop`·턴 종료(안전망). ③ `member.interrupt` / 퇴근 / 프로세스 종료 / 재시작 후처리. ④ 보유 상한 30분 초과 → 강제 해제 + `daemon.notice{level:'warn', message:'<이름>: 셸 락을 <N>초째 쥐고 있어 강제로 해제함 (<명령 80자>)'}`.
 - **hook 이 먼저 끊기면:** 보류 상한(D-16)·연결 끊김으로 응답이 pass-through(`{}`)로 나가면(D-11) 그 명령은 데몬 허락 없이 실행된다. 데몬은 그 대기 자리를 줄에서 **뺀다**(아무도 안 기다리는 락을 넘겨받아 팀이 굳는 것을 막는다). 뮤텍스가 한 번 뚫리는 것이 명령을 포기시키는 것보다 낫다는 D-11 그대로다.
-- **팀 경계:** 락은 `teams.id` 단위다. 다른 팀은 서로 막지 않고, 같은 팀이면 엔진이 달라도(Claude ↔ Codex) 같은 락을 쓴다.
+- **경계:** 락은 `departments.id` 단위다(T34 — 한 부서의 팀들은 **같은 cwd** 를 쓰므로 팀 단위로는 서로를 못 막는다). 다른 부서는 서로 막지 않고, 같은 부서면 팀·직급·엔진이 달라도(Claude ↔ Codex) 같은 락을 쓴다.
 
 ## 멤버 지시문 주입 (T26b)
 
@@ -124,21 +138,22 @@ v1a 에서 데몬이 만드는 이벤트(어댑터 표는 worklog T04 참고):
 
 주입되는 텍스트 = **런타임 프리앰블 + 유효 지시문**. `member.instructions.effective` 가 이 텍스트를 그대로 돌려준다(콘솔 `instr effective <member>`).
 
-- **유효 지시문** = 사용자 `INSTRUCTIONS.md` 에 **본문이 있으면** 그 파일, 없으면 **직급별 기본 템플릿**(팀장 = 오케스트레이션 규칙 + `hire`/`dismiss`/`delegate`/`report`/`ask_user`, 팀원 = 역할 규칙 + `report`/`ask_user`). 템플릿 문장은 앱의 "기본 템플릿 넣기"(T26a)와 같고, 데몬 쪽에는 동적 머리말(`# <이름> — <팀장|팀원> @ <팀>`, 작업 폴더·엔진·역할·팀장)과 팀 설정 숫자(정원·허용 엔진)가 더 붙는다.
+- **유효 지시문** = 사용자 `INSTRUCTIONS.md` 에 **본문이 있으면** 그 파일, 없으면 **직급별 기본 템플릿**(부장 = 부서 오케스트레이션 규칙, 팀장 = 팀 오케스트레이션 규칙 + `hire`/`dismiss`/`delegate`/`report`/`ask_user`, 팀원 = 역할 규칙 + `report`/`ask_user`). 템플릿 문장은 앱의 "기본 템플릿 넣기"(T26a)와 같고, 데몬 쪽에는 동적 머리말(`# <이름> — <부장|팀장|팀원> @ <부서 또는 팀>`, 작업 폴더·엔진·역할·상사)과 팀 설정 숫자(정원·허용 엔진)가 더 붙는다. 직급별 도구 목록 확정은 T35.
 - **`hire` 가 쓴 `# 역할: <role>` 한 줄뿐인 파일은 "본문 없음"** 으로 본다 — 그건 사용자가 쓴 지시문이 아니라 역할 메타데이터라(`[TEAM]` 알림이 되읽는다) 기본 템플릿을 덮지 않고, 대신 그 역할이 템플릿 머리말 `- 역할: …` 에 실린다. `hire`/`member.clockIn` 에 `instructions` 를 같이 주면 그것이 본문이 되어 템플릿을 대신한다.
 - **기본 템플릿은 파일로 저장하지 않는다.** 지시문 파일은 사용자(앱·콘솔 `instr set`)나 `hire`/`clockIn` 의 `instructions` 로만 생긴다. 기본값은 주입할 때마다 계산하므로, 데몬의 템플릿을 고치면 지시문을 따로 쓰지 않은 멤버 전원에게 다음 SessionStart 부터 바로 반영된다.
 - **프리앰블은 사용자 파일이 있어도 늘 붙는다** — 사용자가 쓴 지시문에는 "나는 누구이고 팀에 누가 있는가" 가 없기 때문이다.
 
   ```
-  [사무실] 너는 픽셀 오피스 팀 "alpha" 의 팀원 이음(엔진 claude)이다.
+  [사무실] 너는 픽셀 오피스 부서 "alpha" 의 팀 "t1" 의 팀원 이음(엔진 claude)이다.
+  - 직급: 팀원 (부장 → 팀장 → 팀원; 지시·고용은 바로 아래로만, 보고·질문은 바로 위로만)
   - 작업 폴더: D:\myproject\alpha
-  - 팀장: 반장(claude)
-  - 팀원: 이음(claude), 나루(codex, 역할 문서)
+  - 상사: 반장(팀장) — 보고·질문은 여기로만 올린다.
+  - 직속 부하: (없음)
   - 도구 이름: mcp__team__report, mcp__team__ask_user (도구 목록에 없으면 ToolSearch로 찾는다).
   아래는 너의 지시문(INSTRUCTIONS.md)이다 — 프로젝트의 CLAUDE.md/AGENTS.md 위에 얹히는 개인 규칙이다.
   ```
 
-  로스터는 그 팀에서 **살아 있는(exited/error 가 아닌) 멤버**만, 역할은 각자 지시문 첫 줄의 `# 역할:` 에서 읽는다. 도구 이름 줄은 직급에 따라 다르다(팀장 5개 / 팀원 2개) — D-22: Claude 는 MCP 도구를 지연 로딩하므로 이름이 적혀 있어야 `ToolSearch` 로 찾아 첫 턴부터 쓴다.
+  **로스터는 팀 전체가 아니라 직속 부하만**이다(T34, D-32 — 트리에서 말을 걸 수 있는 상대가 상사 한 명과 직속 부하들뿐이라, 팀 전체를 보여 주면 없는 권한을 착각한다). 살아 있는(exited/error 가 아닌) 자식만 싣고, 역할은 각자 지시문 첫 줄의 `# 역할:` 에서 읽는다. 부장 줄은 `- 상사: 사용자(사람) — 사용자에게 직접 보고·질문할 수 있는 직급은 너뿐이다.` 다. 도구 이름 줄은 직급에 따라 다르다 — D-22: Claude 는 MCP 도구를 지연 로딩하므로 이름이 적혀 있어야 `ToolSearch` 로 찾아 첫 턴부터 쓴다.
 - **길이 상한:** 전체 3000자(한국어 기준 ~2500토큰). 넘으면 **사용자 본문만** 뒤에서 자르고 `[… 지시문이 길어 여기서 잘렸습니다. 전문은 이 멤버의 INSTRUCTIONS.md 에 있습니다.]` 를 붙인다. 프리앰블(정체·로스터·도구)은 통째로 남는다.
 - 엔진 무관: Claude·Codex 어댑터가 같은 텍스트를 같은 방식으로 돌려준다(Codex 는 `SessionStart` 가 첫 프롬프트 제출 때 온다 — T20).
 
@@ -183,7 +198,7 @@ v1a 에서 데몬이 만드는 이벤트(어댑터 표는 worklog T04 참고):
 | `report` | 전원 | `{ taskId, summary, files?, status: 'done'\|'blocked'\|'aborted' }` | `task#<id> 보고 접수(status=<s>). 팀장/사용자 책상(으)로 올라간다.` |
 | `ask_user` | 전원 | `{ question, options? }` | 위 T17 참고 |
 
-**직급은 데몬이 강제한다(01 §TeamTools, D-06). 모델이 주장하는 직급은 보지 않는다 — 요청마다 store 의 `members.rank` 를 다시 읽는다.** 두 겹이다:
+**직급은 데몬이 강제한다(01 §TeamTools, D-06). 모델이 주장하는 직급은 보지 않는다 — 요청마다 store 의 `members.rank` 를 다시 읽는다.** T34 에서 rank 값이 `head|lead|member` 로 바뀌었고 위 표의 "팀장만" 은 `rank='lead'` 를 뜻한다 — **부장(head)에게는 아직 `report`/`ask_user` 만 보인다. 직급별 도구 목록(부장 `create_team`/`dismiss_team`/`delegate`/`reply`, 팀원 `ask_parent` …)은 T35 가 확정한다.** 두 겹이다:
 
 1. **도구 목록이 직급별로 다르다.** 팀원의 `tools/list` 에는 `report`·`ask_user` 만 나온다(팀장 전용 도구는 등록되지 않으므로 이름으로 불러도 `-32602 Tool hire not found`). 팀장은 5개 전부.
 2. **호출 시점에 한 번 더 본다.** 목록을 받은 뒤 직급이 바뀌거나 멤버가 사라지면 `isError` + 한국어 사유(`hire 실패: hire 는 팀장만 쓸 수 있는 도구입니다. 팀원은 report 와 ask_user 만 쓸 수 있습니다.` / `… 멤버를 찾을 수 없습니다(이미 퇴근했을 수 있습니다).`).
@@ -234,7 +249,7 @@ v1a 에서 데몬이 만드는 이벤트(어댑터 표는 worklog T04 참고):
 
 중단·퇴근·비정상 종료·재시작·팀 삭제·데몬 복구는 **같은 후처리 표**를 탄다(데몬 구현은 `src/office/afterCare.ts` 하나). 이유별로 다른 것은 이 표가 전부다:
 
-| 이유 | 내 `queued\|assigned` task | 열린 허가·질문 | 셸 락 | 팀장: 발행한 task | 팀장: 그 task 를 맡은 팀원 | MCP 연결 |
+| 이유 | 내 `queued\|assigned` task | 열린 허가·질문 | 셸 락 | 내가 발행한 task | 그 task 를 맡은 부하 | MCP 연결 |
 |---|---|---|---|---|---|---|
 | `member.interrupt` | `aborted` + 발행자에게 즉시 보고 | 전부 `expired` | 해제 | **그대로** | — | 유지 |
 | `member.clockOut`(퇴근·`dismiss`) | `aborted` + 즉시 보고 | 전부 `expired` | 해제 | `aborted` | `interrupt` | 끊음 |
@@ -244,20 +259,21 @@ v1a 에서 데몬이 만드는 이벤트(어댑터 표는 worklog T04 참고):
 | 데몬 재시작 복구 | 그대로(`assigned` 유지 · `queued` 재큐잉) | 허가 + TUI `AskUserQuestion` 만 `expired`(+ `error{summary:'재지시 필요…', pendingId}`), **`ask_user` 질문은 유지**(D-19) | 해제 | 그대로 | — | 유지 |
 
 - **즉시 보고**란: 발행자에게 버퍼를 건너뛰고 `[REPORTS task#n <이름> status=aborted]\n<이름> 의 작업이 중단됐습니다 (…).` 가 바로 간다. 발행자가 사용자면 대신 `reporting{status:'aborted'}` 이벤트.
-- **팀장이 나가도 팀원 자체는 남는다** — 팀장이 `hire` 한 팀원도 자르지 않는다(퇴근은 사용자 권한). 팀장의 보고 버퍼는 비운다.
+- **상위가 나가도 부하 자체는 남는다** — 팀장이 `hire` 한 팀원도 자르지 않는다(퇴근은 사용자 권한). 그 상위의 보고 버퍼는 비운다. T34 부터 이 규칙은 **직급을 가리지 않는다**(부장이 나가면 그가 팀장에게 낸 일이 거둬진다). 하위 트리를 따라 내려가며 정리하는 것은 T36.
+- **`department.delete` 는 팀원 → 팀장 → 부장 순(잎부터)** 으로 퇴근시킨 뒤 부서·팀·멤버·task 행을 지운다. 위를 먼저 내보내면 그 후처리가 아래를 interrupt 하고 그 후처리가 다시 위 큐에 보고를 밀어 넣어 왕복만 는다.
 - `interrupt` 만 발행 task 를 남긴다: Ctrl+C 는 **그 팀장의 턴**을 끊는 것이지 팀에 내린 지시를 거두는 게 아니다.
-- `team.delete` 는 **팀원 먼저, 팀장 마지막** 순으로 퇴근시킨다(팀장을 먼저 내보내면 남은 팀원 중단 → 이미 나가는 팀장에게 보고, 하는 왕복만 는다). 살아 있지 않던 멤버의 MCP 토큰도 끊는다.
+- `team.delete` 는 **팀원 먼저, 팀장 마지막** 순으로 퇴근시킨다(팀장을 먼저 내보내면 남은 팀원 중단 → 이미 나가는 팀장에게 보고, 하는 왕복만 는다). 살아 있지 않던 멤버의 MCP 토큰도 끊는다. T34 부터 **task 행은 팀이 아니라 부서 소유**라 팀을 지워도 보고 이력이 남는다.
 - 후처리가 실제로 뭔가를 치웠으면(`task` 중단 또는 팀원 중단) `daemon.notice{level:'info', message:'<이름> 후처리(<이유>): task N건 중단, …'}` 이 한 번 나온다.
 - 후처리로 파생 상태가 바뀌면(예: 배정 task 가 0 이 되어 `idle → free`) raw `status` 가 그대로여도 `member.status` 가 한 번 더 나간다.
 
-### 사용자 개입 알림 `[TEAM]` (T25, 01 §4)
+### 사용자 개입 알림 `[TEAM]` (T25, 01 §4 · T34 에서 트리 간선 단위로)
 
-사용자가 **팀원을** 출근·퇴근시키면(앱의 "출근"/"퇴근" = `member.clockIn` / `member.clockOut`) 살아 있는 팀장의 입력 큐에 시스템 메시지가 들어간다:
+사용자가 누군가를 출근·퇴근시키면(`member.clockIn{force:true}` / `member.clockOut`) **그 멤버의 직속 상사**(팀이 아니라 `parent_id`) 입력 큐에 시스템 메시지가 들어간다:
 
 - `[TEAM] 팀원 변경: +<이름>(<engine>, 역할: <role>)` — `역할` 은 그 팀원 지시문 첫 줄이 `# 역할: …` 일 때만 붙는다.
 - `[TEAM] 팀원 변경: -<이름>`
 
-팀장이 스스로 부른 `hire`/`dismiss` 에는 알림이 가지 않는다(자기가 한 일이다). 팀장 자신의 출근·퇴근에도 가지 않는다.
+상사가 스스로 부른 `hire`/`dismiss` 에는 알림이 가지 않는다(자기가 한 일이다). 상사가 없는 부장의 출근·퇴근에도 가지 않는다.
 
 ## Codex 폴백 (T22)
 

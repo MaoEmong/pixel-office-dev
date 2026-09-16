@@ -434,6 +434,7 @@ export abstract class BaseHooksAdapter extends EventEmitter<HooksAdapterEvents> 
 
   protected appendEvent(member: Member, kind: OfficeEventKind, detail: EventDetail, ref: EventRef = {}): void {
     const ev = this.store.appendEvent({
+      departmentId: member.departmentId,
       teamId: member.teamId,
       memberId: member.id,
       kind,

@@ -13,7 +13,7 @@ import { Office, SCREEN_IDLE_SUMMARY } from '../../src/office/Office.js';
 import { Store } from '../../src/store/Store.js';
 import type { Engine, Member, OfficeEvent, Team } from '../../src/store/types.js';
 import type { HookEvent, HookPayload } from '../../src/hooks/types.js';
-import { FakePty, FakeReceiver, fakeReq } from './fakes.js';
+import { FakePty, FakeReceiver, fakeReq, seedDeptTeam } from './fakes.js';
 import { loadFixture } from '../screen/helpers.js';
 
 const SID = 'sess-t23b';
@@ -49,7 +49,7 @@ describe('화면 기반 감시 (T23b)', () => {
     office.on('notice', (l, m) => notices.push(`${l}: ${m}`));
     await office.start();
     // 팀장 없는 팀(store 직접) — 화면 감시만 보므로 team.create 의 팀장 자동 출근(T24)은 끼우지 않는다.
-    team = store.createTeam({ name: 'demo', cwd: dataDir, allowedEngines: ['claude', 'codex'], maxMembers: 6 });
+    team = seedDeptTeam(store, { name: 'demo', cwd: dataDir, allowedEngines: ['claude', 'codex'], maxMembers: 6 }).team;
   });
   afterEach(async () => {
     await office.shutdown();

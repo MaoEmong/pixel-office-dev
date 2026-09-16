@@ -9,27 +9,33 @@ import type {
   ApprovalRespondParams,
   AttachResult,
   ClockInParams,
+  CreateDepartmentParams,
+  CreateDepartmentResult,
   CreateTeamParams,
   CreateTeamResult,
+  DepartmentTree,
+  HireChildParams,
   InstructOptions,
   OfficeApi,
   OfficeEvents,
   OfficeSnapshot,
 } from '../../src/office/types.js';
-import type { EventsQueryInput, Member, OfficeEvent, Team } from '../../src/store/types.js';
+import type { Department, EventsQueryInput, Member, OfficeEvent, Team } from '../../src/store/types.js';
 
 // ---- 가짜 Office ---------------------------------------------------------------------
 
 const TOKEN = 'tok-secret-0123456789abcdef';
 
 function ev(seq: number, kind: OfficeEvent['kind'] = 'idle'): OfficeEvent {
-  return { seq, ts: `2026-09-14T00:00:0${seq}.000Z`, teamId: 't1', memberId: 'm1', kind, detail: {}, ref: {} };
+  return { seq, ts: `2026-09-14T00:00:0${seq}.000Z`, departmentId: 'd1', teamId: 't1', memberId: 'm1', kind, detail: {}, ref: {} };
 }
 
 function member(id: string, status: Member['status'] = 'idle'): Member {
   return {
     id,
+    departmentId: 'd1',
     teamId: 't1',
+    parentId: 'mH',
     name: id,
     rank: 'member',
     engine: 'claude',
@@ -45,7 +51,8 @@ function member(id: string, status: Member['status'] = 'idle'): Member {
   };
 }
 
-const TEAM: Team = { id: 't1', name: 'team', cwd: 'D:\\x', leaderId: null, maxMembers: 4, allowedEngines: ['claude', 'codex'], createdAt: 'c' };
+const TEAM: Team = { id: 't1', departmentId: 'd1', name: 'team', cwd: 'D:\\x', leaderId: null, maxMembers: 4, allowedEngines: ['claude', 'codex'], createdAt: 'c' };
+const DEPT: Department = { id: 'd1', name: 'dept', cwd: 'D:\\x', headId: null, createdAt: 'c' };
 
 class FakeOffice extends EventEmitter<OfficeEvents> implements OfficeApi {
   readonly token = TOKEN;
@@ -72,7 +79,7 @@ class FakeOffice extends EventEmitter<OfficeEvents> implements OfficeApi {
   snapshot(): OfficeSnapshot {
     // T28: 스냅샷 멤버 행에는 파생 상태가 실린다(여기서는 raw 를 그대로 — RpcServer 는 통과만 시킨다).
     const members = [...this.members.values()].map((m) => ({ ...m, derived: m.status }));
-    return { seq: 5, teams: [TEAM], members, pending: [], tasks: [] };
+    return { seq: 5, departments: [DEPT], teams: [TEAM], members, pending: [], tasks: [] };
   }
   getMember(memberId: string): Member | undefined {
     return this.members.get(memberId);
@@ -85,10 +92,41 @@ class FakeOffice extends EventEmitter<OfficeEvents> implements OfficeApi {
     this.rec('eventsQuery', input);
     return this.events.slice(0, input.limit ?? 200);
   }
+  createDepartment(params: CreateDepartmentParams): CreateDepartmentResult {
+    this.rec('createDepartment', params);
+    const head = {
+      ...member('mH'),
+      rank: 'head' as const,
+      teamId: null,
+      parentId: null,
+      name: params.headName ?? '부장',
+      engine: params.headEngine,
+      status: 'starting' as const,
+    };
+    return { department: { ...DEPT, name: params.name, cwd: params.cwd, headId: head.id }, head };
+  }
+  async deleteDepartment(departmentId: string): Promise<void> {
+    this.rec('deleteDepartment', departmentId);
+    if (departmentId !== 'd1') throw new OfficeError(RPC_ERROR.NOT_FOUND, `department not found: ${departmentId}`);
+  }
+  tree(): DepartmentTree[] {
+    this.rec('tree');
+    return [{ department: DEPT, teams: [{ team: TEAM, members: [] }], orphans: [] }];
+  }
   createTeam(params: CreateTeamParams): CreateTeamResult {
     this.rec('createTeam', params);
-    const leader = { ...member('mL'), rank: 'leader' as const, name: params.leaderName ?? '팀장', engine: params.leaderEngine, status: 'starting' as const };
-    return { team: { ...TEAM, name: params.name, cwd: params.cwd, leaderId: leader.id }, leader };
+    const lead = {
+      ...member('mL'),
+      rank: 'lead' as const,
+      name: params.leadName ?? '팀장',
+      engine: params.leadEngine ?? ('claude' as const),
+      status: 'starting' as const,
+    };
+    return { team: { ...TEAM, name: params.name, departmentId: params.departmentId, leaderId: lead.id }, lead };
+  }
+  hireChild(params: HireChildParams): Member {
+    this.rec('hireChild', params);
+    return member('m3', 'starting');
   }
   async deleteTeam(teamId: string): Promise<void> {
     this.rec('deleteTeam', teamId);
@@ -349,19 +387,74 @@ describe('RpcServer', () => {
     await c.call('member.instruct', { memberId: 'm1', text: 'do it', force: true });
     assert.deepEqual(office.calls.at(-1), { method: 'instruct', args: ['m1', 'do it', { force: true }] });
 
-    // team.create 는 팀장이 자동 출근해 `{ team, leader }` 를 돌려준다(T24).
-    const team = await c.call<{ team: Team; leader: Member }>('team.create', { name: 'T', cwd: 'D:\\y', leaderEngine: 'claude', leaderName: '반장' });
-    assert.equal(team.team.name, 'T');
-    assert.equal(team.leader.rank, 'leader');
-    assert.equal(team.leader.name, '반장');
-    assert.equal(team.team.leaderId, team.leader.id);
-    assert.deepEqual(office.calls.at(-1)?.args[0], { name: 'T', cwd: 'D:\\y', leaderEngine: 'claude', leaderName: '반장', maxMembers: undefined, allowedEngines: undefined });
+    // department.create 는 부장이 자동 출근해 `{ department, head }` 를 돌려준다(T34).
+    const dept = await c.call<{ department: Department; head: Member }>('department.create', {
+      name: 'D',
+      cwd: 'D:\\y',
+      headEngine: 'claude',
+      headName: '국장',
+    });
+    assert.equal(dept.department.name, 'D');
+    assert.equal(dept.head.rank, 'head');
+    assert.equal(dept.head.name, '국장');
+    assert.equal(dept.head.parentId, null);
+    assert.equal(dept.department.headId, dept.head.id);
+    assert.deepEqual(office.calls.at(-1)?.args[0], { name: 'D', cwd: 'D:\\y', headEngine: 'claude', headName: '국장' });
 
-    const ci = await c.call<{ member: Member }>('member.clockIn', { teamId: 't1', engine: 'claude', name: 'kim', instructions: '# hi' });
+    const tree = await c.call<{ departments: DepartmentTree[] }>('department.tree', {});
+    assert.deepEqual(tree.departments.map((d) => d.department.id), ['d1']);
+
+    // team.create 는 T34 부터 디버그 전용 — force 없이는 -32004, 있으면 `{ team, lead }`.
+    await expectError(c.call('team.create', { departmentId: 'd1', name: 'T' }), RPC_ERROR.RANK_RULE);
+    const team = await c.call<{ team: Team; lead: Member }>('team.create', {
+      departmentId: 'd1',
+      name: 'T',
+      leadEngine: 'claude',
+      leadName: '반장',
+      force: true,
+    });
+    assert.equal(team.team.name, 'T');
+    assert.equal(team.lead.rank, 'lead');
+    assert.equal(team.lead.name, '반장');
+    assert.equal(team.team.leaderId, team.lead.id);
+    assert.deepEqual(office.calls.at(-1)?.args[0], {
+      departmentId: 'd1',
+      name: 'T',
+      leadEngine: 'claude',
+      leadName: '반장',
+      maxMembers: undefined,
+      allowedEngines: undefined,
+    });
+
+    // member.clockIn 도 디버그 전용(force) — parentId/rank 를 받는다.
+    await expectError(c.call('member.clockIn', { teamId: 't1', engine: 'claude', name: 'kim' }), RPC_ERROR.RANK_RULE);
+    const ci = await c.call<{ member: Member }>('member.clockIn', {
+      teamId: 't1',
+      engine: 'claude',
+      name: 'kim',
+      instructions: '# hi',
+      force: true,
+    });
     assert.equal(ci.member.id, 'm2');
-    assert.deepEqual(office.calls.at(-1)?.args[0], { teamId: 't1', engine: 'claude', name: 'kim', instructions: '# hi', rank: undefined });
-    await c.call('member.clockIn', { teamId: 't1', engine: 'claude', name: 'kim', rank: 'leader' });
-    assert.deepEqual(office.calls.at(-1)?.args[0], { teamId: 't1', engine: 'claude', name: 'kim', instructions: undefined, rank: 'leader' });
+    assert.deepEqual(office.calls.at(-1)?.args[0], {
+      parentId: undefined,
+      departmentId: undefined,
+      teamId: 't1',
+      engine: 'claude',
+      name: 'kim',
+      instructions: '# hi',
+      rank: undefined,
+    });
+    await c.call('member.clockIn', { parentId: 'mH', engine: 'claude', name: 'kim', rank: 'lead', force: true });
+    assert.deepEqual(office.calls.at(-1)?.args[0], {
+      parentId: 'mH',
+      departmentId: undefined,
+      teamId: undefined,
+      engine: 'claude',
+      name: 'kim',
+      instructions: undefined,
+      rank: 'lead',
+    });
 
     assert.deepEqual(await c.call('member.clockOut', { memberId: 'm1' }), {});
     assert.equal((await c.call<{ member: Member }>('member.rehire', { memberId: 'dead' })).member.id, 'dead');
@@ -385,9 +478,10 @@ describe('RpcServer', () => {
 
     const q = await c.call<{ events: OfficeEvent[] }>('events.query', { teamId: 't1', limit: 2 });
     assert.equal(q.events.length, 2);
-    assert.deepEqual(office.calls.at(-1)?.args[0], { teamId: 't1', memberId: undefined, beforeSeq: undefined, limit: 2 });
+    assert.deepEqual(office.calls.at(-1)?.args[0], { departmentId: undefined, teamId: 't1', memberId: undefined, beforeSeq: undefined, limit: 2 });
 
     assert.deepEqual(await c.call('team.delete', { teamId: 't1' }), {});
+    assert.deepEqual(await c.call('department.delete', { departmentId: 'd1' }), {});
   });
 
   test('error codes: -32602 params, -32002 not found, -32003 bad state, -32601 unknown method, -32700 parse, -32600 envelope', async () => {
@@ -398,12 +492,17 @@ describe('RpcServer', () => {
     await expectError(c.call('member.attach', { memberId: 'm1', cols: '80', rows: 24 }), RPC_ERROR.INVALID_PARAMS);
     await expectError(c.call('approval.respond', { pendingId: 'a', behavior: 'maybe' }), RPC_ERROR.INVALID_PARAMS);
     await expectError(c.call('question.respond', { pendingId: 'q', answers: { a: 1 } }), RPC_ERROR.INVALID_PARAMS);
-    await expectError(c.call('team.create', { name: 'T', cwd: 'D:\\y', leaderEngine: 'gpt' }), RPC_ERROR.INVALID_PARAMS);
-    await expectError(c.call('member.clockIn', { teamId: 't1', engine: 'claude', name: 'kim', rank: 'boss' }), RPC_ERROR.INVALID_PARAMS);
+    await expectError(c.call('department.create', { name: 'T', cwd: 'D:\\y', headEngine: 'gpt' }), RPC_ERROR.INVALID_PARAMS);
+    await expectError(c.call('team.create', { departmentId: 'd1', name: 'T', leadEngine: 'gpt', force: true }), RPC_ERROR.INVALID_PARAMS);
+    await expectError(
+      c.call('member.clockIn', { teamId: 't1', engine: 'claude', name: 'kim', rank: 'boss', force: true }),
+      RPC_ERROR.INVALID_PARAMS,
+    );
     await expectError(c.call('member.instruct', { memberId: 'missing', text: 'x' }), RPC_ERROR.NOT_FOUND);
     await expectError(c.call('approval.respond', { pendingId: 'nope', behavior: 'deny' }), RPC_ERROR.NOT_FOUND);
     await expectError(c.call('member.instruct', { memberId: 'dead', text: 'x' }), RPC_ERROR.BAD_STATE);
     await expectError(c.call('team.delete', { teamId: 'zzz' }), RPC_ERROR.NOT_FOUND);
+    await expectError(c.call('department.delete', { departmentId: 'zzz' }), RPC_ERROR.NOT_FOUND);
     await expectError(c.call('member.fire', { memberId: 'm1' }), RPC_ERROR.METHOD_NOT_FOUND);
 
     c.sendRaw('{not json');

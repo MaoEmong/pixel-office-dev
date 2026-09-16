@@ -4,7 +4,19 @@ import type { EventEmitter } from 'node:events';
 import type { ExitInfo, PtySession, SpawnOptions } from '../pty/types.js';
 import type { HookReceiverEvents } from '../hooks/HookReceiver.js';
 import type { ApprovalDecisionInput } from '../adapters/types.js';
-import type { Engine, EventsQueryInput, Member, MemberRank, MemberStatus, OfficeEvent, ReportStatus, Snapshot, Team } from '../store/types.js';
+import type {
+  Department,
+  Engine,
+  EventsQueryInput,
+  HiredBy,
+  Member,
+  MemberRank,
+  MemberStatus,
+  OfficeEvent,
+  ReportStatus,
+  Snapshot,
+  Team,
+} from '../store/types.js';
 
 // ---- 데몬 기록 파일 ----------------------------------------------------------
 
@@ -22,32 +34,74 @@ export interface DaemonInfo {
 
 // ---- RPC 파라미터 ------------------------------------------------------------
 
-export interface CreateTeamParams {
+/** `department.create` — 사용자가 하는 유일한 생성(D-32). 부장이 자동 출근한다. */
+export interface CreateDepartmentParams {
   name: string;
+  /** 부서 = 프로젝트 폴더. 존재하는 디렉토리여야 한다. */
   cwd: string;
-  leaderEngine: Engine;
-  /** 자동 출근하는 팀장의 이름. 기본 '팀장'(T24). */
-  leaderName?: string;
+  headEngine: Engine;
+  /** 자동 출근하는 부장의 이름. 기본 '부장'. */
+  headName?: string;
+}
+
+export interface CreateDepartmentResult {
+  department: Department;
+  head: Member;
+}
+
+/** `team.create`(T34 부터 **디버그 전용** RPC — 실제 경로는 T35 의 부장 도구 `create_team`). */
+export interface CreateTeamParams {
+  departmentId: string;
+  name: string;
+  /** 자동 출근하는 팀장의 엔진. 생략하면 부장과 같은 엔진. */
+  leadEngine?: Engine;
+  /** 자동 출근하는 팀장의 이름. 기본 '팀장'. */
+  leadName?: string;
   maxMembers?: number;
   allowedEngines?: Engine[];
 }
 
-/** `team.create` 결과 — 팀과 **자동 출근한 팀장**(T24, 01 §4 "팀 생성 시 팀장이 자동 출근"). */
+/** `team.create` 결과 — 팀과 **자동 출근한 팀장**(부장의 자식). */
 export interface CreateTeamResult {
   team: Team;
-  leader: Member;
+  lead: Member;
 }
 
+/**
+ * 트리의 **유일한 스폰 경로**(T34). `department.create`(부장) · 팀 생성(팀장) · `hire`(팀원)가 전부 여기로 들어온다.
+ * 직급 사슬(head → lead → member)과 팀 정원은 이 한 곳에서 강제한다.
+ */
+export interface HireChildParams {
+  /** 부모 memberId. 부장(rank 'head')만 null/생략. */
+  parentId?: string | null;
+  /** rank 'head' 일 때 필수(부모가 없으므로 부서를 직접 준다). */
+  departmentId?: string;
+  /** rank 'lead' 일 때 필수(그 팀장이 맡을 팀). 팀원은 부모의 팀을 쓴다. */
+  teamId?: string;
+  name: string;
+  rank: MemberRank;
+  engine: Engine;
+  /** INSTRUCTIONS.md 본문. `role` 이 있으면 `# 역할: <role>` 아래에 붙는다. */
+  instructions?: string;
+  /** 지시문 첫 줄 `# 역할: <role>`(TeamTools `hire` 가 쓴다). */
+  role?: string;
+  /** 기본 'leader'(상위 멤버가 고용). 사용자가 직접 출근시키면 'user'. */
+  hiredBy?: HiredBy;
+}
+
+/** `member.clockIn`(T34 부터 디버그 전용). 부모를 주면 직급이 사슬에서 정해진다. */
 export interface ClockInParams {
-  teamId: string;
+  parentId?: string | null;
+  departmentId?: string;
+  teamId?: string;
   engine: Engine;
   name: string;
   instructions?: string;
-  /** 기본 'member'. 'leader' 는 그 팀에 살아 있는 팀장이 없을 때만(T24). */
+  /** 생략하면 부모 직급의 아래 직급(head → lead → member). */
   rank?: MemberRank;
 }
 
-/** 팀장의 TeamTools `hire`(T25) 용 입력. RPC 가 아니라 Office 메서드 `hireByLeader()` 로만 부른다. */
+/** 팀장의 TeamTools `hire`(T25) 용 입력. `hireChild` 의 얇은 래퍼. */
 export interface HireByLeaderParams {
   /** 고용하는 팀장의 memberId. 이 멤버가 살아 있는 팀장이어야 한다. */
   leaderId: string;
@@ -56,7 +110,7 @@ export interface HireByLeaderParams {
   instructions?: string;
 }
 
-/** `member.instruct` 옵션. `force` 는 "팀장에게만 지시" 게이트를 넘는 디버그 탈출구(T24). */
+/** `member.instruct` 옵션. `force` 는 "부장에게만 지시" 게이트를 넘는 디버그 탈출구. */
 export interface InstructOptions {
   force?: boolean;
 }
@@ -128,6 +182,15 @@ export interface OfficeSnapshot extends Omit<Snapshot, 'members'> {
   members: SnapshotMember[];
 }
 
+/** 콘솔 `tree` · 앱(T37)이 쓰는 부서 트리 한 그루. */
+export interface DepartmentTree {
+  department: Department;
+  head?: SnapshotMember;
+  teams: Array<{ team: Team; lead?: SnapshotMember; members: SnapshotMember[] }>;
+  /** 어느 팀에도 속하지 않는 부장 이외의 멤버(있으면 안 되지만 디버그 경로로 생길 수 있다). */
+  orphans: SnapshotMember[];
+}
+
 export type NoticeLevel = 'info' | 'warn' | 'error';
 
 // ---- Office 이벤트 -------------------------------------------------------------
@@ -160,15 +223,24 @@ export interface OfficeApi extends EventEmitter<OfficeEvents> {
   eventsSince(seq: number): OfficeEvent[];
   eventsQuery(input: EventsQueryInput): OfficeEvent[];
 
-  /** 팀 생성 + 팀장 자동 출근(T24). `team.leaderId` 는 이 시점에 채워진다. */
+  /** 부서 생성 + 부장 자동 출근(T34, D-32). 사용자가 하는 유일한 생성. */
+  createDepartment(params: CreateDepartmentParams): CreateDepartmentResult;
+  /** 부서 하위 트리 전체(팀·팀장·팀원)를 정리하고 삭제한다. 부장이 마지막. */
+  deleteDepartment(departmentId: string): Promise<void>;
+  /** 부서 트리(콘솔 `tree`·앱). */
+  tree(): DepartmentTree[];
+
+  /** 팀 생성 + 팀장 자동 출근. T34 부터 RPC 로는 디버그 전용(`force:true`). */
   createTeam(params: CreateTeamParams): CreateTeamResult;
   deleteTeam(teamId: string): Promise<void>;
 
+  /** 트리의 단일 스폰 경로. 직급 사슬·정원은 여기서 강제한다(T34). */
+  hireChild(params: HireChildParams): Member;
   clockIn(params: ClockInParams): Member;
   clockOut(memberId: string): Promise<void>;
   rehire(memberId: string): Promise<Member>;
   restart(memberId: string): Promise<Member>;
-  /** 팀에 살아 있는 팀장이 있으면 팀원 지시는 -32004 — `opts.force` 로만 넘는다(T24). */
+  /** 부서에 살아 있는 부장이 있으면 부장 외 지시는 -32004 — `opts.force` 로만 넘는다(T34). */
   instruct(memberId: string, text: string, opts?: InstructOptions): number;
   typeRaw(memberId: string, data: string): void;
   attach(clientId: string, memberId: string, cols: number, rows: number): AttachResult;

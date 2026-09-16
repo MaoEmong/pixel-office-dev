@@ -25,9 +25,9 @@ export interface SettlePolicy {
   pending: 'all' | 'keep-ask-user';
   /** 만료마다 `error{summary, pendingId}` 이벤트를 남기는가(D-15 모양). 'all' 경로는 어댑터가 담당하므로 false. */
   pendingEvent: boolean;
-  /** 이 멤버가 팀장일 때, 그가 발행(delegate)한 미종료 task 를 끊는가. */
+  /** 그가 발행(delegate)한 미종료 task 를 끊는가(직급 무관 — 부장·팀장 모두 부하에게 일을 낸다). */
   issuedTasks: 'abort' | 'keep';
-  /** 팀장이 낸 task 를 맡고 있던 팀원을 중단시키는가(01 §"팀장 fire 시 하위 정리"). */
+  /** 그가 낸 task 를 맡고 있던 부하를 중단시키는가(01 §"상위 fire 시 하위 정리"). */
   interruptTargets: boolean;
   /** TeamTools MCP 연결을 끊는가. */
   disposeMcp: boolean;
@@ -42,7 +42,7 @@ export interface SettlePolicy {
 /**
  * 후처리 표(01 §공통 후처리 + T25·T27 의 실제 동작).
  *
- * | 이유 | 내 task | 보류 | 셸 락 | 팀장: 발행 task | 팀장: 대상 | MCP |
+ * | 이유 | 내 task | 보류 | 셸 락 | 발행 task | 그 task 의 대상 | MCP |
  * |---|---|---|---|---|---|---|
  * | interrupt  | aborted | 전부 만료 | 해제 | **유지** | — | 유지 |
  * | clockOut   | aborted | 전부 만료 | 해제 | aborted | interrupt | 끊음 |
@@ -194,8 +194,9 @@ export function settleMember(
   // ① 셸 락은 이유와 무관하게 먼저 돌려준다(01 §해제 표: interrupt·fire·error·퇴근·상한).
   ctx.releaseShellLocks(memberId);
 
-  // ② 팀장이 사라지거나 일을 거둘 때: 그가 발행한 미종료 task 를 끊고(받을 사람이 없다) 맡고 있던 팀원을 중단시킨다.
-  if (member.rank === 'leader' && policy.issuedTasks === 'abort') {
+  // ② 상위가 사라지거나 일을 거둘 때: 그가 발행한 미종료 task 를 끊고(받을 사람이 없다) 맡고 있던 부하를 중단시킨다.
+  //    T34: 직급을 보지 않는다 — 부장도 팀장에게 일을 낸다. 하위 트리 전체를 따라 내려가는 정리는 T36.
+  if (policy.issuedTasks === 'abort') {
     ctx.dropReportBuffer(memberId);
     for (const task of store.openTasksIssuedBy(memberId)) {
       store.updateTask(task.id, { status: 'aborted', reportStatus: 'aborted' });

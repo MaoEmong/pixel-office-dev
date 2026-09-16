@@ -16,7 +16,7 @@ import { derivedStatus } from '../../src/office/derived.js';
 import { Store } from '../../src/store/Store.js';
 import type { Member, OfficeEvent, Team } from '../../src/store/types.js';
 import { loadFixture } from '../screen/helpers.js';
-import { FakeMcp, FakePty, FakeReceiver, fakeReq } from './fakes.js';
+import { FakeMcp, FakePty, FakeReceiver, fakeReq, seedDeptTeam } from './fakes.js';
 
 const SID = 'sess-t28';
 const base = (event: string) => ({ session_id: SID, hook_event_name: event, cwd: 'D:\\x' });
@@ -51,7 +51,7 @@ describe('공통 후처리·파생 상태 (T28)', () => {
     office.on('status', (id, s, d) => statuses.push([id, s, d]));
     office.on('notice', (l, m) => notices.push(`${l}: ${m}`));
     await office.start();
-    team = store.createTeam({ name: 'alpha', cwd: dataDir, maxMembers: 5, allowedEngines: ['claude'] });
+    team = seedDeptTeam(store, { name: 'alpha', cwd: dataDir, maxMembers: 5, allowedEngines: ['claude'] }).team;
   });
   afterEach(async () => {
     await office.shutdown();
@@ -70,7 +70,7 @@ describe('공통 후처리·파생 상태 (T28)', () => {
     await sleep(60);
     return store.getMember(m.id)!;
   };
-  const leaderIn = async (name = '반장') => ready(office.clockIn({ teamId: team.id, engine: 'claude', name, rank: 'leader' }));
+  const leaderIn = async (name = '반장') => ready(office.clockIn({ teamId: team.id, engine: 'claude', name, rank: 'lead' }));
   const memberIn = async (name: string) => ready(office.clockIn({ teamId: team.id, engine: 'claude', name }));
   const busy = (m: Member) => hook(m, 'UserPromptSubmit', { prompt: 'x' });
   const pastesOf = (m: Member) => pty.session(m.id).pastes;
@@ -208,7 +208,7 @@ describe('공통 후처리·파생 상태 (T28)', () => {
   });
 
   test('표(SETTLE_MATRIX): recover 는 ask_user 질문만 남기고 나머지를 만료 + error 이벤트(D-19·D-15)', () => {
-    const m = store.createMember({ teamId: team.id, name: '하루', rank: 'member', engine: 'claude', cwd: dataDir, hiredBy: 'user' });
+    const m = store.createMember({ departmentId: team.departmentId, teamId: team.id, name: '하루', rank: 'member', engine: 'claude', cwd: dataDir, hiredBy: 'user' });
     const approval = store.createPending({ memberId: m.id, type: 'approval', payload: { tool_name: 'Bash' } });
     const tui = store.createPending({ memberId: m.id, type: 'question', payload: { tool_input: { questions: [] } } });
     const ask = store.createPending({ memberId: m.id, type: 'question', payload: { source: 'ask_user', question: '어디에 둘까?' } });

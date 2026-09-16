@@ -190,6 +190,7 @@ export class RpcServer {
       'events.query': (_c, p) =>
         ({
           events: o.eventsQuery({
+            departmentId: optStr(p, 'departmentId'),
             teamId: optStr(p, 'teamId'),
             memberId: optStr(p, 'memberId'),
             beforeSeq: optNum(p, 'beforeSeq'),
@@ -197,37 +198,59 @@ export class RpcServer {
           }),
         }),
 
-      // 결과는 `{ team, leader }` — 팀장이 자동 출근한다(T24).
-      'team.create': (_c, p) =>
-        o.createTeam({
+      // 결과는 `{ department, head }` — 부장이 자동 출근한다(T34, D-32). 사용자가 하는 유일한 생성이다.
+      'department.create': (_c, p) =>
+        o.createDepartment({
           name: reqStr(p, 'name'),
           cwd: reqStr(p, 'cwd'),
-          leaderEngine: reqEngine(p, 'leaderEngine'),
-          leaderName: optStr(p, 'leaderName'),
+          headEngine: reqEngine(p, 'headEngine'),
+          headName: optStr(p, 'headName'),
+        }),
+      'department.delete': async (_c, p) => {
+        await o.deleteDepartment(reqStr(p, 'departmentId'));
+        return {};
+      },
+      'department.tree': () => ({ departments: o.tree() }),
+
+      // T34 부터 **디버그 전용**(`force:true`) — 정식 경로는 부장의 `create_team` 도구(T35). 결과는 `{ team, lead }`.
+      'team.create': (_c, p) => {
+        requireForce(p, 'team.create', '팀은 부장이 create_team 도구로 만든다');
+        return o.createTeam({
+          departmentId: reqStr(p, 'departmentId'),
+          name: reqStr(p, 'name'),
+          leadEngine: optEngine(p, 'leadEngine') ?? optEngine(p, 'leaderEngine'),
+          leadName: optStr(p, 'leadName') ?? optStr(p, 'leaderName'),
           maxMembers: optNum(p, 'maxMembers'),
           allowedEngines: optEngines(p, 'allowedEngines'),
-        }),
+        });
+      },
       'team.delete': async (_c, p) => {
         await o.deleteTeam(reqStr(p, 'teamId'));
         return {};
       },
 
-      'member.clockIn': (_c, p) => ({
-        member: o.clockIn({
-          teamId: reqStr(p, 'teamId'),
-          engine: reqEngine(p, 'engine'),
-          name: reqStr(p, 'name'),
-          instructions: optStr(p, 'instructions'),
-          rank: optRank(p, 'rank'),
-        }),
-      }),
+      // T34 부터 **디버그 전용**(`force:true`) — 사용자는 부서·부장만 만든다(D-32).
+      'member.clockIn': (_c, p) => {
+        requireForce(p, 'member.clockIn', '사용자는 부서를 만들어 부장만 임명한다');
+        return {
+          member: o.clockIn({
+            parentId: optStr(p, 'parentId'),
+            departmentId: optStr(p, 'departmentId'),
+            teamId: optStr(p, 'teamId'),
+            engine: reqEngine(p, 'engine'),
+            name: reqStr(p, 'name'),
+            instructions: optStr(p, 'instructions'),
+            rank: optRank(p, 'rank'),
+          }),
+        };
+      },
       'member.clockOut': async (_c, p) => {
         await o.clockOut(reqStr(p, 'memberId'));
         return {};
       },
       'member.rehire': async (_c, p) => ({ member: await o.rehire(reqStr(p, 'memberId')) }),
       'member.restart': async (_c, p) => ({ member: await o.restart(reqStr(p, 'memberId')) }),
-      // `force:true` 는 "팀장에게만 지시" 게이트(-32004)를 넘는 디버그 탈출구(T24) — 앱은 보내지 않는다.
+      // `force:true` 는 "부장에게만 지시" 게이트(-32004)를 넘는 디버그 탈출구(T34) — 앱은 보내지 않는다.
       'member.instruct': (_c, p) => ({ taskId: o.instruct(reqStr(p, 'memberId'), reqStr(p, 'text'), { force: p.force === true }) }),
       'member.type': (_c, p) => {
         o.typeRaw(reqStr(p, 'memberId'), reqStr(p, 'data', true));
@@ -379,11 +402,27 @@ function reqEngine(p: Record<string, unknown>, key: string): Engine {
   return v;
 }
 
+function optEngine(p: Record<string, unknown>, key: string): Engine | undefined {
+  const v = p[key];
+  if (v === undefined || v === null) return undefined;
+  if (v !== 'claude' && v !== 'codex') throw invalid(`${key} must be claude|codex`);
+  return v;
+}
+
 function optRank(p: Record<string, unknown>, key: string): MemberRank | undefined {
   const v = p[key];
   if (v === undefined || v === null) return undefined;
-  if (v !== 'member' && v !== 'leader') throw invalid(`${key} must be member|leader`);
+  if (v !== 'member' && v !== 'lead' && v !== 'head') throw invalid(`${key} must be head|lead|member`);
   return v;
+}
+
+/**
+ * 디버그 전용 메서드의 관문(T34, D-32). 트리에서 없어진 사용자 기능(팀 직접 생성·팀원 직접 출근)은 지우지 않고
+ * `force:true` 뒤로 숨긴다 — 콘솔·테스트가 쓸 길은 남기되 앱이 실수로 부르지 못하게. 없으면 -32004.
+ */
+function requireForce(p: Record<string, unknown>, method: string, why: string): void {
+  if (p.force === true) return;
+  throw new OfficeError(RPC_ERROR.RANK_RULE, `${method} 은(는) 디버그 전용입니다 — ${why} (force:true 필요)`);
 }
 
 function optEngines(p: Record<string, unknown>, key: string): Engine[] | undefined {

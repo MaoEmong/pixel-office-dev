@@ -1,5 +1,5 @@
 // 콘솔 명령 파싱·인자 해석 (T08). 네트워크·상태 없음 — 순수 함수만 두어 테스트한다.
-import type { Member, Team } from '../store/types.js';
+import type { Department, Member, Team } from '../store/types.js';
 import { stripAnsi } from './format.js';
 
 export class CliError extends Error {
@@ -120,11 +120,12 @@ export function resolveMember(members: Iterable<Member>, ref: string): Member {
   throw new CliError(`멤버를 찾을 수 없습니다: ${ref}`);
 }
 
-export function resolveTeam(teams: Iterable<Team>, ref: string): Team {
-  const all = [...teams];
-  if (!ref) throw new CliError('팀 id 또는 이름이 필요합니다');
+/** id/이름으로 행 하나를 고른다(정확 일치 → 접두). 팀·부서가 같은 규칙을 쓴다. */
+function resolveNamed<T extends { id: string; name: string }>(rows: Iterable<T>, ref: string, what: string): T {
+  const all = [...rows];
+  if (!ref) throw new CliError(`${what} id 또는 이름이 필요합니다`);
   const lower = ref.toLowerCase();
-  const tiers: Array<(t: Team) => boolean> = [
+  const tiers: Array<(t: T) => boolean> = [
     (t) => t.id === ref,
     (t) => t.name === ref,
     (t) => t.id.startsWith(ref),
@@ -134,10 +135,18 @@ export function resolveTeam(teams: Iterable<Team>, ref: string): Team {
     const hits = all.filter(match);
     if (hits.length === 1) return hits[0]!;
     if (hits.length > 1) {
-      throw new CliError(`팀 참조가 모호합니다 "${ref}": ${hits.map((t) => `${t.id}(${t.name})`).join(', ')}`);
+      throw new CliError(`${what} 참조가 모호합니다 "${ref}": ${hits.map((t) => `${t.id}(${t.name})`).join(', ')}`);
     }
   }
-  throw new CliError(`팀을 찾을 수 없습니다: ${ref}`);
+  throw new CliError(`${what}을(를) 찾을 수 없습니다: ${ref}`);
+}
+
+export function resolveTeam(teams: Iterable<Team>, ref: string): Team {
+  return resolveNamed(teams, ref, '팀');
+}
+
+export function resolveDepartment(departments: Iterable<Department>, ref: string): Department {
+  return resolveNamed(departments, ref, '부서');
 }
 
 /** pending id 는 정확 일치 → 접두. */

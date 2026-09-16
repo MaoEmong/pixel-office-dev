@@ -5,13 +5,15 @@ import fs from 'node:fs';
 import { randomUUID, randomBytes } from 'node:crypto';
 import { DatabaseSync, type SQLInputValue } from 'node:sqlite';
 import { config } from '../config.js';
-import { SCHEMA_SQL, SCHEMA_VERSION } from './schema.js';
+import { SCHEMA_SQL, SCHEMA_VERSION, V1_DROP_SQL, V1_RENAME_SQL } from './schema.js';
 import type {
   AppendEventInput,
+  CreateDepartmentInput,
   CreateMemberInput,
   CreatePendingInput,
   CreateTaskInput,
   CreateTeamInput,
+  Department,
   Engine,
   EventDetail,
   EventRef,
@@ -25,6 +27,7 @@ import type {
   Task,
   TaskStatus,
   Team,
+  UpdateDepartmentInput,
   UpdateMemberInput,
   UpdateTaskInput,
   UpdateTeamInput,
@@ -70,9 +73,20 @@ function parseJson<T>(raw: unknown, fallback: T): T {
   }
 }
 
+function rowToDepartment(r: Row): Department {
+  return {
+    id: r.id as string,
+    name: r.name as string,
+    cwd: r.cwd as string,
+    headId: (r.head_id as string | null) ?? null,
+    createdAt: r.created_at as string,
+  };
+}
+
 function rowToTeam(r: Row): Team {
   return {
     id: r.id as string,
+    departmentId: r.department_id as string,
     name: r.name as string,
     cwd: r.cwd as string,
     leaderId: (r.leader_id as string | null) ?? null,
@@ -85,7 +99,9 @@ function rowToTeam(r: Row): Team {
 function rowToMember(r: Row): Member {
   return {
     id: r.id as string,
-    teamId: r.team_id as string,
+    departmentId: r.department_id as string,
+    teamId: (r.team_id as string | null) ?? null,
+    parentId: (r.parent_id as string | null) ?? null,
     name: r.name as string,
     rank: r.rank as Member['rank'],
     engine: r.engine as Engine,
@@ -105,7 +121,8 @@ function rowToEvent(r: Row): OfficeEvent {
   return {
     seq: toNum(r.seq as number),
     ts: r.ts as string,
-    teamId: r.team_id as string,
+    departmentId: (r.department_id as string | null) ?? '',
+    teamId: (r.team_id as string | null) ?? '',
     memberId: r.member_id as string,
     kind: r.kind as OfficeEventKind,
     detail: parseJson<EventDetail>(r.detail, {}),
@@ -129,7 +146,7 @@ function rowToPending(r: Row): Pending {
 function rowToTask(r: Row): Task {
   return {
     id: toNum(r.id as number),
-    teamId: r.team_id as string,
+    departmentId: r.department_id as string,
     fromMember: r.from_member as string,
     toMember: r.to_member as string,
     instruction: r.instruction as string,
@@ -181,18 +198,107 @@ export class Store {
     this.migrate();
   }
 
+  /**
+   * 열 때마다 한 번. 없는 테이블을 만들고(`CREATE TABLE IF NOT EXISTS`), 옛 버전이면 스텝을 태운다.
+   *
+   * v1(2단: 팀·팀장·팀원) → v2(3단 트리: 부서·부장·팀장·팀원)는 팀 정의가 바뀌어(CHECK(rank), NOT NULL,
+   * FK 대상) ALTER 만으로는 안 되므로 **teams/members/tasks 를 통째로 다시 만든다**:
+   *   ① v1 테이블을 `*_v1` 으로 rename(+ v1 인덱스 제거, events 에 department_id 추가)
+   *   ② SCHEMA_SQL 로 v2 테이블 생성
+   *   ③ 팀 하나 = 부서 하나로 복사 — 팀장(rank 'leader')은 **부장(head)** 이 되고 그 부서의 head_id 이자
+   *      옛 팀의 leader_id 로 남는다(부장이 레거시 팀의 팀장을 겸한다). 옛 팀원은 rank 'member' + parent_id = 부장.
+   *      tasks·events 는 그 부서 id 를 받는다.
+   *   ④ `*_v1` drop.
+   * 개발 DB 하나를 위한 코드다(배포 전) — 실패하면 던져서 잘못된 상태로 열리지 않게 한다.
+   */
   private migrate(): void {
-    this.db.exec(SCHEMA_SQL);
-    const row = this.db.prepare('SELECT version FROM schema_version LIMIT 1').get() as Row | undefined;
-    if (!row) {
-      this.db.prepare('INSERT INTO schema_version(version) VALUES (?)').run(SCHEMA_VERSION);
-      return;
-    }
-    const version = toNum(row.version as number);
-    if (version > SCHEMA_VERSION) {
+    const version = this.readVersion();
+    if (version !== undefined && version > SCHEMA_VERSION) {
       throw new Error(`pixel-office.db schema_version ${version} is newer than supported ${SCHEMA_VERSION}`);
     }
-    // version < SCHEMA_VERSION 인 경우의 마이그레이션 스텝은 버전이 올라갈 때 여기에 추가.
+    if (version === 1) {
+      // 테이블을 다시 만드는 동안에는 FK 를 꺼 둔다(ALTER RENAME 이 참조를 따라다니지 않게).
+      this.db.exec('PRAGMA foreign_keys = OFF');
+      this.db.exec(V1_RENAME_SQL);
+      this.db.exec(SCHEMA_SQL);
+      this.transaction(() => this.copyV1ToV2());
+      this.db.exec(V1_DROP_SQL);
+      this.db.exec('PRAGMA foreign_keys = ON');
+    } else {
+      this.db.exec(SCHEMA_SQL);
+    }
+    this.writeVersion(SCHEMA_VERSION);
+  }
+
+  /** schema_version 한 행. 테이블 자체가 없으면(새 DB) undefined. */
+  private readVersion(): number | undefined {
+    const t = this.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='schema_version'").get() as Row | undefined;
+    if (!t) return undefined;
+    const row = this.db.prepare('SELECT version FROM schema_version LIMIT 1').get() as Row | undefined;
+    return row ? toNum(row.version as number) : undefined;
+  }
+
+  private writeVersion(version: number): void {
+    const row = this.db.prepare('SELECT version FROM schema_version LIMIT 1').get() as Row | undefined;
+    if (row) this.db.prepare('UPDATE schema_version SET version = ?').run(version);
+    else this.db.prepare('INSERT INTO schema_version(version) VALUES (?)').run(version);
+  }
+
+  /** v1 `*_v1` 테이블 → v2 테이블. 팀 하나가 부서 하나가 된다(위 migrate 주석의 표). */
+  private copyV1ToV2(): void {
+    const teams = this.db.prepare('SELECT * FROM teams_v1 ORDER BY rowid').all() as Row[];
+    for (const t of teams) {
+      const teamId = t.id as string;
+      const deptId = newId('d');
+      const members = this.db.prepare('SELECT * FROM members_v1 WHERE team_id = ? ORDER BY rowid').all(teamId) as Row[];
+      // v1 팀장(rank 'leader')이 부장이 된다. 없으면(팀장이 지워진 DB) head 는 null 로 둔다.
+      const head = members.find((m) => m.rank === 'leader');
+      const headId = (head?.id as string | undefined) ?? null;
+      this.db
+        .prepare('INSERT INTO departments(id, name, cwd, head_id, created_at) VALUES (?, ?, ?, ?, ?)')
+        .run(deptId, t.name as string, t.cwd as string, headId, t.created_at as string);
+      this.db
+        .prepare(
+          `INSERT INTO teams(id, department_id, name, cwd, leader_id, max_members, allowed_engines, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .run(teamId, deptId, t.name as string, t.cwd as string, headId, t.max_members as number, t.allowed_engines as string, t.created_at as string);
+      for (const m of members) {
+        const isHead = m.rank === 'leader';
+        this.db
+          .prepare(
+            `INSERT INTO members(id, department_id, team_id, parent_id, name, rank, engine, session_id, child_pid, cwd,
+                                 status, hired_by, member_token, instructions_path, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          )
+          .run(
+            m.id as string,
+            deptId,
+            teamId,
+            isHead ? null : headId,
+            m.name as string,
+            isHead ? 'head' : 'member',
+            m.engine as string,
+            nullable(m.session_id),
+            nullable(m.child_pid),
+            m.cwd as string,
+            m.status as string,
+            m.hired_by as string,
+            m.member_token as string,
+            nullable(m.instructions_path),
+            m.created_at as string,
+            m.updated_at as string,
+          );
+      }
+      this.db
+        .prepare(
+          `INSERT INTO tasks(id, department_id, from_member, to_member, instruction, status, report_text, report_status, created_at, updated_at)
+           SELECT id, ?, from_member, to_member, instruction, status, report_text, report_status, created_at, updated_at
+           FROM tasks_v1 WHERE team_id = ?`,
+        )
+        .run(deptId, teamId);
+      this.db.prepare('UPDATE events SET department_id = ? WHERE team_id = ?').run(deptId, teamId);
+    }
   }
 
   /** 여러 쓰기를 한 트랜잭션으로. 예외 시 롤백 후 재throw. */
@@ -212,17 +318,69 @@ export class Store {
     this.db.close();
   }
 
+  // ---- departments (T34) -----------------------------------------------------
+
+  createDepartment(input: CreateDepartmentInput): Department {
+    const id = input.id ?? newId('d');
+    this.db
+      .prepare('INSERT INTO departments(id, name, cwd, head_id, created_at) VALUES (?, ?, ?, ?, ?)')
+      .run(id, input.name, input.cwd, input.headId ?? null, nowIso());
+    return this.getDepartment(id)!;
+  }
+
+  getDepartment(id: string): Department | undefined {
+    const r = this.db.prepare('SELECT * FROM departments WHERE id = ?').get(id) as Row | undefined;
+    return r ? rowToDepartment(r) : undefined;
+  }
+
+  listDepartments(): Department[] {
+    return (this.db.prepare('SELECT * FROM departments ORDER BY rowid').all() as Row[]).map(rowToDepartment);
+  }
+
+  updateDepartment(id: string, patch: UpdateDepartmentInput): Department | undefined {
+    const { sets, params } = buildSet(patch as Record<string, unknown>, {
+      name: { col: 'name' },
+      cwd: { col: 'cwd' },
+      headId: { col: 'head_id', encode: nullable },
+    });
+    if (sets.length > 0) {
+      this.db.prepare(`UPDATE departments SET ${sets.join(', ')} WHERE id = ?`).run(...params, id);
+    }
+    return this.getDepartment(id);
+  }
+
+  /** 부서 삭제. teams·members·tasks 는 FK cascade(members 의 pending 도), events 는 이력이라 남는다. */
+  deleteDepartment(id: string): boolean {
+    const res = this.db.prepare('DELETE FROM departments WHERE id = ?').run(id);
+    return toNum(res.changes) > 0;
+  }
+
+  /**
+   * 그 부서의 **살아 있는 부장**(rank='head' ∧ status ∉ {exited, error}). 사용자 지시 게이트(-32004)와
+   * `department.create` 중복 방지가 이 함수 하나를 본다 — `departments.head_id` 는 나간 부장도 남기므로.
+   */
+  liveHead(departmentId: string): Member | undefined {
+    const r = this.db
+      .prepare(
+        `SELECT * FROM members WHERE department_id = ? AND rank = 'head' AND status NOT IN ('exited', 'error')
+         ORDER BY rowid LIMIT 1`,
+      )
+      .get(departmentId) as Row | undefined;
+    return r ? rowToMember(r) : undefined;
+  }
+
   // ---- teams ----------------------------------------------------------------
 
   createTeam(input: CreateTeamInput): Team {
     const id = input.id ?? newId('t');
     this.db
       .prepare(
-        `INSERT INTO teams(id, name, cwd, leader_id, max_members, allowed_engines, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO teams(id, department_id, name, cwd, leader_id, max_members, allowed_engines, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         id,
+        input.departmentId,
         input.name,
         input.cwd,
         input.leaderId ?? null,
@@ -238,8 +396,12 @@ export class Store {
     return r ? rowToTeam(r) : undefined;
   }
 
-  listTeams(): Team[] {
-    return (this.db.prepare('SELECT * FROM teams ORDER BY rowid').all() as Row[]).map(rowToTeam);
+  listTeams(departmentId?: string): Team[] {
+    const rows =
+      departmentId === undefined
+        ? (this.db.prepare('SELECT * FROM teams ORDER BY rowid').all() as Row[])
+        : (this.db.prepare('SELECT * FROM teams WHERE department_id = ? ORDER BY rowid').all(departmentId) as Row[]);
+    return rows.map(rowToTeam);
   }
 
   updateTeam(id: string, patch: UpdateTeamInput): Team | undefined {
@@ -269,13 +431,15 @@ export class Store {
     const ts = nowIso();
     this.db
       .prepare(
-        `INSERT INTO members(id, team_id, name, rank, engine, session_id, child_pid, cwd, status,
+        `INSERT INTO members(id, department_id, team_id, parent_id, name, rank, engine, session_id, child_pid, cwd, status,
                              hired_by, member_token, instructions_path, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         id,
-        input.teamId,
+        input.departmentId,
+        input.teamId ?? null,
+        input.parentId ?? null,
         input.name,
         input.rank,
         input.engine,
@@ -309,6 +473,13 @@ export class Store {
     return rows.map(rowToMember);
   }
 
+  /** 그 부서의 멤버 전부(부장 포함). 팀이 없는 부장도 들어간다. */
+  listDepartmentMembers(departmentId: string): Member[] {
+    return (
+      this.db.prepare('SELECT * FROM members WHERE department_id = ? ORDER BY rowid').all(departmentId) as Row[]
+    ).map(rowToMember);
+  }
+
   updateMember(id: string, patch: UpdateMemberInput): Member | undefined {
     const { sets, params } = buildSet(patch as Record<string, unknown>, {
       name: { col: 'name' },
@@ -318,6 +489,8 @@ export class Store {
       childPid: { col: 'child_pid', encode: nullable },
       cwd: { col: 'cwd' },
       status: { col: 'status' },
+      teamId: { col: 'team_id', encode: nullable },
+      parentId: { col: 'parent_id', encode: nullable },
       hiredBy: { col: 'hired_by' },
       memberToken: { col: 'member_token' },
       instructionsPath: { col: 'instructions_path', encode: nullable },
@@ -331,18 +504,58 @@ export class Store {
   }
 
   /**
-   * 그 팀의 **살아 있는 팀장**(rank='leader' ∧ status ∉ {exited, error}). T24 직급 규칙의 단일 기준:
-   * `member.clockIn{rank:'leader'}` 중복 방지와 "팀장에게만 지시" 게이트가 이 함수 하나를 본다.
-   * 팀장이 나가고(exited/error) 나면 undefined 가 되어 게이트가 열린다.
+   * 그 팀의 **살아 있는 팀장**(rank='lead' ∧ status ∉ {exited, error}). 팀장 중복 방지·`[TEAM]` 알림 대상이
+   * 이 함수 하나를 본다(`teams.leader_id` 는 나간 팀장도 남기므로).
    */
-  liveLeader(teamId: string): Member | undefined {
+  liveLead(teamId: string): Member | undefined {
     const r = this.db
       .prepare(
-        `SELECT * FROM members WHERE team_id = ? AND rank = 'leader' AND status NOT IN ('exited', 'error')
+        `SELECT * FROM members WHERE team_id = ? AND rank = 'lead' AND status NOT IN ('exited', 'error')
          ORDER BY rowid LIMIT 1`,
       )
       .get(teamId) as Row | undefined;
     return r ? rowToMember(r) : undefined;
+  }
+
+  /** T24 이름 그대로 쓰던 곳을 위한 별칭(= liveLead). */
+  liveLeader(teamId: string): Member | undefined {
+    return this.liveLead(teamId);
+  }
+
+  /** 그 멤버의 직속 부하 중 **살아 있는** 멤버(트리 간선 parent_id 기준). */
+  childrenOf(memberId: string): Member[] {
+    return (
+      this.db
+        .prepare(`SELECT * FROM members WHERE parent_id = ? AND status NOT IN ('exited', 'error') ORDER BY rowid`)
+        .all(memberId) as Row[]
+    ).map(rowToMember);
+  }
+
+  /** 그 멤버의 직속 상사(없으면 undefined — 부장이거나 상사가 지워졌다). */
+  parentOf(memberId: string): Member | undefined {
+    const parentId = this.getMember(memberId)?.parentId;
+    return parentId ? this.getMember(parentId) : undefined;
+  }
+
+  /**
+   * 그 멤버를 뿌리로 한 하위 트리를 **깊이 우선**으로(자기 자신 먼저, 그다음 자식의 하위 트리).
+   * 후처리(부모 퇴근 = 하위 정리)는 이 배열을 **뒤에서부터** 훑으면 잎부터 정리된다.
+   * exited/error 인 자식도 포함한다(행 정리·MCP 끊기 대상이라서). 순환이 생겨도 무한 루프를 돌지 않는다.
+   */
+  subtreeOf(memberId: string): Member[] {
+    const out: Member[] = [];
+    const seen = new Set<string>();
+    const walk = (id: string): void => {
+      if (seen.has(id)) return;
+      seen.add(id);
+      const m = this.getMember(id);
+      if (!m) return;
+      out.push(m);
+      const kids = this.db.prepare('SELECT id FROM members WHERE parent_id = ? ORDER BY rowid').all(id) as Row[];
+      for (const k of kids) walk(k.id as string);
+    };
+    walk(memberId);
+    return out;
   }
 
   /** 멤버 삭제. 그 멤버의 pending 은 cascade. tasks·events 는 남는다(이력). */
@@ -355,10 +568,11 @@ export class Store {
 
   appendEvent(input: AppendEventInput): OfficeEvent {
     const res = this.db
-      .prepare('INSERT INTO events(ts, team_id, member_id, kind, detail, ref) VALUES (?, ?, ?, ?, ?, ?)')
+      .prepare('INSERT INTO events(ts, department_id, team_id, member_id, kind, detail, ref) VALUES (?, ?, ?, ?, ?, ?, ?)')
       .run(
         input.ts ?? nowIso(),
-        input.teamId,
+        input.departmentId,
+        input.teamId ?? '',
         input.memberId,
         input.kind,
         JSON.stringify(input.detail ?? {}),
@@ -382,6 +596,10 @@ export class Store {
   eventsQuery(input: EventsQueryInput): OfficeEvent[] {
     const where: string[] = [];
     const params: SQLInputValue[] = [];
+    if (input.departmentId !== undefined) {
+      where.push('department_id = ?');
+      params.push(input.departmentId);
+    }
     if (input.teamId !== undefined) {
       where.push('team_id = ?');
       params.push(input.teamId);
@@ -406,13 +624,13 @@ export class Store {
     return r ? toNum(r.seq as number) : 0;
   }
 
-  /** 팀당 최신 keepPerTeam 건만 남기고 삭제. 삭제 건수 반환. */
+  /** 부서당 최신 keepPerTeam 건만 남기고 삭제(T34 부터 파티션이 부서다). 삭제 건수 반환. */
   pruneEvents(opts: { keepPerTeam: number } = { keepPerTeam: 50_000 }): number {
     const res = this.db
       .prepare(
         `DELETE FROM events WHERE seq IN (
            SELECT seq FROM (
-             SELECT seq, ROW_NUMBER() OVER (PARTITION BY team_id ORDER BY seq DESC) AS rn FROM events
+             SELECT seq, ROW_NUMBER() OVER (PARTITION BY department_id ORDER BY seq DESC) AS rn FROM events
            ) WHERE rn > ?
          )`,
       )
@@ -478,10 +696,10 @@ export class Store {
     const ts = nowIso();
     const res = this.db
       .prepare(
-        `INSERT INTO tasks(team_id, from_member, to_member, instruction, status, created_at, updated_at)
+        `INSERT INTO tasks(department_id, from_member, to_member, instruction, status, created_at, updated_at)
          VALUES (?, ?, ?, ?, ?, ?, ?)`,
       )
-      .run(input.teamId, input.fromMember, input.toMember, input.instruction, input.status ?? 'queued', ts, ts);
+      .run(input.departmentId, input.fromMember, input.toMember, input.instruction, input.status ?? 'queued', ts, ts);
     return this.getTask(toNum(res.lastInsertRowid))!;
   }
 
@@ -510,9 +728,9 @@ export class Store {
   listTasks(input: ListTasksInput = {}): Task[] {
     const where: string[] = [];
     const params: SQLInputValue[] = [];
-    if (input.teamId !== undefined) {
-      where.push('team_id = ?');
-      params.push(input.teamId);
+    if (input.departmentId !== undefined) {
+      where.push('department_id = ?');
+      params.push(input.departmentId);
     }
     if (input.toMember !== undefined) {
       where.push('to_member = ?');
@@ -558,6 +776,7 @@ export class Store {
   snapshot(): Snapshot {
     return {
       seq: this.lastSeq(),
+      departments: this.listDepartments(),
       teams: this.listTeams(),
       members: this.listMembers(),
       pending: this.listOpenPending(),

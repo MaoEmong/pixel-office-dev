@@ -15,6 +15,7 @@ import type { DecisionHandle, HookReceiverEvents, HookRequest } from '../../src/
 import type { HookEvent, HookPayload } from '../../src/hooks/types.js';
 import { allow, sessionStartContext } from '../../src/hooks/decisions.js';
 import { loadFixture } from '../screen/helpers.js';
+import { seedDeptTeam } from './fakes.js';
 
 // ---- 가짜 pty ----------------------------------------------------------------------------
 
@@ -190,7 +191,7 @@ describe('Office', () => {
     office.on('notice', (l, m) => notices.push(`${l}: ${m}`));
     await office.start();
     // 팀장 없는 팀(store 직접) — 이 파일은 멤버 수명·입력·복구를 본다. team.create 의 팀장 자동 출근(T24)은 TeamRank.test.ts.
-    team = store.createTeam({ name: 'alpha', cwd: dataDir, maxMembers: 2 });
+    team = seedDeptTeam(store, { name: 'alpha', cwd: dataDir, maxMembers: 2 }).team;
   });
   afterEach(async () => {
     await office.shutdown();
@@ -260,10 +261,14 @@ describe('Office', () => {
     // 팀 정원·엔진 허용 검사
     clockIn('lee');
     assert.throws(() => clockIn('park'), (e: { code: number }) => e.code === RPC_ERROR.BAD_STATE);
-    const t2 = store.createTeam({ name: 'codex-only', cwd: dataDir, allowedEngines: ['codex'] });
+    const t2 = seedDeptTeam(store, { name: 'codex-only', cwd: dataDir, allowedEngines: ['codex'] }).team;
     assert.throws(() => office.clockIn({ teamId: t2.id, engine: 'claude', name: 'x' }), (e: { code: number }) => e.code === RPC_ERROR.INVALID_PARAMS);
     assert.throws(() => office.clockIn({ teamId: 'nope', engine: 'claude', name: 'x' }), (e: { code: number }) => e.code === RPC_ERROR.NOT_FOUND);
-    assert.throws(() => office.createTeam({ name: 'bad', cwd: path.join(dataDir, 'missing'), leaderEngine: 'claude' }), (e: { code: number }) => e.code === RPC_ERROR.INVALID_PARAMS);
+    // T34: cwd 검사는 부서로 옮겨졌다(팀은 부서 cwd 를 물려받는다).
+    assert.throws(
+      () => office.createDepartment({ name: 'bad', cwd: path.join(dataDir, 'missing'), headEngine: 'claude' }),
+      (e: { code: number }) => e.code === RPC_ERROR.INVALID_PARAMS,
+    );
   });
 
   test("hook 'hook' routes by member token to the adapter; unknown token → notice only", () => {
@@ -487,7 +492,7 @@ describe('Office', () => {
     assert.equal(store.getMember(m.id), undefined);
     assert.deepEqual(pty.kills, [{ memberId: m.id, graceful: true }]);
 
-    const t2 = store.createTeam({ name: 'b', cwd: dataDir });
+    const t2 = seedDeptTeam(store, { name: 'b', cwd: dataDir }).team;
     const m2 = office.clockIn({ teamId: t2.id, engine: 'claude', name: 'z' });
     sessionStart(m2);
     receiver.emit('hook', fakeReq(m2.memberToken, 'UserPromptSubmit', { ...base('UserPromptSubmit'), prompt: 'go' }).req);

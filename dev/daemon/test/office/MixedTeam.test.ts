@@ -20,7 +20,7 @@ import { Office } from '../../src/office/Office.js';
 import { Store } from '../../src/store/Store.js';
 import type { Member, OfficeEvent, Team } from '../../src/store/types.js';
 import type { HookEvent, HookPayload } from '../../src/hooks/types.js';
-import { FakePty, FakeReceiver, fakeReq } from './fakes.js';
+import { FakePty, FakeReceiver, fakeReq, seedDeptTeam } from './fakes.js';
 import { allow } from '../../src/hooks/decisions.js';
 
 // ---- 실측 로그 로딩 --------------------------------------------------------------
@@ -99,7 +99,7 @@ describe('혼합 팀: Claude 1 + Codex 1 (T23)', () => {
       realDispose(token);
     };
     // 팀장 없는 팀(store 직접) — 혼합 엔진 시나리오만 보므로 team.create 의 팀장 자동 출근(T24)은 끼우지 않는다.
-    team = store.createTeam({ name: 'demo', cwd: dataDir, allowedEngines: ['claude', 'codex'] });
+    team = seedDeptTeam(store, { name: 'demo', cwd: dataDir, allowedEngines: ['claude', 'codex'] }).team;
     하루 = office.clockIn({ teamId: team.id, engine: 'claude', name: '하루' });
     코덱 = office.clockIn({ teamId: team.id, engine: 'codex', name: '코덱' });
   });

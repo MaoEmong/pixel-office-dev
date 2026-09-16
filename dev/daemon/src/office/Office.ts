@@ -32,10 +32,12 @@ import { CodexHooksAdapter } from '../adapters/CodexHooksAdapter.js';
 import { ScreenModel } from '../screen/ScreenModel.js';
 import { InputQueue } from '../input/InputQueue.js';
 import { ALL_TEAM_TOOLS, TeamToolsServer, TEAM_MCP_NAME } from '../mcp/TeamToolsServer.js';
-import { USER_ACTOR } from '../store/types.js';
+import { CHILD_RANK, USER_ACTOR } from '../store/types.js';
 import type {
+  Department,
   Engine,
   EventsQueryInput,
+  HiredBy,
   Member,
   MemberRank,
   MemberStatus,
@@ -53,7 +55,7 @@ import { derivedStatus } from './derived.js';
 import { CODEX_FALLBACK, detectQuestion, isFallbackQuestion, type FallbackQuestionPayload } from './codexFallback.js';
 import { defaultOrphanOps, reapOrphan, type OrphanOps } from './orphans.js';
 import { ShellMutex, shellLockCommand, type ShellLockInfo } from './ShellMutex.js';
-import { defaultInstructions } from './instructions/templates.js';
+import { RANK_LABEL, defaultInstructions, type TemplateScope } from './instructions/templates.js';
 import { buildSessionContext, type RosterEntry } from './instructions/context.js';
 import type {
   ApprovalRespondParams,
@@ -61,11 +63,15 @@ import type {
   AskUserPayload,
   AttachResult,
   ClockInParams,
+  CreateDepartmentParams,
+  CreateDepartmentResult,
   CreateTeamParams,
   CreateTeamResult,
   DaemonInfo,
+  DepartmentTree,
   DerivedStatus,
   HireByLeaderParams,
+  HireChildParams,
   HookReceiverLike,
   InstructOptions,
   NoticeLevel,
@@ -96,10 +102,16 @@ const RESUMED_SUMMARY_CHARS = 60;
 const GONE: ReadonlySet<MemberStatus> = new Set(['exited', 'error']);
 /** 미종료 task(= 아직 보고를 기다리는 것). 파생 상태·dismiss 검사·보고 버퍼 판정이 같은 집합을 본다. */
 const OPEN_TASKS: TaskStatus[] = ['queued', 'assigned'];
-/** `team.create` 가 `leaderName` 없이 올 때 팀장에게 붙는 기본 이름(T24). */
-export const DEFAULT_LEADER_NAME = '팀장';
-/** "팀장에게만 지시" 게이트(-32004)의 문구. PROTOCOL.md 와 같은 문자열이어야 한다(T24). */
-export const leaderOnlyMessage = (leaderName: string) => `팀장에게만 지시할 수 있습니다 (leader: ${leaderName})`;
+/** `department.create` 가 `headName` 없이 올 때 부장에게 붙는 기본 이름(T34). */
+export const DEFAULT_HEAD_NAME = '부장';
+/** 팀 정원 기본값(store 의 teams.max_members DEFAULT 와 같은 값). 팀 없는 부장의 템플릿 문장에도 쓴다. */
+export const DEFAULT_MAX_MEMBERS = 4;
+/** `team.create` 가 `leadName` 없이 올 때 팀장에게 붙는 기본 이름(T24 → T34). */
+export const DEFAULT_LEAD_NAME = '팀장';
+/** T24 이름 그대로 쓰던 곳을 위한 별칭. */
+export const DEFAULT_LEADER_NAME = DEFAULT_LEAD_NAME;
+/** "부장에게만 지시" 게이트(-32004)의 문구. PROTOCOL.md 와 같은 문자열이어야 한다(T34, D-32). */
+export const headOnlyMessage = (headName: string) => `부장에게만 지시할 수 있습니다 (head: ${headName})`;
 /** Ctrl+C 를 두 번 연달아 보내면 Claude 가 종료되므로(T05 함정) 이 간격 안의 두 번째 interrupt 는 거절. */
 const INTERRUPT_GUARD_MS = 1500;
 /** interrupt 후 화면 준비 문구로 idle 을 판정하는 감시 시간·주기(실측: Ctrl+C 에는 Stop hook 이 없다). */
@@ -447,57 +459,124 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
     return this.store.eventsQuery(input);
   }
 
+  // ---- 부서 (T34, D-32) ---------------------------------------------------------------
+
+  /**
+   * 부서 생성 + **부장 자동 출근**. 사용자가 하는 유일한 생성이다(D-32 "사용자는 부서를 만들고 부장만 임명한다").
+   * 부서 행 → 부장 멤버(rank 'head', parent_id null, hiredBy 'user', 이름 `headName ?? '부장'`) → CLI 스폰 →
+   * `departments.head_id` 기록 순. 스폰이 실패하면 부서 행까지 되돌린다 — 부장 없는 부서를 남기지 않는다.
+   */
+  createDepartment(params: CreateDepartmentParams): CreateDepartmentResult {
+    this.ensureStarted();
+    if (!fs.existsSync(params.cwd) || !fs.statSync(params.cwd).isDirectory()) throw invalidParams(`cwd is not a directory: ${params.cwd}`);
+    if (params.headEngine !== 'claude' && params.headEngine !== 'codex') throw invalidParams(`unknown engine: ${String(params.headEngine)}`);
+    if (!params.name.trim()) throw invalidParams('name is empty');
+    const headName = (params.headName ?? DEFAULT_HEAD_NAME).trim() || DEFAULT_HEAD_NAME;
+
+    const department = this.store.createDepartment({ name: params.name.trim(), cwd: path.resolve(params.cwd) });
+    let head: Member;
+    try {
+      head = this.hireChild({ departmentId: department.id, name: headName, rank: 'head', engine: params.headEngine, hiredBy: 'user' });
+    } catch (e) {
+      this.store.deleteDepartment(department.id);
+      throw e;
+    }
+    if (params.headEngine === 'codex') {
+      this.notice('warn', `${department.name}: 부장 엔진이 codex 입니다 — v1 권장은 claude(오케스트레이션 도구 실측이 Claude 기준)`);
+    }
+    return { department: this.store.updateDepartment(department.id, { headId: head.id })!, head };
+  }
+
+  /**
+   * 부서 삭제. **하위 트리 전체**(팀원 → 팀장 → 부장)를 잎부터 정리한 뒤 행을 지운다(events 는 남는다).
+   * 잎부터인 이유는 T28 과 같다 — 위를 먼저 내보내면 그 후처리가 아래를 interrupt 하고, 아래 후처리가 다시
+   * (아직 살아 있는) 위 큐에 `[REPORTS … aborted]` 를 밀어 넣어 어차피 지울 부서에 왕복만 는다.
+   */
+  async deleteDepartment(departmentId: string): Promise<void> {
+    const department = this.store.getDepartment(departmentId);
+    if (!department) throw notFound('department', departmentId);
+    for (const m of this.settleOrder(this.store.listDepartmentMembers(departmentId))) {
+      if (this.runtimes.get(m.id)?.session.alive) await this.clockOut(m.id, { byLeader: true, reason: 'teamDelete' });
+      else this.settle(m.id, 'teamDelete');
+      this.disposeRuntime(m.id);
+      this.lastDerived.delete(m.id);
+    }
+    this.store.deleteDepartment(departmentId);
+  }
+
+  /** 부서 트리(콘솔 `tree` · 앱 T37). 멤버 행에는 스냅샷과 같은 파생 상태가 붙는다. */
+  tree(): DepartmentTree[] {
+    const withDerived = (m: Member) => ({ ...m, derived: derivedStatus(m, this.store) });
+    return this.store.listDepartments().map((department) => {
+      const all = this.store.listDepartmentMembers(department.id);
+      const head = all.find((m) => m.rank === 'head');
+      const teams = this.store.listTeams(department.id).map((team) => ({
+        team,
+        lead: all.filter((m) => m.teamId === team.id && m.rank === 'lead').map(withDerived)[0],
+        members: all.filter((m) => m.teamId === team.id && m.rank === 'member').map(withDerived),
+      }));
+      const known = new Set([head?.id, ...teams.flatMap((t) => [t.lead?.id, ...t.members.map((m) => m.id)])]);
+      return {
+        department,
+        head: head ? withDerived(head) : undefined,
+        teams,
+        orphans: all.filter((m) => !known.has(m.id)).map(withDerived),
+      };
+    });
+  }
+
+  /** 잎부터 정리하는 순서(팀원 → 팀장 → 부장). `subtreeOf` 의 깊이 우선 배열을 직급으로 접은 것. */
+  private settleOrder(members: Member[]): Member[] {
+    const depth: Record<MemberRank, number> = { member: 0, lead: 1, head: 2 };
+    return [...members].sort((a, b) => depth[a.rank] - depth[b.rank]);
+  }
+
   // ---- 팀 --------------------------------------------------------------------------
 
   /**
-   * 팀 생성 + **팀장 자동 출근**(T24, 01 §4). 팀 행 → 팀장 멤버(rank 'leader', hiredBy 'user',
-   * 이름 `leaderName ?? '팀장'`) → CLI 스폰 → `teams.leader_id` 기록 순. 팀장도 정원(maxMembers)의 한 자리다.
-   * v1 권장 팀장 엔진은 Claude(01 §TeamTools "v1 팀장 엔진은 Claude 고정") 이지만 Codex 도 막지 않고 `daemon.notice{warn}` 만 낸다.
-   * 스폰이 실패하면 팀 행까지 되돌린다 — 팀장 없는 팀이 남지 않게.
+   * 팀 생성 + **팀장 자동 출근**. 부서 안에서만 만들어지고 팀장은 **부장의 자식**(parent_id = 부장)이다.
+   * cwd 는 부서 cwd 를 그대로 쓴다(D-32 "한 부서 안의 팀들은 같은 cwd"). 스폰이 실패하면 팀 행까지 되돌린다.
+   * T34 에서는 RPC 로는 디버그 전용(`force:true`) — 정식 경로는 T35 의 부장 도구 `create_team` 이다.
    */
   createTeam(params: CreateTeamParams): CreateTeamResult {
     this.ensureStarted();
-    if (!fs.existsSync(params.cwd) || !fs.statSync(params.cwd).isDirectory()) throw invalidParams(`cwd is not a directory: ${params.cwd}`);
-    if (params.leaderEngine !== 'claude' && params.leaderEngine !== 'codex') throw invalidParams(`unknown engine: ${String(params.leaderEngine)}`);
-    if (params.allowedEngines && !params.allowedEngines.includes(params.leaderEngine)) {
-      throw invalidParams(`leaderEngine ${params.leaderEngine} is not in allowedEngines`);
+    const department = this.store.getDepartment(params.departmentId);
+    if (!department) throw notFound('department', params.departmentId);
+    const head = this.store.liveHead(department.id);
+    if (!head) throw badState(`부서 ${department.name} 에 살아 있는 부장이 없습니다 — 팀은 부장이 만든다`);
+    const engine = params.leadEngine ?? head.engine;
+    if (engine !== 'claude' && engine !== 'codex') throw invalidParams(`unknown engine: ${String(engine)}`);
+    if (params.allowedEngines && !params.allowedEngines.includes(engine)) {
+      throw invalidParams(`leadEngine ${engine} is not in allowedEngines`);
     }
-    if (params.maxMembers !== undefined && params.maxMembers < 1) throw invalidParams('maxMembers must be >= 1 (the leader takes one slot)');
-    const leaderName = (params.leaderName ?? DEFAULT_LEADER_NAME).trim() || DEFAULT_LEADER_NAME;
+    if (params.maxMembers !== undefined && params.maxMembers < 1) throw invalidParams('maxMembers must be >= 1 (the lead takes one slot)');
+    const leadName = (params.leadName ?? DEFAULT_LEAD_NAME).trim() || DEFAULT_LEAD_NAME;
 
     const team = this.store.createTeam({
+      departmentId: department.id,
       name: params.name,
-      cwd: path.resolve(params.cwd),
+      cwd: department.cwd,
       maxMembers: params.maxMembers,
       allowedEngines: params.allowedEngines,
     });
-    let leader: Member;
+    let lead: Member;
     try {
-      leader = this.spawnNewMember(team, { name: leaderName, engine: params.leaderEngine, rank: 'leader', hiredBy: 'user' });
+      lead = this.hireChild({ parentId: head.id, teamId: team.id, name: leadName, rank: 'lead', engine });
     } catch (e) {
       this.store.deleteTeam(team.id);
       throw e;
     }
-    if (params.leaderEngine === 'codex') {
-      this.notice('warn', `${team.name}: 팀장 엔진이 codex 입니다 — v1 권장은 claude(오케스트레이션 도구 실측이 Claude 기준)`);
-    }
-    return { team: this.store.updateTeam(team.id, { leaderId: leader.id })!, leader };
+    return { team: this.store.updateTeam(team.id, { leaderId: lead.id })!, lead };
   }
 
   /**
-   * 멤버 전부 퇴근시킨 뒤 삭제(events 는 남는다).
-   *
-   * **팀원 먼저, 팀장 마지막(T28).** 팀장을 먼저 내보내면 그 후처리가 팀원을 interrupt 하고, 그 팀원의 후처리가
-   * 다시 (아직 살아 있는) 팀장 큐에 `[REPORTS … aborted]` 를 밀어 넣는다 — 어차피 지울 팀에 왕복만 늘어난다.
-   * 팀원부터 `settle('teamDelete')` 로 정리하면 팀장 차례에는 거둘 task 가 남아 있지 않다.
-   * 살아 있지 않은 행도 MCP 토큰은 끊는다(disposeRuntime → disposeMcp).
+   * 팀 삭제 — **팀원 먼저, 팀장 마지막**(T28). 위를 먼저 내보내면 그 후처리가 팀원을 interrupt 하고, 그 팀원의
+   * 후처리가 다시 (아직 살아 있는) 팀장 큐에 `[REPORTS … aborted]` 를 밀어 넣는다. 살아 있지 않은 행도 MCP 토큰은 끊는다.
    */
   async deleteTeam(teamId: string): Promise<void> {
     const team = this.store.getTeam(teamId);
     if (!team) throw notFound('team', teamId);
-    const members = this.store.listMembers(teamId);
-    const ordered = [...members.filter((m) => m.rank !== 'leader'), ...members.filter((m) => m.rank === 'leader')];
-    for (const m of ordered) {
+    for (const m of this.settleOrder(this.store.listMembers(teamId))) {
       if (this.runtimes.get(m.id)?.session.alive) await this.clockOut(m.id, { byLeader: true, reason: 'teamDelete' });
       else this.settle(m.id, 'teamDelete');
       this.disposeRuntime(m.id);
@@ -509,72 +588,167 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
   // ---- 멤버 수명 ---------------------------------------------------------------------
 
   /**
-   * 출근(사용자): 멤버 행 생성 → (지시문 저장) → CLI 스폰. 기본 rank 'member', hiredBy 는 항상 'user'
-   * (사용자가 출근시킨 팀원은 팀장이 `dismiss` 할 수 없다 — 01 §4). `rank:'leader'` 는 팀장이 없는 팀에만(T24).
+   * **트리의 유일한 스폰 경로**(T34). `createDepartment`(부장) · `createTeam`(팀장) · `hire`(팀원)가 전부 여기로 들어와
+   * 멤버 행 생성 → (지시문 저장) → CLI 스폰을 한다. 규칙도 여기 한 곳에서만 강제한다:
    *
-   * **팀장에게 알린다(T25, 01 §4 "팀원 구성이 바뀌면 …"):** 살아 있는 팀장이 있으면 그 팀장 입력 큐에
-   * `[TEAM] 팀원 변경: +<이름>(<엔진>[, 역할: …])`. 팀장이 스스로 부른 `hire` 에는 내지 않는다(자기가 한 일이다).
+   *   - **직급 사슬** head → lead → member. 부모 직급의 바로 아래 직급만 고용할 수 있다(D-32 "고용은 항상 바로 아래로만").
+   *   - 부장은 부모가 없고(`parentId` 생략) 부서에 한 명(살아 있는 기준).
+   *   - 팀장은 팀 하나에 한 명이고 `teamId` 가 필요하다. 팀원은 부모(팀장)의 팀에 들어간다.
+   *   - **정원**은 팀 단위(`maxMembers`, 팀장도 한 자리). 부서의 팀 수는 지금은 제한하지 않는다.
+   */
+  hireChild(params: HireChildParams): Member {
+    this.ensureStarted();
+    const rank = params.rank;
+    if (rank !== 'head' && rank !== 'lead' && rank !== 'member') throw invalidParams(`unknown rank: ${String(rank)}`);
+    const parent = params.parentId ? this.member(params.parentId) : undefined;
+    const hiredBy: HiredBy = params.hiredBy ?? (parent ? 'leader' : 'user');
+    const instructions = params.role === undefined ? params.instructions : buildRoleInstructions(params.role, params.instructions);
+
+    if (rank === 'head') {
+      if (parent) throw new OfficeError(RPC_ERROR.RANK_RULE, '부장 위에는 상사가 없습니다 (parentId 를 비우세요)');
+      const department = this.store.getDepartment(params.departmentId ?? '');
+      if (!department) throw notFound('department', params.departmentId ?? '(없음)');
+      const current = this.store.liveHead(department.id);
+      if (current) throw badState(`부서 ${department.name} 에는 이미 부장이 있습니다 (${current.name})`);
+      return this.spawnNewMember({ department, parentId: null, name: params.name, engine: params.engine, rank, hiredBy, instructions });
+    }
+
+    if (!parent) throw invalidParams(`parentId is required for rank ${rank}`);
+    if (GONE.has(parent.status)) {
+      throw new OfficeError(RPC_ERROR.RANK_RULE, `${parent.name} 은(는) ${parent.status} 입니다 — 고용할 수 없습니다`);
+    }
+    const expected = CHILD_RANK[parent.rank];
+    if (expected !== rank) {
+      throw new OfficeError(
+        RPC_ERROR.RANK_RULE,
+        `${RANK_LABEL[parent.rank]} ${parent.name} 은(는) ${RANK_LABEL[rank]} 을(를) 고용할 수 없습니다 ` +
+          `(${RANK_LABEL[parent.rank]} → ${expected ? RANK_LABEL[expected] : '없음'})`,
+      );
+    }
+    const department = this.store.getDepartment(parent.departmentId);
+    if (!department) throw notFound('department', parent.departmentId);
+
+    const teamId = rank === 'lead' ? params.teamId : (params.teamId ?? parent.teamId ?? undefined);
+    if (!teamId) throw invalidParams(`teamId is required for rank ${rank}`);
+    const team = this.store.getTeam(teamId);
+    if (!team) throw notFound('team', teamId);
+    if (team.departmentId !== department.id) throw invalidParams(`team ${team.name} is not in department ${department.name}`);
+    if (rank === 'lead') {
+      const current = this.store.liveLead(team.id);
+      if (current) throw badState(`team ${team.name} already has a lead (${current.name})`);
+    } else if (parent.teamId !== team.id) {
+      throw new OfficeError(RPC_ERROR.RANK_RULE, `${parent.name} 의 팀이 아닙니다`);
+    }
+    return this.spawnNewMember({ department, team, parentId: parent.id, name: params.name, engine: params.engine, rank, hiredBy, instructions });
+  }
+
+  /**
+   * 출근(사용자). T34 부터 **디버그 전용 RPC**(`member.clockIn{force:true}`) — 정식 경로는 부서 생성(부장)과
+   * 상위 직급의 도구다(D-32 "사용자가 팀장·팀원을 직접 출근시키는 기능은 없앤다"). `hiredBy` 는 항상 `'user'` 라
+   * 상위가 `dismiss` 할 수 없다. 두 갈래다: **`parentId` 를 주면** `hireChild` 로 들어가 직급 사슬 검사를 그대로 받고,
+   * **주지 않으면** 부서·팀을 직접 지정하는 디버그 경로로 사슬을 건너뛴다(직급 규칙 시험·망가진 트리 손보기).
    */
   clockIn(params: ClockInParams): Member {
     this.ensureStarted();
-    const team = this.store.getTeam(params.teamId);
-    if (!team) throw notFound('team', params.teamId);
-    const rank: MemberRank = params.rank ?? 'member';
-    if (rank !== 'member' && rank !== 'leader') throw invalidParams(`unknown rank: ${String(rank)}`);
-    if (rank === 'leader') {
-      const current = this.store.liveLeader(team.id);
-      if (current) throw badState(`team ${team.name} already has a leader (${current.name})`);
+    const parent = params.parentId ? this.member(params.parentId) : undefined;
+    if (parent) {
+      const member = this.hireChild({
+        parentId: parent.id,
+        teamId: params.teamId,
+        name: params.name,
+        engine: params.engine,
+        rank: params.rank ?? CHILD_RANK[parent.rank] ?? 'member',
+        instructions: params.instructions,
+        hiredBy: 'user',
+      });
+      this.registerLeadership(member);
+      // 사용자가 끼워 넣은 멤버는 그 상사가 알아야 한다(자기가 부른 hire 가 아니다).
+      this.notifyParent(member, teamJoinText(member.name, member.engine, roleOf(params.instructions)));
+      return member;
     }
-    const member = this.spawnNewMember(team, {
+
+    // 부모 없이 부서·팀을 직접 지정하는 **디버그 경로**: 사슬을 건너뛰고 그 팀에 바로 꽂는다.
+    const team = params.teamId ? this.store.getTeam(params.teamId) : undefined;
+    if (params.teamId && !team) throw notFound('team', params.teamId);
+    const departmentId = params.departmentId ?? team?.departmentId;
+    const department = departmentId ? this.store.getDepartment(departmentId) : undefined;
+    if (!department) throw notFound('department', params.departmentId ?? '(없음)');
+    const rank: MemberRank = params.rank ?? (team ? 'member' : 'head');
+    if (rank !== 'head' && rank !== 'lead' && rank !== 'member') throw invalidParams(`unknown rank: ${String(rank)}`);
+    if (rank === 'head') {
+      const current = this.store.liveHead(department.id);
+      if (current) throw badState(`부서 ${department.name} 에는 이미 부장이 있습니다 (${current.name})`);
+    } else {
+      if (!team) throw invalidParams(`teamId is required for rank ${rank}`);
+      if (rank === 'lead' && this.store.liveLead(team.id)) throw badState(`team ${team.name} already has a lead (${this.store.liveLead(team.id)!.name})`);
+    }
+    // 살아 있는 상사가 있으면 그 아래로 붙이고, 없으면 부모 없는 행으로 남긴다(콘솔 `tree` 가 "부모 없는 멤버" 로 보여 준다).
+    const implicitParent =
+      rank === 'lead' ? this.store.liveHead(department.id) : rank === 'member' && team ? this.store.liveLead(team.id) : undefined;
+    const member = this.spawnNewMember({
+      department,
+      team: rank === 'head' ? undefined : team,
+      parentId: implicitParent?.id ?? null,
       name: params.name,
       engine: params.engine,
       rank,
       hiredBy: 'user',
       instructions: params.instructions,
     });
-    if (rank === 'leader') this.store.updateTeam(team.id, { leaderId: member.id });
-    else this.notifyTeamChange(team.id, teamJoinText(member.name, member.engine, roleOf(params.instructions)), member.id);
+    this.registerLeadership(member);
+    this.notifyParent(member, teamJoinText(member.name, member.engine, roleOf(params.instructions)));
     return member;
   }
 
+  /** 부장·팀장으로 들어온 멤버를 부서/팀 행에도 적어 둔다(`departments.head_id` / `teams.leader_id`). */
+  private registerLeadership(member: Member): void {
+    if (member.rank === 'head') this.store.updateDepartment(member.departmentId, { headId: member.id });
+    if (member.rank === 'lead' && member.teamId) this.store.updateTeam(member.teamId, { leaderId: member.id });
+  }
+
   /**
-   * 팀장의 TeamTools `hire`(T25) 가 쓸 경로. RPC 로는 노출하지 않는다 — 팀원은 `hiredBy:'leader'` 가 되어
-   * 팀장이 `dismiss` 할 수 있다(사용자가 출근시킨 팀원과 구분, 01 §4). 부르는 쪽이 살아 있는 팀장이어야 한다.
+   * 팀장의 TeamTools `hire`(T25)가 쓰는 얇은 래퍼 = `hireChild({parentId, rank:'member'})`.
+   * 팀원은 `hiredBy:'leader'` 라 팀장이 `dismiss` 할 수 있다(사용자가 출근시킨 팀원과 구분, 01 §4).
    */
   hireByLeader(params: HireByLeaderParams): Member {
-    this.ensureStarted();
-    const leader = this.member(params.leaderId);
-    const team = this.store.getTeam(leader.teamId);
-    if (!team) throw notFound('team', leader.teamId);
-    if (leader.rank !== 'leader' || GONE.has(leader.status)) {
-      throw new OfficeError(RPC_ERROR.RANK_RULE, `hire 는 팀장만 할 수 있습니다 (${leader.name})`);
-    }
-    return this.spawnNewMember(team, {
+    return this.hireChild({
+      parentId: params.leaderId,
       name: params.name,
       engine: params.engine,
       rank: 'member',
-      hiredBy: 'leader',
       instructions: params.instructions,
+      hiredBy: 'leader',
     });
   }
 
-  /** clockIn / hireByLeader / createTeam(팀장) 이 공유하는 "멤버 행 + 지시문 + 스폰". 정원·엔진 검사도 여기서. */
-  private spawnNewMember(
-    team: Team,
-    input: { name: string; engine: Engine; rank: MemberRank; hiredBy: 'user' | 'leader'; instructions?: string },
-  ): Member {
+  /** `hireChild` 만 부르는 "멤버 행 + 지시문 + 스폰". 이름·엔진·정원 검사도 여기서. */
+  private spawnNewMember(input: {
+    department: Department;
+    team?: Team;
+    parentId: string | null;
+    name: string;
+    engine: Engine;
+    rank: MemberRank;
+    hiredBy: HiredBy;
+    instructions?: string;
+  }): Member {
+    const { department, team } = input;
     if (input.engine !== 'claude' && input.engine !== 'codex') throw invalidParams(`unknown engine: ${String(input.engine)}`);
-    if (!team.allowedEngines.includes(input.engine)) throw invalidParams(`engine ${input.engine} not allowed in team ${team.name}`);
+    if (team && !team.allowedEngines.includes(input.engine)) throw invalidParams(`engine ${input.engine} not allowed in team ${team.name}`);
     if (!input.name.trim()) throw invalidParams('name is empty');
-    const live = this.store.listMembers(team.id).filter((m) => !GONE.has(m.status)).length;
-    if (live >= team.maxMembers) throw badState(`team ${team.name} is full (${live}/${team.maxMembers})`);
+    if (team) {
+      const live = this.store.listMembers(team.id).filter((m) => !GONE.has(m.status)).length;
+      if (live >= team.maxMembers) throw badState(`team ${team.name} is full (${live}/${team.maxMembers})`);
+    }
 
     const member = this.store.createMember({
-      teamId: team.id,
+      departmentId: department.id,
+      teamId: team?.id ?? null,
+      parentId: input.parentId,
       name: input.name.trim(),
       rank: input.rank,
       engine: input.engine,
-      cwd: team.cwd,
+      cwd: team?.cwd ?? department.cwd,
       hiredBy: input.hiredBy,
       status: 'starting',
     });
@@ -614,10 +788,10 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
     this.noticeClockOut(member, opts.byLeader === true);
   }
 
-  /** 사용자가 팀원을 퇴근시키면 팀장에게 `[TEAM] 팀원 변경: -<이름>`(팀장 자신의 dismiss 는 제외). */
+/** 사용자가 누군가를 퇴근시키면 그 **상사**에게 `[TEAM] 팀원 변경: -<이름>`(상사 자신의 dismiss 는 제외). */
   private noticeClockOut(member: Member, byLeader: boolean): void {
-    if (byLeader || member.rank === 'leader') return;
-    this.notifyTeamChange(member.teamId, teamLeaveText(member.name), member.id);
+    if (byLeader) return;
+    this.notifyParent(member, teamLeaveText(member.name));
   }
 
   /** exited/error 멤버를 같은 설정으로 재스폰(session_id 있으면 --resume). */
@@ -661,12 +835,12 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
     const member = this.member(memberId);
     const rt = this.liveRuntime(member);
     if (!text.trim()) throw invalidParams('text is empty');
-    if (!opts.force && member.rank !== 'leader') {
-      const leader = this.store.liveLeader(member.teamId);
-      if (leader) throw new OfficeError(RPC_ERROR.RANK_RULE, leaderOnlyMessage(leader.name), { leaderId: leader.id });
+    if (!opts.force && member.rank !== 'head') {
+      const head = this.store.liveHead(member.departmentId);
+      if (head) throw new OfficeError(RPC_ERROR.RANK_RULE, headOnlyMessage(head.name), { headId: head.id });
     }
     const task = this.store.createTask({
-      teamId: member.teamId,
+      departmentId: member.departmentId,
       fromMember: USER_ACTOR,
       toMember: memberId,
       instruction: text,
@@ -761,10 +935,18 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
     if (!member) return '';
     const file = this.readInstructions(memberId);
     if (bodyBelowRole(file).trim()) return file;
-    const team = this.store.getTeam(member.teamId);
-    if (!team) return file;
-    const leader = this.store.liveLeader(team.id);
-    return defaultInstructions(member, team, { role: roleOf(file), leaderName: leader?.name });
+    const scope = this.templateScope(member);
+    if (!scope) return file;
+    return defaultInstructions(member, scope, { role: roleOf(file), parentName: this.store.parentOf(member.id)?.name });
+  }
+
+  /** 기본 템플릿이 쓰는 범위(팀이 있으면 팀, 부장은 부서). 부서 행이 없으면 undefined. */
+  private templateScope(member: Member): TemplateScope | undefined {
+    const team = member.teamId ? this.store.getTeam(member.teamId) : undefined;
+    if (team) return { name: team.name, cwd: team.cwd, maxMembers: team.maxMembers, allowedEngines: team.allowedEngines };
+    const department = this.store.getDepartment(member.departmentId);
+    if (!department) return undefined;
+    return { name: department.name, cwd: department.cwd, maxMembers: DEFAULT_MAX_MEMBERS, allowedEngines: ['claude', 'codex'] };
   }
 
   /**
@@ -774,13 +956,21 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
   buildSessionContext(memberId: string): string {
     const member = this.store.getMember(memberId);
     if (!member) return '';
-    const team = this.store.getTeam(member.teamId);
-    if (!team) return this.effectiveInstructions(memberId);
-    const roster: RosterEntry[] = this.store
-      .listMembers(team.id)
-      .filter((m) => !GONE.has(m.status))
+    const department = this.store.getDepartment(member.departmentId);
+    if (!department) return this.effectiveInstructions(memberId);
+    const parent = this.store.parentOf(member.id);
+    // T34: 로스터는 **직속 부하만**(팀 전체가 아니라) — 트리에서 내가 말을 걸 수 있는 상대가 그들뿐이다.
+    const children: RosterEntry[] = this.store
+      .childrenOf(member.id)
       .map((m) => ({ name: m.name, rank: m.rank, engine: m.engine, role: roleOf(this.readInstructions(m.id)) }));
-    return buildSessionContext({ team, member, roster, instructions: this.effectiveInstructions(memberId) });
+    return buildSessionContext({
+      department,
+      team: member.teamId ? this.store.getTeam(member.teamId) : undefined,
+      member,
+      parent: parent ? { name: parent.name, rank: parent.rank } : undefined,
+      children,
+      instructions: this.effectiveInstructions(memberId),
+    });
   }
 
   /**
@@ -789,14 +979,15 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
    */
   setInstructions(memberId: string, markdown: string): void {
     const member = this.member(memberId);
-    const file = this.instructionsPath(member.teamId, memberId);
+    const file = this.instructionsPath(member.teamId ?? member.departmentId, memberId);
     fs.mkdirSync(path.dirname(file), { recursive: true });
     fs.writeFileSync(file, markdown);
     if (member.instructionsPath !== file) this.store.updateMember(memberId, { instructionsPath: file });
   }
 
-  instructionsPath(teamId: string, memberId: string): string {
-    return path.join(this.cfg.dataDir, 'teams', teamId, 'members', memberId, 'INSTRUCTIONS.md');
+  /** `scopeId` 는 그 멤버의 팀 id, 팀이 없는 부장은 부서 id. 경로 접두사는 v1 그대로 `teams/` 다(기존 파일 유지). */
+  instructionsPath(scopeId: string, memberId: string): string {
+    return path.join(this.cfg.dataDir, 'teams', scopeId, 'members', memberId, 'INSTRUCTIONS.md');
   }
 
   private readInstructions(memberId: string): string {
@@ -898,8 +1089,8 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
   /** 팀장 전용 도구의 공통 관문. 살아 있는 팀장이 아니면 -32004(도구 결과 isError). */
   private requireLiveLeader(memberId: string, tool: string): Member {
     const m = this.member(memberId);
-    if (m.rank !== 'leader' || GONE.has(m.status)) {
-      throw new OfficeError(RPC_ERROR.RANK_RULE, `${tool} 는 팀장만 할 수 있습니다 (${m.name} 은(는) 팀원)`);
+    if (m.rank !== 'lead' || GONE.has(m.status)) {
+      throw new OfficeError(RPC_ERROR.RANK_RULE, `${tool} 는 팀장만 할 수 있습니다 (${m.name} 은(는) ${RANK_LABEL[m.rank]})`);
     }
     return m;
   }
@@ -907,8 +1098,8 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
   /** 팀장이 부른 `hire`. 역할 줄을 붙인 지시문으로 팀원을 출근시킨다. 정원 초과·허용 안 된 엔진은 throw. */
   teamHire(leaderId: string, input: TeamHireInput): Member {
     const leader = this.requireLiveLeader(leaderId, 'hire');
-    const team = this.store.getTeam(leader.teamId);
-    if (!team) throw notFound('team', leader.teamId);
+    const team = leader.teamId ? this.store.getTeam(leader.teamId) : undefined;
+    if (!team) throw notFound('team', leader.teamId ?? '(없음)');
     const role = input.role.trim();
     if (!role) throw invalidParams('role 이 비었습니다 — 그 팀원이 맡을 역할을 한 줄로 적으세요');
     const engine = this.pickHireEngine(team, leader, input.engine);
@@ -943,7 +1134,7 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
     const target = this.store.getMember(targetId);
     if (!target) throw notFound('member', targetId);
     if (target.teamId !== leader.teamId) throw new OfficeError(RPC_ERROR.RANK_RULE, `${target.name} 은(는) 같은 팀이 아닙니다`);
-    if (target.id === leader.id || target.rank === 'leader') throw new OfficeError(RPC_ERROR.RANK_RULE, '팀장은 dismiss 할 수 없습니다');
+    if (target.id === leader.id || target.rank !== 'member') throw new OfficeError(RPC_ERROR.RANK_RULE, '팀장은 dismiss 할 수 없습니다');
     if (target.hiredBy !== 'leader') {
       throw new OfficeError(RPC_ERROR.RANK_RULE, `사용자가 출근시킨 팀원은 퇴근 버튼으로만 내보낼 수 있습니다 (${target.name})`);
     }
@@ -975,11 +1166,11 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
     if (!target) throw notFound('member', toMemberId);
     if (target.teamId !== leader.teamId) throw new OfficeError(RPC_ERROR.RANK_RULE, `${target.name} 은(는) 같은 팀이 아닙니다`);
     if (target.id === leader.id) throw new OfficeError(RPC_ERROR.RANK_RULE, '자기 자신에게는 위임할 수 없습니다');
-    if (target.rank === 'leader') throw new OfficeError(RPC_ERROR.RANK_RULE, '팀장에게는 위임할 수 없습니다');
+    if (target.rank !== 'member') throw new OfficeError(RPC_ERROR.RANK_RULE, '팀장에게는 위임할 수 없습니다');
     if (GONE.has(target.status)) throw badState(`${target.name} 은(는) ${target.status} 입니다 — hire 로 새 팀원을 만드세요`);
 
     const row = this.store.createTask({
-      teamId: leader.teamId,
+      departmentId: leader.departmentId,
       fromMember: leader.id,
       toMember: target.id,
       instruction: text,
@@ -1115,11 +1306,14 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
     rt.queue.enqueue({ kind: fromUser ? 'instruct' : 'system', text: taskMessage(task, fromName), id: String(task.id) });
   }
 
-  /** 팀원 구성이 바뀌었다고 팀장에게 알린다(01 §4). 팀장 본인이 한 일(hire/dismiss)에는 부르지 않는다. */
-  private notifyTeamChange(teamId: string, text: string, exceptMemberId?: string): void {
-    const leader = this.store.liveLeader(teamId);
-    if (!leader || leader.id === exceptMemberId) return;
-    const rt = this.runtimes.get(leader.id);
+  /**
+   * 구성이 바뀌었다고 그 멤버의 **직속 상사**에게 알린다(01 §4, T34 에서 팀 단위 → 트리 간선 단위).
+   * 상사 본인이 한 일(hire/dismiss)에는 부르지 않는다 — 자기가 한 일이다.
+   */
+  private notifyParent(member: Member, text: string): void {
+    const parent = member.parentId ? this.store.getMember(member.parentId) : undefined;
+    if (!parent || GONE.has(parent.status)) return;
+    const rt = this.runtimes.get(parent.id);
     if (!rt?.session.alive) return;
     rt.queue.enqueue({ kind: 'system', text });
   }
@@ -1546,13 +1740,14 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
     if (!member) return Promise.resolve();
     const cmd = shellLockCommand(tool, input);
     if (cmd === null) return Promise.resolve(); // 셸이 아니거나 읽기 전용(D-27)
-    return this.shell.acquire(member.teamId, memberId, ctx.toolUseId, cmd, { signal: ctx.signal });
+    // T34: 락 범위는 **부서**다 — 한 부서의 팀들은 같은 cwd 를 쓰므로(D-32) 팀 단위로는 서로를 못 막는다.
+    return this.shell.acquire(member.departmentId, memberId, ctx.toolUseId, cmd, { signal: ctx.signal });
   }
 
   /** 도구 완료(PostToolUse / PostToolUseFailure)로 그 도구 호출이 쥔 락을 푼다. */
   private releaseShellLock(memberId: string, toolUseId: string | null): void {
-    const teamId = this.store.getMember(memberId)?.teamId;
-    if (teamId) this.shell.release(teamId, memberId, toolUseId);
+    const departmentId = this.store.getMember(memberId)?.departmentId;
+    if (departmentId) this.shell.release(departmentId, memberId, toolUseId);
   }
 
   /** 후처리 안전망(Stop·interrupt·fire·퇴근·프로세스 종료): 그 멤버의 락·대기 자리를 전부 정리. */
@@ -1730,7 +1925,7 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
   }
 
   private appendEvent(member: Member, kind: OfficeEvent['kind'], detail: OfficeEvent['detail'], ref: OfficeEvent['ref'] = {}): void {
-    const ev = this.store.appendEvent({ teamId: member.teamId, memberId: member.id, kind, detail, ref });
+    const ev = this.store.appendEvent({ departmentId: member.departmentId, teamId: member.teamId, memberId: member.id, kind, detail, ref });
     this.emit('event', ev);
   }
 

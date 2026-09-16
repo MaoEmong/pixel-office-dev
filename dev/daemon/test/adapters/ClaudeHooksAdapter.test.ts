@@ -209,8 +209,10 @@ interface Harness {
 
 function harness(opts: { toolGate?: (memberId: string, tool: string, input: unknown) => Promise<void> } = {}): Harness {
   const store = new Store(':memory:');
-  const team = store.createTeam({ name: 'alpha', cwd: 'D:/proj/alpha' });
+  const department = store.createDepartment({ name: 'alpha', cwd: 'D:/proj/alpha' });
+  const team = store.createTeam({ departmentId: department.id, name: 'alpha', cwd: 'D:/proj/alpha' });
   const member = store.createMember({
+    departmentId: team.departmentId,
     teamId: team.id,
     name: '이음',
     rank: 'member',
@@ -585,7 +587,16 @@ describe('ClaudeHooksAdapter', () => {
     assert.equal(h.adapter.resolveQuestion(pending.id, { x: 'y' }), false);
 
     // 다른 멤버의 보류는 건드리지 않는다
-    const other = h.store.createMember({ teamId: h.member.teamId, name: '둘', rank: 'member', engine: 'claude', cwd: 'x', hiredBy: 'user', memberToken: 'tok2' });
+    const other = h.store.createMember({
+      departmentId: h.member.departmentId,
+      teamId: h.member.teamId,
+      name: '둘',
+      rank: 'member',
+      engine: 'claude',
+      cwd: 'x',
+      hiredBy: 'user',
+      memberToken: 'tok2',
+    });
     const fo = fakeReq('tok2', 'PermissionRequest', perm('Bash', P.bashInput));
     h.adapter.handleHook(fo.req, other);
     h.adapter.expireAllForMember(h.member.id);

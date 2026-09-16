@@ -9,7 +9,7 @@ import path from 'node:path';
 import { Office } from '../../src/office/Office.js';
 import { Store } from '../../src/store/Store.js';
 import type { Member, OfficeEvent, Team } from '../../src/store/types.js';
-import { FakePty, FakeReceiver, fakeReq } from './fakes.js';
+import { FakePty, FakeReceiver, fakeReq, seedDeptTeam } from './fakes.js';
 import { allow } from '../../src/hooks/decisions.js';
 import { reapOrphan, type OrphanOps } from '../../src/office/orphans.js';
 
@@ -44,7 +44,7 @@ describe('Office: 엔진별 hook 라우팅 (T20)', () => {
     office.on('event', (e) => events.push(e));
     await office.start();
     // 팀장 없는 팀(store 직접) — 엔진 라우팅만 보므로 team.create 의 팀장 자동 출근(T24)은 끼우지 않는다.
-    team = store.createTeam({ name: 'mix', cwd: dataDir, allowedEngines: ['claude', 'codex'] });
+    team = seedDeptTeam(store, { name: 'mix', cwd: dataDir, allowedEngines: ['claude', 'codex'] }).team;
     claude = office.clockIn({ teamId: team.id, engine: 'claude', name: '이음' });
     codex = office.clockIn({ teamId: team.id, engine: 'codex', name: '코덱스' });
   });

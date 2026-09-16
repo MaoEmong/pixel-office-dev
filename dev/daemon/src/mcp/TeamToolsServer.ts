@@ -34,8 +34,8 @@ export const EVERYONE_TOOLS = ['report', 'ask_user'] as const;
 export const ALL_TEAM_TOOLS = [...LEADER_ONLY_TOOLS, ...EVERYONE_TOOLS] as const;
 export type TeamToolName = (typeof ALL_TEAM_TOOLS)[number];
 
-/** 멤버 직급(store 의 MemberRank 와 같은 값). */
-export type TeamToolRank = 'leader' | 'member';
+/** 멤버 직급(store 의 MemberRank 와 같은 값). 직급별 도구 목록 확정은 T35. */
+export type TeamToolRank = 'head' | 'lead' | 'member';
 export type TeamEngine = 'claude' | 'codex';
 export type ReportToolStatus = 'done' | 'blocked' | 'aborted';
 
@@ -317,11 +317,11 @@ export class TeamToolsServer {
     const rankGate = (tool: string): CallToolResult | undefined => {
       const fresh = this.host.resolveMember(memberToken);
       if (!fresh) return fail(tool, '멤버를 찾을 수 없습니다(이미 퇴근했을 수 있습니다).');
-      if (fresh.rank !== 'leader') return fail(tool, leaderOnlyToolMessage(tool));
+      if (fresh.rank !== 'lead') return fail(tool, leaderOnlyToolMessage(tool));
       return undefined;
     };
 
-    if (member.rank === 'leader') {
+    if (member.rank === 'lead') {
       server.registerTool(
         'hire',
         { title: '팀원 출근(팀장 전용)', description: HIRE_DESCRIPTION, inputSchema: HIRE_SCHEMA, annotations },

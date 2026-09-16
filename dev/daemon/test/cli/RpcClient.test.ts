@@ -14,7 +14,7 @@ import type { OfficeEvent } from '../../src/store/types.js';
 const TOKEN = 'secret-token';
 
 function makeEvent(seq: number): OfficeEvent {
-  return { seq, ts: new Date(seq * 1000).toISOString(), teamId: 't1', memberId: 'm1', kind: 'idle', detail: {}, ref: {} };
+  return { seq, ts: new Date(seq * 1000).toISOString(), departmentId: 'd1', teamId: 't1', memberId: 'm1', kind: 'idle', detail: {}, ref: {} };
 }
 
 interface FakeDaemon {

@@ -19,7 +19,9 @@ import type { Member, OfficeEvent, Team } from '../../src/store/types.js';
 
 function member(over: Partial<Member> & Pick<Member, 'id' | 'name'>): Member {
   return {
+    departmentId: 'd1',
     teamId: 't1',
+    parentId: null,
     rank: 'member',
     engine: 'claude',
     sessionId: null,
@@ -81,8 +83,8 @@ describe('resolveMember', () => {
 
   test('resolveTeam / resolvePendingId 접두', () => {
     const teams: Team[] = [
-      { id: 't1', name: 'alpha', cwd: '', leaderId: null, maxMembers: 4, allowedEngines: ['claude'], createdAt: '' },
-      { id: 't2', name: 'beta', cwd: '', leaderId: null, maxMembers: 4, allowedEngines: ['claude'], createdAt: '' },
+      { id: 't1', departmentId: 'd1', name: 'alpha', cwd: '', leaderId: null, maxMembers: 4, allowedEngines: ['claude'], createdAt: '' },
+      { id: 't2', departmentId: 'd1', name: 'beta', cwd: '', leaderId: null, maxMembers: 4, allowedEngines: ['claude'], createdAt: '' },
     ];
     assert.equal(resolveTeam(teams, 'beta').id, 't2');
     assert.equal(resolveTeam(teams, 'al').id, 't1');
@@ -154,6 +156,7 @@ describe('format', () => {
     const ev: OfficeEvent = {
       seq: 812,
       ts: '',
+      departmentId: 'd1',
       teamId: 't1',
       memberId: 'm3',
       kind: 'waiting_approval',

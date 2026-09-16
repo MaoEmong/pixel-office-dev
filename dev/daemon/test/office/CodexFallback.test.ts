@@ -12,7 +12,7 @@ import { Office } from '../../src/office/Office.js';
 import { CODEX_FALLBACK, detectQuestion, isFallbackQuestion, lastLine, looksLikeQuestion } from '../../src/office/codexFallback.js';
 import { Store } from '../../src/store/Store.js';
 import type { Member, OfficeEvent, Team } from '../../src/store/types.js';
-import { FakePty, FakeReceiver, fakeReq } from './fakes.js';
+import { FakePty, FakeReceiver, fakeReq, seedDeptTeam } from './fakes.js';
 import { loadFixture } from '../screen/helpers.js';
 
 const SID = '01a09f50-13fe-70a0-90b4-2b2a7cdbcb7a';
@@ -84,7 +84,7 @@ describe('Office: Codex 폴백 (T22)', () => {
     office.on('status', (id, s, d) => statuses.push([id, s, d]));
     await office.start();
     // 팀장 없는 팀(store 직접) — Codex 폴백만 보므로 team.create 의 팀장 자동 출근(T24)은 끼우지 않는다.
-    team = store.createTeam({ name: 'mix', cwd: dataDir, allowedEngines: ['claude', 'codex'] });
+    team = seedDeptTeam(store, { name: 'mix', cwd: dataDir, allowedEngines: ['claude', 'codex'] }).team;
     codex = office.clockIn({ teamId: team.id, engine: 'codex', name: '코덱스' });
     claude = office.clockIn({ teamId: team.id, engine: 'claude', name: '이음' });
   });
@@ -110,7 +110,7 @@ describe('Office: Codex 폴백 (T22)', () => {
   };
   /** 배정된 task 하나(큐 흐름 없이 바로 assigned). */
   const assignTask = (m: Member, instruction = '테스트를 돌려줘') =>
-    store.createTask({ teamId: team.id, fromMember: 'user', toMember: m.id, instruction, status: 'assigned' });
+    store.createTask({ departmentId: team.departmentId, fromMember: 'user', toMember: m.id, instruction, status: 'assigned' });
 
   test('보고 폴백: Codex 가 report 도구를 안 불러도 Stop 의 마지막 메시지가 task 보고가 된다', () => {
     idle(codex);

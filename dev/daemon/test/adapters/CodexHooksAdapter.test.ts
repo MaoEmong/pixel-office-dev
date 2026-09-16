@@ -139,8 +139,10 @@ interface Harness {
 
 function harness(): Harness {
   const store = new Store(':memory:');
-  const team = store.createTeam({ name: 'alpha', cwd: 'D:/proj/alpha' });
+  const department = store.createDepartment({ name: 'alpha', cwd: 'D:/proj/alpha' });
+  const team = store.createTeam({ departmentId: department.id, name: 'alpha', cwd: 'D:/proj/alpha' });
   const member = store.createMember({
+    departmentId: team.departmentId,
     teamId: team.id,
     name: '코덱스',
     rank: 'member',

@@ -14,7 +14,7 @@ import { reapOrphan, type OrphanOps } from '../../src/office/orphans.js';
 import { Store } from '../../src/store/Store.js';
 import type { Member, OfficeEvent, Pending, Task, Team } from '../../src/store/types.js';
 import { loadFixture } from '../screen/helpers.js';
-import { FakePty, FakeReceiver, fakeReq } from './fakes.js';
+import { FakePty, FakeReceiver, fakeReq, seedDeptTeam } from './fakes.js';
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const readyScreen = () => loadFixture('claude-ready.txt').join('\r\n');
@@ -34,12 +34,12 @@ interface Seed {
 
 /** 이전 기동이 남긴 DB 모양. 멤버 행·task·pending·이벤트를 직접 심는다. */
 function seed(store: Store, cwd: string): Seed {
-  const team = store.createTeam({ name: 'alpha', cwd, maxMembers: 4 });
-  const a = store.createMember({ teamId: team.id, name: 'A', rank: 'member', engine: 'claude', cwd, hiredBy: 'user', status: 'working', sessionId: 'sess-A', childPid: 4242 });
-  const b = store.createMember({ teamId: team.id, name: 'B', rank: 'member', engine: 'claude', cwd, hiredBy: 'user', status: 'idle', sessionId: null, childPid: 4343 });
-  const c = store.createMember({ teamId: team.id, name: 'C', rank: 'member', engine: 'claude', cwd, hiredBy: 'user', status: 'exited', sessionId: 'sess-C' });
-  const assigned = store.createTask({ teamId: team.id, fromMember: 'user', toMember: a.id, instruction: LONG_INSTRUCTION, status: 'assigned' });
-  const queued = store.createTask({ teamId: team.id, fromMember: 'user', toMember: a.id, instruction: '두 번째: 아직 안 들어간 지시', status: 'queued' });
+  const team = seedDeptTeam(store, { name: 'alpha', cwd, maxMembers: 4 }).team;
+  const a = store.createMember({ departmentId: team.departmentId, teamId: team.id, name: 'A', rank: 'member', engine: 'claude', cwd, hiredBy: 'user', status: 'working', sessionId: 'sess-A', childPid: 4242 });
+  const b = store.createMember({ departmentId: team.departmentId, teamId: team.id, name: 'B', rank: 'member', engine: 'claude', cwd, hiredBy: 'user', status: 'idle', sessionId: null, childPid: 4343 });
+  const c = store.createMember({ departmentId: team.departmentId, teamId: team.id, name: 'C', rank: 'member', engine: 'claude', cwd, hiredBy: 'user', status: 'exited', sessionId: 'sess-C' });
+  const assigned = store.createTask({ departmentId: team.departmentId, fromMember: 'user', toMember: a.id, instruction: LONG_INSTRUCTION, status: 'assigned' });
+  const queued = store.createTask({ departmentId: team.departmentId, fromMember: 'user', toMember: a.id, instruction: '두 번째: 아직 안 들어간 지시', status: 'queued' });
   const approval = store.createPending({ memberId: a.id, type: 'approval', payload: { tool_name: 'Bash', tool_input: { command: 'echo hi' } } });
   const tuiQuestion = store.createPending({
     memberId: a.id,
@@ -48,16 +48,16 @@ function seed(store: Store, cwd: string): Seed {
   });
   // A 의 이벤트 7건(오래된 것부터). [RESUMED] 에는 마지막 5건만 실려야 한다.
   const eventsA: OfficeEvent[] = [
-    store.appendEvent({ teamId: team.id, memberId: a.id, kind: 'thinking', detail: { text: '오래된 생각 1' } }),
-    store.appendEvent({ teamId: team.id, memberId: a.id, kind: 'reading', detail: { tool: 'Read', path: 'old/file.ts' } }),
-    store.appendEvent({ teamId: team.id, memberId: a.id, kind: 'thinking', detail: { text: '[TASK#1 from user]\n이 지시는 여든 글자' } }),
-    store.appendEvent({ teamId: team.id, memberId: a.id, kind: 'reading', detail: { tool: 'Grep', summary: 'grep foo' } }),
-    store.appendEvent({ teamId: team.id, memberId: a.id, kind: 'editing', detail: { tool: 'Edit', path: 'src/a.ts' } }),
-    store.appendEvent({ teamId: team.id, memberId: a.id, kind: 'running', detail: { tool: 'Bash', cmd: 'npm test' } }),
-    store.appendEvent({ teamId: team.id, memberId: a.id, kind: 'waiting_approval', detail: { tool: 'Bash', cmd: 'echo hi' }, ref: { approvalId: approval.id } }),
+    store.appendEvent({ departmentId: team.departmentId, teamId: team.id, memberId: a.id, kind: 'thinking', detail: { text: '오래된 생각 1' } }),
+    store.appendEvent({ departmentId: team.departmentId, teamId: team.id, memberId: a.id, kind: 'reading', detail: { tool: 'Read', path: 'old/file.ts' } }),
+    store.appendEvent({ departmentId: team.departmentId, teamId: team.id, memberId: a.id, kind: 'thinking', detail: { text: '[TASK#1 from user]\n이 지시는 여든 글자' } }),
+    store.appendEvent({ departmentId: team.departmentId, teamId: team.id, memberId: a.id, kind: 'reading', detail: { tool: 'Grep', summary: 'grep foo' } }),
+    store.appendEvent({ departmentId: team.departmentId, teamId: team.id, memberId: a.id, kind: 'editing', detail: { tool: 'Edit', path: 'src/a.ts' } }),
+    store.appendEvent({ departmentId: team.departmentId, teamId: team.id, memberId: a.id, kind: 'running', detail: { tool: 'Bash', cmd: 'npm test' } }),
+    store.appendEvent({ departmentId: team.departmentId, teamId: team.id, memberId: a.id, kind: 'waiting_approval', detail: { tool: 'Bash', cmd: 'echo hi' }, ref: { approvalId: approval.id } }),
   ];
   // C 에도 이벤트 하나(복구가 건드리지 않아야 한다)
-  store.appendEvent({ teamId: team.id, memberId: c.id, kind: 'idle', detail: { summary: 'clocked out' } });
+  store.appendEvent({ departmentId: team.departmentId, teamId: team.id, memberId: c.id, kind: 'idle', detail: { summary: 'clocked out' } });
   return { team, a, b, c, assigned, queued, approval, tuiQuestion, eventsA };
 }
 
@@ -209,8 +209,8 @@ describe('Office restart recovery (T09)', () => {
   });
 
   test('ask_user question (no tool_input) stays open; only TUI questions and approvals expire', async () => {
-    const team = store.createTeam({ name: 'q', cwd: dataDir });
-    const m = store.createMember({ teamId: team.id, name: 'Q', rank: 'member', engine: 'claude', cwd: dataDir, hiredBy: 'user', status: 'waiting_answer', sessionId: 'sess-Q' });
+    const team = seedDeptTeam(store, { name: 'q', cwd: dataDir }).team;
+    const m = store.createMember({ departmentId: team.departmentId, teamId: team.id, name: 'Q', rank: 'member', engine: 'claude', cwd: dataDir, hiredBy: 'user', status: 'waiting_answer', sessionId: 'sess-Q' });
     const askUser = store.createPending({ memberId: m.id, type: 'question', payload: { questions: [{ question: 'M2 ask_user?' }] } });
     const tui = store.createPending({ memberId: m.id, type: 'question', payload: { questions: [], tool_input: {} } });
     const approval = store.createPending({ memberId: m.id, type: 'approval', payload: { tool_name: 'Write', tool_input: {} } });
@@ -302,8 +302,8 @@ describe('Office restart recovery (T09)', () => {
 
   test('recover() never throws: a member whose spawn fails becomes error, the rest are still recovered', async () => {
     const s = seed(store, dataDir);
-    const d = store.createMember({ teamId: s.team.id, name: 'D', rank: 'member', engine: 'claude', cwd: dataDir, hiredBy: 'user', status: 'idle', sessionId: 'sess-D' });
-    store.createTask({ teamId: s.team.id, fromMember: 'user', toMember: d.id, instruction: 'd queued', status: 'queued' });
+    const d = store.createMember({ departmentId: s.team.departmentId, teamId: s.team.id, name: 'D', rank: 'member', engine: 'claude', cwd: dataDir, hiredBy: 'user', status: 'idle', sessionId: 'sess-D' });
+    store.createTask({ departmentId: s.team.departmentId, fromMember: 'user', toMember: d.id, instruction: 'd queued', status: 'queued' });
     pty.failSpawnFor.add(s.a.id);
     newOffice();
     await office.start(); // throw 하지 않는다

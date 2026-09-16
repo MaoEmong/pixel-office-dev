@@ -35,7 +35,7 @@ class FakeHost implements TeamToolsHost {
   readonly reports: Array<{ memberId: string; input: ReportInput }> = [];
   members = new Map<string, TeamToolsMember>([
     [TOKEN, { id: 'm_1', name: 'kim', rank: 'member' }],
-    [LEAD, { id: 'm_lead', name: '반장', rank: 'leader' }],
+    [LEAD, { id: 'm_lead', name: '반장', rank: 'lead' }],
   ]);
   failNext?: string;
   private n = 0;
