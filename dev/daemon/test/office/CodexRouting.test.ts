@@ -169,7 +169,11 @@ describe('Office: 엔진별 hook 라우팅 (T20)', () => {
   test('SessionStart 의 지시문 주입은 엔진과 무관하게 같다', () => {
     office.setInstructions(codex.id, '[코덱스 팀원]');
     const f = send(codex, 'SessionStart', { session_id: 's2', hook_event_name: 'SessionStart', source: 'startup' });
-    assert.deepEqual(f.sent, [{ hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: '[코덱스 팀원]' } }]);
+    // T26b: 프리앰블 + 사용자 지시문. 엔진 표기(`엔진 codex`)만 다르고 구조는 Claude 와 같다.
+    const expected = office.buildSessionContext(codex.id);
+    assert.deepEqual(f.sent, [{ hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: expected } }]);
+    assert.match(expected, /엔진 codex/);
+    assert.ok(expected.endsWith('\n\n[코덱스 팀원]'));
   });
 });
 

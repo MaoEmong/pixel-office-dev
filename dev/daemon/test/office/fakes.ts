@@ -1,7 +1,7 @@
 // Office 테스트 공통 가짜(T09 Recovery.test.ts 용). Office.test.ts 의 인라인 가짜와 같은 모양 — spawn 옵션·write/paste/keys 를 기록하고
 // exit()/data() 로 pty 이벤트를 주입한다.
 import { EventEmitter } from 'node:events';
-import type { HookReceiverLike, PtyManagerLike } from '../../src/office/types.js';
+import type { HookReceiverLike, PtyManagerLike, TeamToolsServerLike } from '../../src/office/types.js';
 import type { ExitInfo, KeyName, PtySession, SpawnOptions } from '../../src/pty/types.js';
 import { gracefulQuit } from '../../src/pty/PtyManager.js';
 import type { DecisionHandle, HookReceiverEvents, HookRequest } from '../../src/hooks/HookReceiver.js';
@@ -91,6 +91,24 @@ export class FakePty extends EventEmitter<PtyEvents> implements PtyManagerLike {
     const s = this.sessions.get(memberId);
     if (!s) throw new Error(`no fake session for ${memberId}`);
     return s;
+  }
+}
+
+/** TeamTools MCP 서버 가짜(T28): 어떤 멤버 토큰의 연결이 언제 끊겼는지만 기록한다. */
+export class FakeMcp implements TeamToolsServerLike {
+  port = 0;
+  closed = false;
+  /** dispose 된 memberToken(호출 순서대로). */
+  readonly disposed: string[] = [];
+  async listen(port: number): Promise<number> {
+    this.port = port || 45679;
+    return this.port;
+  }
+  async close(): Promise<void> {
+    this.closed = true;
+  }
+  dispose(memberToken: string): void {
+    this.disposed.push(memberToken);
   }
 }
 

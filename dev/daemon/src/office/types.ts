@@ -115,8 +115,18 @@ export interface AskUserPayload {
   options: string[];
 }
 
-/** `member.status` 알림의 파생 상태(01 §2 "멤버 표시 상태(파생)"). v1a: idle 이고 배정 task 없으면 free. */
+/** `member.status` 알림의 파생 상태(01 §2 "멤버 표시 상태(파생)"). 규칙은 office/derived.ts 하나에 있다(T28). */
 export type DerivedStatus = MemberStatus | 'free' | 'waiting_reports';
+
+/** 스냅샷의 멤버 행 = Member + 그 시점의 파생 상태(T28). 클라이언트는 이걸 그대로 쓰면 된다. */
+export interface SnapshotMember extends Member {
+  derived: DerivedStatus;
+}
+
+/** `hello` 가 돌려주는 스냅샷. store 의 Snapshot 과 같고 멤버 행에 `derived` 가 더 있다. */
+export interface OfficeSnapshot extends Omit<Snapshot, 'members'> {
+  members: SnapshotMember[];
+}
 
 export type NoticeLevel = 'info' | 'warn' | 'error';
 
@@ -144,7 +154,8 @@ export interface OfficeApi extends EventEmitter<OfficeEvents> {
   readonly version: string;
   readonly pid: number;
 
-  snapshot(): Snapshot;
+  /** 멤버 행에 `derived`(파생 상태)가 실려 있다(T28, PROTOCOL.md `snapshot`). */
+  snapshot(): OfficeSnapshot;
   getMember(memberId: string): Member | undefined;
   eventsSince(seq: number): OfficeEvent[];
   eventsQuery(input: EventsQueryInput): OfficeEvent[];
@@ -166,8 +177,11 @@ export interface OfficeApi extends EventEmitter<OfficeEvents> {
   detachAll(clientId: string): void;
   resize(clientId: string, memberId: string, cols: number, rows: number): void;
   interrupt(memberId: string): void;
+  /** 사용자 INSTRUCTIONS.md 본문만(없으면 `""`). */
   getInstructions(memberId: string): string;
   setInstructions(memberId: string, markdown: string): void;
+  /** SessionStart 에 실제로 주입되는 텍스트 = 런타임 프리앰블 + 유효 지시문(사용자 파일 또는 기본 템플릿, T26b). */
+  buildSessionContext(memberId: string): string;
 
   respondApproval(pendingId: string, decision: ApprovalRespondParams): void;
   /** TUI AskUserQuestion 은 hook 결정으로, TeamTools ask_user 는 `[ANSWER q#<id>]` 큐 주입으로(T17). */

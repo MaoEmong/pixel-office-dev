@@ -79,6 +79,20 @@ void main() {
     expect(s.membersOf('t1').length, 2);
   });
 
+  test('T28: 스냅샷 멤버 행의 derived 를 그대로 쓴다(앱이 다시 계산하지 않는다)', () async {
+    // 팀장이 위임하고 보고를 기다리는 중 — raw 는 idle 이고 배정 task 도 없어서 앱 혼자서는 free 로 볼 수밖에 없다.
+    daemon.snapshotBody = {
+      ...daemon.snapshotBody,
+      'members': [
+        {...member('m1', status: 'idle'), 'rank': 'leader', 'derived': 'waiting_reports'},
+        member('m2', status: 'idle'),
+      ],
+    };
+    await until(container, (s) => s.isConnected && s.members.isNotEmpty);
+    expect(container.read(derivedStatusProvider('m1')), DerivedStatus.waitingReports);
+    expect(container.read(derivedStatusProvider('m2')), DerivedStatus.free, reason: 'derived 가 없으면 예전대로 유추');
+  });
+
   test('member.status: 상태 갱신, member 행 삽입, waiting 해제 시 pending 제거, exited 시 task 제거', () async {
     await until(container, (s) => s.isConnected && s.members.isNotEmpty);
     daemon.push('member.status', {'memberId': 'm1', 'status': 'waiting_approval', 'derived': 'waiting_approval'});

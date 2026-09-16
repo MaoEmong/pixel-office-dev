@@ -59,7 +59,7 @@ enum DerivedStatus {
   /// 데몬이 `waiting_answer` 를 보낸다(PROTOCOL `member.status.derived`, T17).
   bool get isWaiting => this == waitingApproval || this == waitingAnswer;
 
-  /// status 만 알고 derived 를 모를 때(스냅샷) 의 기본값 — PROTOCOL `member.status.derived` 의 v1a 규칙:
+  /// 데몬이 파생을 안 실어 보낸 경우(옛 데몬)의 기본값 — PROTOCOL `member.status.derived` 의 규칙 중 앱이 알 수 있는 만큼:
   /// idle 인데 열린 질문 pending 이 있으면 `waiting_answer`(T17 `ask_user` 는 턴이 끝나도 질문이 열려 있다),
   /// idle 이고 배정 task 가 없으면 `free`, 그 외는 status 와 같다.
   static DerivedStatus fromStatus(MemberStatus s, {required bool hasAssignedTask, bool hasOpenQuestion = false}) {
@@ -107,6 +107,7 @@ class Member {
     required this.instructionsPath,
     required this.createdAt,
     required this.updatedAt,
+    this.derived,
   });
 
   final String id;
@@ -124,6 +125,10 @@ class Member {
   final String createdAt;
   final String updatedAt;
 
+  /// 스냅샷의 멤버 행에만 실려 오는 파생 상태(PROTOCOL `snapshot`, T28). `member.status` 알림의 Member 행에는 없다 →
+  /// 그때는 알림의 `derived` 를 쓴다. 옛 데몬(파생을 안 싣는)에서는 null 이라 `DerivedStatus.fromStatus` 로 떨어진다.
+  final DerivedStatus? derived;
+
   factory Member.fromJson(Map<String, dynamic> j) => Member(
         id: j['id'] as String,
         teamId: j['teamId'] as String,
@@ -139,6 +144,7 @@ class Member {
         instructionsPath: j['instructionsPath'] as String?,
         createdAt: j['createdAt'] as String,
         updatedAt: j['updatedAt'] as String,
+        derived: j['derived'] == null ? null : DerivedStatus.parse(j['derived'] as String),
       );
 
   Member copyWith({MemberStatus? status, String? updatedAt}) => Member(
@@ -156,6 +162,7 @@ class Member {
         instructionsPath: instructionsPath,
         createdAt: createdAt,
         updatedAt: updatedAt ?? this.updatedAt,
+        derived: derived,
       );
 
   @override

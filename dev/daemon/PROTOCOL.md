@@ -23,8 +23,9 @@
 | `member.detach` | `{ memberId }` | `{}` — 연결이 끊기면 자동 detach. |
 | `member.resize` | `{ memberId, cols, rows }` | `{}` — 마지막 attach 클라이언트만 유효(다른 클라이언트의 호출은 오류 없이 무시) |
 | `member.interrupt` | `{ memberId }` | `{}` — Ctrl+C. 큐의 미전송 지시는 버리고 그 멤버의 미종료 task aborted·열린 pending expired. Ctrl+C 두 번이면 CLI 가 종료되므로 1.5초 안의 두 번째 호출은 -32003. `Stop` hook 이 없으므로 화면에 준비 문구가 보이면 데몬이 `idle{summary:'interrupted'}` 이벤트로 idle 처리. |
-| `member.instructions.get` | `{ memberId }` | `{ markdown }` (없으면 `""`) |
+| `member.instructions.get` | `{ memberId }` | `{ markdown }` — **사용자 파일만**(없으면 `""`). 지시문 편집기가 보는 값이라 기본 템플릿을 섞지 않는다. |
 | `member.instructions.set` | `{ memberId, markdown }` | `{}` — 다음 SessionStart부터 반영. 파일: `${dataDir}/teams/<teamId>/members/<memberId>/INSTRUCTIONS.md` |
+| `member.instructions.effective` | `{ memberId }` | `{ markdown }` — **다음 SessionStart 에 실제로 주입될 전체 텍스트**(런타임 프리앰블 + 유효 지시문, 아래 "멤버 지시문 주입"). 읽기 전용·부작용 없음. 콘솔 `instr effective <member>`. |
 | `approval.respond` | `{ pendingId, behavior: 'allow'\|'deny', updatedInput?, message?, alwaysThisSession?: boolean }` | `{}` — `message` 는 deny 시 모델에게 보여줄 사유(기본 "Denied by user"). `alwaysThisSession` 은 allow 일 때 같은 멤버·같은 도구의 다음 허가 요청을 데몬이 자동 allow(데몬 메모리, 재시작 시 초기화). 없는 pending -32002, approval 이 아니면 -32602, 이미 answered/expired -32003. |
 | `question.respond` | `{ pendingId, answers: Record<string,string> }` | `{}` — `answers` 는 `{ "<question>": "<label>" }`(자유 답도 `label` 자리에). 오류 코드는 approval.respond 와 동일. **출처별 처리(T17):** TUI `AskUserQuestion`(payload 에 `tool_input` 있음)은 hook 결정으로 돌려주고, TeamTools `ask_user`(payload `source:'ask_user'`)는 pending 을 answered 로 닫은 뒤 그 멤버 입력 큐에 `[ANSWER q#<pendingId>]\n<답>` 시스템 메시지를 넣는다(아래 "TeamTools MCP"). **Codex 질문 폴백**(payload 에 `fallback:'codex-stop'`, 아래 "Codex 폴백")은 봉투 없이 답 본문만 넣는다. 값이 전부 빈 문자열이면 -32602. 멤버가 실행 중이 아니면 -32003. |
 | `daemon.shutdown` | `{}` | `{}` — 응답 후 `daemon.notice{level:'info'}` 를 보내고 전원 정중히 종료(`/exit`) → 모든 소켓 close code 1001 → 프로세스 종료. 멤버 status 는 바꾸지 않는다(T09 재시작 복구용). |
@@ -36,10 +37,24 @@
 | method | params |
 |---|---|
 | `event` | `OfficeEvent` — `{ seq, ts, teamId, memberId, kind, detail, ref }` (영속, 전역 단조 seq) |
-| `snapshot` | `{ seq, teams, members, pending, tasks }` — `hello` 응답에 포함되지만 데몬이 필요 시 재전송 가능. `pending` 은 `status:'open'` 만, `tasks` 는 `queued|assigned` 만. |
+| `snapshot` | `{ seq, teams, members, pending, tasks }` — `hello` 응답에 포함되지만 데몬이 필요 시 재전송 가능. `pending` 은 `status:'open'` 만, `tasks` 는 `queued|assigned` 만. **`members[]` 의 각 행에는 Member 칼럼 + `derived`(그 시점의 파생 상태, 아래 표)가 같이 온다(T28)** — 클라이언트가 파생 규칙을 다시 구현하지 않아도 재접속 직후 화면이 맞는다. |
 | `term` | `{ memberId, data }` — attach한 클라이언트에만, 비영속 |
-| `member.status` | `{ memberId, status, derived, member? }` — `status` 는 `starting|idle|working|waiting_approval|waiting_answer|exited|error`, `derived` 는 파생 상태(v1a: idle 인데 열린 질문 pending 이 있으면 `waiting_answer`(T17 — `ask_user` 는 턴이 끝난 뒤에도 질문이 열려 있다), **팀장이 idle 인데 자기가 `delegate` 로 낸 미종료 task 가 있으면 `waiting_reports`**(T25 — 팀원 보고를 기다리는 중), idle 이고 배정 task 없으면 `free`, 그 외는 status 와 같음). `member` 는 그 시점의 Member 행(새 멤버 출근을 다른 클라이언트가 알 수 있게; 행이 삭제됐으면 생략). status 값이 실제로 바뀔 때만 온다 — 예외: `ask_user` 질문에 답하면 status 가 그대로여도 `derived` 갱신을 위해 한 번 더 온다. |
+| `member.status` | `{ memberId, status, derived, member? }` — `status` 는 raw(`starting\|idle\|working\|waiting_approval\|waiting_answer\|exited\|error`), `derived` 는 **파생 상태**(아래 표). `member` 는 그 시점의 Member 행(새 멤버 출근을 다른 클라이언트가 알 수 있게; 행이 삭제됐으면 생략). **status 값이 바뀔 때 + `derived` 만 바뀔 때** 온다(T28 — 예: 팀장이 raw `idle` 인 채로 `delegate` 하면 `free → waiting_reports`). 둘 다 그대로면 오지 않는다. |
 | `daemon.notice` | `{ level: 'info'\|'warn'\|'error', message }` — 예: hook 보류 타임아웃, 알 수 없는 멤버 토큰, 첫 실행 다이얼로그 자동 통과, 자동 allow, 데몬 종료. **자동 통과할 수 없는 다이얼로그**(CLI 자체 허가 프롬프트 `approval-prompt`, D-23/D-26)는 `{level:'warn', message:'<이름>: CLI 허가 프롬프트가 떠 있음 — 카드로 답하거나 터미널에서 직접 답하세요'}` 로 **한 번만** 나온다(그 다이얼로그가 사라졌다 다시 뜨면 다시 한 번). 데몬은 이때 키를 보내지 않는다 — 사용자가 "재지시 필요" 카드나 터미널 탭에서 답해야 한다. |
+
+## 멤버 파생 상태 `derived` (T28, 01 §2 "멤버 표시 상태(파생)")
+
+raw `status` 는 "CLI 프로세스가 어떤 상태인가" 일 뿐이다 — `idle` 은 **턴이 끝났다**는 뜻이지 "할 일이 없다" 가 아니고, `ask_user` 질문은 턴이 끝난 뒤에도 열려 있다. 사무실 화면(포즈·모니터·말풍선)이 보는 값은 그래서 `derived` 다. 데몬 안에서 이 규칙을 계산하는 곳은 `src/office/derived.ts` 하나이고, `snapshot.members[].derived` 와 `member.status.derived` 가 같은 함수를 쓴다 — 클라이언트는 다시 계산하지 말고 받은 값을 그대로 쓴다.
+
+| `derived` | 조건(위에서부터 먼저 맞는 것) |
+|---|---|
+| `exited` / `error` | raw 가 그것이면 무조건(나간 멤버는 파생이 덮지 않는다) |
+| `waiting_approval` | 열린 `pending(approval)` 이 있다 — raw 가 무엇이든 |
+| `waiting_answer` | 열린 `pending(question)` 이 있다 — raw 가 무엇이든(`ask_user` 는 raw `idle` 에서도 열려 있다, T17) |
+| raw 값 그대로 | raw 가 `idle` 이 아니다(`starting` / `working`) |
+| `waiting_reports` | 팀장 + raw `idle` + 자기가 `delegate` 로 낸 미종료 task 가 있다(T25) |
+| `free` | raw `idle` + 열린 pending 없음 + 자기에게 배정된 미종료 task 없음(팀장은 발행 task 도 없을 때) |
+| `idle` | 그 외(= raw `idle` 인데 아직 `queued\|assigned` task 를 들고 있다) |
 
 ## 팀·직급 (T24)
 
@@ -102,6 +117,30 @@ v1a 에서 데몬이 만드는 이벤트(어댑터 표는 worklog T04 참고):
 - **언제 푸나(01 §해제 표 + 실측):** ① `PostToolUse` **또는 `PostToolUseFailure`**(실패 때는 `PostToolUse` 가 안 온다) — `tool_use_id` 로 짝을 맞춘다. ② 그 멤버의 `Stop`·턴 종료(안전망). ③ `member.interrupt` / 퇴근 / 프로세스 종료 / 재시작 후처리. ④ 보유 상한 30분 초과 → 강제 해제 + `daemon.notice{level:'warn', message:'<이름>: 셸 락을 <N>초째 쥐고 있어 강제로 해제함 (<명령 80자>)'}`.
 - **hook 이 먼저 끊기면:** 보류 상한(D-16)·연결 끊김으로 응답이 pass-through(`{}`)로 나가면(D-11) 그 명령은 데몬 허락 없이 실행된다. 데몬은 그 대기 자리를 줄에서 **뺀다**(아무도 안 기다리는 락을 넘겨받아 팀이 굳는 것을 막는다). 뮤텍스가 한 번 뚫리는 것이 명령을 포기시키는 것보다 낫다는 D-11 그대로다.
 - **팀 경계:** 락은 `teams.id` 단위다. 다른 팀은 서로 막지 않고, 같은 팀이면 엔진이 달라도(Claude ↔ Codex) 같은 락을 쓴다.
+
+## 멤버 지시문 주입 (T26b)
+
+멤버마다 자기 지시문이 있다(01 §전제 7 · §멤버 지시문 주입). 데몬은 그것을 `SessionStart` hook 의 `additionalContext` 로 돌려준다 — **startup·resume·clear·compact 네 source 모두**에서 다시 오므로 compaction·`/clear` 로 유실되지 않는다(D-05). 프로젝트의 `CLAUDE.md`/`AGENTS.md` 는 건드리지 않는다.
+
+주입되는 텍스트 = **런타임 프리앰블 + 유효 지시문**. `member.instructions.effective` 가 이 텍스트를 그대로 돌려준다(콘솔 `instr effective <member>`).
+
+- **유효 지시문** = 사용자 `INSTRUCTIONS.md` 에 **본문이 있으면** 그 파일, 없으면 **직급별 기본 템플릿**(팀장 = 오케스트레이션 규칙 + `hire`/`dismiss`/`delegate`/`report`/`ask_user`, 팀원 = 역할 규칙 + `report`/`ask_user`). 템플릿 문장은 앱의 "기본 템플릿 넣기"(T26a)와 같고, 데몬 쪽에는 동적 머리말(`# <이름> — <팀장|팀원> @ <팀>`, 작업 폴더·엔진·역할·팀장)과 팀 설정 숫자(정원·허용 엔진)가 더 붙는다.
+- **`hire` 가 쓴 `# 역할: <role>` 한 줄뿐인 파일은 "본문 없음"** 으로 본다 — 그건 사용자가 쓴 지시문이 아니라 역할 메타데이터라(`[TEAM]` 알림이 되읽는다) 기본 템플릿을 덮지 않고, 대신 그 역할이 템플릿 머리말 `- 역할: …` 에 실린다. `hire`/`member.clockIn` 에 `instructions` 를 같이 주면 그것이 본문이 되어 템플릿을 대신한다.
+- **기본 템플릿은 파일로 저장하지 않는다.** 지시문 파일은 사용자(앱·콘솔 `instr set`)나 `hire`/`clockIn` 의 `instructions` 로만 생긴다. 기본값은 주입할 때마다 계산하므로, 데몬의 템플릿을 고치면 지시문을 따로 쓰지 않은 멤버 전원에게 다음 SessionStart 부터 바로 반영된다.
+- **프리앰블은 사용자 파일이 있어도 늘 붙는다** — 사용자가 쓴 지시문에는 "나는 누구이고 팀에 누가 있는가" 가 없기 때문이다.
+
+  ```
+  [사무실] 너는 픽셀 오피스 팀 "alpha" 의 팀원 이음(엔진 claude)이다.
+  - 작업 폴더: D:\myproject\alpha
+  - 팀장: 반장(claude)
+  - 팀원: 이음(claude), 나루(codex, 역할 문서)
+  - 도구 이름: mcp__team__report, mcp__team__ask_user (도구 목록에 없으면 ToolSearch로 찾는다).
+  아래는 너의 지시문(INSTRUCTIONS.md)이다 — 프로젝트의 CLAUDE.md/AGENTS.md 위에 얹히는 개인 규칙이다.
+  ```
+
+  로스터는 그 팀에서 **살아 있는(exited/error 가 아닌) 멤버**만, 역할은 각자 지시문 첫 줄의 `# 역할:` 에서 읽는다. 도구 이름 줄은 직급에 따라 다르다(팀장 5개 / 팀원 2개) — D-22: Claude 는 MCP 도구를 지연 로딩하므로 이름이 적혀 있어야 `ToolSearch` 로 찾아 첫 턴부터 쓴다.
+- **길이 상한:** 전체 3000자(한국어 기준 ~2500토큰). 넘으면 **사용자 본문만** 뒤에서 자르고 `[… 지시문이 길어 여기서 잘렸습니다. 전문은 이 멤버의 INSTRUCTIONS.md 에 있습니다.]` 를 붙인다. 프리앰블(정체·로스터·도구)은 통째로 남는다.
+- 엔진 무관: Claude·Codex 어댑터가 같은 텍스트를 같은 방식으로 돌려준다(Codex 는 `SessionStart` 가 첫 프롬프트 제출 때 온다 — T20).
 
 ## 재시작 복구
 
@@ -191,11 +230,25 @@ v1a 에서 데몬이 만드는 이벤트(어댑터 표는 worklog T04 참고):
 - **`report` 를 안 부르고 턴만 끝낸 경우**(v1a 보고 승격, 엔진 공통): `Stop` 의 마지막 메시지로 `assigned` task 를 닫는 기존 경로가 **같은 버퍼를 탄다**(`status=done`). 그래서 팀원이 도구를 잊어도 팀장이 `[ALL_REPORTS_IN]` 을 영영 못 받고 굳는 일은 없다. 반대로 `report` 로 이미 닫힌 task 는 `assigned` 가 아니므로 **두 번 보고되지 않는다.**
 - **보고를 기다리는 턴 종료는 승격하지 않는다(D-29).** 그 멤버가 `delegate` 로 낸 미종료 task 가 하나라도 있으면 `Stop` 승격을 건너뛴다 — 팀장이 "맡겼고 기다리는 중" 이라고 말하며 턴을 끝낸 것을 완료로 오해해 사용자 task 를 닫아 버리면, 나중의 진짜 `report` 가 "이미 보고됐습니다" 로 거절된다. 그 task 는 `[ALL_REPORTS_IN]` 뒤 턴의 승격이나 `report` 도구가 닫는다.
 
-### 후처리 (T25, 01 §"interrupt / fire / error 공통 후처리")
+### 후처리 (T25·T28, 01 §"interrupt / fire / error 공통 후처리")
 
-- **팀원 중단·퇴근·비정상 종료** → 그 멤버의 `queued|assigned` task 가 전부 `aborted`(+`report_status:'aborted'`) 되고, 발행자에게 **즉시** `[REPORTS task#n <이름> status=aborted]\n<이름> 의 작업이 중단됐습니다 (…).` 가 간다(버퍼를 안 탄다). 발행자가 사용자면 대신 `reporting{status:'aborted'}` 이벤트.
-- **팀장 퇴근·비정상 종료** → 팀장이 발행한 미종료 task 를 전부 `aborted` 로 만들고 그 task 를 맡고 있던 팀원을 `interrupt` 한다(`idle{summary:'task#n aborted (팀장 퇴근)'}` 이벤트). **팀원 자체는 남는다** — 팀장이 `hire` 한 팀원도 자르지 않는다(퇴근은 사용자 권한). 팀장의 보고 버퍼도 비운다.
-- 셸 락 해제·pending 만료는 기존과 같다(T27, T17).
+중단·퇴근·비정상 종료·재시작·팀 삭제·데몬 복구는 **같은 후처리 표**를 탄다(데몬 구현은 `src/office/afterCare.ts` 하나). 이유별로 다른 것은 이 표가 전부다:
+
+| 이유 | 내 `queued\|assigned` task | 열린 허가·질문 | 셸 락 | 팀장: 발행한 task | 팀장: 그 task 를 맡은 팀원 | MCP 연결 |
+|---|---|---|---|---|---|---|
+| `member.interrupt` | `aborted` + 발행자에게 즉시 보고 | 전부 `expired` | 해제 | **그대로** | — | 유지 |
+| `member.clockOut`(퇴근·`dismiss`) | `aborted` + 즉시 보고 | 전부 `expired` | 해제 | `aborted` | `interrupt` | 끊음 |
+| 프로세스 비정상 종료 | `aborted` + 즉시 보고 | 전부 `expired` | 해제 | `aborted` | `interrupt` | 끊음 |
+| `team.delete` | `aborted` | 전부 `expired` | 해제 | `aborted` | `interrupt` | 끊음 |
+| `member.restart` | **그대로**(같은 세션이 이어서 한다) | 전부 `expired` | 해제 | 그대로 | — | 유지 |
+| 데몬 재시작 복구 | 그대로(`assigned` 유지 · `queued` 재큐잉) | 허가 + TUI `AskUserQuestion` 만 `expired`(+ `error{summary:'재지시 필요…', pendingId}`), **`ask_user` 질문은 유지**(D-19) | 해제 | 그대로 | — | 유지 |
+
+- **즉시 보고**란: 발행자에게 버퍼를 건너뛰고 `[REPORTS task#n <이름> status=aborted]\n<이름> 의 작업이 중단됐습니다 (…).` 가 바로 간다. 발행자가 사용자면 대신 `reporting{status:'aborted'}` 이벤트.
+- **팀장이 나가도 팀원 자체는 남는다** — 팀장이 `hire` 한 팀원도 자르지 않는다(퇴근은 사용자 권한). 팀장의 보고 버퍼는 비운다.
+- `interrupt` 만 발행 task 를 남긴다: Ctrl+C 는 **그 팀장의 턴**을 끊는 것이지 팀에 내린 지시를 거두는 게 아니다.
+- `team.delete` 는 **팀원 먼저, 팀장 마지막** 순으로 퇴근시킨다(팀장을 먼저 내보내면 남은 팀원 중단 → 이미 나가는 팀장에게 보고, 하는 왕복만 는다). 살아 있지 않던 멤버의 MCP 토큰도 끊는다.
+- 후처리가 실제로 뭔가를 치웠으면(`task` 중단 또는 팀원 중단) `daemon.notice{level:'info', message:'<이름> 후처리(<이유>): task N건 중단, …'}` 이 한 번 나온다.
+- 후처리로 파생 상태가 바뀌면(예: 배정 task 가 0 이 되어 `idle → free`) raw `status` 가 그대로여도 `member.status` 가 한 번 더 나간다.
 
 ### 사용자 개입 알림 `[TEAM]` (T25, 01 §4)
 

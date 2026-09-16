@@ -60,7 +60,8 @@ const HELP: Array<[string, string]> = [
   ['events [n]', '최근 수신 이벤트 n건 (기본 20)'],
   ['query <team|-> [beforeSeq] [limit]', '과거 이벤트 조회 (events.query)'],
   ['tasks', 'task 목록 (스냅샷의 열린 task + 이번 세션에 본 위임·보고)'],
-  ['instr get <member>', '지시문 보기'],
+  ['instr get <member>', '지시문 보기 (사용자 파일만)'],
+  ['instr effective <member>', '다음 SessionStart 에 주입될 전체 텍스트 (프리앰블 + 기본 템플릿 포함)'],
   ['instr set <member> [text]', '지시문 편집 (text 생략 시 여러 줄 입력, `.` 한 줄로 종료)'],
   ['refresh', '재접속해 스냅샷을 다시 받는다'],
   ['help', '이 도움말'],
@@ -579,6 +580,14 @@ class Cli {
           this.print('──');
           return;
         }
+        if (sub === 'effective') {
+          const res = (await c.call('member.instructions.effective', { memberId: m.id })) as { markdown: string };
+          const text = res.markdown ?? '';
+          this.print(`── ${m.name} 주입 지시문 (다음 SessionStart, ${text.length}자) ──`);
+          for (const line of text.split(/\r?\n/)) this.print(`  ${line}`);
+          this.print('──');
+          return;
+        }
         if (sub === 'set') {
           const inline = p.rawAfter(2);
           const save = async (markdown: string): Promise<void> => {
@@ -592,7 +601,7 @@ class Cli {
           this.rl?.setPrompt('... ');
           return;
         }
-        throw new CliError('사용법: instr get <member> | instr set <member> [text]');
+        throw new CliError('사용법: instr get <member> | instr effective <member> | instr set <member> [text]');
       }
 
       // ---- 연결 ----

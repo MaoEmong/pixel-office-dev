@@ -258,13 +258,15 @@ class OfficeNotifier extends Notifier<OfficeState> {
     final assigned = {for (final t in snap.tasks) if (t.status == TaskStatus.assigned) t.toMember};
     // 열린 질문이 있는 멤버는 raw 가 idle 이어도 파생이 waiting_answer 다(`ask_user` — PROTOCOL, T19b).
     final withQuestion = {for (final p in snap.pending) if (p.type == PendingType.question) p.memberId};
+    // 데몬이 스냅샷 멤버 행에 파생 상태를 실어 준다(T28) — 그대로 쓴다. 없으면(옛 데몬) 스냅샷으로 유추한다.
     final derived = {
       for (final m in snap.members)
-        m.id: DerivedStatus.fromStatus(
-          m.status,
-          hasAssignedTask: assigned.contains(m.id),
-          hasOpenQuestion: withQuestion.contains(m.id),
-        ),
+        m.id: m.derived ??
+            DerivedStatus.fromStatus(
+              m.status,
+              hasAssignedTask: assigned.contains(m.id),
+              hasOpenQuestion: withQuestion.contains(m.id),
+            ),
     };
     return s.copyWith(
       teams: teams,

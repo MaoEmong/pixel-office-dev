@@ -254,6 +254,8 @@ export class RpcServer {
         return {};
       },
       'member.instructions.get': (_c, p) => ({ markdown: o.getInstructions(reqStr(p, 'memberId')) }),
+      // T26b: 다음 SessionStart 에 실제로 주입될 텍스트(프리앰블 + 사용자 파일 또는 기본 템플릿).
+      'member.instructions.effective': (_c, p) => ({ markdown: o.buildSessionContext(reqStr(p, 'memberId')) }),
       'member.instructions.set': (_c, p) => {
         o.setInstructions(reqStr(p, 'memberId'), reqStr(p, 'markdown', true));
         return {};

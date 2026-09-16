@@ -54,6 +54,16 @@ void main() {
       expect(summarize(MemberStatus.exited, event('m', OfficeEventKind.idle), derived: DerivedStatus.waitingAnswer), '(퇴근)');
     });
 
+    test('T28 파생 free: "(대기)" 자리에서만 "(한가함)" — 방금 한 일은 그대로 보여 준다', () {
+      expect(summarize(MemberStatus.idle, event('m', OfficeEventKind.idle), derived: DerivedStatus.free), freeSummary);
+      expect(summarize(MemberStatus.idle, null, derived: DerivedStatus.free), freeSummary);
+      // 맡은 일이 남아 있으면(파생 idle) 그냥 "(대기)".
+      expect(summarize(MemberStatus.idle, event('m', OfficeEventKind.idle), derived: DerivedStatus.idle), '(대기)');
+      // 보고 직후처럼 마지막 이벤트가 말해 주는 게 있으면 그걸 남긴다.
+      expect(summarize(MemberStatus.idle, event('m', OfficeEventKind.reporting), derived: DerivedStatus.free), '📋 보고');
+      expect(summarize(MemberStatus.idle, event('m', OfficeEventKind.idle), derived: DerivedStatus.waitingReports), waitingReportsSummary);
+    });
+
     test('basename / truncate', () {
       expect(basename('a/b/c.dart'), 'c.dart');
       expect(basename(r'C:\a\b\'), 'b');
@@ -156,7 +166,8 @@ void main() {
         derived: const {'m1': DerivedStatus.free, 'm2': DerivedStatus.free},
       );
       expect(after.memberById('m1')!.queueIndex, isNull);
-      expect(after.memberById('m1')!.summary, '(대기)');
+      // T28: 파생이 free 면 "(대기)" 자리에 "(한가함)" — 턴도 끝났고 맡은 일도 없다는 뜻.
+      expect(after.memberById('m1')!.summary, freeSummary);
       expect(after.queue, isEmpty);
     });
 

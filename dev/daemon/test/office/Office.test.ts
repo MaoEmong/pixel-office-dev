@@ -269,7 +269,9 @@ describe('Office', () => {
   test("hook 'hook' routes by member token to the adapter; unknown token → notice only", () => {
     const m = clockIn('kim', 'be nice');
     const r = sessionStart(m);
-    assert.deepEqual(r.sent, [sessionStartContext('be nice')]);
+    // T26b: 주입 텍스트 = 런타임 프리앰블 + 사용자 지시문(자세한 내용은 Instructions.test.ts).
+    assert.deepEqual(r.sent, [sessionStartContext(office.buildSessionContext(m.id))]);
+    assert.ok(office.buildSessionContext(m.id).endsWith('\n\nbe nice'));
     const after = store.getMember(m.id)!;
     assert.equal(after.status, 'idle');
     assert.equal(after.sessionId, SID);

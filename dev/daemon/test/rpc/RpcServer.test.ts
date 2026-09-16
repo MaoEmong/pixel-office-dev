@@ -5,8 +5,18 @@ import { EventEmitter } from 'node:events';
 import WebSocket from 'ws';
 import { RpcServer, CLOSE_UNAUTHORIZED } from '../../src/rpc/RpcServer.js';
 import { OfficeError, RPC_ERROR } from '../../src/office/errors.js';
-import type { ApprovalRespondParams, AttachResult, ClockInParams, CreateTeamParams, CreateTeamResult, InstructOptions, OfficeApi, OfficeEvents } from '../../src/office/types.js';
-import type { EventsQueryInput, Member, OfficeEvent, Snapshot, Team } from '../../src/store/types.js';
+import type {
+  ApprovalRespondParams,
+  AttachResult,
+  ClockInParams,
+  CreateTeamParams,
+  CreateTeamResult,
+  InstructOptions,
+  OfficeApi,
+  OfficeEvents,
+  OfficeSnapshot,
+} from '../../src/office/types.js';
+import type { EventsQueryInput, Member, OfficeEvent, Team } from '../../src/store/types.js';
 
 // ---- 가짜 Office ---------------------------------------------------------------------
 
@@ -59,8 +69,10 @@ class FakeOffice extends EventEmitter<OfficeEvents> implements OfficeApi {
     return m;
   }
 
-  snapshot(): Snapshot {
-    return { seq: 5, teams: [TEAM], members: [...this.members.values()], pending: [], tasks: [] };
+  snapshot(): OfficeSnapshot {
+    // T28: 스냅샷 멤버 행에는 파생 상태가 실린다(여기서는 raw 를 그대로 — RpcServer 는 통과만 시킨다).
+    const members = [...this.members.values()].map((m) => ({ ...m, derived: m.status }));
+    return { seq: 5, teams: [TEAM], members, pending: [], tasks: [] };
   }
   getMember(memberId: string): Member | undefined {
     return this.members.get(memberId);
@@ -134,6 +146,11 @@ class FakeOffice extends EventEmitter<OfficeEvents> implements OfficeApi {
   setInstructions(memberId: string, markdown: string): void {
     this.rec('setInstructions', memberId, markdown);
     this.need(memberId);
+  }
+  buildSessionContext(memberId: string): string {
+    this.rec('buildSessionContext', memberId);
+    this.need(memberId);
+    return '[사무실] …\n\n# role';
   }
   respondApproval(pendingId: string, decision: ApprovalRespondParams): void {
     this.rec('respondApproval', pendingId, decision);
@@ -228,7 +245,7 @@ class TestClient {
     });
   }
 
-  hello(since?: number): Promise<{ daemon: { version: string; pid: number }; snapshot: Snapshot }> {
+  hello(since?: number): Promise<{ daemon: { version: string; pid: number }; snapshot: OfficeSnapshot }> {
     return this.call('hello', { token: TOKEN, since, client: { name: 'test', version: '0' } });
   }
 
@@ -353,6 +370,8 @@ describe('RpcServer', () => {
     assert.deepEqual(office.calls.at(-1), { method: 'typeRaw', args: ['m1', ''] });
     assert.deepEqual(await c.call('member.interrupt', { memberId: 'm1' }), {});
     assert.deepEqual(await c.call('member.instructions.get', { memberId: 'm1' }), { markdown: '# role' });
+    assert.deepEqual(await c.call('member.instructions.effective', { memberId: 'm1' }), { markdown: '[사무실] …\n\n# role' });
+    assert.deepEqual(office.calls.at(-1), { method: 'buildSessionContext', args: ['m1'] });
     assert.deepEqual(await c.call('member.instructions.set', { memberId: 'm1', markdown: '' }), {});
     assert.deepEqual(office.calls.at(-1), { method: 'setInstructions', args: ['m1', ''] });
 

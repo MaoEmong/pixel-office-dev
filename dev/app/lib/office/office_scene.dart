@@ -8,6 +8,7 @@
 //         text → "💬 <text>", delegating → "→ 위임", reporting → "📋 보고"
 //   이벤트 없음 → status 로: starting "(출근 중)", idle "(대기)", working "…", waiting_* 는 위와 동일.
 //   파생 status 가 waiting_reports 면 "📨 보고 대기"(팀장이 위임하고 팀원 보고를 기다리는 중 — M4).
+//   파생 status 가 free 면(턴 끝 + 맡은 일 없음, T28) "(대기)" 자리에 "(한가함)".
 //   파생 status 가 waiting_answer/waiting_approval 이면 이벤트보다 "❓ 질문"/"❗ 허가 대기" 가 앞선다
 //   (`ask_user` 는 질문이 열린 채 raw status 가 idle 로 돌아간다 — PROTOCOL `member.status.derived`, T19 함정 1).
 
@@ -24,6 +25,10 @@ const String leaderBadgeLabel = '팀장';
 
 /// 파생 상태 `waiting_reports`(팀장이 위임하고 팀원 보고를 기다리는 중 — 01 §3, M4) 의 모니터·말풍선 문구.
 const String waitingReportsSummary = '📨 보고 대기';
+
+/// 파생 상태 `free`(턴도 끝났고 맡은 일도 없다 — PROTOCOL `derived`, T28) 의 문구. 같은 "(대기)" 라도
+/// **일이 남아 있는** idle 과 구분해 보여 준다.
+const String freeSummary = '(한가함)';
 
 /// 캐릭터 한 명이 화면에 필요한 값.
 class SceneMember {
@@ -256,6 +261,8 @@ String summarize(MemberStatus status, OfficeEvent? event, {DerivedStatus? derive
   if (derived == DerivedStatus.waitingApproval) return '❗ 허가 대기';
   // 팀장이 위임 후 idle 인데 미종료 task 가 남았다 — 마지막 이벤트("(대기)")보다 이게 사실에 가깝다(01 §3, M4).
   if (derived == DerivedStatus.waitingReports) return waitingReportsSummary;
+  // 턴도 끝났고 맡은 일도 없다(T28). "(대기)" 가 나올 자리에서만 바꾼다 — 방금 한 일(보고·편집)은 그대로 보여 준다.
+  if (derived == DerivedStatus.free && (event == null || event.kind == OfficeEventKind.idle)) return freeSummary;
   if (event == null) return _statusSummary(status);
   final d = event.detail;
   return switch (event.kind) {

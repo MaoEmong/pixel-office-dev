@@ -47,9 +47,14 @@ import type {
   Team,
 } from '../store/types.js';
 import { OfficeError, RPC_ERROR, badState, invalidParams, notFound } from './errors.js';
+// T28: 공통 후처리(interrupt/퇴근/종료/재시작/팀 삭제/복구)와 파생 상태는 각각 한 파일에 모여 있다.
+import { settleMember, type SettleCtx, type SettleReason, type SettleSummary } from './afterCare.js';
+import { derivedStatus } from './derived.js';
 import { CODEX_FALLBACK, detectQuestion, isFallbackQuestion, type FallbackQuestionPayload } from './codexFallback.js';
 import { defaultOrphanOps, reapOrphan, type OrphanOps } from './orphans.js';
 import { ShellMutex, shellLockCommand, type ShellLockInfo } from './ShellMutex.js';
+import { defaultInstructions } from './instructions/templates.js';
+import { buildSessionContext, type RosterEntry } from './instructions/context.js';
 import type {
   ApprovalRespondParams,
   AskUserParams,
@@ -66,6 +71,7 @@ import type {
   NoticeLevel,
   OfficeApi,
   OfficeEvents,
+  OfficeSnapshot,
   PtyManagerLike,
   ReportLine,
   TeamHireInput,
@@ -227,6 +233,8 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
    * `blocked` 는 버퍼를 건너뛰고 즉시 단독 전달.
    */
   private readonly reportBuffer = new Map<string, ReportLine[]>();
+  /** 멤버별로 마지막에 내보낸 파생 상태(T28). raw 는 그대로인데 파생만 바뀐 것을 알아채는 데 쓴다. */
+  private readonly lastDerived = new Map<string, DerivedStatus>();
   private readonly fallbackWindowMs: number;
   private readonly orphanOps: OrphanOps;
   private info?: DaemonInfo;
@@ -284,7 +292,8 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
       });
     const adapterDeps: AdapterDeps = {
       store: this.store,
-      getInstructions: (memberId: string) => this.readInstructions(memberId) || undefined,
+      // T26b: hook 에 나가는 것은 파일 본문이 아니라 **런타임 프리앰블 + 유효 지시문**(아래 buildSessionContext).
+      getInstructions: (memberId: string) => this.buildSessionContext(memberId) || undefined,
       // T27: 셸 도구(읽기 전용 제외)의 PreToolUse 는 팀 락을 잡을 때까지 응답을 보류한다.
       toolGate: (memberId, tool, input, ctx) => this.shellGate(memberId, tool, input, ctx),
     };
@@ -409,8 +418,13 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
 
   // ---- 조회 ------------------------------------------------------------------------
 
-  snapshot(): Snapshot {
-    return this.store.snapshot();
+  /**
+   * 스냅샷. 멤버 행에 **파생 상태**를 실어 보낸다(T28) — 클라이언트가 `member.status` 알림과 같은 규칙을 다시 구현하지 않게
+   * (재접속 직후 팀장이 `waiting_reports` 인지 `free` 인지는 raw status 만으로는 알 수 없다). 규칙은 derived.ts 하나뿐이다.
+   */
+  snapshot(): OfficeSnapshot {
+    const snap = this.store.snapshot();
+    return { ...snap, members: snap.members.map((m) => ({ ...m, derived: derivedStatus(m, this.store) })) };
   }
 
   getMember(memberId: string): Member | undefined {
@@ -470,13 +484,24 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
     return { team: this.store.updateTeam(team.id, { leaderId: leader.id })!, leader };
   }
 
-  /** 멤버 전부 퇴근시킨 뒤 삭제(events 는 남는다). */
+  /**
+   * 멤버 전부 퇴근시킨 뒤 삭제(events 는 남는다).
+   *
+   * **팀원 먼저, 팀장 마지막(T28).** 팀장을 먼저 내보내면 그 후처리가 팀원을 interrupt 하고, 그 팀원의 후처리가
+   * 다시 (아직 살아 있는) 팀장 큐에 `[REPORTS … aborted]` 를 밀어 넣는다 — 어차피 지울 팀에 왕복만 늘어난다.
+   * 팀원부터 `settle('teamDelete')` 로 정리하면 팀장 차례에는 거둘 task 가 남아 있지 않다.
+   * 살아 있지 않은 행도 MCP 토큰은 끊는다(disposeRuntime → disposeMcp).
+   */
   async deleteTeam(teamId: string): Promise<void> {
     const team = this.store.getTeam(teamId);
     if (!team) throw notFound('team', teamId);
-    for (const m of this.store.listMembers(teamId)) {
-      if (this.runtimes.get(m.id)?.session.alive) await this.clockOut(m.id);
+    const members = this.store.listMembers(teamId);
+    const ordered = [...members.filter((m) => m.rank !== 'leader'), ...members.filter((m) => m.rank === 'leader')];
+    for (const m of ordered) {
+      if (this.runtimes.get(m.id)?.session.alive) await this.clockOut(m.id, { byLeader: true, reason: 'teamDelete' });
+      else this.settle(m.id, 'teamDelete');
       this.disposeRuntime(m.id);
+      this.lastDerived.delete(m.id);
     }
     this.store.deleteTeam(teamId);
   }
@@ -566,24 +591,24 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
    * (01 §"interrupt / fire / error 공통 후처리"). 팀원 자체는 남는다 — 사용자가 출근시킨 팀원은 물론이고
    * 팀장이 hire 한 팀원도 자르지 않는다(퇴근은 사용자의 권한, 아래 worklog 결정).
    * `opts.byLeader` 는 TeamTools `dismiss` 경로 표시 — 그때는 `[TEAM]` 알림을 팀장에게 되돌리지 않는다.
+   * 후처리(task·pending·셸 락·팀장 정리·MCP)는 전부 `settle()` 하나가 한다(T28). `opts.reason` 은 팀 삭제 경로 표시.
    */
-  async clockOut(memberId: string, opts: { byLeader?: boolean } = {}): Promise<void> {
+  async clockOut(memberId: string, opts: { byLeader?: boolean; reason?: SettleReason } = {}): Promise<void> {
     const member = this.member(memberId);
     const rt = this.runtimes.get(memberId);
-    if (member.rank === 'leader') this.abortTasksIssuedBy(member, '팀장 퇴근');
+    if (!rt?.session.alive && GONE.has(member.status)) throw badState(`member ${memberId} already ${member.status}`);
+    if (rt?.session.alive) {
+      rt.exitMode = 'clockOut';
+      rt.queue.clear();
+      rt.queue.stop();
+    }
+    this.settle(memberId, opts.reason ?? 'clockOut');
     if (!rt?.session.alive) {
-      if (GONE.has(member.status)) throw badState(`member ${memberId} already ${member.status}`);
       // 프로세스 없이 status 만 살아 있는 행(데몬 재시작 후 등) — 상태만 정리한다.
       this.finishMember(memberId, 'clocked out');
       this.noticeClockOut(member, opts.byLeader === true);
       return;
     }
-    rt.exitMode = 'clockOut';
-    rt.queue.clear();
-    rt.queue.stop();
-    this.adapterOf(memberId).expireAllForMember(memberId);
-    this.releaseShellLocks(memberId); // T27 후처리
-    this.abortTasksAndReport(memberId, '퇴근');
     await this.pty.kill(memberId, { graceful: true, timeoutMs: KILL_TIMEOUT_MS });
     this.finishMember(memberId, 'clocked out');
     this.noticeClockOut(member, opts.byLeader === true);
@@ -615,8 +640,7 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
       rt.exitMode = 'restart';
       rt.queue.clear();
       rt.queue.stop();
-      this.adapterOf(memberId).expireAllForMember(memberId);
-      this.releaseShellLocks(memberId); // T27 후처리
+      this.settle(memberId, 'restart'); // T28: 보류 만료 + 셸 락 해제(진행 task 는 같은 세션을 이어서 하므로 그대로)
       await this.pty.kill(memberId, { graceful: true, timeoutMs: KILL_TIMEOUT_MS });
     }
     const fresh = this.spawnMember(this.store.getMember(memberId)!, true);
@@ -672,9 +696,9 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
     rt.lastInterruptAt = now;
     rt.queue.clear();
     rt.queue.interrupt();
-    this.adapterOf(memberId).expireAllForMember(memberId);
-    this.releaseShellLocks(memberId); // T27 후처리 — 중단한 명령이 쥔 락을 팀에 돌려준다
-    this.abortTasksAndReport(memberId, '중단(interrupt)'); // T25: 발행자에게 aborted 보고가 즉시 간다
+    // T28 공통 후처리: 내 task aborted(+ 발행자에게 즉시 보고) · 보류 만료 · 셸 락 해제.
+    // 팀장이어도 자기가 낸 task 는 건드리지 않는다 — Ctrl+C 는 그 팀장의 턴을 끊는 것이지 팀 지시를 거두는 게 아니다.
+    this.settle(memberId, 'interrupt');
     this.watchInterrupted(rt);
   }
 
@@ -720,12 +744,49 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
 
   // ---- 지시문 ----------------------------------------------------------------------
 
+  /** **사용자 파일만.** 없으면 `""` — 앱의 지시문 편집기가 보는 값이다(기본 템플릿은 섞지 않는다). */
   getInstructions(memberId: string): string {
     this.member(memberId);
     return this.readInstructions(memberId);
   }
 
-  /** `${dataDir}/teams/<teamId>/members/<memberId>/INSTRUCTIONS.md`. 다음 SessionStart 부터 반영(D-05). */
+  /**
+   * 지금 이 멤버에게 실제로 적용되는 지시문 본문(T26b). 사용자 파일에 **본문이 있으면** 그것, 없으면 직급 기본 템플릿.
+   *
+   * `hire` 가 쓴 `# 역할: <role>` 한 줄뿐인 파일은 "본문 없음" 으로 본다 — 그건 사용자가 쓴 지시문이 아니라 역할 메타데이터라
+   * (roleOf 가 `[TEAM]` 알림에 쓴다) 기본 템플릿을 덮을 이유가 없다. 대신 그 역할이 템플릿 머리말에 실린다.
+   */
+  effectiveInstructions(memberId: string): string {
+    const member = this.store.getMember(memberId);
+    if (!member) return '';
+    const file = this.readInstructions(memberId);
+    if (bodyBelowRole(file).trim()) return file;
+    const team = this.store.getTeam(member.teamId);
+    if (!team) return file;
+    const leader = this.store.liveLeader(team.id);
+    return defaultInstructions(member, team, { role: roleOf(file), leaderName: leader?.name });
+  }
+
+  /**
+   * SessionStart 의 `additionalContext` 로 나가는 전체 텍스트(T26b) = 런타임 프리앰블 + 유효 지시문.
+   * 프리앰블(정체·로스터·도구 이름)은 사용자 지시문이 있어도 늘 붙고, startup/resume/clear/compact 마다 다시 나간다(D-05).
+   */
+  buildSessionContext(memberId: string): string {
+    const member = this.store.getMember(memberId);
+    if (!member) return '';
+    const team = this.store.getTeam(member.teamId);
+    if (!team) return this.effectiveInstructions(memberId);
+    const roster: RosterEntry[] = this.store
+      .listMembers(team.id)
+      .filter((m) => !GONE.has(m.status))
+      .map((m) => ({ name: m.name, rank: m.rank, engine: m.engine, role: roleOf(this.readInstructions(m.id)) }));
+    return buildSessionContext({ team, member, roster, instructions: this.effectiveInstructions(memberId) });
+  }
+
+  /**
+   * `${dataDir}/teams/<teamId>/members/<memberId>/INSTRUCTIONS.md`. 다음 SessionStart 부터 반영(D-05).
+   * 파일은 **사용자(앱·콘솔)나 `hire`/`clockIn` 의 `instructions` 로만** 생긴다 — 기본 템플릿은 저장하지 않는다(T26b).
+   */
   setInstructions(memberId: string, markdown: string): void {
     const member = this.member(memberId);
     const file = this.instructionsPath(member.teamId, memberId);
@@ -999,38 +1060,31 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
     this.emitStatus(leaderId, leader.status); // derived: 남은 발행 task 가 0 이면 waiting_reports 가 풀린다
   }
 
-  /** 중단·퇴근·비정상 종료 후처리: 그 멤버의 미종료 task 를 aborted 로 만들고 발행자에게 즉시 알린다(01 §공통 후처리). */
-  private abortTasksAndReport(memberId: string, why: string): Task[] {
-    const member = this.store.getMember(memberId);
-    const aborted = this.store.abortTasksFor(memberId);
-    for (const task of aborted) {
-      this.inFlight.delete(task.id);
-      const body = `${member?.name ?? memberId} 의 작업이 중단됐습니다 (${why}).`;
-      if (task.fromMember === USER_ACTOR) {
-        if (member) this.appendEvent(member, 'reporting', { summary: body, status: 'aborted' }, { taskId: task.id });
-      } else {
-        this.deliverReports(task.fromMember, [{ taskId: task.id, name: member?.name ?? memberId, status: 'aborted', body }], false);
-      }
-    }
-    return aborted;
+  // ---- 내부: 공통 후처리(T28) ------------------------------------------------------------
+  //
+  // interrupt / 퇴근 / 비정상 종료 / 재시작 / 팀 삭제 / 데몬 복구는 전부 이 문 하나로 들어간다. 이유별로 무엇이 다른지는
+  // afterCare.ts 의 SETTLE_MATRIX 표에만 적혀 있다(01 §"interrupt / fire / error 공통 후처리").
+
+  /** 후처리 한 번. `opts.expireQuestions` 는 `recover` 에서 되살릴 세션이 아예 없는 멤버용(ask_user 질문까지 만료). */
+  private settle(memberId: string, reason: SettleReason, opts: { expireQuestions?: boolean } = {}): SettleSummary {
+    return settleMember(this.store, this.settleCtx(), memberId, reason, opts);
   }
 
-  /** 팀장이 나갈 때: 그가 발행한 미종료 task 를 전부 aborted 하고 맡고 있던 팀원을 interrupt 한다(팀원 자체는 남는다). */
-  private abortTasksIssuedBy(leader: Member, why: string): void {
-    this.reportBuffer.delete(leader.id);
-    for (const task of this.store.openTasksIssuedBy(leader.id)) {
-      this.store.updateTask(task.id, { status: 'aborted', reportStatus: 'aborted' });
-      this.inFlight.delete(task.id);
-      const target = this.store.getMember(task.toMember);
-      if (target) this.appendEvent(target, 'idle', { summary: `task#${task.id} aborted (${why})` }, { taskId: task.id });
-      if (this.runtimes.get(task.toMember)?.session.alive) {
-        try {
-          this.interrupt(task.toMember);
-        } catch (err) {
-          this.notice('warn', `${target?.name ?? task.toMember} 중단 실패(${why}): ${errMsg(err)}`);
-        }
-      }
-    }
+  /** afterCare 가 부르는 부작용 묶음. Office 안에서만 만든다. */
+  private settleCtx(): SettleCtx {
+    return {
+      expireAllPending: (id) => this.adapterOf(id).expireAllForMember(id),
+      releaseShellLocks: (id) => this.releaseShellLocks(id),
+      disposeMcp: (id) => this.disposeMcp(id),
+      isAlive: (id) => this.runtimes.get(id)?.session.alive === true,
+      interrupt: (id) => this.interrupt(id),
+      appendEvent: (member, kind, detail, ref) => this.appendEvent(member, kind, detail, ref),
+      deliverReports: (leaderId, lines, allIn) => this.deliverReports(leaderId, lines, allIn),
+      dropReportBuffer: (leaderId) => this.reportBuffer.delete(leaderId),
+      forgetInFlight: (taskId) => this.inFlight.delete(taskId),
+      syncDerived: (id) => this.syncDerived(id),
+      notice: (level, message) => this.notice(level, message),
+    };
   }
 
   /** task 하나를 입력 큐에 넣는다(대상이 지금 받을 수 있을 때만). 넣었으면 true. */
@@ -1356,18 +1410,8 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
    * approval 전부, question 은 payload.tool_input 이 있는 것(TUI AskUserQuestion)만. all=true 면(멤버가 error 로 가는 경우) 전부.
    */
   private expirePendingForRestart(member: Member, all: boolean): Pending[] {
-    const out: Pending[] = [];
-    for (const p of this.store.listOpenPending(member.id)) {
-      const isTuiQuestion = p.type === 'question' && p.payload.tool_input !== undefined;
-      if (!all && p.type === 'question' && !isTuiQuestion) continue;
-      const final = this.store.expirePending(p.id);
-      if (final?.status !== 'expired') continue;
-      out.push(final);
-      const summary = p.type === 'approval' ? '재지시 필요: 허가 요청이 재시작으로 만료됨' : '재지시 필요: 질문이 재시작으로 만료됨';
-      const ref = p.type === 'approval' ? { approvalId: p.id } : { questionId: p.id };
-      this.appendEvent(member, 'error', { summary, pendingId: p.id, pendingType: p.type }, ref);
-    }
-    return out;
+    // T28: 후처리 표의 `recover` 행이 이 규칙을 그대로 들고 있다(만료 + D-15 모양의 error 이벤트, task 는 건드리지 않음).
+    return this.settle(member.id, 'recover', { expireQuestions: all }).expiredPending;
   }
 
   /** 되살리지 못한 멤버: error 이벤트 + status error + 미종료 task aborted(01 §error 공통 후처리). 재고용은 사용자 몫. */
@@ -1432,12 +1476,10 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
       this.setStatus(memberId, 'exited');
       return;
     }
-    // 예상 못 한 종료(사용자 /exit, 크래시): 어댑터가 error 이벤트 + exited/error, pending 만료. task 는 여기서 aborted.
+    // 예상 못 한 종료(사용자 /exit, 크래시): 어댑터가 error 이벤트 + exited/error, pending 만료.
     this.adapterOf(memberId).onSessionExit(memberId, info.exitCode);
-    // T25: 팀장이 죽었으면 그가 발행한 task 도 전부 정리한다(01 §"interrupt / fire / error 공통 후처리").
-    const gone = this.store.getMember(memberId);
-    if (gone?.rank === 'leader') this.abortTasksIssuedBy(gone, '팀장 종료');
-    this.abortTasksAndReport(memberId, '세션 종료');
+    // T28: 나머지 후처리(내 task aborted + 발행자 보고 / 팀장이면 발행 task 정리 + 팀원 중단 / 셸 락 / MCP)는 표 하나로.
+    this.settle(memberId, 'error');
   }
 
   /** 퇴근 마무리: 흔적 이벤트 + status exited. MCP 연결도 끊는다(프로세스 없이 status 만 살아 있던 행 포함). */
@@ -1445,7 +1487,6 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
     const member = this.store.getMember(memberId);
     if (!member) return;
     this.disposeMcp(memberId);
-    this.abortTasksAndReport(memberId, '퇴근');
     this.appendEvent(member, 'idle', { summary });
     this.setStatus(memberId, 'exited');
     this.store.updateMember(memberId, { childPid: null });
@@ -1652,28 +1693,38 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
     return m?.status === 'idle' && this.store.listOpenPending(memberId).length === 0;
   }
 
-  /**
-   * 파생 상태(01 §2): idle 인데 열린 질문이 있으면 `waiting_answer`(ask_user 는 턴이 끝난 뒤에도 질문이 열려 있다, T17),
-   * **팀장이 idle 인데 자기가 발행한 미종료 task 가 있으면 `waiting_reports`**(T25 — 팀원 보고를 기다리는 중),
-   * idle 이고 배정 task 없으면 `free`.
-   */
+  /** 파생 상태(01 §2, T28). 규칙은 derived.ts 하나에만 있고 snapshot·`member.status` 알림이 같이 쓴다. */
   private derived(memberId: string, status: MemberStatus): DerivedStatus {
-    if (status !== 'idle') return status;
-    if (this.store.listOpenPending(memberId).some((p) => p.type === 'question')) return 'waiting_answer';
-    if (this.store.getMember(memberId)?.rank === 'leader' && this.store.openTasksIssuedBy(memberId).length > 0) return 'waiting_reports';
-    const open = this.store.listTasks({ toMember: memberId, status: OPEN_TASKS });
-    return open.length === 0 ? 'free' : 'idle';
+    const m = this.store.getMember(memberId);
+    return m ? derivedStatus(m, this.store, status) : status;
   }
 
   private emitStatus(memberId: string, status: MemberStatus): void {
-    this.emit('status', memberId, status, this.derived(memberId, status));
+    const derived = this.derived(memberId, status);
+    this.lastDerived.set(memberId, derived);
+    this.emit('status', memberId, status, derived);
     // T25 유휴 감시: 유휴가 되는 순간 밀려 있던 위임(queued)을 전달한다. 게이트는 dispatchTask 가 다시 본다.
     if (status === 'idle') this.dispatchQueuedTasks(memberId);
   }
 
+  /**
+   * raw status 는 그대로인데 **파생만** 바뀐 경우에도 알린다(T28 — T17 의 `ask_user` 예외를 일반화).
+   * 예: 팀장이 idle 인 채로 위임을 하면 free → waiting_reports, 보고가 다 들어오면 다시 free.
+   * 값이 그대로면 아무것도 내지 않는다(중복 알림 방지).
+   */
+  private syncDerived(memberId: string): void {
+    const m = this.store.getMember(memberId);
+    if (!m) return;
+    const derived = derivedStatus(m, this.store);
+    if (this.lastDerived.get(memberId) === derived) return;
+    this.lastDerived.set(memberId, derived);
+    this.emit('status', memberId, m.status, derived);
+  }
+
   private setStatus(memberId: string, status: MemberStatus): void {
     const m = this.store.getMember(memberId);
-    if (!m || m.status === status) return;
+    if (!m) return;
+    if (m.status === status) return void this.syncDerived(memberId);
     this.store.updateMember(memberId, { status });
     this.emitStatus(memberId, status);
   }
@@ -1759,6 +1810,17 @@ export function reportBody(summary: string, files?: string[]): string {
 export function buildRoleInstructions(role: string, body?: string): string {
   const rest = (body ?? '').trim();
   return rest ? `# 역할: ${role}\n\n${rest}\n` : `# 역할: ${role}\n`;
+}
+
+/**
+ * `# 역할: <role>` 첫 줄을 뺀 나머지(T26b). 비어 있으면 "사용자가 쓴 지시문이 없다" 는 뜻이라 기본 템플릿이 쓰인다.
+ * 첫 줄이 역할 줄이 아니면 원문 그대로.
+ */
+export function bodyBelowRole(instructions?: string): string {
+  const text = instructions ?? '';
+  if (!roleOf(text)) return text;
+  const nl = text.search(/\r?\n/);
+  return nl < 0 ? '' : text.slice(nl + 1);
 }
 
 /** 지시문 첫 줄의 `# 역할: <role>` 을 되읽는다(`[TEAM]` 알림에 역할을 싣기 위해). */
