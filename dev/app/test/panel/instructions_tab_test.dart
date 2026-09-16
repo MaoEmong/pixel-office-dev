@@ -122,6 +122,11 @@ void main() {
       expect(_text(tester), memberInstructionTemplate);
       expect(_text(tester), startsWith('# 팀원 지시문'));
       expect(_text(tester), contains('report(taskId, summary, status: done|blocked)'));
+      // T29: 데몬 팀원 템플릿과 같은 도구 이름 줄 (T26b "남은 것")
+      expect(
+        _text(tester),
+        contains('도구 이름: mcp__team__report, mcp__team__ask_user (도구 목록에 없으면 ToolSearch로 찾는다).'),
+      );
       expect(find.byKey(_template), findsNothing); // 내용이 생기면 버튼도 사라진다
       expect(_enabled(tester, _save), isTrue); // 넣은 것도 저장 대상
     });

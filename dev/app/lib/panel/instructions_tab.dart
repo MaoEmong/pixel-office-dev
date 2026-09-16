@@ -44,6 +44,7 @@ const String memberInstructionTemplate = r'''# 팀원 지시문
 - 맡은 디렉토리/파일 밖은 건드리지 않는다. 빌드·테스트는 지시받은 경우에만.
 - 끝나면 report(taskId, summary, status: done|blocked)로 팀장에게 보고한다. 막히면 status: blocked로 이유를 적는다.
 - 사용자에게 직접 물어야 하면 ask_user(question, options?)를 쓴다.
+도구 이름: mcp__team__report, mcp__team__ask_user (도구 목록에 없으면 ToolSearch로 찾는다).
 ''';
 
 /// 직급별 기본 템플릿. 직급을 모르면(멤버 행이 없으면) 팀원 것.
