@@ -1,4 +1,4 @@
-// 오른쪽 패널(T13 · T15 · T18) — 선택된 멤버의 헤더 + 배너 + 카드 + 탭(로그 · 터미널 · 변경 파일 · 보고서).
+// 오른쪽 패널(T13 · T15 · T18 · T26) — 선택된 멤버의 헤더 + 배너 + 카드 + 탭(로그 · 터미널 · 지시문 · 보고서).
 //
 //  RightPanel(memberId: null)  → "캐릭터를 선택하세요"
 //  RightPanel(memberId: 'm_…') → PanelHeader(이름 · 엔진 · 상태 · 팀 cwd · 출근 후 경과)
@@ -7,7 +7,8 @@
 //                                 + RedoCards(재지시 필요, T18) + PendingCards(열린 허가·질문 카드, T15) + TabBar
 //     로그      LogTab       (lib/panel/log_tab.dart)      memberLogProvider — 백필 ∪ 라이브
 //     터미널    TerminalTab  (lib/panel/terminal_tab.dart) xterm + member.attach/term/type/resize/detach, Terminal 은 terminalCacheProvider 에
-//     변경 파일 자리(추후)
+//     지시문    InstructionsTab (lib/panel/instructions_tab.dart) member.instructions.get/set + member.restart,
+//                                초안은 instructionsCacheProvider 에(탭을 오가도 유지)
 //     보고서    ReportTab    (lib/panel/report_tab.dart)   reporting + 직전 text 로 되살린 task 보고, 최신 먼저
 //
 // 탭 위치(DefaultTabController)는 멤버가 바뀌어도 유지된다. TabBarView 는 보이지 않는 탭을 내리므로
@@ -21,6 +22,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../model/models.dart';
 import '../state/office_state.dart';
+import 'instructions_tab.dart';
 import 'labels.dart';
 import 'log_tab.dart';
 import 'member_gone_banner.dart';
@@ -30,6 +32,16 @@ import 'redo_card.dart';
 import 'report_tab.dart';
 import 'terminal_tab.dart';
 
+export 'instructions_tab.dart'
+    show
+        InstructionsTab,
+        InstructionsCache,
+        InstructionsDraft,
+        instructionsCacheProvider,
+        instructionTemplate,
+        instructionsHint,
+        leaderInstructionTemplate,
+        memberInstructionTemplate;
 export 'labels.dart' show eventKindLabel, memberStatusLabel, derivedStatusLabel;
 export 'log_tab.dart' show LogTab, LogRow;
 export 'member_gone_banner.dart' show MemberGoneBanner, RecoveryHint, memberFailureEventsProvider, recoveryExpiredCountProvider;
@@ -89,7 +101,7 @@ class RightPanel extends ConsumerWidget {
                 ),
               ),
               const TabBar(
-                tabs: [Tab(text: '로그'), Tab(text: '터미널'), Tab(text: '변경 파일'), Tab(text: '보고서')],
+                tabs: [Tab(text: '로그'), Tab(text: '터미널'), Tab(text: '지시문'), Tab(text: '보고서')],
                 labelStyle: TextStyle(fontSize: 13),
                 labelPadding: EdgeInsets.symmetric(horizontal: 8),
               ),
@@ -98,7 +110,7 @@ class RightPanel extends ConsumerWidget {
                   children: [
                     LogTab(memberId: id),
                     TerminalTab(memberId: id),
-                    const _PlaceholderTab('변경 파일 (추후)'),
+                    InstructionsTab(memberId: id),
                     ReportTab(memberId: id),
                   ],
                 ),
@@ -234,12 +246,4 @@ class _ElapsedSinceState extends State<ElapsedSince> {
         '${widget.prefix}${formatElapsed(DateTime.now().difference(widget.since))}',
         style: const TextStyle(fontSize: 11, color: Colors.white54),
       );
-}
-
-class _PlaceholderTab extends StatelessWidget {
-  const _PlaceholderTab(this.label);
-  final String label;
-
-  @override
-  Widget build(BuildContext context) => Center(child: Text(label, style: const TextStyle(color: Colors.white38)));
 }

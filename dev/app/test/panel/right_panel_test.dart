@@ -1,4 +1,5 @@
-// RightPanel: null → 안내, 헤더(이름·엔진·상태·팀 cwd·경과), 탭 4개, 탭 전환으로 터미널 attach/detach, 보고서 자리(text 이벤트).
+// RightPanel: null → 안내, 헤더(이름·엔진·상태·팀 cwd·경과), 탭 4개(로그·터미널·지시문·보고서),
+// 탭 전환으로 터미널 attach/detach, 보고서 자리(text 이벤트).
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:pixel_office/panel/right_panel.dart';
@@ -33,7 +34,7 @@ void main() {
       expect(find.textContaining('출근 1시간 30분'), findsOneWidget); // createdAt = now-90m
       expect(find.text('로그'), findsOneWidget);
       expect(find.text('터미널'), findsOneWidget);
-      expect(find.text('변경 파일'), findsOneWidget);
+      expect(find.text('지시문'), findsOneWidget);
       expect(find.text('보고서'), findsOneWidget);
       expect(find.byType(LogTab), findsOneWidget);
       expect(find.byType(TerminalView), findsNothing); // 터미널 탭은 보일 때만 attach

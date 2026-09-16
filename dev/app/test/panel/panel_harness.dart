@@ -14,11 +14,19 @@ import 'panel_fake_daemon.dart';
 export '../fake_daemon.dart' show sampleEvent;
 export 'panel_fake_daemon.dart';
 
-Map<String, dynamic> memberJson(String id, {String status = 'idle', String name = '', String engine = 'claude', String createdAt = ''}) => {
+Map<String, dynamic> memberJson(
+  String id, {
+  String status = 'idle',
+  String name = '',
+  String engine = 'claude',
+  String createdAt = '',
+  String rank = 'member',
+}) =>
+    {
       'id': id,
       'teamId': 't1',
       'name': name.isEmpty ? id : name,
-      'rank': 'member',
+      'rank': rank,
       'engine': engine,
       'sessionId': null,
       'childPid': null,
