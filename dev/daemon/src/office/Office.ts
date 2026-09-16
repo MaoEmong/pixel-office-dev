@@ -512,7 +512,9 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
     if (params.headEngine === 'codex') {
       this.notice('warn', `${department.name}: 부장 엔진이 codex 입니다 — v1 권장은 claude(오케스트레이션 도구 실측이 Claude 기준)`);
     }
-    return { department: this.store.updateDepartment(department.id, { headId: head.id })!, head };
+    const created = this.store.updateDepartment(department.id, { headId: head.id })!;
+    this.emit('tree', 'department.create');
+    return { department: created, head };
   }
 
   /**
@@ -531,6 +533,8 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
     }
     await this.drainChildExits();
     this.store.deleteDepartment(departmentId);
+    // 지운 행은 `member.status{exited}` 로만 알려졌었다 — 부서·팀 행 자체가 사라진 것은 스냅샷으로 민다(T38).
+    this.emit('tree', 'department.delete');
   }
 
   /** 부서 트리(콘솔 `tree` · 앱 T37). 멤버 행에는 스냅샷과 같은 파생 상태가 붙는다. */
@@ -606,7 +610,9 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
       this.store.deleteTeam(team.id);
       throw e;
     }
-    return { team: this.store.updateTeam(team.id, { leaderId: lead.id })!, lead };
+    const created = this.store.updateTeam(team.id, { leaderId: lead.id })!;
+    this.emit('tree', 'team.create');
+    return { team: created, lead };
   }
 
   /**
@@ -624,6 +630,7 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
     }
     await this.drainChildExits();
     this.store.deleteTeam(teamId);
+    this.emit('tree', 'team.delete');
   }
 
   // ---- 멤버 수명 ---------------------------------------------------------------------
@@ -870,8 +877,8 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
   /**
    * 사용자 지시 = task(from 'user'). 큐에 `[TASK#n from user]\n<text>` — flush 되면 assigned.
    *
-   * **"팀장에게만 지시"(T24, 01 §4 · 전제 6):** 팀에 살아 있는 팀장이 있으면 팀원 직접 지시는 `-32004`.
-   * 팀장이 나가면(exited/error) 게이트가 열려 사용자가 팀원에게 직접 지시할 수 있다.
+   * **"부장에게만 지시"(T34, D-32 — T24 의 "팀장에게만" 을 대체):** 그 **부서**에 살아 있는 부장이 있으면
+   * 부장 외(팀장·팀원) 직접 지시는 `-32004` + `data:{headId}`. 부장이 나가면(exited/error) 게이트가 열린다.
    * `opts.force` 는 디버그용 탈출구 — 앱은 보내지 않는다. 터미널 탭 직접 타이핑(`member.type`)은 "지시"가 아니라 항상 가능.
    */
   instruct(memberId: string, text: string, opts: InstructOptions = {}): number {

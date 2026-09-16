@@ -234,4 +234,21 @@ describe('직무 체계 rev 3 — 트리 동작 (T34)', () => {
     }
     assert.equal(worker.departmentId, department.id);
   });
+
+  // T38: 부서·팀 행의 생멸에는 `member.status` 같은 알림이 없다 — Office 가 'tree' 를 내고 RpcServer 가 `snapshot` 을 민다.
+  test("'tree' 이벤트: 부서·팀 생성/삭제에서만 나온다(고용·퇴근은 아니다)", async () => {
+    const seen: string[] = [];
+    office.on('tree', (reason) => seen.push(reason));
+
+    // 고용·지시는 트리 **모양**이 아니라 멤버 행이라 'tree' 가 아니다(member.status 가 알린다).
+    const worker = office.hireByLeader({ leaderId: lead.id, engine: 'claude', name: '이음' });
+    await office.clockOut(worker.id);
+    assert.deepEqual(seen, []);
+
+    const t2 = office.createTeam({ departmentId: department.id, name: 't2', leadName: '조장' });
+    await office.deleteTeam(t2.team.id);
+    const d2 = office.createDepartment({ name: 'beta', cwd: dataDir, headEngine: 'claude', headName: '부장2' });
+    await office.deleteDepartment(d2.department.id);
+    assert.deepEqual(seen, ['team.create', 'team.delete', 'department.create', 'department.delete']);
+  });
 });

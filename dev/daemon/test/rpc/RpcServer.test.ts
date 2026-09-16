@@ -103,11 +103,13 @@ class FakeOffice extends EventEmitter<OfficeEvents> implements OfficeApi {
       engine: params.headEngine,
       status: 'starting' as const,
     };
+    this.emit('tree', 'department.create'); // 실제 Office 와 같은 자리에서(T38)
     return { department: { ...DEPT, name: params.name, cwd: params.cwd, headId: head.id }, head };
   }
   async deleteDepartment(departmentId: string): Promise<void> {
     this.rec('deleteDepartment', departmentId);
     if (departmentId !== 'd1') throw new OfficeError(RPC_ERROR.NOT_FOUND, `department not found: ${departmentId}`);
+    this.emit('tree', 'department.delete');
   }
   tree(): DepartmentTree[] {
     this.rec('tree');
@@ -122,6 +124,7 @@ class FakeOffice extends EventEmitter<OfficeEvents> implements OfficeApi {
       engine: params.leadEngine ?? ('claude' as const),
       status: 'starting' as const,
     };
+    this.emit('tree', 'team.create');
     return { team: { ...TEAM, name: params.name, departmentId: params.departmentId, leaderId: lead.id }, lead };
   }
   hireChild(params: HireChildParams): Member {
@@ -131,6 +134,7 @@ class FakeOffice extends EventEmitter<OfficeEvents> implements OfficeApi {
   async deleteTeam(teamId: string): Promise<void> {
     this.rec('deleteTeam', teamId);
     if (teamId !== 't1') throw new OfficeError(RPC_ERROR.NOT_FOUND, `team not found: ${teamId}`);
+    this.emit('tree', 'team.delete');
   }
   clockIn(params: ClockInParams): Member {
     this.rec('clockIn', params);
@@ -383,7 +387,7 @@ describe('RpcServer', () => {
 
     assert.deepEqual(await c.call('member.instruct', { memberId: 'm1', text: 'do it' }), { taskId: 7 });
     assert.deepEqual(office.calls.at(-1), { method: 'instruct', args: ['m1', 'do it', { force: false }] });
-    // force 는 "팀장에게만 지시" 게이트를 넘는 디버그 탈출구(T24) — 서버가 boolean 으로 정규화해 넘긴다.
+    // force 는 "부장에게만 지시" 게이트를 넘는 디버그 탈출구(T34, D-32) — 서버가 boolean 으로 정규화해 넘긴다.
     await c.call('member.instruct', { memberId: 'm1', text: 'do it', force: true });
     assert.deepEqual(office.calls.at(-1), { method: 'instruct', args: ['m1', 'do it', { force: true }] });
 
@@ -559,6 +563,42 @@ describe('RpcServer', () => {
     await tick();
     assert.equal(terms(a).length, 1);
     assert.deepEqual(office.calls.find((x) => x.method === 'detach')?.args, [attachCall.args[0], 'm1']);
+  });
+
+  // T38: 부서·팀 행의 생멸을 알리는 알림은 `snapshot` 하나뿐이다(T37 함정 ① — 콘솔에서 지운 부서가 앱에 남아 있었다).
+  test('snapshot push: 트리가 바뀌면(부서·팀 생성/삭제) 전 클라이언트에 snapshot 알림 — 응답이 먼저다', async () => {
+    const a = await connect();
+    const b = await connect();
+    const unauthed = await connect();
+    await a.hello();
+    await b.hello();
+    const order: string[] = [];
+    a.ws.on('message', (raw) => {
+      const m = JSON.parse(raw.toString()) as Record<string, unknown>;
+      order.push(typeof m.method === 'string' ? m.method : 'result');
+    });
+
+    await a.call('department.create', { name: 'D', cwd: 'D:\\y', headEngine: 'claude' });
+    const pushed = await b.waitNotification((n) => n.method === 'snapshot');
+    // hello 스냅샷과 **같은 내용**이라 클라이언트는 같은 코드로 적용하면 된다.
+    assert.deepEqual(pushed.params, office.snapshot());
+    await tick();
+    // 요청한 클라이언트에게도 가되, 응답 뒤에 온다(setImmediate).
+    assert.deepEqual(order, ['result', 'snapshot']);
+    assert.equal(unauthed.notifications.length, 0);
+
+    const count = (c: TestClient) => c.notifications.filter((n) => n.method === 'snapshot').length;
+    await a.call('team.create', { departmentId: 'd1', name: 'T', force: true });
+    await a.call('team.delete', { teamId: 't1' });
+    await a.call('department.delete', { departmentId: 'd1' });
+    await tick();
+    assert.deepEqual([count(a), count(b)], [4, 4]);
+
+    // 실패한 호출은 트리를 바꾸지 않으므로 아무것도 밀지 않는다.
+    await expectError(a.call('department.delete', { departmentId: 'zzz' }), RPC_ERROR.NOT_FOUND);
+    await expectError(a.call('team.create', { departmentId: 'd1', name: 'T' }), RPC_ERROR.RANK_RULE);
+    await tick();
+    assert.deepEqual([count(a), count(b)], [4, 4]);
   });
 
   test('client close → Office.detachAll(clientId) with the same clientId used for attach', async () => {

@@ -330,6 +330,20 @@ export class RpcServer {
       for (const c of this.clients.values()) if (c.authed && c.attached.has(memberId)) this.notify(c, 'term', { memberId, data });
     });
     on('notice', (level, message) => this.broadcast('daemon.notice', { level, message }));
+    // 트리 모양이 바뀌면(부서·팀 생성/삭제) 스냅샷을 한 번 민다(T38). 멤버 행은 `member.status` 가 알리지만
+    // **부서·팀 행의 생멸을 알리는 알림은 없어서** 다른 클라이언트는 재접속할 때까지 지운 부서를 그리고 있었다
+    // (T37 함정 ①). 요청한 클라이언트가 응답을 먼저 받도록 다음 매크로태스크로 미룬다.
+    on('tree', () => setImmediate(() => this.pushSnapshot()));
+  }
+
+  /** 전 클라이언트에 `snapshot` 알림(PROTOCOL "데몬이 필요 시 재전송"). 종료 중이면 조용히 넘어간다. */
+  private pushSnapshot(): void {
+    if (!this.wss || this.clients.size === 0) return;
+    try {
+      this.broadcast('snapshot', this.office.snapshot());
+    } catch (err) {
+      console.warn('[rpc] snapshot push failed:', err);
+    }
   }
 
   private broadcast(method: string, params: unknown): void {

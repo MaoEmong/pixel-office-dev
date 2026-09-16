@@ -384,4 +384,46 @@ void main() {
     expect(s.events.length, 1);
     expect(s.reconnectAttempts, 0);
   });
+
+  // T38: 다른 클라이언트(콘솔·다른 창)가 부서·팀을 지우면 데몬이 `snapshot` 알림을 민다 — hello 스냅샷과 **같은 코드**로
+  // 적용돼야 유령 부서 탭·책상이 사라진다(T37 함정 ①). 재접속 없이.
+  test('T38: 밀려온 snapshot 알림 = hello 스냅샷 — 없어진 부서·팀·멤버·pending·task 가 지워지고 이벤트 링은 남는다', () async {
+    daemon.snapshotBody = {
+      ...daemon.snapshotBody,
+      'departments': [
+        {'id': 'd1', 'name': 'alpha', 'cwd': 'D:/x', 'headId': 'mH', 'createdAt': '1'},
+        {'id': 'd2', 'name': 'beta', 'cwd': 'D:/y', 'headId': 'mH2', 'createdAt': '2'},
+      ],
+      'members': [member('mH', rank: 'head', name: '부장'), member('m1', parentId: 'mH')],
+    };
+    await until(container, (s) => s.isConnected && s.departments.length == 2);
+    daemon.emitEvent(sampleEvent(11, memberId: 'm1'));
+    await until(container, (s) => s.events.length == 1);
+    expect(container.read(openPendingProvider).keys, ['a1']);
+    expect(container.read(openTasksProvider).keys, [1]);
+
+    // 콘솔에서 `dept delete beta` 를 했다고 치자 — 데몬이 미는 스냅샷에는 d2 도, 그 행들도 없다.
+    daemon.push('snapshot', {
+      'seq': 12,
+      'departments': [
+        {'id': 'd1', 'name': 'alpha', 'cwd': 'D:/x', 'headId': 'mH', 'createdAt': '1'},
+      ],
+      'teams': <Map<String, dynamic>>[],
+      'members': [member('mH', rank: 'head', name: '부장')],
+      'pending': <Map<String, dynamic>>[],
+      'tasks': <Map<String, dynamic>>[],
+    });
+
+    await until(container, (s) => s.departments.length == 1);
+    final s = container.read(officeProvider);
+    expect(container.read(departmentsProvider).keys, ['d1']);
+    expect(container.read(teamsProvider), isEmpty); // 스냅샷에 없는 팀 행은 사라진다
+    expect(container.read(membersProvider).keys, ['mH']);
+    expect(container.read(openPendingProvider), isEmpty);
+    expect(container.read(openTasksProvider), isEmpty);
+    expect(container.read(derivedStatusProvider('mH')), DerivedStatus.free);
+    expect(container.read(lastSeqProvider), 12);
+    expect(s.events.length, 1); // 로컬 이벤트 링·말풍선은 유지(재접속 규칙 4)
+    expect(daemon.helloParams.length, 1); // 재접속 없이 적용됐다
+  });
 }

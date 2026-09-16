@@ -241,6 +241,13 @@ export type OfficeEvents = {
   term: [memberId: string, data: string];
   /** 사용자에게 보여줄 데몬 알림 → `daemon.notice`. */
   notice: [level: NoticeLevel, message: string];
+  /**
+   * 트리 **모양**이 바뀌었다(부서·팀 생성/삭제, T38) → RpcServer 가 `snapshot` 알림을 민다.
+   * 멤버 행의 생멸은 `member.status` 가 알리지만 부서·팀 행의 생멸을 알리는 알림은 없어서,
+   * 다른 클라이언트가 재접속할 때까지 지운 부서·팀이 화면에 남아 있었다(T37 함정 ①).
+   * `reason` 은 로그·테스트용 꼬리표다.
+   */
+  tree: [reason: 'department.create' | 'department.delete' | 'team.create' | 'team.delete'];
   /** shutdown() 완료. */
   shutdown: [];
 };

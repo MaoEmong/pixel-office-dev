@@ -1,7 +1,9 @@
 # pixel-office 데스크탑 앱 (Flutter, Windows)
 
-데몬(`dev/daemon`)에 WebSocket 으로 붙어 사무실을 그리는 클라이언트. T11 시점에는 골격만 있다 — RPC 클라이언트·상태 모델·레이아웃 자리.
-와이어 계약은 `dev/daemon/PROTOCOL.md` 가 유일한 기준이다.
+데몬(`dev/daemon`)에 WebSocket 으로 붙어 사무실을 그리는 클라이언트. 와이어 계약은 `dev/daemon/PROTOCOL.md` 가 유일한 기준이다.
+
+현재(T37, 2026-09-16): **직무 체계 rev 3** — 상단 탭 = 부서, 사용자가 만드는 것은 부서(=부장 임명)뿐, 지시는 그 부서의 부장에게만,
+사무실은 부장 책상 + 팀 클러스터, 내 책상에는 사용자 몫(허가 전부 + 부장 질문)만. 아래 "직무 체계 rev 3" 절이 요약이다.
 
 ## 실행
 
@@ -55,6 +57,9 @@ Codex 팀원이 각자 책상·배지·터미널 탭(실제 Codex TUI)으로 보
   "지시는 부장에게 — 이 멤버는 상사가 일을 줍니다 (터미널 직접 입력은 가능)" 안내가 붙는다. 탭(로그·터미널·지시문·보고서)은 그대로다.
 - **선택 멤버**는 `lib/state/selection.dart`(`selectedMemberIdProvider`). 멤버 행이 사라지면 선택이 자동 해제된다
   (퇴근은 행이 남으므로 유지).
+- **다른 클라이언트가 지운 부서·팀**(콘솔 `dept delete` 등)은 데몬이 미는 `snapshot` 알림으로 사라진다(T38).
+  `_onNotification` 의 `snapshot` 가지가 `hello` 와 **같은 `_applySnapshot`** 을 쓰므로 부서 탭·책상·pending·task 가 한 번에 맞춰진다
+  (이벤트 링버퍼·말풍선은 유지). 재접속이나 수동 새로고침이 필요 없다.
 
 ### T29 결함 수정(T37)
 
@@ -78,16 +83,22 @@ lib/
     office_state.dart       Riverpod 프로바이더 (아래 표)
     selection.dart          selectedMemberIdProvider (사무실·패널·지시 바가 공유하는 선택 멤버, T24b)
   topbar/
+    top_bar.dart            부서 탭 + "부서 만들기"(부장 임명) · 부서 삭제 · 선택 멤버 직급 배지·비상 퇴근(T37)
     selected_department.dart  상단 부서 탭 상태(T37, T24 의 selected_team.dart 를 대체)
+    daemon_launcher.dart notices.dart   데몬 시작 버튼(T14) · daemon.notice 배너
+  office/                   사무실 캔버스(T12·T16·T37): office_scene/layout/painter/motion/view — 부장 책상 + 팀 클러스터 배치
+  panel/                    오른쪽 패널(T13·T15·T18·T26a·T37): 로그·터미널·지시문·보고서 탭, 허가/질문 카드, AskParentCard
+  command/command_bar.dart  지시 바 — 대상은 그 부서의 살아 있는 부장 하나로 고정(T37)
 test/
   fake_daemon.dart          dart:io HttpServer + WebSocketTransformer 로 만든 가짜 데몬(hello/replay/echo/fail/hang/push)
   rpc_client_test.dart      상관·에러 매핑·replay 중복 제거·재접속(since)·backoff
   model_test.dart           PROTOCOL/설계문서 예시 JSON 파싱
-  office_state_test.dart    스냅샷 → 맵, member.status, event → 링버퍼/pending 파생, 재접속
+  office_state_test.dart    스냅샷 → 맵, member.status, event → 링버퍼/pending 파생, 재접속, **밀려온 snapshot**(T38)
+  command/ office/ panel/ state/   위젯·배치·카드 테스트(T12~T37)
 windows/runner/main.cpp     창 제목 "픽셀 오피스"
 ```
 
-의존성: `flutter_riverpod`(상태), `web_socket_channel`(WS), `xterm`(T13 터미널 탭용, 지금은 미사용).
+의존성: `flutter_riverpod`(상태), `web_socket_channel`(WS), `xterm`(터미널 탭, T13).
 
 ## daemon.json 은 어디서 읽나
 
@@ -134,6 +145,8 @@ windows/runner/main.cpp     창 제목 "픽셀 오피스"
 | `noticesProvider` | `List<DaemonNotice>` | `daemon.notice` 최근 50건 |
 
 재접속 시 스냅샷은 departments/teams/members/pending/tasks 를 **교체**하고, 이벤트 링버퍼·말풍선은 유지한다.
+데몬이 미는 `snapshot` 알림(T38 — 부서·팀 생성/삭제 때)도 **같은 경로**를 탄다: `_onNotification` → `_applySnapshot` →
+없어진 행이 그 자리에서 사라진다. 그래서 콘솔에서 `dept delete` 를 해도 앱이 유령 탭을 들고 있지 않다.
 
 `queryEvents({departmentId, memberId, beforeSeq, limit})` 는 `events.query` 래퍼다. **멤버 로그 백필은 `departmentId` 를
 보내지 않는다** — T34 마이그레이션 이전 이벤트 행은 `department_id` 가 `''` 이라 부서로 거르면 옛 기록이 통째로 사라진다.

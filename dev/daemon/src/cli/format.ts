@@ -64,6 +64,33 @@ export function formatDepartment(d: Department, teamCount: number, memberCount: 
   return `${d.id}  ${d.name}  ${d.cwd}  head=${d.headId ?? '-'}  팀 ${teamCount}개  멤버 ${memberCount}명`;
 }
 
+/** `department.tree` 결과 한 그루(데몬 office/types.ts DepartmentTree 의 와이어 모양). */
+export interface TreeNode {
+  department: Department;
+  head?: Member & { derived?: string };
+  teams: Array<{ team: Team; lead?: Member & { derived?: string }; members: Array<Member & { derived?: string }> }>;
+  orphans: Array<Member & { derived?: string }>;
+}
+
+/** 콘솔 `tree` 출력. 부서 → 부장 → 팀/팀장 → 팀원(T34). */
+export function treeLines(nodes: TreeNode[]): string[] {
+  const who = (m: (Member & { derived?: string }) | undefined, fallback: string): string =>
+    m ? `${RANK_LABEL[m.rank]} ${m.name} [${m.engine}] ${m.derived ?? m.status} (${m.id})` : fallback;
+  const out: string[] = [];
+  for (const n of nodes) {
+    out.push(`${n.department.name} (${n.department.id})  ${n.department.cwd}`);
+    out.push(`  └ ${who(n.head, '부장 (없음)')}`);
+    for (const t of n.teams) {
+      out.push(`     ├ 팀 ${t.team.name} (${t.team.id})  정원 ${t.members.length + (t.lead ? 1 : 0)}/${t.team.maxMembers}`);
+      out.push(`     │  └ ${who(t.lead, '팀장 (없음)')}`);
+      for (const m of t.members) out.push(`     │     └ ${who(m, '')}`);
+    }
+    if (n.teams.length === 0) out.push('     ├ (팀 없음)');
+    for (const m of n.orphans) out.push(`     ! 팀 없는 멤버: ${who(m, '')}`);
+  }
+  return out;
+}
+
 /** `task#12 assigned 반장→이음: <지시>  ↩ done <보고>` — 보고가 있으면 뒤에 붙는다(T25). */
 export function formatTask(t: Task, nameOf: NameOf): string {
   const to = t.toMember === 'user' ? 'user' : nameOf(t.toMember);

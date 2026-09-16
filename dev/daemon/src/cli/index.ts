@@ -1,9 +1,12 @@
-// pixel-office 콘솔 클라이언트 (T08). 데몬(PROTOCOL.md)에 WebSocket JSON-RPC 로 붙는 REPL.
+// pixel-office 콘솔 클라이언트 (T08, rev 3 = T38). 데몬(PROTOCOL.md)에 WebSocket JSON-RPC 로 붙는 REPL.
 //
-//   npm run cli                                   대화형
-//   npm run cli -- --exec "hire t1 claude 하루" --exec "say 하루 안녕" --wait-idle 하루
+//   npm run cli                                   대화형 (help 로 명령 목록 — 절 구성은 cli/help.ts)
+//   npm run cli -- --exec "dept create d1 D:/proj claude 부장" --exec "say 부장 안녕" --wait-idle 부장
 //                                                 명령을 순서대로 실행 → (선택) 멤버가 idle 될 때까지 대기 → 종료
 //   옵션: --url ws://127.0.0.1:7420  --token <t>  --timeout <ms>(wait-idle 상한, 기본 10분)
+//
+// rev 3(D-32): 사용자가 만드는 것은 **부서**뿐이고 지시는 **부장**에게만 간다. 팀·팀원을 직접 만드는 옛 길은
+// 지우지 않고 `force:true` 뒤의 디버그 명령(`team create`/`hire`)으로 남겼다(D-34).
 import readline from 'node:readline';
 import type { Department, Member, OfficeEvent, Snapshot, Task, Team } from '../store/types.js';
 import { RpcClient, RpcError, readDaemonInfo, daemonInfoPath, type HelloResult } from './RpcClient.js';
@@ -33,79 +36,24 @@ import {
   fromSnapshotPending,
   questionsOf,
   stripAnsi,
+  treeLines,
   type LocalPending,
+  type TreeNode,
 } from './format.js';
+import { helpLines } from './help.js';
 
 const EVENT_BUFFER = 500;
 const SPAWN_TIMEOUT_MS = 60_000;
 
-/** `department.tree` 결과 한 그루(데몬 office/types.ts DepartmentTree 의 와이어 모양). */
-interface TreeNode {
-  department: Department;
-  head?: Member & { derived?: string };
-  teams: Array<{ team: Team; lead?: Member & { derived?: string }; members: Array<Member & { derived?: string }> }>;
-  orphans: Array<Member & { derived?: string }>;
-}
-
-/** `tree` 출력. 부서 → 부장 → 팀/팀장 → 팀원. */
-export function treeLines(nodes: TreeNode[]): string[] {
-  const who = (m: (Member & { derived?: string }) | undefined, fallback: string): string =>
-    m ? `${RANK_LABEL[m.rank]} ${m.name} [${m.engine}] ${m.derived ?? m.status} (${m.id})` : fallback;
-  const out: string[] = [];
-  for (const n of nodes) {
-    out.push(`${n.department.name} (${n.department.id})  ${n.department.cwd}`);
-    out.push(`  └ ${who(n.head, '부장 (없음)')}`);
-    for (const t of n.teams) {
-      out.push(`     ├ 팀 ${t.team.name} (${t.team.id})  정원 ${t.members.length + (t.lead ? 1 : 0)}/${t.team.maxMembers}`);
-      out.push(`     │  └ ${who(t.lead, '팀장 (없음)')}`);
-      for (const m of t.members) out.push(`     │     └ ${who(m, '')}`);
-    }
-    if (n.teams.length === 0) out.push('     ├ (팀 없음)');
-    for (const m of n.orphans) out.push(`     ! 팀 없는 멤버: ${who(m, '')}`);
-  }
-  return out;
-}
-
-const HELP: Array<[string, string]> = [
-  ['depts', '부서 목록'],
-  ['dept create <name> <cwd> [claude|codex] [부장이름]', '부서 생성 + 부장 자동 출근 (엔진 기본 claude, 이름 기본 부장)'],
-  ['dept delete <dept>', '부서 삭제 (하위 트리 전원 퇴근)'],
-  ['tree', '부서 → 부장 → 팀/팀장 → 팀원 트리'],
-  ['teams', '팀 목록'],
-  ['team create <dept> <name> [claude|codex] [팀장이름]', '[디버그] 팀 생성 + 팀장 자동 출근 (force:true — 정식 경로는 부장 도구)'],
-  ['team delete <team>', '팀 삭제 (팀장·팀원 퇴근)'],
-  ['members', '멤버 목록'],
-  ['hire <parent> <claude|codex> <name>', '[디버그] 상사 아래로 출근 (member.clockIn{force:true})'],
-  ['fire <member>', '멤버 퇴근 (member.clockOut)'],
-  ['rehire <member>', 'exited/error 멤버 재출근 (member.rehire)'],
-  ['restart <member>', '지시문 즉시 반영 재시작 (member.restart)'],
-  ['say <member> <text...>', '지시 (member.instruct) → taskId 출력. 팀장이 있으면 팀원 지시는 -32004'],
-  ['say! <member> <text...>', '팀원 직접 지시 (member.instruct{force:true}) — 디버그용'],
-  ['type <member> <text>', '터미널에 raw 타이핑. \\n \\r \\t \\e \\xHH 이스케이프, 끝이 \\n/\\r 이 아니면 Enter 자동'],
-  ['', '  이스케이프·제어문자만(\\e, \\e\\e, \\e[A, \\x03 …)이면 Enter 를 붙이지 않는다 — ESC 단독 전송용(T19b)'],
-  ['attach <member>', '현재 화면 출력 + term 스트림 구독 ([term] 접두)'],
-  ['detach', 'term 구독 해제'],
-  ['int <member>', 'Ctrl+C (member.interrupt)'],
-  ['resize <member> <cols> <rows>', '터미널 크기 변경'],
-  ['pending', '열린 허가/질문 목록'],
-  ['allow <pending>', '허가 (approval.respond allow)'],
-  ['deny <pending> [message]', '거부 (approval.respond deny)'],
-  ['answer <pending> <question>=<label> ...', '질문 답 (question.respond). 질문이 하나면 answer <pending> <label>'],
-  ['events [n]', '최근 수신 이벤트 n건 (기본 20)'],
-  ['query <team|-> [beforeSeq] [limit]', '과거 이벤트 조회 (events.query)'],
-  ['tasks', 'task 목록 (스냅샷의 열린 task + 이번 세션에 본 위임·보고)'],
-  ['instr get <member>', '지시문 보기 (사용자 파일만)'],
-  ['instr effective <member>', '다음 SessionStart 에 주입될 전체 텍스트 (프리앰블 + 기본 템플릿 포함)'],
-  ['instr set <member> [text]', '지시문 편집 (text 생략 시 여러 줄 입력, `.` 한 줄로 종료)'],
-  ['refresh', '재접속해 스냅샷을 다시 받는다'],
-  ['help', '이 도움말'],
-  ['quit', '클라이언트 종료'],
-  ['shutdown', '데몬 종료 (daemon.shutdown)'],
-];
 
 interface MultiLine {
   lines: string[];
   done: (text: string) => Promise<void>;
+}
+
+/** y/N 확인 프롬프트(지금은 `fire` 하나). 다음 한 줄을 명령이 아니라 답으로 먹는다. */
+interface Confirm {
+  done: (yes: boolean) => Promise<void>;
 }
 
 class Cli {
@@ -120,6 +68,7 @@ class Cli {
   quitting = false;
   private rl: readline.Interface | null = null;
   private multi: MultiLine | null = null;
+  private confirm: Confirm | null = null;
   private readonly idleWaiters = new Set<(ev: { memberId: string; kind: 'event' | 'status'; idle: boolean }) => void>();
 
   constructor(
@@ -337,7 +286,12 @@ class Cli {
       rl.on('line', (line) => {
         chain = chain.then(async () => {
           if (this.quitting) return;
-          if (this.multi) {
+          if (this.confirm) {
+            const ask = this.confirm;
+            this.confirm = null;
+            rl.setPrompt(prompt);
+            await ask.done(line.trim().toLowerCase() === 'y').catch((e: unknown) => this.printError(e));
+          } else if (this.multi) {
             if (line === '.') {
               const m = this.multi;
               this.multi = null;
@@ -352,6 +306,13 @@ class Cli {
         });
       });
       rl.on('SIGINT', () => {
+        if (this.confirm) {
+          this.confirm = null;
+          rl.setPrompt(prompt);
+          this.print('(취소)');
+          rl.prompt();
+          return;
+        }
         if (this.multi) {
           this.multi = null;
           rl.setPrompt(prompt);
@@ -409,6 +370,24 @@ class Cli {
     }
   }
 
+  /**
+   * 퇴근 경고 꼬리. 부장·팀장을 내보내면 그 **하위 트리 전원**이 잎부터 따라 정리된다(T36 후처리 표).
+   * 살아 있는 자손만 센다(이미 나간 행은 셈에서 뺀다).
+   */
+  private subtreeWarning(m: Member): string {
+    const live = [...this.members.values()].filter((x) => x.status !== 'exited' && x.status !== 'error');
+    const seen = new Set<string>([m.id]);
+    let frontier = [m.id];
+    let count = 0;
+    while (frontier.length) {
+      const next = live.filter((x) => x.parentId && frontier.includes(x.parentId) && !seen.has(x.id));
+      for (const x of next) seen.add(x.id);
+      count += next.length;
+      frontier = next.map((x) => x.id);
+    }
+    return count ? ` — 하위 ${count}명(${m.rank === 'head' ? '부서 전원' : '팀 전원'})도 함께 정리됩니다` : '';
+  }
+
   private member(ref: string | undefined): Member {
     if (!ref) throw new CliError('멤버 id 또는 이름이 필요합니다');
     return resolveMember(this.members.values(), ref);
@@ -423,7 +402,7 @@ class Cli {
         return;
       case 'help':
       case '?':
-        for (const [usage, desc] of HELP) this.print(`  ${usage.padEnd(44)} ${desc}`);
+        for (const line of helpLines()) this.print(line);
         return;
 
       // ---- 부서 (T34) ----
@@ -529,10 +508,26 @@ class Cli {
         this.print(`출근: ${formatMember(res.member, this.scopeNameOf(res.member))}`);
         return;
       }
+      // 퇴근은 rev 3 에서 **비상구**다(D-34) — 사용자가 팀장·팀원을 출근시키는 길은 없앴지만, 굳은 세션을 치울
+      // 길이 없으면 안 된다. 다만 부장·팀장을 퇴근시키면 하위 트리 전원이 잎부터 정리되므로(T36) 확인을 한 번 받는다.
       case 'fire': {
         const m = this.member(args[0]);
-        await c.call('member.clockOut', { memberId: m.id }, SPAWN_TIMEOUT_MS);
-        this.print(`퇴근: ${m.name} (${m.id})`);
+        const doFire = async (): Promise<void> => {
+          await c.call('member.clockOut', { memberId: m.id }, SPAWN_TIMEOUT_MS);
+          this.print(`퇴근: ${m.name} (${m.id})`);
+        };
+        const scope = this.subtreeWarning(m);
+        if (!this.interactive) return doFire(); // --exec 는 사용자가 이미 적어서 보낸 명령이다
+        this.print(`비상 퇴근: ${RANK_LABEL[m.rank]} ${m.name} (${m.id})${scope}`);
+        this.confirm = {
+          done: async (yes) => {
+            if (!yes) return this.print('취소했습니다');
+            await doFire();
+          },
+        };
+        this.print('정말 퇴근시킬까요? y 를 입력하면 진행, 그 밖의 입력은 취소');
+        this.rl?.setPrompt('y/N> ');
+        this.rl?.prompt();
         return;
       }
       case 'rehire':
@@ -545,8 +540,9 @@ class Cli {
         this.print(`${cmd === 'rehire' ? '재출근' : '재시작'}: ${formatMember(res.member, this.scopeNameOf(res.member))}`);
         return;
       }
-      // 팀장이 있는 팀에서 팀원에게 say 하면 데몬이 -32004 를 돌려준다(T24) — printError 가
-      // `오류 [-32004] 팀장에게만 지시할 수 있습니다 (leader: …)` 로 그대로 보여준다. `say!` 는 그 게이트를 넘는 디버그용.
+      // rev 3(T34): 지시는 **부장에게만** 간다. 부장이 살아 있는 부서에서 팀장·팀원에게 say 하면 데몬이 -32004 를
+      // 돌려주고 printError 가 `오류 [-32004] 부장에게만 지시할 수 있습니다 (head: …) {"headId":"…"}` 로 그대로 보여준다.
+      // 부장이 나가 있으면 게이트가 열린다. `say!` 는 그 게이트를 넘는 디버그용(force:true).
       case 'say':
       case 'say!': {
         const m = this.member(args[0]);
@@ -776,7 +772,7 @@ async function main(): Promise<number> {
   }
   if (argv.help) {
     console.log('사용법: npm run cli [-- --exec "<명령>" ... --wait-idle <member> --url <ws://> --token <t> --timeout <ms>]');
-    for (const [usage, desc] of HELP) console.log(`  ${usage.padEnd(44)} ${desc}`);
+    for (const line of helpLines()) console.log(line);
     return 0;
   }
   const interactive = argv.exec.length === 0 && !argv.waitIdle;

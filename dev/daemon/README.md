@@ -1,6 +1,6 @@
 # pixel-office daemon
 
-실제 `claude` / `codex` CLI를 가상 터미널(ConPTY)에 띄우고, hooks로 상태를 받고, 사무실 UI에 이벤트를 흘려주는 상주 프로세스. M0 완료(2026-09-15): 콘솔 클라이언트만으로 고용→지시→허가/질문→재접속→재시작 복구까지 동작. M3 완료(2026-09-16, T23): 같은 팀에 Claude 팀원과 Codex 팀원을 섞어도 각자 자기 이벤트·pending·터미널로 동작한다(엔진별 차이는 아래 "Codex 팀원" 절).
+실제 `claude` / `codex` CLI를 가상 터미널(ConPTY)에 띄우고, hooks로 상태를 받고, 사무실 UI에 이벤트를 흘려주는 상주 프로세스. M0 완료(2026-09-15): 콘솔 클라이언트만으로 고용→지시→허가/질문→재접속→재시작 복구까지 동작. M3 완료(2026-09-16, T23): 같은 부서에 Claude 멤버와 Codex 멤버를 섞어도 각자 자기 이벤트·pending·터미널로 동작한다(엔진별 차이는 아래 "Codex 멤버" 절). **M4b(2026-09-16, T34~T38): 직무 체계 rev 3 — 부서 → 부장 → 팀장 → 팀원 3단 트리**(아래 절, D-32).
 
 ## 실행
 
@@ -9,12 +9,23 @@ npm install
 npm start                 # 데몬 1회 실행 (ws://127.0.0.1:7420, hook 7421, MCP 7422)
 npm run dev               # tsx watch
 npm run cli               # 콘솔 클라이언트 REPL (help 로 명령 목록)
-npm run cli -- --exec "hire demo claude 하루" --exec "say 하루 안녕" --wait-idle 하루   # 비대화형
+npm run cli -- --exec "dept create demo D:/proj claude 부장" --exec "say 부장 안녕" --wait-idle 부장   # 비대화형
 npm test                  # node:test 전체 (PIXEL_IT=1 이면 실제 CLI 통합 테스트 포함)
 npm run typecheck
 ```
 
-콘솔 클라이언트 핵심 명령: `team create <name> <cwd> [claude|codex]` · `hire <team> <engine> <name>` · `say <member> <text>` · `pending` · `allow <id>` / `deny <id>` / `answer <id> <label>` · `attach <member>` / `detach` · `type <member> <text>` · `int <member>` · `fire <member>` · `events [n]` · `query <team>` · `shutdown`.
+콘솔 클라이언트(rev 3, T38 — 절 구성은 `src/cli/help.ts`, `help` 로 전체):
+
+| 절 | 명령 |
+|---|---|
+| 부서·트리 | `dept create <name> <cwd> [claude\|codex] [부장이름]` · `depts` · `dept delete <dept>` · `tree` |
+| 지시·터미널 | `say <head> <text>`(부장 외에는 -32004) · `attach`/`detach` · `type <member> <text>` · `int <member>` · `resize` |
+| 내 책상 | `pending`(ask_parent 는 `이음 → 반장(ask_parent)`) · `allow` / `deny` / `answer` |
+| 일·이벤트 | `tasks`(발행자→대상·상태·보고) · `events [n]` · `query <부서\|->` |
+| 지시문 | `instr get` / `instr effective` / `instr set` |
+| 멤버 | `members` · `fire <member>`(비상 퇴근, 확인 `y`) · `rehire` · `restart` |
+| 디버그 | `teams` · `team create <dept> <name> …` · `team delete` · `hire <parent> <engine> <name>` · `say!` — 전부 `force:true`(D-34) |
+| 연결 | `refresh` · `shutdown` · `quit` |
 
 ## 환경변수
 
@@ -40,18 +51,71 @@ npm run typecheck
 
 `claude` 는 npm 전역 설치를 권장한다(데스크탑 앱 번들 경로는 앱 업데이트마다 버전 폴더가 바뀐다).
 
-## Codex 팀원 (M3)
+## 직무 체계 rev 3 — 부서 · 부장 · 팀장 · 팀원 (M4b, D-32)
 
-`member.clockIn{engine:'codex'}` 이면 데몬이 Claude 와 **같은 오피스 이벤트·pending·RPC** 로 보이게 감싼다. 클라이언트는
+```
+사용자 ──department.create(부장 임명)──▶ 부장(head) ──create_team──▶ 팀장(lead) ──hire──▶ 팀원(member)
+   ◀──── report·ask_user (부장만) ───────┘        ◀── report·ask_parent ──┘     ◀── report·ask_parent ──┘
+```
+
+**사용자가 만드는 것은 부서 하나뿐이다.** 부서 = 프로젝트 폴더(cwd)이고, 그 아래는 전부 멤버가 멤버를 만든다.
+고용·지시는 항상 바로 아래로, 보고·질문은 항상 바로 위로만 간다(`members.parent_id` 가 유일한 기준).
+스키마·RPC는 T34, 도구는 T35, 후처리·복구는 T36, 앱은 T37, 콘솔·문서는 T38.
+
+**직급별 도구**(단일 출처 `src/mcp/TeamToolsServer.ts` 의 `RANK_TOOLS` — MCP 등록 목록·Office 게이트·지시문 템플릿·PROTOCOL 표가 전부 이 표를 읽는다):
+
+| 직급 | 도구 |
+|---|---|
+| 부장 `head` | `create_team` · `dismiss_team` · `delegate` · `reply` · `report`(→ 사용자) · `ask_user` |
+| 팀장 `lead` | `hire` · `dismiss` · `delegate` · `reply` · `report`(→ 부장) · `ask_parent` |
+| 팀원 `member` | `report`(→ 팀장) · `ask_parent` |
+
+직급 규칙은 **데몬이 두 겹으로** 강제한다(모델 말을 믿지 않는다): 요청마다 store 에서 rank 를 다시 읽어 ① 그 직급의 도구만
+`tools/list` 에 내보내고 ② 그래도 불리면 `isError` + 한국어 사유. 대상 규칙(`delegate`/`reply`/`dismiss` 는 **살아 있는 직속
+부하**에게만, `report`/`ask_parent` 는 **직속 상사**에게만)은 Office 의 관문 세 개(`requireToolRank`/`requireChild`/`requireParent`)가 본다.
+
+**봉투**(pty 큐에 들어가는 시스템 메시지 — 모델이 출처를 헷갈리지 않게 항상 같은 모양):
+
+| 봉투 | 언제 |
+|---|---|
+| `[TASK#n from <이름>(<직급>)]` | 위에서 일이 내려올 때(사용자 지시는 `from user`) |
+| `[REPORTS task#n <이름> status=…]` … `[ALL_REPORTS_IN]` | 부하 보고가 **부모 단위**로 버퍼링됐다가 내가 낸 미종료 task 가 0 이 되는 순간 한 덩어리로 |
+| `[QUESTION from <이름> q#<id>]` / `[ANSWER q#<id>]` | `ask_parent` → 상사, 상사의 `reply`(또는 사용자 오버라이드 `question.respond`) → 본인 |
+| `[MESSAGE from <이름>]` | 열린 질문이 없는데 상사가 `reply` 했을 때 |
+| `[TEAM] 팀원 변경: +/-<이름>` | 사용자가 끼워 넣거나 내보낸 멤버를 **직속 상사**에게 |
+| `[RESUMED] …` | 데몬 재시작·`member.restart` 후(맡긴 일·직속 부하가 함께 실린다) |
+
+**후처리·복구**(표는 `PROTOCOL.md` §"후처리" 8행, 구현은 `src/office/afterCare.ts`):
+
+- 상위가 사라지면(`clockOut`/`error`/`teamDelete`/`departmentDelete`) **하위 트리 전체를 잎부터** 정리한다(`parentGone`).
+  `interrupt`·`restart` 는 자기 턴만 건드리고 하위는 계속 돈다.
+- 재시작 복구는 **뿌리부터**(부장 → 팀장 → 팀원). 부모가 못 살아나면 그 자식은 `error{restart: parent gone}` 로 두고 재스폰하지 않는다.
+- `member.restart` 는 hook 보류만 끊고 `ask_user`/`ask_parent` 질문은 살린다(D-36).
+
+**트리가 바뀌면 스냅샷을 민다(T38).** 멤버 행의 생멸은 `member.status` 가 알리지만 **부서·팀 행의 생멸을 알리는 알림은 없어서**,
+콘솔에서 지운 부서가 앱에 유령으로 남아 있었다(T37 함정 ①). 이제 `department.create`/`department.delete`/`team.create`/`team.delete`
+(= 부장의 `create_team`/`dismiss_team` 포함) 뒤에 Office 가 `tree` 이벤트를 내고 RpcServer 가 전 클라이언트에 `snapshot` 알림을 보낸다.
+클라이언트는 `hello` 스냅샷과 **같은 코드로** 적용하면 된다.
+
+**디버그 전용 RPC**(D-34): 없어진 사용자 기능은 지우지 않고 `force:true` 뒤에 숨겼다 — `team.create`·`member.clockIn`
+(+ `member.instruct{force}`). `force` 가 없으면 -32004. 앱은 절대 보내지 않고 콘솔의 "디버그" 절과 테스트만 쓴다.
+`member.clockOut` 은 예외로 누구에게나 열려 있다 — 굳은 세션을 사용자가 치울 **비상구**(콘솔 `fire` 는 확인 `y` 를 받는다).
+
+**아직 안 본 것:** 트리 전체 실기(부서 → 부장 → 팀 → 팀원 → 보고 상향 → 부장 퇴근 시 부서 정리)는 **T39 시연** 몫이다.
+rev 3 를 **Codex 엔진**으로 돌려 보는 것은 사용량 한도 때문에 **2026-09-21 이후**로 이월돼 있다(바로 아래 절 끝의 재확인 목록).
+
+## Codex 멤버 (M3)
+
+멤버의 엔진이 `codex` 면(부서 생성의 `headEngine`, `create_team`/`hire` 의 `engine`) 데몬이 Claude 와 **같은 오피스 이벤트·pending·RPC** 로 보이게 감싼다. 클라이언트는
 `member.engine` 을 책상 배지에 쓰는 것 말고는 구분할 필요가 없다. 계약 표는 `PROTOCOL.md` §"엔진별 동작 차이", 아래는 운영에 필요한 것만.
 
 - **hook 주입:** `<cwd>/.codex/hooks.json`(마커 `pixel-office`) + `--dangerously-bypass-hook-trust`. 같은 cwd 의 팀원들이 파일을
-  공유하고 멤버 식별은 `PIXEL_MEMBER` 환경변수로 한다. 남이 쓴 파일이면 덮어쓰지 않고 `daemon.notice{warn}` 만 낸다.
+  공유하고(한 부서의 팀들은 같은 cwd 다 — D-32) 멤버 식별은 `PIXEL_MEMBER` 환경변수로 한다. 남이 쓴 파일이면 덮어쓰지 않고 `daemon.notice{warn}` 만 낸다.
   Codex 는 `SessionEnd`·`Interrupt` 의 timeout 을 3초로 클램프하며 경고 배너를 띄운다(정상) — 이 둘은 절대 보류하지 않는다.
 - **스폰 인자:** `-c approval_policy="on-request" -c sandbox_mode="workspace-write"`, 재개는 `codex resume <id>` 서브커맨드.
 - **MCP 주입:** `-c mcp_servers.team.url="http://127.0.0.1:<mcpPort>/mcp/<memberToken>"` — 그 실행에만 적용되고
   `~/.codex/config.toml` 은 건드리지 않는다. Claude 는 같은 URL 을 `--mcp-config <세션 mcp.json>` 으로 받는다. 서버 이름은 둘 다 `team`.
-  실기에서 `/mcp verbose` 가 `team: connected (1 tool) · Tools: ask_user` 로 보인다(T22).
+  실기에서 `/mcp verbose` 가 `team: connected (1 tool) · Tools: ask_user` 로 보인다(T22 — 그때는 도구가 하나였다. T35 부터는 직급별 목록이라 팀원이면 `report, ask_parent` 가 보인다).
 - **이벤트 매핑:** Codex 의 도구는 사실상 `Bash` 하나뿐이라 **명령 문자열 휴리스틱**으로 가른다 —
   `cat`/`rg`/`ls`/`sed -n`/`git diff|log|status` 등은 `reading`, `apply_patch` 는 `editing`, 나머지(쓰기 리다이렉트 포함)는 `running`.
   모르면 `running`(과장된 reading 보다 안전). Claude 는 도구 이름표(`Read`/`Write`/`Bash`)로 그대로 가른다.
@@ -79,15 +143,17 @@ src/
   index.ts        진입점 — Office + RpcServer 기동, SIGINT 정중 종료
   config.ts       설정
   office/         Office 오케스트레이터(T07) + 재시작 복구·유령 정리(T09) + 엔진 라우팅·Codex 부팅 감시(T20) + codexFallback(T22) + 오류 코드
+                  트리(T34: 부서·부장·팀장·팀원, hireChild 단일 스폰) + 직급 도구 관문(T35) + afterCare/derived(T36: 하위 트리 정리·복구 순서)
+                  + instructions/(프리앰블·직급별 템플릿, T26b·T35)
   rpc/            WebSocket JSON-RPC 서버(T07) — 계약은 PROTOCOL.md
   pty/            PtyManager — CLI 스폰·입출력·세션 hooks 설정 파일(T01)
   screen/         ScreenModel — headless xterm 화면 상태, 준비/다이얼로그 판정(T02)
   hooks/          HookReceiver + hook.js(CLI가 실행하는 브리지) + 결정 JSON 빌더(T03)
   adapters/       BaseHooksAdapter(공통 뼈대) + ClaudeHooksAdapter(T04) / CodexHooksAdapter·codexMapping(T20) — hook 이벤트 → 오피스 이벤트·pending
-  mcp/            TeamToolsServer — Streamable HTTP MCP `/mcp/<memberToken>`, `ask_user`(T17). 두 엔진 공통
+  mcp/            TeamToolsServer — Streamable HTTP MCP `/mcp/<memberToken>`. **직급별 도구 표 `RANK_TOOLS`**(T35)가 여기 하나뿐. 두 엔진 공통
   input/          InputQueue — 타이핑 직렬화, prompt-ready 게이팅, 다이얼로그 통과(T05)
-  store/          node:sqlite 저장소 — teams/members/events(seq)/pending/tasks(T06)
-  cli/            콘솔 클라이언트(T08) — RpcClient + REPL/--exec
+  store/          node:sqlite 저장소 — departments/teams/members(parent_id·rank)/events(seq)/pending/tasks(T06, 스키마 v2 = T34)
+  cli/            콘솔 클라이언트(T08, rev 3 = T38) — RpcClient + REPL/--exec, parse.ts(순수 파싱)·format.ts(출력·tree)·help.ts(도움말 절)
   tui-maps/       CLI 버전별 화면 패턴 JSON (verified 플래그)
 test/             node:test (모듈별 폴더; *.integration.test.ts 는 PIXEL_IT=1)
 ```
