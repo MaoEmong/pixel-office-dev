@@ -1,16 +1,22 @@
 // 엔진별 CLI 인자 생성 (순수 함수). 실측에서 확인한 값을 그대로 유지한다.
 
+export interface ClaudeArgsOptions {
+  /** TeamTools MCP 설정 파일(T17). 있으면 `--mcp-config <path>` 를 붙인다. */
+  mcpConfigPath?: string;
+}
+
 /**
  * Claude: `--settings <세션 설정>` + `--permission-mode default` (기본 auto 면 PermissionRequest hook 이 안 옴, 실측 ①)
- * + 재개 시 `--resume <id>` + extraArgs.
+ * + 재개 시 `--resume <id>` + (`--mcp-config <path>`, T17) + extraArgs.
  */
-export function buildClaudeArgs(settingsPath: string, resumeSessionId?: string, extraArgs: readonly string[] = []): string[] {
+export function buildClaudeArgs(settingsPath: string, resumeSessionId?: string, extraArgs: readonly string[] = [], opts: ClaudeArgsOptions = {}): string[] {
   return [
     '--settings',
     settingsPath,
     '--permission-mode',
     'default',
     ...(resumeSessionId ? ['--resume', resumeSessionId] : []),
+    ...(opts.mcpConfigPath ? ['--mcp-config', opts.mcpConfigPath] : []),
     ...extraArgs,
   ];
 }

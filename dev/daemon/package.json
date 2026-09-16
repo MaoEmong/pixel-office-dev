@@ -19,10 +19,12 @@
   "type": "module",
   "private": "true",
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0",
     "@xterm/addon-serialize": "^0.14.0",
     "@xterm/headless": "^6.0.0",
     "node-pty": "^1.1.0",
-    "ws": "^8.21.3"
+    "ws": "^8.21.3",
+    "zod": "^4.6.5"
   },
   "devDependencies": {
     "@types/node": "^26.5.1",

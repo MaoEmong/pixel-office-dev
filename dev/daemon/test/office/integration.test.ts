@@ -157,10 +157,12 @@ test('real daemon: team.create → clockIn(claude) → instruct → waiting_appr
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pixel-office-t07-it-'));
   const wsPort = await freePort();
   const hookPort = await freePort();
+  // T17: TeamTools MCP 도 임시 포트로(기본 7422 충돌 방지).
+  const mcpPort = await freePort();
 
   const child = spawn(process.execPath, ['--import', 'tsx', 'src/index.ts'], {
     cwd: DAEMON_DIR,
-    env: { ...process.env, PIXEL_WS_PORT: String(wsPort), PIXEL_HOOK_PORT: String(hookPort), PIXEL_DATA_DIR: dataDir, PIXEL_IT: '' },
+    env: { ...process.env, PIXEL_WS_PORT: String(wsPort), PIXEL_HOOK_PORT: String(hookPort), PIXEL_MCP_PORT: String(mcpPort), PIXEL_DATA_DIR: dataDir, PIXEL_IT: '' },
     stdio: ['ignore', 'pipe', 'pipe'],
     windowsHide: true,
   });

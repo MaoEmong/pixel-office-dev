@@ -12,6 +12,8 @@ import type { Engine, EventsQueryInput, Member, MemberStatus, OfficeEvent, Snaps
 export interface DaemonInfo {
   wsPort: number;
   hookPort: number;
+  /** TeamTools MCP(Streamable HTTP) 포트(T17). CLI 세션의 mcp.json 이 이 포트를 가리킨다. */
+  mcpPort: number;
   token: string;
   pid: number;
   startedAt: string;
@@ -45,6 +47,19 @@ export interface AttachResult {
 export interface ApprovalRespondParams extends ApprovalDecisionInput {
   /** 이번 세션 동안 같은 도구의 허가 요청을 자동 allow(멤버 단위, 데몬 메모리에만). */
   alwaysThisSession?: boolean;
+}
+
+/** TeamTools `ask_user` 입력(T17). */
+export interface AskUserParams {
+  question: string;
+  options?: string[];
+}
+
+/** `ask_user` pending 의 payload 모양(D-19: `tool_input` 이 없어야 재시작 시 유효한 질문으로 남는다). */
+export interface AskUserPayload {
+  source: 'ask_user';
+  question: string;
+  options: string[];
 }
 
 /** `member.status` 알림의 파생 상태(01 §2 "멤버 표시 상태(파생)"). v1a: idle 이고 배정 task 없으면 free. */
@@ -100,6 +115,7 @@ export interface OfficeApi extends EventEmitter<OfficeEvents> {
   setInstructions(memberId: string, markdown: string): void;
 
   respondApproval(pendingId: string, decision: ApprovalRespondParams): void;
+  /** TUI AskUserQuestion 은 hook 결정으로, TeamTools ask_user 는 `[ANSWER q#<id>]` 큐 주입으로(T17). */
   respondQuestion(pendingId: string, answers: Record<string, string>): void;
 
   shutdown(): Promise<void>;
@@ -116,6 +132,15 @@ export interface PtyManagerLike {
   on(event: 'data', listener: (memberId: string, chunk: string) => void): this;
   on(event: 'exit', listener: (memberId: string, info: ExitInfo) => void): this;
   on(event: 'warn', listener: (memberId: string, message: string) => void): this;
+}
+
+/** TeamToolsServer 의 부분집합(테스트 가짜용). */
+export interface TeamToolsServerLike {
+  listen(port: number, host?: string): Promise<number>;
+  close(): Promise<void>;
+  /** 멤버 퇴근·종료 시 그 토큰의 연결을 끊는다. */
+  dispose(memberToken: string): void;
+  readonly port: number;
 }
 
 /** HookReceiver 의 부분집합(테스트 가짜용). */

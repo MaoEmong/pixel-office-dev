@@ -9,6 +9,9 @@
 //   PtyManager  'exit'            → adapter.onSessionExit(예상 못 한 종료) / status exited(퇴근·재시작·셧다운)
 //   adapter     'event'/'status'  → 'event' / 'status' 이벤트(전 클라이언트)
 //   InputQueue  isIdle            = member.status === 'idle' ∧ 열린 pending 없음
+//   TeamToolsServer(T17) ask_user  → askUser(): pending(question, source:'ask_user') + asking + waiting_answer
+//   respondQuestion(ask_user)     → answerPending(게이트 해제) → 큐에 `[ANSWER q#<id>]\n<답>`(system) — 답이 열린 pending 을
+//                                   먼저 닫으므로 isIdle 게이트를 그대로 통과한다(bypass 플래그 없음, 아래 answerAskUser)
 import { EventEmitter } from 'node:events';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -23,12 +26,15 @@ import { HookReceiver } from '../hooks/HookReceiver.js';
 import { ClaudeHooksAdapter } from '../adapters/ClaudeHooksAdapter.js';
 import { ScreenModel } from '../screen/ScreenModel.js';
 import { InputQueue } from '../input/InputQueue.js';
+import { TeamToolsServer, TEAM_MCP_NAME } from '../mcp/TeamToolsServer.js';
 import { USER_ACTOR } from '../store/types.js';
 import type { EventsQueryInput, Member, MemberStatus, OfficeEvent, Pending, Snapshot, Task, Team } from '../store/types.js';
 import { OfficeError, RPC_ERROR, badState, invalidParams, notFound } from './errors.js';
 import { defaultOrphanOps, reapOrphan, type OrphanOps } from './orphans.js';
 import type {
   ApprovalRespondParams,
+  AskUserParams,
+  AskUserPayload,
   AttachResult,
   ClockInParams,
   CreateTeamParams,
@@ -39,6 +45,7 @@ import type {
   OfficeApi,
   OfficeEvents,
   PtyManagerLike,
+  TeamToolsServerLike,
 } from './types.js';
 
 export type * from './types.js';
@@ -73,6 +80,8 @@ export interface OfficeOptions {
   store?: Store;
   pty?: PtyManagerLike;
   receiver?: HookReceiverLike;
+  /** TeamTools MCP 서버(T17). 생략 시 실제 TeamToolsServer 를 config.mcpPort 에 연다. */
+  mcp?: TeamToolsServerLike;
   /** hook.js 절대 경로. 기본 src/hooks/hook.js. */
   hookScriptPath?: string;
   version?: string;
@@ -132,6 +141,7 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
   readonly store: Store;
   readonly pty: PtyManagerLike;
   readonly receiver: HookReceiverLike;
+  readonly mcp: TeamToolsServerLike;
   readonly adapter: ClaudeHooksAdapter;
 
   private readonly runtimes = new Map<string, MemberRuntime>();
@@ -163,6 +173,18 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
         rows: this.cfg.rows,
       });
     this.receiver = opts.receiver ?? new HookReceiver();
+    this.mcp =
+      opts.mcp ??
+      new TeamToolsServer({
+        version: this.version,
+        host: {
+          resolveMember: (token) => {
+            const m = this.store.getMemberByToken(token);
+            return m && !GONE.has(m.status) ? { id: m.id, name: m.name } : undefined;
+          },
+          askUser: (memberId, input) => ({ questionId: this.askUser(memberId, input).id }),
+        },
+      });
     this.adapter = new ClaudeHooksAdapter({
       store: this.store,
       getInstructions: (memberId) => this.readInstructions(memberId) || undefined,
@@ -177,9 +199,11 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
     if (this.info) return this.info;
     fs.mkdirSync(this.cfg.dataDir, { recursive: true });
     const hookPort = await this.receiver.listen(this.cfg.hookPort);
+    const mcpPort = await this.mcp.listen(this.cfg.mcpPort);
     this.info = {
       wsPort: this.cfg.wsPort,
       hookPort,
+      mcpPort,
       token: this.token,
       pid: this.pid,
       startedAt: new Date().toISOString(),
@@ -187,6 +211,7 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
     };
     this.writeDaemonInfo();
     this.started = true;
+    console.log(`[office] mcp       : http://127.0.0.1:${mcpPort}/mcp/<memberToken> (TeamTools: ask_user)`);
     try {
       const pruned = this.store.pruneEvents();
       if (pruned > 0) console.log(`[office] pruned ${pruned} old events`);
@@ -243,6 +268,7 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
       ),
     );
     await this.receiver.close();
+    await this.mcp.close();
     for (const rt of this.runtimes.values()) rt.screen.dispose();
     this.runtimes.clear();
     this.store.close();
@@ -511,9 +537,73 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
     }
   }
 
+  /**
+   * 질문에 답한다. TUI `AskUserQuestion`(payload.tool_input 있음)은 어댑터가 hook 결정으로 돌려주고,
+   * TeamTools `ask_user`(payload.source==='ask_user')는 큐에 `[ANSWER q#<id>]` 시스템 메시지를 넣는다(T17).
+   */
   respondQuestion(pendingId: string, answers: Record<string, string>): void {
-    this.openPending(pendingId, 'question');
+    const pending = this.openPending(pendingId, 'question');
+    if (isAskUserPayload(pending.payload)) {
+      this.answerAskUser(pending, answers);
+      return;
+    }
     if (!this.adapter.resolveQuestion(pendingId, answers)) throw badState(`pending ${pendingId} is no longer held (hook already closed)`);
+  }
+
+  // ---- TeamTools ask_user (T17) ------------------------------------------------------------------
+
+  /**
+   * MCP `ask_user` 연결점: pending(question) 등록 + `asking` 이벤트 + status waiting_answer. 즉시 반환(비블로킹) —
+   * 모델은 도구 결과의 안내대로 턴을 끝내고, 답은 `respondQuestion` 이 `[ANSWER q#<id>]` 로 넣는다.
+   * payload 에 `tool_input` 을 넣지 않는다(D-19: 재시작 복구가 이 질문을 유효한 것으로 남긴다).
+   */
+  askUser(memberId: string, input: AskUserParams): Pending {
+    const member = this.member(memberId);
+    this.liveRuntime(member);
+    const question = input.question.trim();
+    if (!question) throw invalidParams('question is empty');
+    const options = (input.options ?? []).map((o) => o.trim()).filter((o) => o.length > 0);
+    const payload: AskUserPayload = { source: 'ask_user', question, options };
+    const pending = this.store.createPending({ memberId, type: 'question', payload: { ...payload } });
+    const detail: OfficeEvent['detail'] = { tool: 'ask_user', summary: question };
+    if (options.length > 0) detail.options = options;
+    this.appendEvent(member, 'asking', detail, { questionId: pending.id });
+    this.setStatus(memberId, 'waiting_answer');
+    return pending;
+  }
+
+  /**
+   * ask_user 답: pending 을 answered 로 닫고(= isIdle 게이트의 "열린 pending 없음" 조건이 풀린다) 큐에 `[ANSWER q#<id>]\n<답>`.
+   * 큐는 항목 종류를 모르므로(T05 남은 것) 별도 bypass 플래그 대신 **답이 게이트를 먼저 연다** — 같은 멤버에 열린 ask_user 질문이
+   * 둘이면 둘 다 답해야 흐른다(설계: 답 대기 중 새 지시를 섞지 않는다). 질문이 열린 동안 쌓인 항목([TASK#n]·[RESUMED])보다
+   * 답이 먼저 들어간다(모델은 답을 기다리며 그 작업을 멈춘 상태) — 큐를 비웠다가 답 뒤에 그대로 다시 넣는다.
+   * status 는 손대지 않는다: 보통 idle(턴이 끝난 상태)이라 큐가 바로 흘러 UserPromptSubmit 이 working 으로 올린다.
+   * 아직 waiting_answer(PostToolUse 전, 턴 진행 중)면 working 으로.
+   */
+  private answerAskUser(pending: Pending, answers: Record<string, string>): void {
+    const member = this.member(pending.memberId);
+    const rt = this.liveRuntime(member);
+    const text = buildAnswerText(pending.id, answers);
+    this.store.answerPending(pending.id, answers);
+    if (this.store.getMember(member.id)?.status === 'waiting_answer') this.setStatus(member.id, 'working');
+    else this.emitStatus(member.id, this.store.getMember(member.id)!.status); // derived(waiting_answer → idle/free) 갱신
+    const waiting = rt.queue.clear();
+    rt.queue.enqueue({ kind: 'system', text, id: pending.id });
+    for (const item of waiting) rt.queue.enqueue(item);
+  }
+
+  /** `${dataDir}/sessions/<memberId>/mcp.json` — Claude `--mcp-config` 용. 스폰 때마다 다시 쓴다(포트·토큰이 바뀔 수 있다). */
+  mcpConfigPath(memberId: string): string {
+    return path.join(this.cfg.dataDir, 'sessions', memberId, 'mcp.json');
+  }
+
+  private writeMcpConfig(member: Member): string {
+    const port = this.info?.mcpPort ?? this.cfg.mcpPort;
+    const file = this.mcpConfigPath(member.id);
+    const body = { mcpServers: { [TEAM_MCP_NAME]: { type: 'http', url: `http://127.0.0.1:${port}/mcp/${member.memberToken}` } } };
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, JSON.stringify(body, null, 2));
+    return file;
   }
 
   private openPending(pendingId: string, type: Pending['type']): Pending {
@@ -565,6 +655,8 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
       rows,
       hookScriptPath: this.hookScriptPath,
       hookPort: this.info?.hookPort ?? this.cfg.hookPort,
+      // TeamTools MCP(T17): Claude 만. Codex 는 M3.
+      mcpConfigPath: member.engine === 'claude' ? this.writeMcpConfig(member) : undefined,
     });
     const screen = new ScreenModel({ engine: member.engine, cols, rows });
     const queue = new InputQueue({ session, screen, isIdle: () => this.isIdle(member.id) });
@@ -749,6 +841,7 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
       rt.queue.clear();
       if (rt.interruptWatch) clearInterval(rt.interruptWatch);
     }
+    this.disposeMcp(memberId);
     const mode = rt?.exitMode;
     if (mode === 'shutdown') return;
     if (rt && !mode && this.tryResumeFallback(rt, info)) return;
@@ -775,12 +868,19 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
   }
 
   private disposeRuntime(memberId: string): void {
+    this.disposeMcp(memberId);
     const rt = this.runtimes.get(memberId);
     if (!rt) return;
     rt.queue.stop();
     if (rt.interruptWatch) clearInterval(rt.interruptWatch);
     rt.screen.dispose();
     this.runtimes.delete(memberId);
+  }
+
+  /** 그 멤버의 MCP 연결을 끊는다(퇴근·종료·재스폰 전). 멤버 행이 없으면 무시. */
+  private disposeMcp(memberId: string): void {
+    const token = this.store.getMember(memberId)?.memberToken;
+    if (token) this.mcp.dispose(token);
   }
 
   /** Ctrl+C 후: 화면에 중단 안내 또는 준비 문구가 보이면 idle(설계 §실측 "중단"). 최대 INTERRUPT_WATCH_MS. */
@@ -868,8 +968,13 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
     return m?.status === 'idle' && this.store.listOpenPending(memberId).length === 0;
   }
 
+  /**
+   * 파생 상태(01 §2): idle 인데 열린 질문이 있으면 `waiting_answer`(ask_user 는 턴이 끝난 뒤에도 질문이 열려 있다, T17),
+   * idle 이고 배정 task 없으면 `free`.
+   */
   private derived(memberId: string, status: MemberStatus): DerivedStatus {
     if (status !== 'idle') return status;
+    if (this.store.listOpenPending(memberId).some((p) => p.type === 'question')) return 'waiting_answer';
     const open = this.store.listTasks({ toMember: memberId, status: ['queued', 'assigned'] });
     return open.length === 0 ? 'free' : 'idle';
   }
@@ -931,6 +1036,22 @@ export function buildResumedText(input: { assigned: Task[]; events: OfficeEvent[
   const events = recent.length ? recent.map(describeEvent).join('; ') : '없음';
   const expired = input.expiredCount ? ` 만료된 허가·질문: ${input.expiredCount}건(필요하면 다시 요청하라).` : '';
   return `[RESUMED] 데몬이 재시작됐다. 진행 중이던 작업: ${tasks}. 마지막 확인된 행동: ${events}.${expired} 현재 상태를 점검하고 이어서 진행하라.`;
+}
+
+/**
+ * `[ANSWER q#<id>]\n<답>` — ask_user 답을 멤버에게 넣는 시스템 메시지(01 §TeamTools). 답이 하나면 라벨만, 여럿이면
+ * `<question>: <label>` 을 줄마다. 빈 답은 -32602.
+ */
+export function buildAnswerText(questionId: string, answers: Record<string, string>): string {
+  const entries = Object.entries(answers).filter(([, v]) => typeof v === 'string' && v.trim().length > 0);
+  if (entries.length === 0) throw invalidParams('answers is empty');
+  const body = entries.length === 1 ? entries[0]![1].trim() : entries.map(([q, a]) => `${q}: ${a.trim()}`).join('\n');
+  return `[ANSWER q#${questionId}]\n${body}`;
+}
+
+/** `ask_user` pending 인가(D-19: tool_input 없음 + source 표식). */
+export function isAskUserPayload(payload: Record<string, unknown>): payload is Record<string, unknown> & AskUserPayload {
+  return payload.source === 'ask_user' && typeof payload.question === 'string' && payload.tool_input === undefined;
 }
 
 /** 이벤트 한 건 → "kind 요약". 요약은 detail.summary → text → cmd → path → tool 순으로 있는 것. */

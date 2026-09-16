@@ -208,7 +208,10 @@ export class PtyManager extends EventEmitter<PtyManagerEvents> {
   private prepareCommand(opts: SpawnOptions): { file: string; args: string[] } {
     if (opts.engine === 'claude') {
       const settingsPath = writeClaudeSessionSettings(this.cfg.dataDir, opts.memberId, opts.hookScriptPath, opts.hookPort);
-      return { file: this.cfg.claudeExe, args: buildClaudeArgs(settingsPath, opts.resumeSessionId, opts.extraArgs) };
+      return {
+        file: this.cfg.claudeExe,
+        args: buildClaudeArgs(settingsPath, opts.resumeSessionId, opts.extraArgs, { mcpConfigPath: opts.mcpConfigPath }),
+      };
     }
     const result = ensureCodexHooksFile(opts.cwd, opts.hookScriptPath, opts.hookPort);
     if (!result.written) this.warn(opts.memberId, result.reason ?? `did not write ${result.path}`);

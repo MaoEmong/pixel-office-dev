@@ -9,6 +9,8 @@ export const config = {
   wsPort: Number(process.env.PIXEL_WS_PORT || 7420),
   /** hook 수신 HTTP 포트 (hook.js 가 POST). */
   hookPort: Number(process.env.PIXEL_HOOK_PORT || 7421),
+  /** TeamTools MCP(Streamable HTTP) 포트. CLI 세션이 `/mcp/<memberToken>` 으로 붙는다(T17). */
+  mcpPort: Number(process.env.PIXEL_MCP_PORT || 7422),
   /** 데몬 상태·토큰·DB·멤버 지시문이 놓이는 폴더. */
   dataDir: process.env.PIXEL_DATA_DIR || path.join(localAppData, 'pixel-office'),
   /** claude 실행 파일. PATH 에 있으면 'claude', 없으면 데스크탑 앱 번들 경로. */

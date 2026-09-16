@@ -83,7 +83,7 @@ describe('Office restart recovery (T09)', () => {
   });
 
   const newOffice = (opts: { fallbackWindowMs?: number } = {}) => {
-    office = new Office({ config: { dataDir, hookPort: 0, wsPort: 0 }, store, pty, receiver, version: 't09', recovery: { ...opts, orphanOps: fakeOrphanOps() } });
+    office = new Office({ config: { dataDir, hookPort: 0, wsPort: 0, mcpPort: 0 }, store, pty, receiver, version: 't09', recovery: { ...opts, orphanOps: fakeOrphanOps() } });
     events = [];
     statuses = [];
     notices = [];

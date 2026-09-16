@@ -23,6 +23,11 @@ export interface SpawnOptions {
   hookPort: number;
   /** 엔진 인자 뒤에 그대로 붙일 추가 인자. */
   extraArgs?: string[];
+  /**
+   * TeamTools MCP 설정 파일(T17). Claude 는 `--mcp-config <path>` 로 그 세션에만 주입한다.
+   * Codex 는 M3(`-c mcp_servers.team.url=...`) — 지금은 무시.
+   */
+  mcpConfigPath?: string;
 }
 
 export interface ExitInfo {

@@ -269,7 +269,9 @@ test('real daemon restart: greet → kill daemon → new daemon resumes member �
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pixel-office-t09-it-'));
   const wsPort = await freePort();
   const hookPort = await freePort();
-  const env = { PIXEL_WS_PORT: String(wsPort), PIXEL_HOOK_PORT: String(hookPort), PIXEL_DATA_DIR: dataDir };
+  // T17: TeamTools MCP 도 임시 포트로 — 기본 7422 에 진짜 데몬이 떠 있으면 start() 가 EADDRINUSE 로 죽는다.
+  const mcpPort = await freePort();
+  const env = { PIXEL_WS_PORT: String(wsPort), PIXEL_HOOK_PORT: String(hookPort), PIXEL_MCP_PORT: String(mcpPort), PIXEL_DATA_DIR: dataDir };
   const claudePids: number[] = [];
   const daemons: Daemon[] = [];
   let client1: Client | undefined;

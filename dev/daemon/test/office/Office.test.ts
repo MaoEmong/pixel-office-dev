@@ -181,7 +181,7 @@ describe('Office', () => {
     store = new Store(':memory:');
     pty = new FakePty();
     receiver = new FakeReceiver();
-    office = new Office({ config: { dataDir, hookPort: 0, wsPort: 0 }, store, pty, receiver, version: '1.2.3' });
+    office = new Office({ config: { dataDir, hookPort: 0, wsPort: 0, mcpPort: 0 }, store, pty, receiver, version: '1.2.3' });
     events = [];
     statuses = [];
     notices = [];
@@ -209,15 +209,18 @@ describe('Office', () => {
   };
   const clockIn = (name = 'kim', instructions?: string) => office.clockIn({ teamId: team.id, engine: 'claude', name, instructions });
 
-  test('start(): daemon.json has wsPort/hookPort/token/pid/startedAt/version; token is 32 random bytes', async () => {
+  test('start(): daemon.json has wsPort/hookPort/mcpPort/token/pid/startedAt/version; token is 32 random bytes', async () => {
     const info = JSON.parse(fs.readFileSync(path.join(dataDir, 'daemon.json'), 'utf8'));
-    assert.deepEqual(Object.keys(info).sort(), ['hookPort', 'pid', 'startedAt', 'token', 'version', 'wsPort']);
+    assert.deepEqual(Object.keys(info).sort(), ['hookPort', 'mcpPort', 'pid', 'startedAt', 'token', 'version', 'wsPort']);
     assert.equal(info.hookPort, 45678);
+    // T17: TeamTools MCP 는 실제 서버(임시 포트) — 0 이 아닌 실제 바인딩 포트가 기록된다
+    assert.ok(Number.isInteger(info.mcpPort) && info.mcpPort > 0, `mcpPort bound: ${info.mcpPort}`);
+    assert.equal(info.mcpPort, office.mcp.port);
     assert.equal(info.pid, process.pid);
     assert.equal(info.version, '1.2.3');
     assert.match(info.token, /^[0-9a-f]{64}$/);
     assert.equal(info.token, office.token);
-    const other = new Office({ config: { dataDir, hookPort: 0, wsPort: 0 }, store: new Store(':memory:'), pty: new FakePty(), receiver: new FakeReceiver() });
+    const other = new Office({ config: { dataDir, hookPort: 0, wsPort: 0, mcpPort: 0 }, store: new Store(':memory:'), pty: new FakePty(), receiver: new FakeReceiver() });
     assert.notEqual(other.token, office.token);
     office.updateDaemonInfo({ wsPort: 4321 });
     assert.equal(JSON.parse(fs.readFileSync(path.join(dataDir, 'daemon.json'), 'utf8')).wsPort, 4321);

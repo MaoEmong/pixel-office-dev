@@ -57,6 +57,31 @@ describe('sanitizeEnv', () => {
   });
 });
 
+describe('buildClaudeArgs (T17 --mcp-config)', () => {
+  test('mcpConfigPath adds --mcp-config after --resume and before extraArgs', () => {
+    assert.deepEqual(buildClaudeArgs('D:\\s.json', undefined, [], { mcpConfigPath: 'D:\\m.json' }), [
+      '--settings',
+      'D:\\s.json',
+      '--permission-mode',
+      'default',
+      '--mcp-config',
+      'D:\\m.json',
+    ]);
+    assert.deepEqual(buildClaudeArgs('D:\\s.json', 'sess-1', ['--model', 'x'], { mcpConfigPath: 'D:\\m.json' }), [
+      '--settings',
+      'D:\\s.json',
+      '--permission-mode',
+      'default',
+      '--resume',
+      'sess-1',
+      '--mcp-config',
+      'D:\\m.json',
+      '--model',
+      'x',
+    ]);
+  });
+});
+
 describe('buildClaudeArgs', () => {
   test('fresh session', () => {
     assert.deepEqual(buildClaudeArgs('D:\\s.json'), ['--settings', 'D:\\s.json', '--permission-mode', 'default']);
