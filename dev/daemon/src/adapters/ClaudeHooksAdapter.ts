@@ -7,6 +7,7 @@
 //   UserPromptSubmit    → status working, thinking{text: prompt[:200]}
 //   PreToolUse          → reading/editing/running (mapping.ts), status working; toolGate 있으면 hold 후 '{}'; AskUserQuestion 은 이벤트 없음
 //   PermissionRequest   → AskUserQuestion: pending(question) + asking, status waiting_answer, hold
+//                          mcp__team__*  : 즉시 allow(사용자에게 안 올림) — D-22
 //                          그 외: pending(approval) + waiting_approval, status waiting_approval, hold
 //   PostToolUse(Failure)→ toolDone 내부 이벤트, status working (오피스 이벤트 없음)
 //   Notification        → 무시
@@ -37,6 +38,11 @@ export const MAX_THINKING_CHARS = 200;
 export const MAX_TEXT_CHARS = 4000;
 /** deny 에 message 가 없을 때 모델에게 보내는 사유. */
 export const DEFAULT_DENY_MESSAGE = 'Denied by user';
+/**
+ * TeamTools MCP 도구 이름 접두사. 이 도구들의 PermissionRequest 는 사용자에게 올리지 않고 데몬이 바로 allow 한다(D-22):
+ * 우리 도구라 부작용이 데몬 안에서만 생기고, 허가 카드가 질문 카드보다 먼저 뜨는 어색한 흐름을 없앤다.
+ */
+export const TEAM_TOOL_PREFIX = 'mcp__team__';
 
 /** SessionEnd 중 같은 프로세스 안에서 새 SessionStart 가 뒤따르는 reason(종료가 아님). */
 const IN_PROCESS_SESSION_END: ReadonlySet<string> = new Set(['clear', 'resume']);
@@ -237,6 +243,14 @@ export class ClaudeHooksAdapter extends EventEmitter<ClaudeHooksAdapterEvents> {
     const { payload } = req;
     const toolName = toolNameOf(payload);
     const toolInput = payload.tool_input;
+
+    // D-22: TeamTools MCP 도구(mcp__team__*)는 보류하지 않고 즉시 허가한다. pending/waiting_approval 이벤트 없음
+    // (PreToolUse 가 이미 running{tool} 을 남겼다).
+    if (toolName.startsWith(TEAM_TOOL_PREFIX)) {
+      req.respond(allow());
+      return;
+    }
+
     const handle = req.hold();
 
     if (toolName === ASK_USER_QUESTION) {

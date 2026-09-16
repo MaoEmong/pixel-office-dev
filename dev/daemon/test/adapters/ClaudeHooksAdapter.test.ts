@@ -452,6 +452,30 @@ describe('ClaudeHooksAdapter', () => {
     assert.deepEqual(kinds(h), ['thinking', 'asking']);
   });
 
+  test('PermissionRequest(mcp__team__*) → 즉시 allow, pending/이벤트 없음 (D-22); mcp__other__ 는 그대로 사용자에게', () => {
+    h.send('SessionStart', P.sessionStart);
+    h.send('UserPromptSubmit', { ...P.userPrompt, prompt: 'ask_user 로 물어봐' });
+    // PreToolUse 는 평소대로 running{tool} 만 남긴다.
+    h.send('PreToolUse', pre('mcp__team__ask_user', { question: '점심은?', options: ['김밥', '라면'] }, 'toolu_mcp1'));
+
+    const f = h.send('PermissionRequest', perm('mcp__team__ask_user', { question: '점심은?', options: ['김밥', '라면'] }));
+    assert.equal(f.state(), 'responded'); // hold 하지 않는다
+    assert.deepEqual(f.sent, [allow()]);
+    assert.deepEqual(f.sent, [{ hookSpecificOutput: { hookEventName: 'PermissionRequest', decision: { behavior: 'allow' } } }]);
+    assert.equal(h.created.length, 0); // pending 없음
+    assert.deepEqual(h.adapter.heldPendingIds(), []);
+    assert.deepEqual(kinds(h), ['thinking', 'running']); // waiting_approval 이벤트 없음
+    assert.equal(h.member$().status, 'working'); // waiting_approval 로 안 간다
+
+    // 다른 MCP 서버(mcp__team__ 이 아닌)는 기존대로 허가 카드를 탄다.
+    const other = h.send('PermissionRequest', perm('mcp__github__create_issue', { title: 'x' }));
+    assert.equal(other.state(), 'held');
+    assert.equal(h.created.length, 1);
+    assert.equal(h.created[0]!.type, 'approval');
+    assert.deepEqual(kinds(h), ['thinking', 'running', 'waiting_approval']);
+    assert.equal(h.member$().status, 'waiting_approval');
+  });
+
   test('PostToolUse / PostToolUseFailure → toolDone only (no office event), status working', () => {
     h.send('SessionStart', P.sessionStart);
     h.send('UserPromptSubmit', P.userPrompt);
