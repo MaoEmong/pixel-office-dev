@@ -46,6 +46,25 @@ describe('prepareSpawnCommand', () => {
     assert.equal(parsed.hooks.PreToolUse![0]!.hooks[0]!.command, 'node D:/daemon/src/hooks/hook.js 7421 PreToolUse');
   });
 
+  test('codex: mcpUrl 이 있으면 -c mcp_servers.team.url="…" 이 붙는다 (T22, 실측: codex mcp add --url 이 쓰는 키)', () => {
+    const url = 'http://127.0.0.1:7422/mcp/abc123';
+    const cmd = prepareSpawnCommand({ ...cfg, dataDir: dir }, opts({ mcpUrl: url }));
+    assert.deepEqual(cmd.args, [
+      '--dangerously-bypass-hook-trust',
+      '-c',
+      'approval_policy="on-request"',
+      '-c',
+      'sandbox_mode="workspace-write"',
+      '-c',
+      `mcp_servers.team.url="${url}"`,
+    ]);
+    // 재개 때도 같은 인자가 붙는다(resume 서브커맨드가 맨 앞).
+    const again = prepareSpawnCommand({ ...cfg, dataDir: dir }, opts({ mcpUrl: url, resumeSessionId: '01a0' }));
+    assert.deepEqual(again.args.slice(0, 2), ['resume', '01a0']);
+    assert.ok(again.args.includes(`mcp_servers.team.url="${url}"`));
+    assert.equal(again.args.includes('--mcp-config'), false, 'Codex 에는 Claude 플래그를 쓰지 않는다');
+  });
+
   test('codex: 재개는 resume <id> 가 맨 앞', () => {
     const cmd = prepareSpawnCommand({ ...cfg, dataDir: dir }, opts({ resumeSessionId: '01a09f50-13fe' }));
     assert.deepEqual(cmd.args.slice(0, 2), ['resume', '01a09f50-13fe']);

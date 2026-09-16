@@ -15,6 +15,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { resolveCodexExe } from '../../src/config.js';
 import type { DaemonInfo } from '../../src/office/types.js';
 import type { Member, OfficeEvent, Snapshot, Team } from '../../src/store/types.js';
 import { Client, IT, SANDBOX, freePort, killTree, pidAlive, sleep, startDaemon, waitExit } from './it-helpers.js';
@@ -22,15 +23,9 @@ import { Client, IT, SANDBOX, freePort, killTree, pidAlive, sleep, startDaemon, 
 const TARGET = path.resolve(SANDBOX, '..', 't20.txt'); // workspace(sandbox) 밖 → 승인 필요
 const INSTRUCTION = '셸 명령 "echo t20 > ../t20.txt"를 실행해서 상위 폴더에 파일을 만들어줘. 다른 건 하지 마.';
 
-/** npm 전역 설치의 실제 codex.exe(스파이크에서 쓴 경로). 없으면 PATH 의 codex. */
+/** npm 전역 설치의 실제 codex.exe. T22 부터 데몬이 스스로 찾으므로(config.resolveCodexExe) 같은 함수를 쓴다. */
 function codexExe(): string {
-  if (process.env.PIXEL_CODEX_EXE) return process.env.PIXEL_CODEX_EXE;
-  const vendor = path.join(
-    process.env.APPDATA ?? path.join(os.homedir(), 'AppData', 'Roaming'),
-    'npm', 'node_modules', '@openai', 'codex', 'node_modules', '@openai', 'codex-win32-x64',
-    'vendor', 'x86_64-pc-windows-msvc', 'bin', 'codex.exe',
-  );
-  return fs.existsSync(vendor) ? vendor : 'codex';
+  return resolveCodexExe();
 }
 
 test('real daemon + real Codex: clockIn → instruct → waiting_approval → allow → file → clockOut (Ctrl+C×2)', { skip: IT ? false : 'set PIXEL_IT=1 to run', timeout: 600_000 }, async () => {

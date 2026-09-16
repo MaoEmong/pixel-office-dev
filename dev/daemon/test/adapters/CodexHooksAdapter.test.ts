@@ -319,6 +319,27 @@ describe('CodexHooksAdapter', () => {
       assert.deepEqual(kinds(h), []);
     });
 
+    test('T22: Codex 가 MCP 도구 이름을 어떻게 보내든 team + ask_user 가 들어가면 즉시 allow', () => {
+      // Codex 0.154 가 MCP 도구의 tool_name 을 어떤 모양으로 보내는지 아직 실측 못 함(모델 턴 필요 — 사용량 한도).
+      // 후보를 전부 받아 준다. TODO(2026-09-21 이후): 실제 이름을 캡처해 좁힌다.
+      for (const toolName of ['team.ask_user', 'team/ask_user', 'team__ask_user', 'mcp__team__ask_user', 'MCP team ask_user']) {
+        const h = harness();
+        const f = h.send('PermissionRequest', { ...COMMON, hook_event_name: 'PermissionRequest', tool_name: toolName, tool_input: { question: '색?' } });
+        assert.deepEqual(f.sent, [allow()], `${toolName} 은 자동 allow`);
+        assert.equal(h.created.length, 0);
+      }
+    });
+
+    test('T22: 남의 MCP 서버 도구는 자동 allow 하지 않는다(team 과 도구 이름이 둘 다 있어야)', () => {
+      for (const toolName of ['other.ask_user', 'team.delete_repo', 'ask_user', 'teamcity.build']) {
+        const h = harness();
+        const f = h.send('PermissionRequest', { ...COMMON, hook_event_name: 'PermissionRequest', tool_name: toolName, tool_input: {} });
+        assert.deepEqual(f.sent, [], `${toolName} 은 사용자 결정을 기다려야 한다(보류)`);
+        assert.equal(h.created.length, 1);
+        assert.equal(h.created[0]!.type, 'approval');
+      }
+    });
+
     test('Codex 에는 AskUserQuestion 이 없다 — 그 이름이 와도 그냥 approval 로 다룬다', () => {
       const h = harness();
       h.send('PermissionRequest', {

@@ -32,6 +32,7 @@ import { TeamToolsServer, TEAM_MCP_NAME } from '../mcp/TeamToolsServer.js';
 import { USER_ACTOR } from '../store/types.js';
 import type { Engine, EventsQueryInput, Member, MemberStatus, OfficeEvent, Pending, Snapshot, Task, Team } from '../store/types.js';
 import { OfficeError, RPC_ERROR, badState, invalidParams, notFound } from './errors.js';
+import { CODEX_FALLBACK, detectQuestion, isFallbackQuestion, type FallbackQuestionPayload } from './codexFallback.js';
 import { defaultOrphanOps, reapOrphan, type OrphanOps } from './orphans.js';
 import type {
   ApprovalRespondParams,
@@ -582,6 +583,7 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
   /**
    * 질문에 답한다. TUI `AskUserQuestion`(payload.tool_input 있음)은 어댑터가 hook 결정으로 돌려주고,
    * TeamTools `ask_user`(payload.source==='ask_user')는 큐에 `[ANSWER q#<id>]` 시스템 메시지를 넣는다(T17).
+   * Codex 질문 폴백(payload.fallback, T22)은 같은 경로지만 봉투 없이 답 본문만 넣는다.
    */
   respondQuestion(pendingId: string, answers: Record<string, string>): void {
     const pending = this.openPending(pendingId, 'question');
@@ -627,7 +629,8 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
   private answerAskUser(pending: Pending, answers: Record<string, string>): void {
     const member = this.member(pending.memberId);
     const rt = this.liveRuntime(member);
-    const text = buildAnswerText(pending.id, answers);
+    // Codex 질문 폴백(T22)에는 기다리는 MCP 호출이 없다 → `[ANSWER q#…]` 봉투 없이 사용자가 친 것처럼 그대로 넣는다.
+    const text = isFallbackQuestion(pending.payload) ? answerBody(answers) : buildAnswerText(pending.id, answers);
     this.store.answerPending(pending.id, answers);
     if (this.store.getMember(member.id)?.status === 'waiting_answer') this.setStatus(member.id, 'working');
     else this.emitStatus(member.id, this.store.getMember(member.id)!.status); // derived(waiting_answer → idle/free) 갱신
@@ -641,10 +644,15 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
     return path.join(this.cfg.dataDir, 'sessions', memberId, 'mcp.json');
   }
 
-  private writeMcpConfig(member: Member): string {
+  /** 그 멤버의 TeamTools MCP 엔드포인트. Claude 는 mcp.json 안에, Codex 는 `-c mcp_servers.team.url=` 인자에 들어간다. */
+  mcpUrl(member: Member): string {
     const port = this.info?.mcpPort ?? this.cfg.mcpPort;
+    return `http://127.0.0.1:${port}/mcp/${member.memberToken}`;
+  }
+
+  private writeMcpConfig(member: Member): string {
     const file = this.mcpConfigPath(member.id);
-    const body = { mcpServers: { [TEAM_MCP_NAME]: { type: 'http', url: `http://127.0.0.1:${port}/mcp/${member.memberToken}` } } };
+    const body = { mcpServers: { [TEAM_MCP_NAME]: { type: 'http', url: this.mcpUrl(member) } } };
     fs.mkdirSync(path.dirname(file), { recursive: true });
     fs.writeFileSync(file, JSON.stringify(body, null, 2));
     return file;
@@ -699,8 +707,9 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
       rows,
       hookScriptPath: this.hookScriptPath,
       hookPort: this.info?.hookPort ?? this.cfg.hookPort,
-      // TeamTools MCP(T17): Claude 만. Codex 는 M3.
+      // TeamTools MCP: Claude 는 mcp.json + `--mcp-config`(T17), Codex 는 `-c mcp_servers.team.url=…`(T22).
       mcpConfigPath: member.engine === 'claude' ? this.writeMcpConfig(member) : undefined,
+      mcpUrl: member.engine === 'codex' ? this.mcpUrl(member) : undefined,
     });
     const screen = new ScreenModel({ engine: member.engine, cols, rows });
     const queue = new InputQueue({ session, screen, isIdle: () => this.isIdle(member.id) });
@@ -929,10 +938,11 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
     this.store.abortTasksFor(memberId);
   }
 
-  /** 퇴근 마무리: 흔적 이벤트 + status exited. */
+  /** 퇴근 마무리: 흔적 이벤트 + status exited. MCP 연결도 끊는다(프로세스 없이 status 만 살아 있던 행 포함). */
   private finishMember(memberId: string, summary: string): void {
     const member = this.store.getMember(memberId);
     if (!member) return;
+    this.disposeMcp(memberId);
     this.store.abortTasksFor(memberId);
     this.appendEvent(member, 'idle', { summary });
     this.setStatus(memberId, 'exited');
@@ -1023,18 +1033,49 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
     this.pty.on('warn', (memberId, message) => this.notice('warn', `[${memberId}] ${message}`));
   }
 
-  /** v1a 보고: Stop 의 text 를 기억했다가 idle 에서 assigned task 를 reported 로(01 §TeamTools "사용자 지시도 task"). */
+  /**
+   * v1a 보고: Stop 의 text 를 기억했다가 idle 에서 assigned task 를 reported 로(01 §TeamTools "사용자 지시도 task").
+   * 엔진 공통이다 — Codex 도 `report` 도구 없이 이 경로로 보고가 올라간다(T22 "보고 폴백").
+   * 그 앞에 Codex 전용 질문 폴백이 있다(아래).
+   */
   private afterOfficeEvent(ev: OfficeEvent): void {
     const rt = this.runtimes.get(ev.memberId);
     if (ev.kind === 'text' && typeof ev.detail.text === 'string' && rt) rt.lastText = ev.detail.text;
     if (ev.kind !== 'idle' || ev.detail.summary !== undefined) return;
     const member = this.store.getMember(ev.memberId);
     if (!member) return;
+    // Codex 폴백(T22): 질문으로 끝난 턴은 "끝난 작업"이 아니다 — 질문 pending 을 만들고 task 는 assigned 로 둔다.
+    if (member.engine === 'codex' && this.codexQuestionFallback(member, rt?.lastText)) {
+      // 같은 문장으로 다음 턴에 또 묻지 않도록 비운다(마지막 메시지가 없는 턴이 이어질 수 있다).
+      if (rt) rt.lastText = undefined;
+      return;
+    }
     for (const task of this.store.listTasks({ toMember: ev.memberId, status: 'assigned' })) {
       const reportText = rt?.lastText ?? null;
       this.store.updateTask(task.id, { status: 'reported', reportStatus: 'done', reportText });
       this.appendEvent(member, 'reporting', { summary: reportText ? truncate(reportText, 300) : `task#${task.id} done` }, { taskId: task.id });
     }
+  }
+
+  /**
+   * Codex 질문 폴백(T22, 01 §"Codex 멤버 폴백(v1)"): 턴 종료 메시지가 질문처럼 보이면(`?`/`？` 로 끝나거나 정해진 표현)
+   * TeamTools `ask_user` 와 **같은 모양의** pending(question) 을 만든다 — 앱의 질문 카드·내 책상 줄서기·재시작 복구
+   * (D-19: ask_user 질문은 살아남는다)가 그대로 동작한다. 다른 점은 payload 의 `fallback` 표식뿐이다: 기다리는 MCP 호출이
+   * 없으므로 답은 `[ANSWER q#…]` 가 아니라 **보통 프롬프트**로 들어간다(answerAskUser).
+   * status 는 idle 그대로 두고(턴이 끝났다) 파생만 `waiting_answer` 로 갱신한다.
+   * 만들었으면 true(그 턴은 보고로 치지 않는다).
+   */
+  private codexQuestionFallback(member: Member, lastText: string | undefined): boolean {
+    if (!this.runtimes.get(member.id)?.session.alive) return false;
+    const question = detectQuestion(lastText);
+    if (!question) return false;
+    // 이미 열린 질문이 있으면(ask_user 를 제대로 부른 턴 등) 두 번 묻지 않는다.
+    if (this.store.listOpenPending(member.id).some((p) => p.type === 'question')) return false;
+    const payload: FallbackQuestionPayload = { source: 'ask_user', question, options: [], fallback: CODEX_FALLBACK };
+    const pending = this.store.createPending({ memberId: member.id, type: 'question', payload: { ...payload } });
+    this.appendEvent(member, 'asking', { tool: 'ask_user', summary: question, fallback: CODEX_FALLBACK }, { questionId: pending.id });
+    this.emitStatus(member.id, this.store.getMember(member.id)?.status ?? 'idle');
+    return true;
   }
 
   // ---- 내부: 유틸 ------------------------------------------------------------------------
@@ -1119,10 +1160,14 @@ export function buildResumedText(input: { assigned: Task[]; events: OfficeEvent[
  * `<question>: <label>` 을 줄마다. 빈 답은 -32602.
  */
 export function buildAnswerText(questionId: string, answers: Record<string, string>): string {
+  return `[ANSWER q#${questionId}]\n${answerBody(answers)}`;
+}
+
+/** 답 본문만(봉투 없음). Codex 질문 폴백(T22)은 이것만 보통 프롬프트로 넣는다. 빈 답은 -32602. */
+export function answerBody(answers: Record<string, string>): string {
   const entries = Object.entries(answers).filter(([, v]) => typeof v === 'string' && v.trim().length > 0);
   if (entries.length === 0) throw invalidParams('answers is empty');
-  const body = entries.length === 1 ? entries[0]![1].trim() : entries.map(([q, a]) => `${q}: ${a.trim()}`).join('\n');
-  return `[ANSWER q#${questionId}]\n${body}`;
+  return entries.length === 1 ? entries[0]![1].trim() : entries.map(([q, a]) => `${q}: ${a.trim()}`).join('\n');
 }
 
 /** `ask_user` pending 인가(D-19: tool_input 없음 + source 표식). */

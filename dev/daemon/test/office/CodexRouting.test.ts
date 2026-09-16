@@ -116,11 +116,15 @@ describe('Office: 엔진별 hook 라우팅 (T20)', () => {
     assert.deepEqual(codexSession.keys, ['ctrl-c', 'ctrl-c']);
   });
 
-  test('스폰 옵션: Codex 는 engine=codex + mcpConfigPath 없음(M3), 재고용은 resume', async () => {
+  test('스폰 옵션: Codex 는 engine=codex + mcpUrl(T22, mcpConfigPath 는 Claude 전용), 재고용은 resume', async () => {
     const first = pty.spawns.find((s) => s.memberId === codex.id)!;
     assert.equal(first.engine, 'codex');
     assert.equal(first.cwd, team.cwd);
-    assert.equal(first.mcpConfigPath, undefined, 'Codex MCP 주입은 M3');
+    assert.equal(first.mcpConfigPath, undefined, 'Codex 는 --mcp-config 를 쓰지 않는다');
+    assert.equal(first.mcpUrl, `http://127.0.0.1:${office.daemonInfo!.mcpPort}/mcp/${codex.memberToken}`, 'Codex 는 -c mcp_servers.team.url 로 주입(T22)');
+    const claudeSpawn = pty.spawns.find((s) => s.memberId === claude.id)!;
+    assert.equal(claudeSpawn.mcpUrl, undefined, 'Claude 는 mcp.json 경로를 쓴다');
+    assert.ok(claudeSpawn.mcpConfigPath);
     assert.equal(first.resumeSessionId, undefined);
     assert.equal(first.memberToken, codex.memberToken);
 
@@ -131,6 +135,23 @@ describe('Office: 엔진별 hook 라우팅 (T20)', () => {
     await office.rehire(codex.id);
     const again = pty.spawns.filter((s) => s.memberId === codex.id).at(-1)!;
     assert.equal(again.resumeSessionId, '01a09f50-13fe');
+    assert.equal(again.mcpUrl, first.mcpUrl, '재고용에도 같은 MCP 엔드포인트를 다시 주입한다');
+  });
+
+  test('MCP 연결은 Codex 퇴근·프로세스 종료에서도 끊긴다 (T22)', async () => {
+    const disposed: string[] = [];
+    const realDispose = office.mcp.dispose.bind(office.mcp);
+    office.mcp.dispose = (token: string) => {
+      disposed.push(token);
+      realDispose(token);
+    };
+    await office.clockOut(codex.id);
+    assert.ok(disposed.includes(codex.memberToken), 'clockOut → dispose(memberToken)');
+
+    disposed.length = 0;
+    await office.rehire(codex.id);
+    pty.exit(codex.id, 1); // 예상 못 한 종료
+    assert.ok(disposed.includes(codex.memberToken), 'pty 종료 → dispose(memberToken)');
   });
 
   test('Codex 부팅: SessionStart 없이도 화면이 준비되면 starting → idle (T20 실측: Codex 는 첫 프롬프트 때 SessionStart)', async () => {

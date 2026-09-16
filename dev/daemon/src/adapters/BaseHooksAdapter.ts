@@ -82,6 +82,14 @@ export abstract class BaseHooksAdapter extends EventEmitter<HooksAdapterEvents> 
     return false;
   }
 
+  /**
+   * 우리 TeamTools MCP 도구인지 — 맞으면 사용자에게 올리지 않고 데몬이 바로 allow 한다(D-22).
+   * 기본은 Claude 가 붙이는 이름 규칙(`mcp__team__<tool>`). Codex 는 이름 규칙이 달라 어댑터가 넓게 잡는다(T22).
+   */
+  protected isTeamTool(toolName: string): boolean {
+    return toolName.startsWith(TEAM_TOOL_PREFIX);
+  }
+
   /** waiting_approval 이벤트의 detail. 기본은 PreToolUse 와 같은 도구 detail. */
   protected approvalDetail(toolName: string, toolInput: unknown): EventDetail {
     return toolDetail(toolName, toolInput);
@@ -266,7 +274,7 @@ export abstract class BaseHooksAdapter extends EventEmitter<HooksAdapterEvents> 
 
     // D-22: TeamTools MCP 도구(mcp__team__*)는 보류하지 않고 즉시 허가한다. pending/waiting_approval 이벤트 없음
     // (PreToolUse 가 이미 running{tool} 을 남겼다).
-    if (toolName.startsWith(TEAM_TOOL_PREFIX)) {
+    if (this.isTeamTool(toolName)) {
       req.respond(allow());
       return;
     }

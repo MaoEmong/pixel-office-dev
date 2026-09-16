@@ -26,7 +26,7 @@
 | `member.instructions.get` | `{ memberId }` | `{ markdown }` (없으면 `""`) |
 | `member.instructions.set` | `{ memberId, markdown }` | `{}` — 다음 SessionStart부터 반영. 파일: `${dataDir}/teams/<teamId>/members/<memberId>/INSTRUCTIONS.md` |
 | `approval.respond` | `{ pendingId, behavior: 'allow'\|'deny', updatedInput?, message?, alwaysThisSession?: boolean }` | `{}` — `message` 는 deny 시 모델에게 보여줄 사유(기본 "Denied by user"). `alwaysThisSession` 은 allow 일 때 같은 멤버·같은 도구의 다음 허가 요청을 데몬이 자동 allow(데몬 메모리, 재시작 시 초기화). 없는 pending -32002, approval 이 아니면 -32602, 이미 answered/expired -32003. |
-| `question.respond` | `{ pendingId, answers: Record<string,string> }` | `{}` — `answers` 는 `{ "<question>": "<label>" }`(자유 답도 `label` 자리에). 오류 코드는 approval.respond 와 동일. **출처별 처리(T17):** TUI `AskUserQuestion`(payload 에 `tool_input` 있음)은 hook 결정으로 돌려주고, TeamTools `ask_user`(payload `source:'ask_user'`)는 pending 을 answered 로 닫은 뒤 그 멤버 입력 큐에 `[ANSWER q#<pendingId>]\n<답>` 시스템 메시지를 넣는다(아래 "TeamTools MCP"). 값이 전부 빈 문자열이면 -32602. 멤버가 실행 중이 아니면 -32003. |
+| `question.respond` | `{ pendingId, answers: Record<string,string> }` | `{}` — `answers` 는 `{ "<question>": "<label>" }`(자유 답도 `label` 자리에). 오류 코드는 approval.respond 와 동일. **출처별 처리(T17):** TUI `AskUserQuestion`(payload 에 `tool_input` 있음)은 hook 결정으로 돌려주고, TeamTools `ask_user`(payload `source:'ask_user'`)는 pending 을 answered 로 닫은 뒤 그 멤버 입력 큐에 `[ANSWER q#<pendingId>]\n<답>` 시스템 메시지를 넣는다(아래 "TeamTools MCP"). **Codex 질문 폴백**(payload 에 `fallback:'codex-stop'`, 아래 "Codex 폴백")은 봉투 없이 답 본문만 넣는다. 값이 전부 빈 문자열이면 -32602. 멤버가 실행 중이 아니면 -32003. |
 | `daemon.shutdown` | `{}` | `{}` — 응답 후 `daemon.notice{level:'info'}` 를 보내고 전원 정중히 종료(`/exit`) → 모든 소켓 close code 1001 → 프로세스 종료. 멤버 status 는 바꾸지 않는다(T09 재시작 복구용). |
 
 에러 코드: `-32001` 인증 실패, `-32002` 없는 멤버/팀/pending, `-32003` 상태 오류(예: 이미 종료), `-32004` 직급 규칙 위반(M4), `-32602` 파라미터. 그 외 JSON-RPC 표준: `-32700` JSON 파싱 실패(id null), `-32600` 봉투 오류(`jsonrpc:"2.0"`·`method` 누락), `-32601` 없는 메서드, `-32000` 내부 오류. 에러 객체는 `{ code, message, data? }`.
@@ -71,12 +71,13 @@ v1a 에서 데몬이 만드는 이벤트(어댑터 표는 worklog T04 참고):
 | 스폰 인자 | `--permission-mode default` (+ `--mcp-config`) | `-c approval_policy="on-request" -c sandbox_mode="workspace-write"`, 재개는 `resume <id>` 서브커맨드 |
 | `reading`/`editing`/`running` | `PreToolUse` 의 **도구 이름**(Read/Edit/Bash …) | 도구는 `Bash` 하나뿐 → **명령 문자열 휴리스틱**. `cat`·`rg`·`ls`·`sed -n`·`type`·`Get-Content`·`git diff\|log\|status` 등만 `reading`, `apply_patch` 는 `editing`, 나머지는 `running`. 애매하면 `running` |
 | `waiting_approval` detail | `{tool, path\|cmd, summary?}` | `{tool:'Bash', cmd, summary}` — `summary` 는 Codex 가 보내는 한국어 승인 문구(`tool_input.description`) |
-| 질문(`asking`) | TUI `AskUserQuestion` + TeamTools `ask_user` | **TUI 질문이 없다.** `asking` 은 TeamTools `ask_user` 뿐 → `question.respond` 는 항상 `[ANSWER q#<id>]` 주입 경로 |
+| 질문(`asking`) | TUI `AskUserQuestion` + TeamTools `ask_user` | **TUI 질문이 없다.** TeamTools `ask_user`(T22 주입) + **질문 폴백**(턴 종료 메시지가 질문이면 데몬이 승격, 아래 "Codex 폴백") |
 | 첫 `idle` | `SessionStart` hook(기동 직후) | **`SessionStart` 가 첫 프롬프트 제출 때 온다**(실측 T20). 데몬이 화면 준비(prompt ready)를 보고 `starting → idle` 로 올린다 — 클라이언트에는 그냥 `member.status idle` 로 보인다 |
 | 중단 | `Ctrl+C` → Stop hook 없음 → 화면으로 `idle{summary:'interrupted'}` | `Ctrl+C` → **`Interrupt` hook**(3초 클램프) → 같은 `idle{summary:'interrupted'}` |
 | 퇴근(`member.clockOut`) | `/exit` + Enter | `Ctrl+C`(idle 이면 한 번에 exit 0). 2초 안에 안 죽으면 `Ctrl+C` 한 번 더, 그래도 안 죽으면 강제 종료 |
 | 첫 실행 다이얼로그 | 온보딩 + 폴더 신뢰(↓+Enter) | 폴더 신뢰 "Do you trust the contents of this directory?" → Enter (ScreenModel 감지, InputQueue 가 통과 → `daemon.notice{info}`) |
-| TeamTools MCP | `--mcp-config` 로 주입 | M3(아직 주입 안 함) — Codex 멤버는 `ask_user` 를 쓸 수 없다 |
+| TeamTools MCP | `--mcp-config <세션 mcp.json>` 로 주입 | `-c mcp_servers.team.url="http://127.0.0.1:<mcpPort>/mcp/<memberToken>"`(T22, 그 실행에만 — `~/.codex/config.toml` 은 안 건드린다). 실기동에서 `/mcp` 가 `team: connected (1 tool) · Tools: ask_user` 로 보인다 |
+| 보고(`reporting`) | TeamTools `report`(M4) / v1a 는 턴 종료 메시지 승격 | 같음(**폴백**: 아래 "Codex 폴백") |
 
 `SessionEnd` 의 `reason` 이 `clear`/`resume` 이면 두 엔진 모두 종료로 보지 않는다(같은 프로세스에서 새 `SessionStart` 가 따라온다).
 
@@ -100,7 +101,8 @@ v1a 에서 데몬이 만드는 이벤트(어댑터 표는 worklog T04 참고):
 데몬이 CLI 세션에 노출하는 MCP 서버. 클라이언트(앱)가 부르는 것이 아니라 **멤버의 CLI 가 도구로 부른다.**
 
 - **엔드포인트:** `http://127.0.0.1:<mcpPort>/mcp/<memberToken>` — MCP **Streamable HTTP** 전송(`@modelcontextprotocol/sdk`, 무상태: 세션 id 없음, 요청마다 새 서버 인스턴스). `mcpPort` 는 config(`PIXEL_MCP_PORT`, 기본 7422)·`daemon.json`. 모르는 토큰·다른 경로·종료된 멤버의 토큰은 404 `{ jsonrpc, error:{code:-32001, message:'unknown member token'} }`. 토큰은 hook 과 같은 식별 용도(보안 경계 아님, 로컬 전용).
-- **주입:** Claude 는 스폰 때마다 `${dataDir}/sessions/<memberId>/mcp.json` = `{ "mcpServers": { "team": { "type": "http", "url": "http://127.0.0.1:<mcpPort>/mcp/<memberToken>" } } }` 을 쓰고 `--mcp-config <그 파일>` 을 붙인다(clockIn/rehire/restart/재시작 복구 전부). 도구는 Claude 안에서 `mcp__team__ask_user` 로 보인다(첫 호출은 `PermissionRequest` → `approval` pending 을 탈 수 있다). Codex 주입은 M3.
+- **주입:** Claude 는 스폰 때마다 `${dataDir}/sessions/<memberId>/mcp.json` = `{ "mcpServers": { "team": { "type": "http", "url": "http://127.0.0.1:<mcpPort>/mcp/<memberToken>" } } }` 을 쓰고 `--mcp-config <그 파일>` 을 붙인다(clockIn/rehire/restart/재시작 복구 전부). 도구는 Claude 안에서 `mcp__team__ask_user` 로 보인다(첫 호출은 `PermissionRequest` → `approval` pending 을 탈 수 있다).
+  **Codex 는 같은 URL 을 `-c mcp_servers.team.url="…"` 인자로 받는다(T22)** — 그 실행에만 적용되고 `~/.codex/config.toml` 은 건드리지 않는다(`codex mcp add <name> --url` 이 쓰는 키와 같다). 서버 이름은 두 엔진 모두 `team`. MCP 도구의 `PermissionRequest` 는 두 엔진 모두 데몬이 자동 allow 한다(D-22; Codex 의 `tool_name` 모양이 아직 미확인이라 `team` + 도구 이름이 둘 다 들어 있으면 우리 도구로 본다).
 - **도구 `ask_user({ question: string, options?: string[] })`** — 비블로킹. 데몬이:
   1. `pending(question)` 생성 — payload `{ source:'ask_user', question, options: string[] }` (**`tool_input` 없음** — D-19: 재시작 복구가 이 질문을 유효한 것으로 남긴다. TUI 질문 payload 는 `{ questions, tool_input }`).
   2. `asking{tool:'ask_user', summary:question, options?}` ref `{questionId}` 이벤트.
@@ -109,6 +111,19 @@ v1a 에서 데몬이 만드는 이벤트(어댑터 표는 worklog T04 참고):
   멤버가 실행 중이 아니거나 question 이 비면 `isError` 결과.
 - **답 주입:** `question.respond{pendingId, answers}` → pending `answered`(answer = answers) → 그 멤버 입력 큐에 시스템 메시지 `[ANSWER q#<id>]\n<답>` — 답이 하나면 label 만, 여럿이면 `<question>: <label>` 줄마다. 큐 규칙은 다른 자동 타이핑과 같다(idle ∧ 프롬프트 준비 ∧ 사용자 타이핑 아님): 답이 pending 을 먼저 닫으므로 "열린 질문 없음" 게이트가 그 순간 열린다. **질문이 열린 동안 쌓인 항목(`[TASK#n]`, `[RESUMED]`)보다 답이 먼저 들어간다.** 같은 멤버에 열린 질문이 둘이면 둘 다 답해야 흐른다. 턴이 아직 진행 중(`waiting_answer`)에 답하면 status 는 `working` 으로 두고 `Stop` 뒤에 흘린다.
 - **만료:** `member.interrupt`/`clockOut`/프로세스 종료는 다른 pending 과 같이 `expired`. 재시작 복구는 `ask_user` 질문을 **열린 채** 둔다(위 "재시작 복구" 3) — 되살린 세션의 `[RESUMED]` 는 답이 올 때까지 큐에 머물고, 답하면 `[ANSWER]` → `[RESUMED]` 순으로 들어간다.
+
+## Codex 폴백 (T22)
+
+Codex 멤버에게도 TeamTools MCP 가 붙지만(위 표), 모델이 `ask_user`/`report` 를 **안 부르고 말로만 끝내는** 턴이 있다. 그러면 사무실에서는 아무 일도 일어나지 않으므로, 데몬이 턴 종료(`Stop`)의 `last_assistant_message` 를 보고 두 가지를 승격한다. **Codex 멤버에만** 적용되고 Claude 멤버의 동작은 그대로다.
+
+1. **질문 폴백** — 마지막 줄이 질문처럼 보이면(물음표 `?`/`？` 로 끝나거나 `알려 주세요`·`확인해 주세요`·`어떻게 할까요`·`어느 쪽`·`which`·`should I` 같은 표현) 데몬이 `ask_user` 와 **같은 모양의** pending 을 만든다:
+   - pending `question`, payload `{ source:'ask_user', question:<마지막 줄, 300자>, options: [], fallback:'codex-stop' }` — `tool_input` 이 없으므로 D-19 규칙대로 재시작에도 살아남고, 앱의 질문 카드·내 책상 줄서기는 `ask_user` 와 똑같이 그린다.
+   - `asking{tool:'ask_user', summary:<질문>, fallback:'codex-stop'}` ref `{questionId}` 이벤트.
+   - `member.status` 는 `idle` 그대로(턴은 끝났다), **`derived` 가 `waiting_answer`** — 캐릭터가 내 책상으로 걸어온다.
+   - 그 멤버에 이미 열린 질문이 있으면 새로 만들지 않는다(중복 방지).
+   - **답 주입이 다르다:** 기다리는 MCP 호출이 없으므로 `question.respond` 는 `[ANSWER q#<id>]` 봉투 없이 **답 본문만** 보통 프롬프트로 넣는다(사용자가 직접 친 것과 같은 모양). 큐 규칙(열린 pending 이 닫히면 흐른다, 답이 먼저)은 `ask_user` 와 같다.
+2. **보고 폴백** — 질문이 아니고 그 멤버에 `assigned` task 가 있으면 v1a 보고 경로(`Stop` → `reported`, `report_text` = 마지막 메시지, `reporting{summary}` ref `{taskId}`)가 그대로 돈다. 이 경로는 원래 엔진 공통이라 Codex 가 `report` 도구를 못 불러도 보고가 올라간다.
+3. **질문이 보고보다 먼저다.** 질문으로 끝난 턴은 "끝난 작업"이 아니므로 task 는 `assigned` 로 남는다 — 답한 뒤의 턴에서 보고가 닫힌다.
 
 ## 재접속 규칙
 

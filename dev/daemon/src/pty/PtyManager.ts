@@ -259,6 +259,7 @@ export interface SpawnCommand {
  *   claude: `<dataDir>/sessions/<memberId>/claude-settings.json` 을 쓰고 `--settings …`(+ --resume, --mcp-config)
  *   codex : `<cwd>/.codex/hooks.json`(pixel-office 마커, 남의 파일이면 건드리지 않고 warn) +
  *           `[resume <id>] --dangerously-bypass-hook-trust -c approval_policy="on-request" -c sandbox_mode="workspace-write"` (실측 ④)
+ *           + `-c mcp_servers.team.url="<mcpUrl>"` (T22, mcpUrl 이 있을 때)
  */
 export function prepareSpawnCommand(cfg: Pick<PtyManagerConfig, 'claudeExe' | 'codexExe' | 'dataDir'>, opts: SpawnOptions): SpawnCommand {
   if (opts.engine === 'claude') {
@@ -269,7 +270,7 @@ export function prepareSpawnCommand(cfg: Pick<PtyManagerConfig, 'claudeExe' | 'c
     };
   }
   const result = ensureCodexHooksFile(opts.cwd, opts.hookScriptPath, opts.hookPort);
-  const cmd: SpawnCommand = { file: cfg.codexExe, args: buildCodexArgs(opts.resumeSessionId, opts.extraArgs) };
+  const cmd: SpawnCommand = { file: cfg.codexExe, args: buildCodexArgs(opts.resumeSessionId, opts.extraArgs, { mcpUrl: opts.mcpUrl }) };
   if (!result.written) cmd.warn = result.reason ?? `did not write ${result.path}`;
   return cmd;
 }
