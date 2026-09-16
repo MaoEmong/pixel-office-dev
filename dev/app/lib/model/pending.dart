@@ -59,6 +59,10 @@ class Pending {
         answer: j['answer'],
       );
 
+  /// TeamTools `ask_user`(T17) 가 만든 질문인가 — payload `{source:'ask_user', question, options}`(D-19: `tool_input` 없음).
+  /// TUI `AskUserQuestion` 과 달리 **턴을 붙잡지 않아** 질문이 열린 채 멤버가 계속 일하거나 idle 로 돌아간다.
+  bool get isAskUser => type == PendingType.question && payload['source'] == 'ask_user';
+
   /// 카드 제목용 요약. approval: `tool_name` + command|file_path|path, question: 첫 질문.
   String get summary {
     if (type == PendingType.approval) {

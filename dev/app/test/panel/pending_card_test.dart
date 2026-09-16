@@ -312,6 +312,39 @@ void main() {
       });
     });
 
+    testWidgets('T19b: 라이브 ask_user asking 이벤트 → 질문 카드(옵션 포함), raw idle 여도 유지, 답하면 사라진다', (tester) async {
+      await tester.runAsync(() async {
+        final c = await pumpPanel(tester, daemon, const PendingCards(memberId: 'm2'));
+        await pumpUntilConnected(tester, c);
+        expect(find.byType(QuestionCard), findsNothing);
+
+        daemon.emitEvent({
+          ...ev(11, memberId: 'm2', kind: 'asking', detail: {'tool': 'ask_user', 'summary': '점심은?', 'options': ['김밥', '라면']}),
+          'ref': {'questionId': 'q_ask'},
+        });
+        await pumpUntil(tester, () => find.byType(QuestionCard).evaluate().isNotEmpty, reason: 'question card from ask_user event');
+        expect(find.text('점심은?'), findsOneWidget);
+        expect(find.text('김밥'), findsOneWidget);
+        expect(find.text('라면'), findsOneWidget);
+
+        // ask_user 는 턴을 붙잡지 않는다 — raw status 가 idle 로 돌아와도 카드는 남아 있어야 한다(T19 함정 1).
+        daemon.push('member.status', {'memberId': 'm2', 'status': 'idle', 'derived': 'waiting_answer'});
+        await pumpUntil(tester, () => c.read(derivedStatusProvider('m2')) == DerivedStatus.waitingAnswer);
+        await tester.pump();
+        expect(find.byType(QuestionCard), findsOneWidget);
+
+        await tester.tap(find.text('김밥'));
+        await pumpUntil(tester, () => daemon.countOf('question.respond') == 1);
+        expect(daemon.paramsOf('question.respond').single['answers'], {'점심은?': '김밥'});
+        await pumpUntil(tester, () => find.byType(QuestionCard).evaluate().isEmpty, reason: 'card gone after answer');
+
+        // 데몬이 derived 갱신용 member.status 를 한 번 더 보내도 상태가 흔들리지 않는다.
+        daemon.push('member.status', {'memberId': 'm2', 'status': 'idle', 'derived': 'free'});
+        await pumpUntil(tester, () => c.read(derivedStatusProvider('m2')) == DerivedStatus.free);
+        expect(c.read(openPendingProvider), isEmpty);
+      });
+    });
+
     testWidgets('PendingInbox: 전 멤버, 최신 먼저, 멤버 이름 표시', (tester) async {
       daemon.snapshotBody['pending'] = [
         pendingJson('old', memberId: 'm1', createdAt: '2026-09-15T01:00:00.000Z', payload: {'tool_name': 'Bash', 'tool_input': {'command': 'ls'}}),

@@ -47,6 +47,7 @@ const HELP: Array<[string, string]> = [
   ['restart <member>', '지시문 즉시 반영 재시작 (member.restart)'],
   ['say <member> <text...>', '지시 (member.instruct) → taskId 출력'],
   ['type <member> <text>', '터미널에 raw 타이핑. \\n \\r \\t \\e \\xHH 이스케이프, 끝이 \\n/\\r 이 아니면 Enter 자동'],
+  ['', '  이스케이프·제어문자만(\\e, \\e\\e, \\e[A, \\x03 …)이면 Enter 를 붙이지 않는다 — ESC 단독 전송용(T19b)'],
   ['attach <member>', '현재 화면 출력 + term 스트림 구독 ([term] 접두)'],
   ['detach', 'term 구독 해제'],
   ['int <member>', 'Ctrl+C (member.interrupt)'],
@@ -156,11 +157,19 @@ class Cli {
         summary: detailSummary(ev.detail),
       });
     } else if (ev.kind === 'asking' && ref.questionId) {
+      // TeamTools `ask_user`(T17) 는 `asking{tool:'ask_user', summary:<질문>, options?}` — 스냅샷 payload 와 같은
+      // 모양을 만들어 두면 refresh 없이도 `pending` 이 질문·옵션을 찍고 `answer <id> <label>` 이 먹는다.
+      const d = ev.detail ?? {};
+      const payload =
+        d.tool === 'ask_user' && typeof d.summary === 'string'
+          ? { source: 'ask_user', question: d.summary, options: Array.isArray(d.options) ? d.options : [] }
+          : undefined;
       this.pending.set(ref.questionId, {
         id: ref.questionId,
         memberId: ev.memberId,
         type: 'question',
         summary: detailSummary(ev.detail),
+        payload,
       });
     }
     for (const w of this.idleWaiters) w({ memberId: ev.memberId, kind: 'event', idle: ev.kind === 'idle' });

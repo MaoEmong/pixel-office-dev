@@ -10,6 +10,7 @@ import {
   resolvePendingId,
   resolveTeam,
   tokenize,
+  isEscapeOnly,
   typedPayload,
   unescapeTyped,
 } from '../../src/cli/parse.js';
@@ -108,8 +109,21 @@ describe('answer / type / argv', () => {
     assert.equal(typedPayload('hello'), 'hello\r');
     assert.equal(typedPayload('hello\\n'), 'hello\n');
     assert.equal(typedPayload('hello\\r'), 'hello\r');
-    assert.equal(typedPayload('\\e'), '\x1b\r');
-    assert.equal(typedPayload('\\x03'), '\x03\r');
+    assert.equal(typedPayload(''), '\r'); // 빈 입력 = Enter 한 번
+    assert.equal(typedPayload('hello\\e'), 'hello\x1b\r'); // 글자가 섞여 있으면 그대로 Enter
+  });
+
+  test('T19b: 이스케이프·제어문자만이면 Enter 를 붙이지 않는다 (ESC 가 Alt+Enter 로 나가던 버그)', () => {
+    assert.equal(typedPayload('\\e'), '\x1b'); // 예전: '\x1b\r' = Alt+Enter → 다이얼로그가 안 닫혔다
+    assert.equal(typedPayload('\\e\\e'), '\x1b\x1b');
+    assert.equal(typedPayload('\\e[A'), '\x1b[A'); // 커서 위
+    assert.equal(typedPayload('\\x03'), '\x03'); // Ctrl+C
+    assert.equal(typedPayload('\\x1b[B'), '\x1b[B');
+    assert.equal(isEscapeOnly('\x1b'), true);
+    assert.equal(isEscapeOnly('\x1b[A'), true);
+    assert.equal(isEscapeOnly(''), false);
+    assert.equal(isEscapeOnly('\t'), false); // 탭·개행은 "글자" 로 본다
+    assert.equal(isEscapeOnly('a\x1b'), false);
   });
 
   test('parseArgv', () => {
@@ -164,5 +178,19 @@ describe('format', () => {
     ]);
     assert.equal(pendingSummary('question', payload), '색? [파랑|빨강] / 크기? [S|L]');
     assert.deepEqual(questionsOf(undefined), []);
+  });
+
+  test('T19b: questionsOf 가 TeamTools ask_user payload {source, question, options} 도 읽는다', () => {
+    const askUser = { source: 'ask_user', question: '점심은?', options: ['김밥', '라면'] };
+    assert.deepEqual(questionsOf(askUser), [{ question: '점심은?', options: ['김밥', '라면'] }]);
+    // `pending` 출력이 더 이상 "(질문 내용 없음)" 이 아니고, 질문이 하나라 `answer <id> <label>` 이 먹는다.
+    assert.equal(pendingSummary('question', askUser), '점심은? [김밥|라면]');
+    assert.equal(questionsOf(askUser).length, 1);
+    // 옵션 없는 자유 질문도 하나로.
+    assert.deepEqual(questionsOf({ source: 'ask_user', question: '어디로?' }), [{ question: '어디로?', options: [] }]);
+    // 질문 본문을 모르면 여전히 빈 배열(= answer 가 question=label 형식을 요구).
+    assert.deepEqual(questionsOf({ source: 'ask_user' }), []);
+    assert.deepEqual(questionsOf({ fromEvent: true }), []);
+    assert.equal(pendingSummary('question', { fromEvent: true }), '(질문 내용 없음)');
   });
 });

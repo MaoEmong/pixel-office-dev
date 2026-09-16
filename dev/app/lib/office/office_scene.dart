@@ -7,6 +7,8 @@
 //         idle → "(대기)", waiting_approval → "❗ 허가 대기", asking → "❓ 질문", error → "⚠ 오류",
 //         text → "💬 <text>", delegating → "→ 위임", reporting → "📋 보고"
 //   이벤트 없음 → status 로: starting "(출근 중)", idle "(대기)", working "…", waiting_* 는 위와 동일.
+//   파생 status 가 waiting_answer/waiting_approval 이면 이벤트보다 "❓ 질문"/"❗ 허가 대기" 가 앞선다
+//   (`ask_user` 는 질문이 열린 채 raw status 가 idle 로 돌아간다 — PROTOCOL `member.status.derived`, T19 함정 1).
 
 import '../model/models.dart';
 
@@ -143,6 +145,7 @@ class OfficeScene {
     required Map<String, Member> members,
     required Map<String, OfficeEvent> latestEvents,
     required Map<String, Pending> pending,
+    Map<String, DerivedStatus> derived = const {},
     String? teamId,
   }) {
     if (teamId != null) {
@@ -152,19 +155,24 @@ class OfficeScene {
     final sorted = members.values.toList(growable: false)..sort(_byCreatedAt);
     final openPending = pending.values.toList(growable: false)..sort(_pendingByCreatedAt);
 
+    // 줄에 서는 기준(T19 함정 1 수정): "열린 pending 이 있다" 또는 "파생 status 가 waiting"(raw 가 `idle` 이어도
+    // `ask_user` 질문이 열려 있으면 파생은 `waiting_answer`). raw status 만 보면 `ask_user` 질문자가 줄에 안 선다.
+    final withPending = {for (final p in openPending) p.memberId};
+    bool isQueuedMember(Member m) =>
+        withPending.contains(m.id) || (derived[m.id]?.isWaiting ?? false) || m.status.isWaiting;
+
     // 줄 순서: pending 생성 순으로 멤버가 처음 나타나는 순서. pending 없이 waiting 인 멤버는 그 뒤에 createdAt 순.
     final queueOrder = <String>[];
     for (final p in openPending) {
       if (!queueOrder.contains(p.memberId) && members.containsKey(p.memberId)) queueOrder.add(p.memberId);
     }
     for (final m in sorted) {
-      if (m.status.isWaiting && !queueOrder.contains(m.id)) queueOrder.add(m.id);
+      if (isQueuedMember(m) && !queueOrder.contains(m.id)) queueOrder.add(m.id);
     }
-    // 실제로 줄에 서는 건 waiting 상태인 멤버뿐(pending 만 남고 status 가 바뀐 경우는 자리로).
     final queued = <String, int>{};
     for (final id in queueOrder) {
       final m = members[id];
-      if (m != null && m.status.isWaiting) queued[id] = queued.length;
+      if (m != null && isQueuedMember(m)) queued[id] = queued.length;
     }
 
     final sceneMembers = <SceneMember>[
@@ -175,8 +183,8 @@ class OfficeScene {
           engine: sorted[i].engine,
           status: sorted[i].status,
           deskIndex: i,
-          summary: summarize(sorted[i].status, latestEvents[sorted[i].id]),
-          isAlert: isAlertFor(sorted[i].status, latestEvents[sorted[i].id]),
+          summary: summarize(sorted[i].status, latestEvents[sorted[i].id], derived: derived[sorted[i].id]),
+          isAlert: isAlertFor(sorted[i].status, latestEvents[sorted[i].id], derived: derived[sorted[i].id]),
           queueIndex: queued[sorted[i].id],
           eventKind: latestEvents[sorted[i].id]?.kind,
           eventSeq: latestEvents[sorted[i].id]?.seq,
@@ -223,10 +231,13 @@ class OfficeScene {
 
 // ---- 요약 함수 -------------------------------------------------------------------
 
-/// 모니터·말풍선용 한 줄 요약.
-String summarize(MemberStatus status, OfficeEvent? event) {
+/// 모니터·말풍선용 한 줄 요약. [derived] 가 `waiting_answer` 면(= `ask_user` 질문이 열린 채 raw 는 `idle`)
+/// 마지막 이벤트보다 "❓ 질문" 이 앞선다 — 답을 기다리는 동안 "(대기)" 로 보이지 않게(T19 함정 1).
+String summarize(MemberStatus status, OfficeEvent? event, {DerivedStatus? derived}) {
   if (status == MemberStatus.exited) return '(퇴근)';
   if (status == MemberStatus.error) return '⚠ 오류';
+  if (derived == DerivedStatus.waitingAnswer) return '❓ 질문';
+  if (derived == DerivedStatus.waitingApproval) return '❗ 허가 대기';
   if (event == null) return _statusSummary(status);
   final d = event.detail;
   return switch (event.kind) {
@@ -254,10 +265,11 @@ String _statusSummary(MemberStatus s) => switch (s) {
       MemberStatus.error => '⚠ 오류',
     };
 
-/// alert 말풍선 여부: 마지막 이벤트가 waiting_approval/asking/reporting 이거나 멤버가 waiting 상태.
-bool isAlertFor(MemberStatus status, OfficeEvent? event) {
+/// alert 말풍선 여부: 마지막 이벤트가 waiting_approval/asking/reporting 이거나 멤버가 (raw·파생) waiting 상태.
+bool isAlertFor(MemberStatus status, OfficeEvent? event, {DerivedStatus? derived}) {
   if (status.isGone) return false;
   if (status.isWaiting) return true;
+  if (derived?.isWaiting ?? false) return true;
   return event?.kind.isAlert ?? false;
 }
 

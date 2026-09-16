@@ -47,6 +47,11 @@ void main() {
       expect(isAlertFor(MemberStatus.working, event('m', OfficeEventKind.reporting)), isTrue);
       expect(isAlertFor(MemberStatus.working, event('m', OfficeEventKind.running)), isFalse);
       expect(isAlertFor(MemberStatus.exited, event('m', OfficeEventKind.asking)), isFalse);
+      // T19b: raw idle 이어도 파생이 waiting_answer 면 alert + "❓ 질문"(ask_user 는 턴을 붙잡지 않는다).
+      expect(isAlertFor(MemberStatus.idle, event('m', OfficeEventKind.idle), derived: DerivedStatus.waitingAnswer), isTrue);
+      expect(isAlertFor(MemberStatus.idle, event('m', OfficeEventKind.idle), derived: DerivedStatus.free), isFalse);
+      expect(summarize(MemberStatus.idle, event('m', OfficeEventKind.idle), derived: DerivedStatus.waitingAnswer), '❓ 질문');
+      expect(summarize(MemberStatus.exited, event('m', OfficeEventKind.idle), derived: DerivedStatus.waitingAnswer), '(퇴근)');
     });
 
     test('basename / truncate', () {
@@ -106,7 +111,7 @@ void main() {
       expect(scene.queue.map((q) => q.line(scene.queue.indexOf(q))), ['1. 이음 — 질문: 어느 폴더?', '2. 하루 — 허가: rm -rf build/']);
     });
 
-    test('pending 없이 waiting 인 멤버도 줄에 선다(뒤에), pending 만 남은 working 멤버는 자리에', () {
+    test('열린 pending 이 있으면 raw status 와 무관하게 줄에 선다; pending 없이 waiting 인 멤버는 그 뒤에', () {
       final scene = OfficeScene.build(
         members: {
           'm1': member('m1', status: MemberStatus.working, createdAt: '1'),
@@ -114,11 +119,45 @@ void main() {
           'm3': member('m3', status: MemberStatus.waitingAnswer, createdAt: '3'),
         },
         latestEvents: const {},
-        pending: {'a1': approval('a1', 'm1', 'ls'), 'a3': approval('a3', 'm3', 'pwd', createdAt: '2026-09-15T00:00:01Z')},
+        pending: {
+          'a3': approval('a3', 'm3', 'pwd', createdAt: '2026-09-15T00:00:01Z'),
+          'a1': approval('a1', 'm1', 'ls', createdAt: '2026-09-15T00:00:02Z'),
+        },
       );
-      expect(scene.memberById('m1')!.queueIndex, isNull);
-      expect(scene.memberById('m3')!.queueIndex, 0);
-      expect(scene.memberById('m2')!.queueIndex, 1);
+      expect(scene.memberById('m3')!.queueIndex, 0); // pending 생성 순
+      expect(scene.memberById('m1')!.queueIndex, 1); // working 이지만 열린 pending 이 있다
+      expect(scene.memberById('m2')!.queueIndex, 2); // pending 없이 waiting → 뒤에
+    });
+
+    test('T19b: ask_user 질문이 열린 멤버(raw idle · 파생 waiting_answer)도 내 책상 줄에 서고 말풍선은 "❓ 질문"', () {
+      // 데몬은 `asking` 뒤 턴이 끝나면 raw status 를 idle 로 되돌리고 파생만 waiting_answer 로 둔다(T17).
+      final members = {
+        'm1': member('m1', name: '모시', status: MemberStatus.idle, createdAt: '1'),
+        'm2': member('m2', name: '하루', status: MemberStatus.idle, createdAt: '2'),
+      };
+      final latest = {'m1': event('m1', OfficeEventKind.idle, seq: 9)};
+      final scene = OfficeScene.build(
+        members: members,
+        latestEvents: latest,
+        pending: {'q1': askUserQuestion('q1', 'm1', '점심은?', options: ['김밥', '라면'])},
+        derived: const {'m1': DerivedStatus.waitingAnswer, 'm2': DerivedStatus.free},
+      );
+      expect(scene.memberById('m1')!.queueIndex, 0);
+      expect(scene.memberById('m1')!.isAlert, isTrue);
+      expect(scene.memberById('m1')!.summary, '❓ 질문');
+      expect(scene.memberById('m2')!.queueIndex, isNull);
+      expect(scene.queue.single.line(0), '1. 모시 — 질문: 점심은?');
+
+      // 답이 들어가면: pending 이 닫히고 파생이 free 로 → 자기 자리로 돌아간다.
+      final after = OfficeScene.build(
+        members: members,
+        latestEvents: latest,
+        pending: const {},
+        derived: const {'m1': DerivedStatus.free, 'm2': DerivedStatus.free},
+      );
+      expect(after.memberById('m1')!.queueIndex, isNull);
+      expect(after.memberById('m1')!.summary, '(대기)');
+      expect(after.queue, isEmpty);
     });
 
     test('teamId 를 주면 그 팀 멤버·그 멤버의 pending 만, null 이면 전체', () {

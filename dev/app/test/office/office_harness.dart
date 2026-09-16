@@ -61,13 +61,21 @@ Future<void> settleMotion(WidgetTester tester) async {
   await tester.pump(const Duration(seconds: 3));
 }
 
-OfficeState twoMembers({MemberStatus m2Status = MemberStatus.idle, Map<String, Pending> pending = const {}}) => OfficeState(
+OfficeState twoMembers({
+  MemberStatus m2Status = MemberStatus.idle,
+  Map<String, Pending> pending = const {},
+  Map<String, DerivedStatus> derived = const {},
+  Map<String, OfficeEvent> extraEvents = const {},
+}) =>
+    OfficeState(
       members: {
         'm1': member('m1', name: '하루', status: MemberStatus.working, createdAt: '1'),
         'm2': member('m2', name: '모시', status: m2Status, engine: Engine.codex, createdAt: '2'),
       },
       latestEvent: {
         'm1': event('m1', OfficeEventKind.running, detail: {'tool': 'Bash', 'cmd': 'flutter test test/stt_test.dart'}),
+        ...extraEvents,
       },
+      derived: derived,
       pending: pending,
     );

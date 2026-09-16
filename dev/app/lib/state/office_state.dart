@@ -88,7 +88,9 @@ class OfficeState {
   /// 멤버 id → 파생 상태(free 등). 스냅샷에서는 v1a 규칙으로 계산.
   final Map<String, DerivedStatus> derived;
 
-  /// 열린 pending(id → Pending). 스냅샷 + waiting_approval/asking 이벤트로 추가, error{pendingId}·status 변화로 제거.
+  /// 열린 pending(id → Pending). 스냅샷 + waiting_approval/asking 이벤트로 추가.
+  /// 제거는 (a) `error{pendingId}`, (b) 스냅샷에서 빠짐, (c) `member.status` 의 raw·파생이 **둘 다** waiting 이 아님
+  /// (단 `ask_user` 질문은 raw 가 idle/종료 일 때만 — [_onMemberStatus] 주석) — 세 가지뿐.
   final Map<String, Pending> pending;
 
   /// 열린 task(queued|assigned, id → Task).
@@ -254,8 +256,15 @@ class OfficeNotifier extends Notifier<OfficeState> {
     final pending = {for (final p in snap.pending) p.id: p};
     final tasks = {for (final t in snap.tasks) t.id: t};
     final assigned = {for (final t in snap.tasks) if (t.status == TaskStatus.assigned) t.toMember};
+    // 열린 질문이 있는 멤버는 raw 가 idle 이어도 파생이 waiting_answer 다(`ask_user` — PROTOCOL, T19b).
+    final withQuestion = {for (final p in snap.pending) if (p.type == PendingType.question) p.memberId};
     final derived = {
-      for (final m in snap.members) m.id: DerivedStatus.fromStatus(m.status, hasAssignedTask: assigned.contains(m.id)),
+      for (final m in snap.members)
+        m.id: DerivedStatus.fromStatus(
+          m.status,
+          hasAssignedTask: assigned.contains(m.id),
+          hasOpenQuestion: withQuestion.contains(m.id),
+        ),
     };
     return s.copyWith(
       teams: teams,
@@ -294,11 +303,18 @@ class OfficeNotifier extends Notifier<OfficeState> {
     final derived = {...state.derived, n.memberId: n.derived};
     var pending = state.pending;
     var tasks = state.tasks;
-    if (!n.status.isWaiting) {
+    if (!n.status.isWaiting && !n.derived.isWaiting) {
       // 허가/질문에 응답이 끝났거나(→working) 멤버가 사라졌다 — 그 멤버의 열린 pending 은 닫힌 것.
-      final open = pending.values.where((p) => p.memberId == n.memberId).toList();
-      if (open.isNotEmpty) {
-        pending = {...pending}..removeWhere((_, p) => p.memberId == n.memberId);
+      //
+      // 예외: TeamTools `ask_user` 질문(T17)은 **턴을 붙잡지 않는다**. 도구가 끝나면 status 가 곧 `working` 으로
+      // 돌아오고(PostToolUse) 턴이 끝나면 `idle` 이 된다 — 그 동안에도 질문은 열려 있다. 데몬의 파생 규칙은
+      // "idle 인데 열린 질문이 있으면 waiting_answer" 이므로 **raw 가 idle 일 때만** 질문이 닫혔는지 알 수 있다.
+      // 따라서 raw 가 idle/종료 일 때만 ask_user 질문까지 지우고, working/starting 일 때는 남겨 둔다
+      // (T19b: 이 예외가 없으면 `asking` 직후의 `working` 알림이 방금 만든 질문 pending 을 지워 버린다).
+      final canCloseAskUser = n.status == MemberStatus.idle || n.status.isGone;
+      bool closedBy(Pending p) => p.memberId == n.memberId && (canCloseAskUser || !p.isAskUser);
+      if (pending.values.any(closedBy)) {
+        pending = {...pending}..removeWhere((_, p) => closedBy(p));
       }
     }
     if (n.status.isGone) {
@@ -357,13 +373,23 @@ class OfficeNotifier extends Notifier<OfficeState> {
       case OfficeEventKind.asking:
         final id = ev.ref.questionId;
         if (id != null && !pending.containsKey(id)) {
+          // TeamTools `ask_user`(T17) 는 `asking{tool:'ask_user', summary:<질문>, options?}` 로 온다 —
+          // 스냅샷 payload 와 같은 `{source:'ask_user', question, options}` 모양으로 만들어야 QuestionCard 가 옵션까지 그린다.
+          final isAskUser = ev.detail.tool == 'ask_user';
+          final rawOptions = ev.detail['options'];
+          final options = rawOptions is List ? [for (final o in rawOptions) o] : null;
           pending = {
             ...pending,
             id: Pending(
               id: id,
               memberId: ev.memberId,
               type: PendingType.question,
-              payload: {'question': ev.detail.summary ?? ev.detail.text ?? '', 'fromEvent': true},
+              payload: {
+                if (isAskUser) 'source': 'ask_user',
+                'question': ev.detail.summary ?? ev.detail.text ?? '',
+                'options': ?options,
+                'fromEvent': true,
+              },
               status: PendingStatus.open,
               createdAt: ev.ts,
               answeredAt: null,

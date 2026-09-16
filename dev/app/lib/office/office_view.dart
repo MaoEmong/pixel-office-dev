@@ -30,13 +30,19 @@ final officeLatestEventsProvider = Provider<Map<String, OfficeEvent>>(
   (ref) => ref.watch(officeProvider.select((s) => s.latestEvent)),
 );
 
-/// 화면용 장면(팀 id 별, null = 전체). members / latestEvent / pending 중 하나라도 바뀌면 다시 만든다
+/// 멤버별 파생 상태 맵(내 책상 줄·말풍선 판정에 쓴다 — `ask_user` 는 raw status 가 idle 이라 파생을 봐야 한다).
+final officeDerivedProvider = Provider<Map<String, DerivedStatus>>(
+  (ref) => ref.watch(officeProvider.select((s) => s.derived)),
+);
+
+/// 화면용 장면(팀 id 별, null = 전체). members / latestEvent / pending / derived 중 하나라도 바뀌면 다시 만든다
 /// (값 비교로 불필요한 repaint 는 페인터가 거른다).
 final officeSceneProvider = Provider.family<OfficeScene, String?>(
   (ref, teamId) => OfficeScene.build(
     members: ref.watch(membersProvider),
     latestEvents: ref.watch(officeLatestEventsProvider),
     pending: ref.watch(openPendingProvider),
+    derived: ref.watch(officeDerivedProvider),
     teamId: teamId,
   ),
 );

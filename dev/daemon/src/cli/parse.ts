@@ -1,5 +1,6 @@
 // 콘솔 명령 파싱·인자 해석 (T08). 네트워크·상태 없음 — 순수 함수만 두어 테스트한다.
 import type { Member, Team } from '../store/types.js';
+import { stripAnsi } from './format.js';
 
 export class CliError extends Error {
   constructor(message: string) {
@@ -196,11 +197,24 @@ export function unescapeTyped(s: string): string {
   });
 }
 
-/** member.type 에 보낼 데이터. 원문이 `\n`/`\r` 이스케이프로 끝나지 않으면 Enter(\r) 를 붙인다. */
+/**
+ * 이스케이프·제어문자만으로 이루어진 입력인가(`\e`, `\e\e`, `\e[A`, `\x03` …).
+ * T19 함정 3: 이런 입력에 Enter(`\r`)를 붙이면 `ESC CR` = **Alt+Enter** 로 나가 ESC 가 먹지 않는다.
+ * 판정은 콘솔 출력과 같은 ANSI/제어문자 정규식([stripAnsi])으로 — 남는 글자가 없으면 "키 입력만" 이다.
+ * (`\t`·`\n`·`\r` 는 stripAnsi 가 남기므로 여기에 걸리지 않는다.)
+ */
+export function isEscapeOnly(data: string): boolean {
+  return data.length > 0 && stripAnsi(data) === '';
+}
+
+/**
+ * member.type 에 보낼 데이터. 원문이 `\n`/`\r` 로 끝나거나 [isEscapeOnly] 면 그대로,
+ * 아니면 Enter(`\r`)를 붙인다.
+ */
 export function typedPayload(rawText: string): string {
   const endsWithNewline = /\\[nr]$/.test(rawText) || /[\r\n]$/.test(rawText);
   const data = unescapeTyped(rawText);
-  return endsWithNewline ? data : data + '\r';
+  return endsWithNewline || isEscapeOnly(data) ? data : data + '\r';
 }
 
 // ---- argv (비대화 모드) ----------------------------------------------------------

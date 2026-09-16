@@ -101,20 +101,32 @@ export interface QuestionItem {
   options: string[];
 }
 
-/** question payload 의 questions[] → {question, options(label[])}. */
+function labelsOf(raw: unknown): string[] {
+  return Array.isArray(raw)
+    ? raw.map((o) => (isRecord(o) && typeof o.label === 'string' ? o.label : typeof o === 'string' ? o : '')).filter(Boolean)
+    : [];
+}
+
+/**
+ * question payload → {question, options(label[])}. 두 가지 모양을 받는다(PROTOCOL "TeamTools MCP", D-19):
+ *  - TUI `AskUserQuestion`: `{ questions: [{question, options:[{label}…]}], tool_input }`
+ *  - TeamTools `ask_user`(T17): `{ source:'ask_user', question, options: string[] }` — 질문 하나, `tool_input` 없음
+ */
 export function questionsOf(payload: Record<string, unknown> | undefined): QuestionItem[] {
-  if (!payload || !Array.isArray(payload.questions)) return [];
-  const out: QuestionItem[] = [];
-  for (const q of payload.questions) {
-    if (!isRecord(q) || typeof q.question !== 'string') continue;
-    const options = Array.isArray(q.options)
-      ? q.options
-          .map((o) => (isRecord(o) && typeof o.label === 'string' ? o.label : typeof o === 'string' ? o : ''))
-          .filter(Boolean)
-      : [];
-    out.push({ question: q.question, options });
+  if (!payload) return [];
+  if (Array.isArray(payload.questions)) {
+    const out: QuestionItem[] = [];
+    for (const q of payload.questions) {
+      if (!isRecord(q) || typeof q.question !== 'string') continue;
+      out.push({ question: q.question, options: labelsOf(q.options) });
+    }
+    return out;
   }
-  return out;
+  // ask_user(또는 이벤트로만 알게 된 같은 모양): 질문 하나.
+  if (typeof payload.question === 'string' && payload.question) {
+    return [{ question: payload.question, options: labelsOf(payload.options) }];
+  }
+  return [];
 }
 
 export function formatPending(p: LocalPending, nameOf: NameOf): string {

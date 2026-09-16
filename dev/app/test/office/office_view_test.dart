@@ -71,6 +71,45 @@ void main() {
     handle.dispose();
   });
 
+  testWidgets('T19b: ask_user 질문(raw idle · 파생 waiting_answer)도 내 책상 줄로, 목록에 "질문: <본문>"', (tester) async {
+    final handle = tester.ensureSemantics();
+    final notifier = FakeOfficeNotifier(twoMembers());
+    await pumpHarness(tester, notifier);
+    expect(painterOf(tester).scene.memberById('m2')!.isQueued, isFalse);
+
+    // 데몬: asking → text → idle 로 턴이 끝난 상태. raw 는 idle, 파생만 waiting_answer, 질문 pending 은 열려 있다.
+    notifier.set(twoMembers(
+      pending: {'q1': askUserQuestion('q1', 'm2', '점심은?', options: ['김밥', '라면'])},
+      derived: const {'m1': DerivedStatus.working, 'm2': DerivedStatus.waitingAnswer},
+      extraEvents: {'m2': event('m2', OfficeEventKind.idle, seq: 9)},
+    ));
+    await tester.pump();
+    await settleMotion(tester);
+    var painter = painterOf(tester);
+    final m2 = painter.scene.memberById('m2')!;
+    expect(m2.status, MemberStatus.idle); // raw 는 그대로 idle
+    expect(m2.queueIndex, 0);
+    expect(m2.summary, '❓ 질문');
+    expect(m2.isAlert, isTrue);
+    expect(painter.scene.queue.single.line(0), '1. 모시 — 질문: 점심은?');
+    expect(painter.lastPlacements[1].center, painter.lastLayout!.queueSlot(0));
+    expect(find.semantics.byLabel(RegExp(r'내 책상 · 1\. 모시 — 질문: 점심은\?')), findsOne);
+
+    // 답한 뒤: pending 이 닫히고 파생이 free → 자기 자리로.
+    notifier.set(twoMembers(
+      derived: const {'m1': DerivedStatus.working, 'm2': DerivedStatus.free},
+      extraEvents: {'m2': event('m2', OfficeEventKind.text, seq: 10, detail: {'text': '김밥'})},
+    ));
+    await tester.pump();
+    await settleMotion(tester);
+    painter = painterOf(tester);
+    expect(painter.scene.memberById('m2')!.isQueued, isFalse);
+    expect(painter.scene.queue, isEmpty);
+    expect(painter.lastPlacements[1].center, painter.lastLayout!.seatCenter(1));
+    expect(find.semantics.byLabel('내 책상 · 대기 없음'), findsOne);
+    handle.dispose();
+  });
+
   testWidgets('탭: 캐릭터·책상 → 멤버 id, 빈 곳 → null, 선택 멤버는 페인터에 전달', (tester) async {
     final picks = <String?>[];
     await pumpHarness(tester, FakeOfficeNotifier(twoMembers()), selected: 'm2', onSelect: picks.add);

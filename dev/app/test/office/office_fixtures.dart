@@ -42,3 +42,17 @@ Pending question(String id, String memberId, String q, {String createdAt = '2026
       answeredAt: null,
       answer: null,
     );
+
+/// TeamTools `ask_user`(T17) 질문 pending — payload `{source, question, options}`(`tool_input` 없음, D-19).
+Pending askUserQuestion(String id, String memberId, String q,
+        {List<String> options = const [], String createdAt = '2026-09-15T00:00:00.000Z'}) =>
+    Pending(
+      id: id,
+      memberId: memberId,
+      type: PendingType.question,
+      payload: {'source': 'ask_user', 'question': q, 'options': options},
+      status: PendingStatus.open,
+      createdAt: createdAt,
+      answeredAt: null,
+      answer: null,
+    );

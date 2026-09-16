@@ -120,6 +120,88 @@ void main() {
     expect(container.read(openTasksProvider), isEmpty); // reporting 으로 닫힘
   });
 
+  test('T19b: ask_user asking → pending 생성(payload source/question/options), raw idle + 파생 waiting_answer 여도 유지', () async {
+    await until(container, (s) => s.isConnected && s.members.isNotEmpty);
+    daemon.emitEvent(sampleEvent(11, memberId: 'm2', kind: 'asking',
+        detail: {'tool': 'ask_user', 'summary': '점심은?', 'options': ['김밥', '라면']}, ref: {'questionId': 'q_1'}));
+    await until(container, (s) => s.pending.containsKey('q_1'));
+    final p = container.read(openPendingProvider)['q_1']!;
+    expect(p.type, PendingType.question);
+    expect(p.payload['source'], 'ask_user');
+    expect(p.payload['question'], '점심은?');
+    expect(p.payload['options'], ['김밥', '라면']);
+    expect(p.summary, '점심은?');
+
+    // 실기 순서(T19b): asking → waiting_answer → (PostToolUse) working → text → idle.
+    // 중간의 working 알림이 방금 만든 질문 pending 을 지우면 안 된다.
+    daemon.push('member.status', {'memberId': 'm2', 'status': 'waiting_answer', 'derived': 'waiting_answer'});
+    await until(container, (s) => s.members['m2']!.status == MemberStatus.waitingAnswer);
+    daemon.push('member.status', {'memberId': 'm2', 'status': 'working', 'derived': 'working'});
+    await until(container, (s) => s.members['m2']!.status == MemberStatus.working);
+    expect(container.read(openPendingProvider).containsKey('q_1'), isTrue);
+
+    // 턴이 끝나면 raw 는 idle 로 돌아오고 파생만 waiting_answer.
+    daemon.push('member.status', {'memberId': 'm2', 'status': 'idle', 'derived': 'waiting_answer'});
+    await until(container, (s) => s.derived['m2'] == DerivedStatus.waitingAnswer);
+    expect(container.read(openPendingProvider).containsKey('q_1'), isTrue); // 예전 버그: 여기서 지워졌다
+    expect(container.read(memberStatusProvider('m2')), MemberStatus.idle);
+
+    // 답이 들어가면 데몬이 pending 을 닫고 derived 갱신용 member.status 를 한 번 더 보낸다 → 그때 제거.
+    daemon.push('member.status', {'memberId': 'm2', 'status': 'idle', 'derived': 'free'});
+    await until(container, (s) => s.derived['m2'] == DerivedStatus.free);
+    expect(container.read(openPendingProvider).containsKey('q_1'), isFalse);
+  });
+
+  test('T19b: 스냅샷의 열린 ask_user 질문 → idle 멤버의 파생은 waiting_answer (재접속·창 다시 열기)', () async {
+    daemon.snapshotBody = {
+      ...daemon.snapshotBody,
+      'pending': [
+        {
+          'id': 'q_s', 'memberId': 'm2', 'type': 'question',
+          'payload': {'source': 'ask_user', 'question': '점심은?', 'options': ['김밥', '라면']},
+          'status': 'open', 'createdAt': 'c', 'answeredAt': null, 'answer': null,
+        },
+      ],
+    };
+    await until(container, (s) => s.isConnected && s.members.isNotEmpty);
+    expect(container.read(memberStatusProvider('m2')), MemberStatus.idle);
+    expect(container.read(derivedStatusProvider('m2')), DerivedStatus.waitingAnswer);
+    expect(container.read(openPendingProvider)['q_s']?.summary, '점심은?');
+    expect(container.read(derivedStatusProvider('m1')), DerivedStatus.working); // 질문 없는 멤버는 그대로
+  });
+
+  test('T19b: waiting_approval pending 도 파생이 waiting 인 동안은 유지된다', () async {
+    await until(container, (s) => s.isConnected && s.members.isNotEmpty);
+    // raw 는 idle 인데 파생만 waiting_approval → a1 유지.
+    daemon.push('member.status', {'memberId': 'm1', 'status': 'idle', 'derived': 'waiting_approval'});
+    await until(container, (s) => s.derived['m1'] == DerivedStatus.waitingApproval);
+    expect(container.read(openPendingProvider).containsKey('a1'), isTrue);
+    daemon.push('member.status', {'memberId': 'm1', 'status': 'working', 'derived': 'working'});
+    await until(container, (s) => s.derived['m1'] == DerivedStatus.working);
+    expect(container.read(openPendingProvider), isEmpty);
+  });
+
+  test('T19b: working 알림은 ask_user 질문만 남기고 나머지(허가·TUI 질문)는 지운다', () async {
+    await until(container, (s) => s.isConnected && s.members.isNotEmpty);
+    final n = container.read(officeProvider.notifier);
+    // m1: 스냅샷 허가 a1 + TUI 질문 + ask_user 질문.
+    n.applyEvent(OfficeEvent.fromJson(sampleEvent(20, memberId: 'm1', kind: 'asking',
+        detail: {'tool': 'AskUserQuestion', 'summary': '어느 폴더?'}, ref: {'questionId': 'q_tui'})));
+    n.applyEvent(OfficeEvent.fromJson(sampleEvent(21, memberId: 'm1', kind: 'asking',
+        detail: {'tool': 'ask_user', 'summary': '점심은?'}, ref: {'questionId': 'q_mcp'})));
+    expect(container.read(openPendingProvider).keys.toSet(), {'a1', 'q_tui', 'q_mcp'});
+    expect(container.read(openPendingProvider)['q_tui']!.isAskUser, isFalse);
+    expect(container.read(openPendingProvider)['q_mcp']!.isAskUser, isTrue);
+
+    daemon.push('member.status', {'memberId': 'm1', 'status': 'working', 'derived': 'working'});
+    await until(container, (s) => s.pending.length == 1);
+    expect(container.read(openPendingProvider).keys, ['q_mcp']);
+
+    // raw 가 idle 로 돌아오고 파생이 free 면(= 열린 질문 없음) ask_user 질문도 닫힌다.
+    daemon.push('member.status', {'memberId': 'm1', 'status': 'idle', 'derived': 'free'});
+    await until(container, (s) => s.pending.isEmpty);
+  });
+
   test('daemon.json 없음: 소켓을 열지 못해도 reconnectAttempts·lastError 가 상태에 반영된다', () async {
     final c = ProviderContainer(overrides: [
       rpcClientProvider.overrideWith((ref) {

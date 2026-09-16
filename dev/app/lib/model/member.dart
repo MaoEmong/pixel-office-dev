@@ -55,8 +55,15 @@ enum DerivedStatus {
     throw FormatException('unknown derived status: $s');
   }
 
-  /// status 만 알고 derived 를 모를 때(스냅샷) 의 기본값 — v1a 규칙: idle 이고 배정 task 없으면 free.
-  static DerivedStatus fromStatus(MemberStatus s, {required bool hasAssignedTask}) {
+  /// 사용자 응답을 기다리는 파생 상태. raw status 가 `idle` 이어도 `ask_user` 질문이 열려 있으면
+  /// 데몬이 `waiting_answer` 를 보낸다(PROTOCOL `member.status.derived`, T17).
+  bool get isWaiting => this == waitingApproval || this == waitingAnswer;
+
+  /// status 만 알고 derived 를 모를 때(스냅샷) 의 기본값 — PROTOCOL `member.status.derived` 의 v1a 규칙:
+  /// idle 인데 열린 질문 pending 이 있으면 `waiting_answer`(T17 `ask_user` 는 턴이 끝나도 질문이 열려 있다),
+  /// idle 이고 배정 task 가 없으면 `free`, 그 외는 status 와 같다.
+  static DerivedStatus fromStatus(MemberStatus s, {required bool hasAssignedTask, bool hasOpenQuestion = false}) {
+    if (s == MemberStatus.idle && hasOpenQuestion) return DerivedStatus.waitingAnswer;
     if (s == MemberStatus.idle && !hasAssignedTask) return DerivedStatus.free;
     return DerivedStatus.parse(s.wire);
   }
