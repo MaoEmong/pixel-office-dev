@@ -129,3 +129,31 @@ DROP TABLE IF EXISTS tasks_v1;
 DROP TABLE IF EXISTS members_v1;
 DROP TABLE IF EXISTS teams_v1;
 `;
+
+/**
+ * **T39 결함 복구** — v1 → v2 마이그레이션 잔재로 `pending.member_id` 의 FK 가 사라진 `members_v1` 을 가리키는 DB 고치기.
+ *
+ * 원인: `V1_RENAME_SQL` 의 `ALTER TABLE members RENAME TO members_v1` 이 **다른 테이블의 REFERENCES 절까지 고쳐 쓴다**.
+ * teams/members/tasks 는 SCHEMA_SQL 로 다시 만들어져 멀쩡했지만 `pending` 은 `CREATE TABLE IF NOT EXISTS` 라 v1 행이
+ * 그대로 남았고, 그 안의 참조만 `members_v1` 로 바뀐 뒤 그 테이블이 drop 됐다. 그 뒤로 **pending INSERT 가 전부**
+ * `no such table: main.members_v1` 로 실패한다 = 허가 카드·ask_user·ask_parent 가 통째로 죽는다(T39 시연에서 발견).
+ *
+ * 복구는 행을 살린 채 테이블만 갈아 끼운다(FK 를 끈 상태에서 부른다). 멱등 — 이미 `members` 를 가리키면 Store 가 건너뛴다.
+ */
+export const PENDING_FK_REPAIR_SQL = `
+CREATE TABLE pending_fix (
+  id          TEXT PRIMARY KEY,
+  member_id   TEXT NOT NULL REFERENCES members(id) ON DELETE CASCADE,
+  type        TEXT NOT NULL CHECK (type IN ('approval','question')),
+  payload     TEXT NOT NULL DEFAULT '{}',
+  status      TEXT NOT NULL CHECK (status IN ('open','answered','expired')),
+  created_at  TEXT NOT NULL,
+  answered_at TEXT,
+  answer      TEXT
+);
+INSERT INTO pending_fix(id, member_id, type, payload, status, created_at, answered_at, answer)
+  SELECT id, member_id, type, payload, status, created_at, answered_at, answer FROM pending;
+DROP TABLE pending;
+ALTER TABLE pending_fix RENAME TO pending;
+CREATE INDEX IF NOT EXISTS idx_pending_member_status ON pending(member_id, status);
+`;

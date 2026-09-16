@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import { randomUUID, randomBytes } from 'node:crypto';
 import { DatabaseSync, type SQLInputValue } from 'node:sqlite';
 import { config } from '../config.js';
-import { SCHEMA_SQL, SCHEMA_VERSION, V1_DROP_SQL, V1_RENAME_SQL } from './schema.js';
+import { PENDING_FK_REPAIR_SQL, SCHEMA_SQL, SCHEMA_VERSION, V1_DROP_SQL, V1_RENAME_SQL } from './schema.js';
 import type {
   AppendEventInput,
   CreateDepartmentInput,
@@ -227,7 +227,30 @@ export class Store {
     } else {
       this.db.exec(SCHEMA_SQL);
     }
+    this.repairPendingFk();
     this.writeVersion(SCHEMA_VERSION);
+  }
+
+  /**
+   * **T39** — v1 → v2 마이그레이션이 `pending.member_id` 의 REFERENCES 를 `members_v1`(이미 drop 된 임시 테이블)로
+   * 바꿔 놓은 DB 를 고친다. 그대로 두면 `createPending` 이 전부 `no such table: main.members_v1` 로 던져
+   * 허가 카드·`ask_user`·`ask_parent` 가 통째로 죽는다(어댑터는 hook 을 보류한 뒤 던지므로 CLI 가 영영 멈춘다).
+   *
+   * 이유는 schema.ts `PENDING_FK_REPAIR_SQL` 주석에. 열 때마다 검사하지만 실제 작업은 깨진 DB 에서 한 번뿐이다.
+   */
+  private repairPendingFk(): void {
+    const row = this.db
+      .prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='pending'")
+      .get() as Row | undefined;
+    const sql = typeof row?.sql === 'string' ? row.sql : '';
+    if (!sql.includes('members_v1')) return;
+    this.db.exec('PRAGMA foreign_keys = OFF');
+    try {
+      this.transaction(() => this.db.exec(PENDING_FK_REPAIR_SQL));
+    } finally {
+      this.db.exec('PRAGMA foreign_keys = ON');
+    }
+    console.warn('[store] pending.member_id FK 복구: members_v1 → members (T39)');
   }
 
   /** schema_version 한 행. 테이블 자체가 없으면(새 DB) undefined. */

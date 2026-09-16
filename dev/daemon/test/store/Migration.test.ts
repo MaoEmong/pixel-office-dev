@@ -209,4 +209,43 @@ describe('스키마 v1 → v2 마이그레이션 (T34, D-32)', () => {
     assert.equal((raw.prepare('SELECT version FROM schema_version').get() as { version: number }).version, 2);
     raw.close();
   });
+
+  // ---- T39 결함: pending FK 가 members_v1 을 가리킨 채 남는다 -------------------------------
+  //
+  // `ALTER TABLE members RENAME TO members_v1`(V1_RENAME_SQL)이 **다른 테이블의 REFERENCES 절까지** 고쳐 쓴다.
+  // teams/members/tasks 는 SCHEMA_SQL 로 다시 만들어지지만 `pending` 은 `IF NOT EXISTS` 라 v1 행이 그대로 남고
+  // 참조만 `members_v1` 로 바뀐다 → 그 테이블이 drop 된 뒤로 **pending INSERT 가 전부 실패**한다
+  // (`no such table: main.members_v1`). 허가 카드·ask_user·ask_parent 가 통째로 죽는다 — T39 시연에서 발견.
+  test('T39: 마이그레이션 뒤에도 pending 을 새로 만들 수 있다 (FK 가 members 를 가리킨다)', () => {
+    const store = new Store(dbPath);
+    const lead = store.listMembers().find((m) => m.name === '반장')!;
+    const p = store.createPending({ memberId: lead.id, type: 'approval', payload: { tool_name: 'Bash' } });
+    assert.equal(p.type, 'approval');
+    assert.equal(store.listOpenPending(lead.id).length, 1);
+    const q = store.createPending({ memberId: lead.id, type: 'question', payload: { source: 'ask_parent' } });
+    assert.equal(q.status, 'open');
+    store.close();
+
+    const raw = new DatabaseSync(dbPath);
+    const sql = (raw.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='pending'").get() as { sql: string }).sql;
+    assert.ok(!sql.includes('members_v1'), `pending FK 가 members_v1 을 가리킨다: ${sql}`);
+    // 옛 pending 행(a_1)은 살아남는다 — 복구는 테이블만 갈아 끼운다.
+    const rows = raw.prepare('SELECT id FROM pending ORDER BY id').all() as Array<{ id: string }>;
+    assert.ok(rows.some((r) => r.id === 'a_1'), '마이그레이션 전 pending 행이 남아야 한다');
+    // 인덱스도 다시 만들어진다.
+    const idx = raw.prepare("SELECT name FROM sqlite_master WHERE type='index' AND name='idx_pending_member_status'").all();
+    assert.equal(idx.length, 1);
+    raw.close();
+  });
+
+  test('T39: 복구된 DB 를 다시 열어도 그대로 동작한다(멱등)', () => {
+    const s1 = new Store(dbPath);
+    const leadId = s1.listMembers().find((m) => m.name === '반장')!.id;
+    s1.close();
+    const s2 = new Store(dbPath);
+    const before = s2.listOpenPending().length;
+    s2.createPending({ memberId: leadId, type: 'approval', payload: {} });
+    assert.equal(s2.listOpenPending().length, before + 1);
+    s2.close();
+  });
 });
