@@ -40,6 +40,7 @@ export 'instructions_tab.dart'
         instructionsCacheProvider,
         instructionTemplate,
         instructionsHint,
+        headInstructionTemplate,
         leaderInstructionTemplate,
         memberInstructionTemplate;
 export 'labels.dart' show eventKindLabel, memberStatusLabel, derivedStatusLabel;
@@ -47,7 +48,7 @@ export 'log_tab.dart' show LogTab, LogRow;
 export 'member_gone_banner.dart' show MemberGoneBanner, RecoveryHint, memberFailureEventsProvider, recoveryExpiredCountProvider;
 export 'member_log.dart' show memberLogProvider, memberBackfillProvider, latestTextEventProvider, MemberBackfill;
 export 'panel_tabs.dart' show RightPanelTab, PanelTabRequest, panelTabRequestProvider;
-export 'pending_card.dart' show PendingCards, PendingInbox, PendingCard, ApprovalCard, QuestionCard;
+export 'pending_card.dart' show PendingCards, PendingInbox, PendingCard, ApprovalCard, QuestionCard, AskParentCard, askParentCardTitle, askParentOverrideLabel;
 export 'redo_card.dart' show RedoCards, RedoCard, redoNeededProvider, redoInstructionProvider, describeRedoSummary;
 export 'report_tab.dart' show ReportTab, ReportCard, MemberReport, memberReportsProvider, taskInstructionsProvider, parseTaskPrompt;
 export 'terminal_cache.dart' show terminalCacheProvider, TerminalCache, CachedTerminal;
@@ -139,7 +140,18 @@ class _TabRequestListener extends ConsumerWidget {
   }
 }
 
-/// 헤더: `이름 · 엔진 · 상태 · 팀 cwd · 출근 후 경과`.
+/// 비-부장 멤버 패널에 붙는 안내 — 사용자 지시는 부장에게만 간다(D-32). 터미널 직접 타이핑은 그대로 된다.
+const String panelNotInstructableHint = '지시는 부장에게 — 이 멤버는 상사가 일을 줍니다 (터미널 직접 입력은 가능)';
+
+/// 트리 한 줄: `직급 · 상사: 이름(직급) · 직속 부하 N명`. 테스트·문서에서 참조.
+String panelTreeLine({required MemberRank rank, required String? parentName, MemberRank? parentRank, required int childCount}) {
+  final parent = parentName == null
+      ? (rank == MemberRank.head ? '사용자' : '없음')
+      : '$parentName(${(parentRank ?? MemberRank.member).label})';
+  return '${rank.label} · 상사: $parent · 직속 부하 $childCount명';
+}
+
+/// 헤더: `이름 · 엔진 · 상태 · 직급/상사/부하 · 부서·팀 cwd · 출근 후 경과`.
 class PanelHeader extends ConsumerWidget {
   const PanelHeader({super.key, required this.member});
 
@@ -147,13 +159,20 @@ class PanelHeader extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final team = ref.watch(teamsProvider)[member.teamId];
+    final team = member.teamId == null ? null : ref.watch(teamsProvider)[member.teamId];
+    final department = ref.watch(departmentProvider(member.departmentId));
+    final parent = ref.watch(parentProvider(member.id));
+    final children = ref.watch(childrenProvider(member.id));
     final derived = ref.watch(derivedStatusProvider(member.id));
     final statusLabel = derived != null && derived.wire != member.status.wire
         ? derivedStatusLabel(derived)
         : memberStatusLabel(member.status);
     final hired = DateTime.tryParse(member.createdAt);
-    final cwd = team?.cwd ?? member.cwd;
+    final cwd = department?.cwd ?? team?.cwd ?? member.cwd;
+    final scope = [
+      if (department != null) department.name,
+      if (team != null) '팀 ${team.name}',
+    ].join(' · ');
     return Container(
       padding: const EdgeInsets.fromLTRB(12, 10, 12, 8),
       color: Theme.of(context).colorScheme.surfaceContainerHigh,
@@ -175,10 +194,30 @@ class PanelHeader extends ConsumerWidget {
           ),
           const SizedBox(height: 4),
           Text(
-            '${team?.name ?? member.teamId} · $cwd',
+            panelTreeLine(
+              rank: member.rank,
+              parentName: parent?.name,
+              parentRank: parent?.rank,
+              childCount: children.length,
+            ),
+            key: const Key('panel.treeLine'),
+            style: const TextStyle(fontSize: 11.5, color: Colors.white70),
+            overflow: TextOverflow.ellipsis,
+          ),
+          const SizedBox(height: 2),
+          Text(
+            '${scope.isEmpty ? member.departmentId : scope} · $cwd',
             style: const TextStyle(fontSize: 11, color: Colors.white54, fontFamily: panelMonoFamily, fontFamilyFallback: panelMonoFallback),
             overflow: TextOverflow.ellipsis,
           ),
+          if (!member.rank.talksToUser) ...[
+            const SizedBox(height: 4),
+            Text(
+              panelNotInstructableHint,
+              key: const Key('panel.notInstructable'),
+              style: TextStyle(fontSize: 11, color: Theme.of(context).colorScheme.primary.withValues(alpha: 0.9)),
+            ),
+          ],
         ],
       ),
     );

@@ -6,7 +6,9 @@
 //   자리 ↔ 내 책상 줄(허가·질문 pending), 줄 순서 변경, 책상 번호 변경 → 걷기
 //   status starting 인 새 멤버 → 문에서 자리로 "입장"; exited/error 가 되면 자리 → 문 → (회색으로) 자리
 //   마지막 이벤트가 reporting → 내 책상으로 걸어와 [reportVisitDuration] 동안 "📄 보고" 말풍선, 그 뒤 돌아감
-//     (시간 만료는 위젯의 Timer 가 [endVisit] 로 알린다; idle/text 이외의 새 이벤트·줄 서기·퇴근이면 즉시 취소)
+//     (시간 만료는 위젯의 Timer 가 [endVisit] 로 알린다; idle/text·**MCP 팀 도구 호출** 이외의 새 이벤트·
+//      줄 서기·퇴근이면 즉시 취소 — [cancelsVisit], T29 결함 ④)
+//   `ask_parent` 로 상사 답을 기다리는 멤버 → 직속 상사 책상 옆으로 걸어가 서 있는다(T37)
 //   working 멤버는 자리에서 ±1.5 px, 1 Hz 로 흔들린다([bobAt]).
 
 import 'dart:math' as math;
@@ -113,6 +115,19 @@ class OfficeMotion {
   /// 방문 취소 대상이 아닌 이벤트(보고 뒤에 자연히 따라오는 것들).
   static const Set<OfficeEventKind> _visitKeepKinds = {OfficeEventKind.reporting, OfficeEventKind.idle, OfficeEventKind.text};
 
+  /// 보고 방문을 취소해야 하는 새 이벤트인가.
+  ///
+  /// T29 결함 ④: 보고 직후의 `running{tool:'mcp__team__dismiss'}` 처럼 **MCP 팀 도구 호출**은 보고에 딸린
+  /// 뒷정리이지 "다른 일을 시작했다" 가 아니다 — 6초 방문을 끊으면 보고하러 온 멤버가 내 책상에 오지도 못하고
+  /// 사라진다. 도구 이름이 `mcp__team__` 로 시작하는 이벤트는 취소 사유에서 뺀다.
+  static bool cancelsVisit(SceneMember m, ReportVisit visit) {
+    final seq = m.eventSeq;
+    if (seq == null || seq == visit.seq) return false;
+    if (_visitKeepKinds.contains(m.eventKind)) return false;
+    if ((m.eventTool ?? '').startsWith(teamToolPrefix)) return false;
+    return true;
+  }
+
   /// 멤버별 현재 이동(읽기 전용).
   Map<String, MovementState> get movements => Map.unmodifiable(_movements);
 
@@ -155,8 +170,7 @@ class OfficeMotion {
       }
       final v = _visits[m.id];
       if (v != null) {
-        final newer = seq != null && seq != v.seq && !_visitKeepKinds.contains(kind);
-        if (m.isQueued || m.isGone || newer) _visits.remove(m.id);
+        if (m.isQueued || m.isGone || cancelsVisit(m, v)) _visits.remove(m.id);
       }
     }
     _visits.removeWhere((id, _) => !ids.contains(id));
@@ -237,6 +251,14 @@ class OfficeMotion {
     }
     if (m.isQueued) {
       return CharacterPlacement(memberId: m.id, center: layout.queueSlot(m.queueIndex!), bubbleAnchor: layout.queueBubbleAnchor(m.queueIndex!));
+    }
+    // `ask_parent` 로 답을 기다리는 중 — 내 책상이 아니라 **직속 상사 책상 옆**으로 간다(T37, D-32).
+    if (m.isAskingParent) {
+      return CharacterPlacement(
+        memberId: m.id,
+        center: layout.visitorSpot(m.askParentDeskIndex!),
+        bubbleAnchor: layout.visitorBubbleAnchor(m.askParentDeskIndex!),
+      );
     }
     return CharacterPlacement(memberId: m.id, center: layout.seatCenter(m.deskIndex), bubbleAnchor: layout.seatBubbleAnchor(m.deskIndex));
   }

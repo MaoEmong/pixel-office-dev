@@ -1,5 +1,5 @@
 // 사무실 뷰(T12 + T16 이동 애니메이션). main.dart 의 OfficeArea 자리에 그대로 들어간다:
-//   OfficeView(selectedMemberId: id, onSelectMember: (id) => ..., teamId: null /* 전체 */)
+//   OfficeView(selectedMemberId: id, onSelectMember: (id) => ..., departmentId: null /* 전체 */)
 // membersProvider / latestEvent 맵 / openPendingProvider 세 개만 watch 해 OfficeScene 을 만들고 OfficePainter 로 그린다.
 // 탭 → OfficeLayout.hitTest(지금 위치 기준) → onSelectMember(멤버 id, 빈 곳이면 null).
 //
@@ -35,20 +35,21 @@ final officeDerivedProvider = Provider<Map<String, DerivedStatus>>(
   (ref) => ref.watch(officeProvider.select((s) => s.derived)),
 );
 
-/// 화면용 장면(팀 id 별, null = 전체). members / latestEvent / pending / derived 중 하나라도 바뀌면 다시 만든다
-/// (값 비교로 불필요한 repaint 는 페인터가 거른다).
+/// 화면용 장면(**부서 id 별**, null = 전체). members / teams / latestEvent / pending / derived 중 하나라도
+/// 바뀌면 다시 만든다(값 비교로 불필요한 repaint 는 페인터가 거른다).
 final officeSceneProvider = Provider.family<OfficeScene, String?>(
-  (ref, teamId) => OfficeScene.build(
+  (ref, departmentId) => OfficeScene.build(
     members: ref.watch(membersProvider),
     latestEvents: ref.watch(officeLatestEventsProvider),
     pending: ref.watch(openPendingProvider),
     derived: ref.watch(officeDerivedProvider),
-    teamId: teamId,
+    teams: ref.watch(teamsProvider),
+    departmentId: departmentId,
   ),
 );
 
 class OfficeView extends ConsumerStatefulWidget {
-  const OfficeView({super.key, this.selectedMemberId, this.onSelectMember, this.teamId});
+  const OfficeView({super.key, this.selectedMemberId, this.onSelectMember, this.departmentId});
 
   /// 선택된 멤버(외곽 링). null 이면 없음.
   final String? selectedMemberId;
@@ -56,8 +57,8 @@ class OfficeView extends ConsumerStatefulWidget {
   /// 탭 결과: 캐릭터/책상이면 그 멤버 id, 빈 곳이면 null.
   final ValueChanged<String?>? onSelectMember;
 
-  /// 보여줄 팀. null 이면 전체 멤버.
-  final String? teamId;
+  /// 보여줄 부서(= 상단 탭). null 이면 전체 멤버.
+  final String? departmentId;
 
   @override
   ConsumerState<OfficeView> createState() => _OfficeViewState();
@@ -119,8 +120,9 @@ class _OfficeViewState extends ConsumerState<OfficeView> with SingleTickerProvid
       _motion.reset();
       _syncedSize = size;
     }
-    final layout = OfficeLayout(size: size, deskCount: scene.members.length);
+    final layout = OfficeLayout(size: size, plan: scene.plan);
     _layout = layout;
+
     _motion.sync(scene, layout, _now);
     _reconcileVisitTimers();
     _ensureTicker();
@@ -151,7 +153,7 @@ class _OfficeViewState extends ConsumerState<OfficeView> with SingleTickerProvid
 
   @override
   Widget build(BuildContext context) {
-    final scene = ref.watch(officeSceneProvider(widget.teamId));
+    final scene = ref.watch(officeSceneProvider(widget.departmentId));
     final textDirection = Directionality.maybeOf(context) ?? TextDirection.ltr;
     return LayoutBuilder(
       builder: (context, constraints) {
@@ -176,7 +178,7 @@ class _OfficeViewState extends ConsumerState<OfficeView> with SingleTickerProvid
           onTapUp: onSelect == null
               ? null
               : (d) {
-                  final layout = _layout ?? OfficeLayout(size: size, deskCount: scene.members.length);
+                  final layout = _layout ?? OfficeLayout(size: size, plan: scene.plan);
                   onSelect(layout.hitTest(d.localPosition, scene, _motion.placementsAt(_now)));
                 },
           child: ClipRect(

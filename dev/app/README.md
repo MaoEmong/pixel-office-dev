@@ -21,23 +21,47 @@ flutter analyze && flutter test # 검증
 두 엔진이 같다(엔진 차이는 전부 데몬이 흡수한다 — `dev/daemon/PROTOCOL.md` §"엔진별 동작 차이"). T23 실기에서 같은 팀의 Claude 팀원과
 Codex 팀원이 각자 책상·배지·터미널 탭(실제 Codex TUI)으로 보이는 것을 확인했다(`docs/worklog/T23-MixedTeam.md`).
 
-## 팀·팀장 (T24 / T24b)
+## 직무 체계 rev 3 — 부서 · 부장 · 팀 (T37, D-32)
 
-팀을 만들면 **팀장이 자동으로 출근한다**(`team.create` → `{team, leader}`). 사용자 지시는 **팀장에게만** 간다 — 팀원에게
-직접 지시하면 데몬이 `-32004 팀장에게만 지시할 수 있습니다 (leader: <이름>)` 로 막는다(01-설계문서 §4).
+```
+사용자 ──부서 만들기(부장 임명)──▶ 부장(head) ──create_team──▶ 팀장(lead) ──hire──▶ 팀원(member)
+   ◀──── 보고·ask_user·허가 카드 ────┘        ◀── 보고·ask_parent ──┘      ◀── 보고·ask_parent ──┘
+```
 
-- **"살아 있는 팀장" 판정**: `rank == 'leader'` 이고 status 가 `exited`/`error` 가 아닌 첫 멤버. `Team.leaderId` 는 팀장이
-  나가도 남으므로 그것으로 판정하면 안 된다(데몬 `Store.liveLeader` 와 같은 규칙 — `liveLeadersProvider` / `liveLeaderProvider(teamId)`).
-- **지시 바**(`lib/command/command_bar.dart`): 팀장이 있으면 대상이 팀장으로 고정된다(사무실에서 팀원을 클릭해도). 같은 팀의
-  팀원 항목은 비활성 + 툴팁 "팀장에게만 지시할 수 있어요", 팀장 없는 팀의 멤버는 그대로 고를 수 있다. 팀장이 퇴근하면 게이트가
-  열려 팀원에게 직접 지시된다. `-32004` 가 오면 데몬 문구를 배지 자리에 그대로 띄우고 `data.leaderId` 로 대상을 되돌린다 —
-  `force`(콘솔 `say!`)는 앱에서 쓰지 않는다.
-- **상단 바**(`lib/topbar/top_bar.dart`): 출근 다이얼로그의 "팀장 이름"(기본 `팀장`)·"팀장 엔진", 새 팀이면 팀원 이름은 선택
-  (비우면 팀장만 출근한 빈 사무실). 팀을 만들면 응답의 `leader.id` 를 바로 선택한다. 선택 멤버가 팀장이면 이름 앞에 왕관 배지.
-- **사무실 캔버스**(`lib/office/`): 팀장 책상에는 엔진 배지 왼쪽에 "팀장" 배지, 캐릭터에는 금색 링(`OfficeColors.leaderMark`).
-  파생 상태 `waiting_reports`(팀장이 위임하고 보고를 기다리는 중)는 모니터·말풍선에 "📨 보고 대기".
+**사용자가 만드는 것은 부서뿐이다.** 팀·팀원은 부장·팀장이 만든다(앱에는 출근 버튼이 없다 — `member.clockIn`/`team.create` 는
+`force:true` 뒤의 콘솔 전용 디버그 경로다, D-34).
+
+- **상단 탭 = 부서**(`lib/topbar/selected_department.dart`: `selectedDepartmentIdProvider` / `activeDepartmentIdProvider`).
+  "부서 만들기" 다이얼로그(이름 · 작업 폴더 cwd · 부장 엔진 · 부장 이름, 기본 `부장`) → `department.create` →
+  응답의 `head` 를 바로 선택한다. 탭 오른쪽 `⋮` → "부서 삭제" → 확인 → `department.delete`(하위 트리를 잎부터 정리).
+- **퇴근은 비상용으로만** 남겼다: 선택 멤버 옆 작은 버튼 → 확인 다이얼로그(경고 "비상용: 부장/팀장 퇴근 시 하위 전원이 정리됩니다")
+  → `member.clockOut`.
+- **지시 바**(`lib/command/command_bar.dart`): 대상이 **그 부서의 살아 있는 부장 하나로 고정**된다. 드롭다운에는 부장만 들어가고,
+  살아 있는 부장이 없으면 비활성 + 안내(`commandBarNoHeadHint`). `-32004 부장에게만 지시할 수 있습니다 (head: <이름>)` 가
+  오면 데몬 문구를 그대로 띄우고 `data.headId` 로 대상을 되돌린다 — `force` 는 앱에서 쓰지 않는다.
+- **"살아 있는 부장/팀장" 판정**은 `departments.headId`/`teams.leaderId` 가 아니라 멤버 행의 `rank` + status 로 한다
+  (데몬 `Store.liveHead`/`liveLead` 와 같은 규칙 — `liveHeadProvider(departmentId)` / `liveLeadProvider(teamId)`).
+- **사무실 배치**(`lib/office/`): **부장 책상이 맨 윗줄 가운데**, 그 아래 팀마다 클러스터(제목 줄 "팀 t1 · 3명" + 팀장 책상 먼저,
+  팀원 뒤). 팀 없는 멤버는 "미배정" 클러스터(정상 트리에는 없다). 배치 계획은 `OfficeScene.plan`(`OfficeDeskPlan`/`DeskCluster`)
+  이고 `OfficeLayout` 이 그것으로 책상·클러스터 상자를 계산한다. 직급 배지는 "♛ 부장"(금색 `OfficeColors.headMark`) ·
+  "★ 팀장"(은색 `leadMark`), 캐릭터에는 같은 색 링. 엔진 배지는 그대로.
+- **내 책상**에는 **사용자 몫만** 선다: 허가는 직급과 무관하게 전부(셸 허가는 안전 문제 — D-32), 질문은 부장의 `ask_user`
+  (와 턴을 붙잡는 TUI `AskUserQuestion`). 판정은 `Pending.goesToUser(rank:)` 한 곳이다.
+- **`ask_parent`(T35)** 질문(payload `{source:'ask_parent', question, options, from, to}`)은 상사에게 간 질문이라
+  사용자 카드·줄에 나오지 않는다. 대신 그 멤버는 **직속 상사 책상 옆으로 걸어가** "❓ 상사에게 질문" 말풍선을 띄우고,
+  질문한 멤버의 패널에는 안내 카드 `AskParentCard`("↑ 팀장/부장에게 질문 중")가 뜬다. 상사가 멈춰 있을 때를 위해
+  "대신 답하기" 버튼으로 사용자가 `question.respond` 를 대신 보낼 수 있다(월권 경로).
+- **오른쪽 패널 헤더**: `직급 · 상사: 이름(직급) · 직속 부하 N명` 한 줄(`panelTreeLine`). 부장이 아니면
+  "지시는 부장에게 — 이 멤버는 상사가 일을 줍니다 (터미널 직접 입력은 가능)" 안내가 붙는다. 탭(로그·터미널·지시문·보고서)은 그대로다.
 - **선택 멤버**는 `lib/state/selection.dart`(`selectedMemberIdProvider`). 멤버 행이 사라지면 선택이 자동 해제된다
   (퇴근은 행이 남으므로 유지).
+
+### T29 결함 수정(T37)
+
+- **③ 셸 대기가 안 보이던 것**: `running` 이벤트에 `detail.waiting`(예 `shell-lock`) 이 있으면 모니터·말풍선이 `cmd` 대신
+  `summary` 를 "⏳" 를 붙여 보여 준다 — "⏳ 셸 대기 중 (락: 작가)".
+- **④ 보고 방문이 끊기던 것**: 보고 직후의 `running{tool:'mcp__team__*'}` 은 보고에 딸린 뒷정리이므로 6초 방문을
+  취소하지 않는다(`OfficeMotion.cancelsVisit`). 보통 도구(Bash 등)는 예전대로 취소한다.
 
 ## 구조
 
@@ -48,11 +72,13 @@ lib/
     daemon_info.dart        %LOCALAPPDATA%\pixel-office\daemon.json 읽기 (wsPort, token, pid, version …)
     rpc_client.dart         JSON-RPC 2.0 over WebSocket: connect / hello / call / 알림 스트림 / lastSeq / 자동 재접속
   model/
-    team.dart member.dart office_event.dart pending.dart task.dart snapshot.dart   (store/types.ts 와 1:1, fromJson)
+    department.dart team.dart member.dart office_event.dart pending.dart task.dart snapshot.dart   (store/types.ts 와 1:1, fromJson)
     models.dart             배럴
   state/
     office_state.dart       Riverpod 프로바이더 (아래 표)
     selection.dart          selectedMemberIdProvider (사무실·패널·지시 바가 공유하는 선택 멤버, T24b)
+  topbar/
+    selected_department.dart  상단 부서 탭 상태(T37, T24 의 selected_team.dart 를 대체)
 test/
   fake_daemon.dart          dart:io HttpServer + WebSocketTransformer 로 만든 가짜 데몬(hello/replay/echo/fail/hang/push)
   rpc_client_test.dart      상관·에러 매핑·replay 중복 제거·재접속(since)·backoff
@@ -88,15 +114,18 @@ windows/runner/main.cpp     창 제목 "픽셀 오피스"
 |---|---|---|
 | `rpcClientProvider` | `RpcClient` | 앱 전체 하나. 테스트에서 override. |
 | `daemonConnectorProvider` | `DaemonConnector` | url/token 공급자. 기본 daemon.json. |
-| `officeProvider` | `OfficeState` (`OfficeNotifier`) | build 시 클라이언트 `start()`. `instruct`/`respondApproval`/`respondQuestion`/`applyEvent` 등 편의 메서드. |
+| `officeProvider` | `OfficeState` (`OfficeNotifier`) | build 시 클라이언트 `start()`. `instruct`/`createDepartment`/`deleteDepartment`/`queryEvents`/`respondApproval`/`respondQuestion`/`applyEvent` 등 편의 메서드. |
 | `connectionStateProvider` | `RpcConnectionState` | 상단 바·오버레이 |
 | `daemonVersionProvider` / `daemonPidProvider` | `String?` / `int?` | hello 결과 |
 | `reconnectAttemptsProvider` / `lastSeqProvider` | `int` | |
-| `teamsProvider` | `Map<String, Team>` | 스냅샷 |
+| `departmentsProvider` / `departmentProvider(id)` | `Map<String, Department>` / `Department?` | 스냅샷 `departments[]` — 상단 탭(T37) |
+| `teamsProvider` / `teamsOfDepartmentProvider(departmentId)` | `Map<String, Team>` / `List<Team>` | 스냅샷. 부서별은 createdAt 순 |
 | `membersProvider` | `Map<String, Member>` | 스냅샷 + `member.status`(행 삽입 포함) |
 | `memberProvider(id)` / `memberStatusProvider(id)` / `derivedStatusProvider(id)` | family | 캐릭터 포즈용 |
-| `membersOfTeamProvider(teamId)` | `List<Member>` | 팀 탭 |
-| `liveLeadersProvider` / `liveLeaderProvider(teamId)` | `Map<String, Member>` / `Member?` | 살아 있는 팀장(rank leader ∧ status ∉ {exited,error}) — 지시 게이트(T24b) |
+| `membersOfTeamProvider(teamId)` / `membersOfDepartmentProvider(id)` | `List<Member>` | 클러스터·부서 화면 |
+| `liveHeadsProvider` / `liveHeadProvider(departmentId)` | `Map<String, Member>` / `Member?` | 살아 있는 부장(rank head ∧ status ∉ {exited,error}) — **지시 게이트**(T37) |
+| `liveLeadsProvider` / `liveLeadProvider(teamId)` | `Map<String, Member>` / `Member?` | 살아 있는 팀장(rank lead) |
+| `childrenProvider(memberId)` / `parentProvider(memberId)` | `List<Member>` / `Member?` | 트리(`parentId`) — 패널 헤더의 상사·직속 부하 |
 | `openPendingProvider` | `Map<String, Pending>` | 스냅샷 + `waiting_approval`/`asking` 이벤트로 추가, `error{pendingId}`·멤버가 waiting 을 벗어나면 제거 |
 | `openTasksProvider` | `Map<int, Task>` | 스냅샷 + `instruct()` 로 추가, `reporting{taskId}`·멤버 exited/error 로 제거 |
 | `globalEventsProvider` | `List<OfficeEvent>` | 링버퍼 2000 (오래된 → 최신) |
@@ -104,4 +133,7 @@ windows/runner/main.cpp     창 제목 "픽셀 오피스"
 | `latestEventProvider(id)` | `OfficeEvent?` | 말풍선 |
 | `noticesProvider` | `List<DaemonNotice>` | `daemon.notice` 최근 50건 |
 
-재접속 시 스냅샷은 teams/members/pending/tasks 를 **교체**하고, 이벤트 링버퍼·말풍선은 유지한다.
+재접속 시 스냅샷은 departments/teams/members/pending/tasks 를 **교체**하고, 이벤트 링버퍼·말풍선은 유지한다.
+
+`queryEvents({departmentId, memberId, beforeSeq, limit})` 는 `events.query` 래퍼다. **멤버 로그 백필은 `departmentId` 를
+보내지 않는다** — T34 마이그레이션 이전 이벤트 행은 `department_id` 가 `''` 이라 부서로 거르면 옛 기록이 통째로 사라진다.

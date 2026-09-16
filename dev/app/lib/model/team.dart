@@ -17,6 +17,7 @@ enum Engine {
 class Team {
   const Team({
     required this.id,
+    required this.departmentId,
     required this.name,
     required this.cwd,
     required this.leaderId,
@@ -26,8 +27,16 @@ class Team {
   });
 
   final String id;
+
+  /// 팀이 속한 부서(T34). 팀은 부서 안에서만 만들어진다.
+  final String departmentId;
+
   final String name;
+
+  /// 당분간 부서 cwd 와 같다(D-32 "한 부서 안의 팀들은 같은 cwd").
   final String cwd;
+
+  /// 팀장 memberId. **팀장이 나가도 남는다** — 살아 있는 팀장은 `liveLeadProvider`.
   final String? leaderId;
   final int maxMembers;
   final List<Engine> allowedEngines;
@@ -35,6 +44,7 @@ class Team {
 
   factory Team.fromJson(Map<String, dynamic> j) => Team(
         id: j['id'] as String,
+        departmentId: j['departmentId'] as String? ?? '',
         name: j['name'] as String,
         cwd: j['cwd'] as String,
         leaderId: j['leaderId'] as String?,

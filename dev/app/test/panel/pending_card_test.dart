@@ -360,5 +360,69 @@ void main() {
         expect(find.textContaining('하루 ·'), findsOneWidget);
       });
     });
+
+    testWidgets('T37: PendingInbox 는 사용자 몫만 — ask_parent 는 빠진다', (tester) async {
+      daemon.snapshotBody['pending'] = [
+        pendingJson('a1', memberId: 'm1', createdAt: '2026-09-15T01:00:00.000Z', payload: {'tool_name': 'Bash', 'tool_input': {'command': 'ls'}}),
+        pendingJson('p1', memberId: 'm2', type: 'question', createdAt: '2026-09-15T02:00:00.000Z',
+            payload: {'source': 'ask_parent', 'question': '이 폴더 지워도 됩니까?', 'from': 'm2', 'to': 'm1'}),
+      ];
+      await tester.runAsync(() async {
+        final c = await pumpPanel(tester, daemon, const PendingInbox());
+        await pumpUntilConnected(tester, c);
+        await pumpUntil(tester, () => find.byType(PendingCard).evaluate().isNotEmpty, reason: 'approval card');
+        final cards = tester.widgetList<PendingCard>(find.byType(PendingCard)).toList();
+        expect(cards.map((c) => c.pending.id), ['a1']); // 허가만
+        expect(find.byType(AskParentCard), findsNothing);
+      });
+    });
+  });
+
+  // ---- T37 ask_parent 안내 카드 -------------------------------------------------------
+
+  group('AskParentCard', () {
+    final askParentPending = pendingJson('p1', memberId: 'm2', type: 'question', payload: {
+      'source': 'ask_parent',
+      'question': '이 폴더 지워도 됩니까?',
+      'options': ['네', '아니오'],
+      'from': 'm2',
+      'to': 'm1',
+    });
+
+    testWidgets('질문한 멤버 패널에 "팀장/부장에게 질문 중" 안내 카드(상사 이름·질문·보기)', (tester) async {
+      daemon.snapshotBody['pending'] = [askParentPending];
+      await tester.runAsync(() async {
+        final c = await pumpPanel(tester, daemon, const PendingCards(memberId: 'm2'));
+        await pumpUntilConnected(tester, c);
+        await pumpUntil(tester, () => find.byType(AskParentCard).evaluate().isNotEmpty, reason: 'ask_parent card');
+        expect(find.textContaining(askParentCardTitle), findsOneWidget);
+        // 상사(m1 하루) 이름과 직급, 질문 본문.
+        expect(find.textContaining('하루(팀원) 에게: 이 폴더 지워도 됩니까?'), findsOneWidget);
+        expect(find.textContaining('보기: 네 / 아니오'), findsOneWidget);
+        // 답하기 UI 는 접혀 있다 — 사용자 몫이 아니기 때문.
+        expect(find.byType(QuestionCard), findsNothing);
+        expect(find.text(askParentOverrideLabel), findsOneWidget);
+      });
+    });
+
+    testWidgets('"대신 답하기" → 질문 카드가 열리고 옵션을 누르면 question.respond', (tester) async {
+      daemon.snapshotBody['pending'] = [askParentPending];
+      await tester.runAsync(() async {
+        final c = await pumpPanel(tester, daemon, const PendingCards(memberId: 'm2'));
+        await pumpUntilConnected(tester, c);
+        await pumpUntil(tester, () => find.byType(AskParentCard).evaluate().isNotEmpty, reason: 'ask_parent card');
+
+        await tester.tap(find.byKey(const Key('askParent.override')));
+        await tester.pump();
+        expect(find.byType(QuestionCard), findsOneWidget);
+
+        await tester.tap(find.text('네'));
+        await pumpUntil(tester, () => daemon.countOf('question.respond') == 1, reason: 'respond sent');
+        expect(daemon.paramsOf('question.respond').single, {
+          'pendingId': 'p1',
+          'answers': {'이 폴더 지워도 됩니까?': '네'},
+        });
+      });
+    });
   });
 }

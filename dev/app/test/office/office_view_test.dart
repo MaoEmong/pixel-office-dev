@@ -71,14 +71,16 @@ void main() {
     handle.dispose();
   });
 
-  testWidgets('T19b: ask_user 질문(raw idle · 파생 waiting_answer)도 내 책상 줄로, 목록에 "질문: <본문>"', (tester) async {
+  testWidgets('T19b: 부장의 ask_user 질문(raw idle · 파생 waiting_answer)도 내 책상 줄로, 목록에 "질문: <본문>"', (tester) async {
     final handle = tester.ensureSemantics();
-    final notifier = FakeOfficeNotifier(twoMembers());
+    // T37: `ask_user` 로 사용자에게 올릴 수 있는 것은 부장뿐이다(D-32) — 모시를 부장으로 둔다.
+    final notifier = FakeOfficeNotifier(twoMembers(m2AsHead: true));
     await pumpHarness(tester, notifier);
     expect(painterOf(tester).scene.memberById('m2')!.isQueued, isFalse);
 
     // 데몬: asking → text → idle 로 턴이 끝난 상태. raw 는 idle, 파생만 waiting_answer, 질문 pending 은 열려 있다.
     notifier.set(twoMembers(
+      m2AsHead: true,
       pending: {'q1': askUserQuestion('q1', 'm2', '점심은?', options: ['김밥', '라면'])},
       derived: const {'m1': DerivedStatus.working, 'm2': DerivedStatus.waitingAnswer},
       extraEvents: {'m2': event('m2', OfficeEventKind.idle, seq: 9)},
@@ -92,11 +94,13 @@ void main() {
     expect(m2.summary, '❓ 질문');
     expect(m2.isAlert, isTrue);
     expect(painter.scene.queue.single.line(0), '1. 모시 — 질문: 점심은?');
-    expect(painter.lastPlacements[1].center, painter.lastLayout!.queueSlot(0));
+    // 부장은 맨 윗줄(책상 0) 이라 장면 순서의 첫 자리다.
+    expect(painter.lastPlacements[0].center, painter.lastLayout!.queueSlot(0));
     expect(find.semantics.byLabel(RegExp(r'내 책상 · 1\. 모시 — 질문: 점심은\?')), findsOne);
 
     // 답한 뒤: pending 이 닫히고 파생이 free → 자기 자리로.
     notifier.set(twoMembers(
+      m2AsHead: true,
       derived: const {'m1': DerivedStatus.working, 'm2': DerivedStatus.free},
       extraEvents: {'m2': event('m2', OfficeEventKind.text, seq: 10, detail: {'text': '김밥'})},
     ));
@@ -105,7 +109,7 @@ void main() {
     painter = painterOf(tester);
     expect(painter.scene.memberById('m2')!.isQueued, isFalse);
     expect(painter.scene.queue, isEmpty);
-    expect(painter.lastPlacements[1].center, painter.lastLayout!.seatCenter(1));
+    expect(painter.lastPlacements[0].center, painter.lastLayout!.seatCenter(0));
     expect(find.semantics.byLabel('내 책상 · 대기 없음'), findsOne);
     handle.dispose();
   });
@@ -149,20 +153,22 @@ void main() {
     expect(painter.lastLayout!.deskRect(1).right, lessThanOrEqualTo(600));
   });
 
-  testWidgets('teamId 를 주면 그 팀 멤버만 그린다, null 이면 전체', (tester) async {
+  testWidgets('departmentId 를 주면 그 부서 멤버만 그린다, null 이면 전체', (tester) async {
     final state = OfficeState(
       members: {
-        'm1': member('m1', name: '하루', createdAt: '1', teamId: 'tA'),
-        'm2': member('m2', name: '모시', createdAt: '2', teamId: 'tB'),
-        'm3': member('m3', name: '이음', createdAt: '3', teamId: 'tA'),
+        'm1': member('m1', name: '하루', createdAt: '1', departmentId: 'dA', teamId: 'tA'),
+        'm2': member('m2', name: '모시', createdAt: '2', departmentId: 'dB', teamId: 'tB'),
+        'm3': member('m3', name: '이음', createdAt: '3', departmentId: 'dA', teamId: 'tA'),
       },
     );
-    Widget app(String? teamId) => ProviderScope(
+    Widget app(String? departmentId) => ProviderScope(
           overrides: [officeProvider.overrideWith(() => FakeOfficeNotifier(state))],
-          child: MaterialApp(home: Center(child: SizedBox(width: 1000, height: 700, child: OfficeView(teamId: teamId)))),
+          child: MaterialApp(
+            home: Center(child: SizedBox(width: 1000, height: 700, child: OfficeView(departmentId: departmentId))),
+          ),
         );
 
-    await tester.pumpWidget(app('tA'));
+    await tester.pumpWidget(app('dA'));
     var painter = painterOf(tester);
     expect(painter.scene.members.map((m) => m.id), ['m1', 'm3']);
     expect(painter.scene.members[1].deskLabel, '책상 2 · 이음');
@@ -170,7 +176,8 @@ void main() {
 
     await tester.pumpWidget(app(null));
     painter = painterOf(tester);
-    expect(painter.scene.members.map((m) => m.id), ['m1', 'm2', 'm3']);
+    // 전체(부서 필터 없음)에서는 팀 클러스터 순으로 묶인다 — tA(m1, m3) → tB(m2).
+    expect(painter.scene.members.map((m) => m.id), ['m1', 'm3', 'm2']);
     expect(painter.lastLayout!.deskCount, 3);
   });
 

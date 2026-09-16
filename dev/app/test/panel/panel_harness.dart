@@ -21,10 +21,15 @@ Map<String, dynamic> memberJson(
   String engine = 'claude',
   String createdAt = '',
   String rank = 'member',
+  String departmentId = 'd1',
+  String? teamId = 't1',
+  String? parentId,
 }) =>
     {
       'id': id,
-      'teamId': 't1',
+      'departmentId': departmentId,
+      'teamId': rank == 'head' ? null : teamId,
+      'parentId': parentId,
       'name': name.isEmpty ? id : name,
       'rank': rank,
       'engine': engine,
@@ -39,8 +44,12 @@ Map<String, dynamic> memberJson(
       'updatedAt': 'u',
     };
 
-Map<String, dynamic> teamJson({String id = 't1', String name = 'pixel', String cwd = 'D:/proj/pixel'}) => {
+Map<String, dynamic> departmentJson({String id = 'd1', String name = 'alpha', String cwd = 'D:/proj/pixel', String? headId}) =>
+    {'id': id, 'name': name, 'cwd': cwd, 'headId': headId, 'createdAt': 'c'};
+
+Map<String, dynamic> teamJson({String id = 't1', String name = 'pixel', String cwd = 'D:/proj/pixel', String departmentId = 'd1'}) => {
       'id': id,
+      'departmentId': departmentId,
       'name': name,
       'cwd': cwd,
       'leaderId': null,
@@ -72,8 +81,12 @@ Map<String, dynamic> pendingJson(
 Future<PanelFakeDaemon> startDaemon() async {
   final d = PanelFakeDaemon();
   d.snapshotBody = {
+    'departments': [departmentJson(headId: 'mH')],
     'teams': [teamJson()],
-    'members': [memberJson('m1', status: 'working', name: '하루'), memberJson('m2', status: 'idle', name: '모시', engine: 'codex')],
+    'members': [
+      memberJson('m1', status: 'working', name: '하루', parentId: 'mH'),
+      memberJson('m2', status: 'idle', name: '모시', engine: 'codex', parentId: 'mH'),
+    ],
     'pending': [],
     'tasks': [],
   };

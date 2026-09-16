@@ -100,7 +100,7 @@ void main() {
       // 열린 task 가 있으면 그 전문이 우선
       c.read(officeProvider.notifier).upsertTask(const Task(
         id: 6,
-        teamId: 't1',
+        departmentId: 'd1',
         fromMember: 'user',
         toMember: 'm1',
         instruction: '최신 열린 지시',

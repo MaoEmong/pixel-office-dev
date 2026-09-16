@@ -24,6 +24,33 @@ void main() {
       expect(summarize(w, event('m', OfficeEventKind.reporting)), '📋 보고');
     });
 
+    test('T29 결함 ③: running 이어도 detail.waiting 이 있으면 cmd 가 아니라 summary + ⏳', () {
+      // 데몬은 셸 락 대기를 `running{summary:"셸 대기 중 (락: 작가)", waiting:"shell-lock", cmd:"…"}` 로 보낸다.
+      // cmd 를 우선하면 명령만 보여 "왜 안 도는지" 가 화면에 안 나왔다(T29).
+      final waiting = event('m', OfficeEventKind.running, detail: {
+        'summary': '셸 대기 중 (락: 작가)',
+        'waiting': 'shell-lock',
+        'holder': 'm9',
+        'cmd': 'flutter test test/stt_test.dart',
+      });
+      expect(summarize(MemberStatus.working, waiting), '$waitingPrefix 셸 대기 중 (락: 작가)');
+      expect(summarize(MemberStatus.working, waiting), isNot(contains('flutter test')));
+      // 락을 잡고 실제로 도는 중이면 예전대로 명령을 보여 준다.
+      final started = event('m', OfficeEventKind.running, detail: {'cmd': 'flutter test', 'summary': '테스트 실행'});
+      expect(summarize(MemberStatus.working, started), '▶ flutter test');
+      // 긴 요약은 잘린다.
+      final long = event('m', OfficeEventKind.running, detail: {'summary': '셸 대기 중 ${'가' * 60}', 'waiting': 'shell-lock'});
+      expect(summarize(MemberStatus.working, long).runes.length, lessThanOrEqualTo(cmdMaxChars + 2));
+    });
+
+    test('T37: ask_parent 로 상사 답을 기다리면 "❓ 상사에게 질문" 이 이벤트보다 앞선다', () {
+      final idle = event('m', OfficeEventKind.idle);
+      expect(summarize(MemberStatus.idle, idle, askingParent: true), askParentSummary);
+      expect(isAlertFor(MemberStatus.idle, idle, askingParent: true), isTrue);
+      // 퇴근·오류가 먼저다.
+      expect(summarize(MemberStatus.exited, idle, askingParent: true), '(퇴근)');
+    });
+
     test('path 없는 reading/editing 은 oneLine 으로', () {
       expect(summarize(MemberStatus.working, event('m', OfficeEventKind.reading, detail: {'tool': 'Grep', 'summary': 'MlKit'})), '📖 MlKit');
     });
@@ -139,10 +166,11 @@ void main() {
       expect(scene.memberById('m2')!.queueIndex, 2); // pending 없이 waiting → 뒤에
     });
 
-    test('T19b: ask_user 질문이 열린 멤버(raw idle · 파생 waiting_answer)도 내 책상 줄에 서고 말풍선은 "❓ 질문"', () {
+    test('T19b: 부장의 ask_user 질문(raw idle · 파생 waiting_answer)도 내 책상 줄에 서고 말풍선은 "❓ 질문"', () {
       // 데몬은 `asking` 뒤 턴이 끝나면 raw status 를 idle 로 되돌리고 파생만 waiting_answer 로 둔다(T17).
+      // T37: `ask_user` 는 부장 전용이다(D-32) — 질문자를 부장으로 둔다.
       final members = {
-        'm1': member('m1', name: '모시', status: MemberStatus.idle, createdAt: '1'),
+        'm1': head('m1', name: '모시', status: MemberStatus.idle, createdAt: '1'),
         'm2': member('m2', name: '하루', status: MemberStatus.idle, createdAt: '2'),
       };
       final latest = {'m1': event('m1', OfficeEventKind.idle, seq: 9)};
@@ -171,27 +199,78 @@ void main() {
       expect(after.queue, isEmpty);
     });
 
-    test('teamId 를 주면 그 팀 멤버·그 멤버의 pending 만, null 이면 전체', () {
+    test('T37: 내 책상 줄 = 허가(전원) + 부장 질문. ask_parent 는 상사 책상으로 간다', () {
       final members = {
-        'a1': member('a1', name: '하루', status: MemberStatus.waitingApproval, createdAt: '1', teamId: 'tA'),
-        'b1': member('b1', name: '모시', status: MemberStatus.waitingAnswer, createdAt: '2', teamId: 'tB'),
-        'a2': member('a2', name: '이음', createdAt: '3', teamId: 'tA'),
+        'mH': head('mH', name: '부장', createdAt: '0'),
+        'mL': lead('mL', name: '반장', parentId: 'mH', createdAt: '1'),
+        'm1': member('m1', name: '이음', parentId: 'mL', createdAt: '2'),
+      };
+      final scene = OfficeScene.build(
+        members: members,
+        latestEvents: const {},
+        pending: {
+          // 팀원의 셸 허가 — 직급과 무관하게 사용자에게 온다(D-32 3).
+          'a1': approval('a1', 'm1', 'rm -rf build/', createdAt: '2026-09-16T00:00:01Z'),
+          // 부장의 ask_user — 사용자 몫.
+          'q1': askUserQuestion('q1', 'mH', '배포할까요?', createdAt: '2026-09-16T00:00:02Z'),
+          // 팀장의 ask_parent(부장에게) — 사용자 몫이 아니다.
+          'q2': askParentQuestion('q2', 'mL', '스펙 확인 부탁', to: 'mH', createdAt: '2026-09-16T00:00:03Z'),
+        },
+        derived: const {'mL': DerivedStatus.waitingAnswer, 'mH': DerivedStatus.waitingAnswer},
+        teams: {'t1': team('t1', name: 't1')},
+      );
+      expect(scene.queue.map((q) => q.pendingId), ['a1', 'q1']);
+      expect(scene.memberById('m1')!.queueIndex, 0);
+      expect(scene.memberById('mH')!.queueIndex, 1);
+      // 팀장은 파생이 waiting_answer 여도 사용자 줄에 서지 않고 부장 책상(책상 0) 옆으로 간다.
+      expect(scene.memberById('mL')!.queueIndex, isNull);
+      expect(scene.memberById('mL')!.askParentDeskIndex, 0);
+      expect(scene.memberById('mL')!.summary, askParentSummary);
+    });
+
+    test('T37: 팀장의 ask_user 는 사용자 줄에 세우지 않는다(부장 전용 경로)', () {
+      final scene = OfficeScene.build(
+        members: {
+          'mH': head('mH', name: '부장', createdAt: '0'),
+          'mL': lead('mL', name: '반장', parentId: 'mH', createdAt: '1'),
+        },
+        latestEvents: const {},
+        pending: {'q1': askUserQuestion('q1', 'mL', '이거 맞나요?')},
+        derived: const {'mL': DerivedStatus.waitingAnswer},
+      );
+      expect(scene.queue, isEmpty);
+      expect(scene.memberById('mL')!.queueIndex, isNull);
+      // 반대로 TUI AskUserQuestion(턴을 붙잡는 질문)은 직급과 무관하게 사용자만 풀 수 있다 → 줄에 선다.
+      final tui = OfficeScene.build(
+        members: {'mL': lead('mL', name: '반장', createdAt: '1')},
+        latestEvents: const {},
+        pending: {'q9': question('q9', 'mL', '어느 폴더?')},
+        derived: const {'mL': DerivedStatus.waitingAnswer},
+      );
+      expect(tui.queue.single.pendingId, 'q9');
+    });
+
+    test('departmentId 를 주면 그 부서 멤버·그 멤버의 pending 만, null 이면 전체', () {
+      final members = {
+        'a1': member('a1', name: '하루', status: MemberStatus.waitingApproval, createdAt: '1', departmentId: 'dA', teamId: 'tA'),
+        'b1': member('b1', name: '모시', status: MemberStatus.waitingAnswer, createdAt: '2', departmentId: 'dB', teamId: 'tB'),
+        'a2': member('a2', name: '이음', createdAt: '3', departmentId: 'dA', teamId: 'tA'),
       };
       final pending = {
         'p1': approval('p1', 'a1', 'ls', createdAt: '2026-09-15T00:00:01Z'),
         'p2': question('p2', 'b1', '?', createdAt: '2026-09-15T00:00:02Z'),
       };
       final all = OfficeScene.build(members: members, latestEvents: const {}, pending: pending);
-      expect(all.members.map((m) => m.id), ['a1', 'b1', 'a2']);
+      expect(all.members.map((m) => m.id), ['a1', 'a2', 'b1']); // 팀 클러스터 순(tA → tB)
       expect(all.queue.map((q) => q.pendingId), ['p1', 'p2']);
 
-      final teamA = OfficeScene.build(members: members, latestEvents: const {}, pending: pending, teamId: 'tA');
-      expect(teamA.members.map((m) => m.id), ['a1', 'a2']);
-      expect(teamA.members.map((m) => m.deskIndex), [0, 1]); // 책상 번호는 팀 안에서 다시 매김
-      expect(teamA.queue.map((q) => q.pendingId), ['p1']);
-      expect(teamA.memberById('a1')!.queueIndex, 0);
+      final deptA = OfficeScene.build(members: members, latestEvents: const {}, pending: pending, departmentId: 'dA');
+      expect(deptA.members.map((m) => m.id), ['a1', 'a2']);
+      expect(deptA.members.map((m) => m.deskIndex), [0, 1]); // 책상 번호는 부서 안에서 다시 매김
+      expect(deptA.queue.map((q) => q.pendingId), ['p1']);
+      expect(deptA.memberById('a1')!.queueIndex, 0);
 
-      final none = OfficeScene.build(members: members, latestEvents: const {}, pending: pending, teamId: 'tZ');
+      final none = OfficeScene.build(members: members, latestEvents: const {}, pending: pending, departmentId: 'dZ');
       expect(none.isEmpty, isTrue);
       expect(none.queue, isEmpty);
     });

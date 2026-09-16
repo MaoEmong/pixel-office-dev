@@ -9,10 +9,13 @@ import 'package:pixel_office/state/office_state.dart';
 
 import 'fake_daemon.dart';
 
-Map<String, dynamic> member(String id, {String status = 'idle', String name = ''}) => {
-      'id': id, 'teamId': 't1', 'name': name.isEmpty ? id : name, 'rank': 'member', 'engine': 'claude',
+Map<String, dynamic> member(String id,
+        {String status = 'idle', String name = '', String rank = 'member', String? parentId, String? teamId = 't1', String createdAt = 'c'}) =>
+    {
+      'id': id, 'departmentId': 'd1', 'teamId': rank == 'head' ? null : teamId, 'parentId': parentId,
+      'name': name.isEmpty ? id : name, 'rank': rank, 'engine': 'claude',
       'sessionId': null, 'childPid': null, 'cwd': 'D:/x', 'status': status, 'hiredBy': 'user',
-      'memberToken': 'mt', 'instructionsPath': null, 'createdAt': 'c', 'updatedAt': 'u',
+      'memberToken': 'mt', 'instructionsPath': null, 'createdAt': createdAt, 'updatedAt': 'u',
     };
 
 Future<void> until(ProviderContainer c, bool Function(OfficeState) test, {Duration timeout = const Duration(seconds: 5)}) async {
@@ -36,15 +39,18 @@ void main() {
     daemon = FakeDaemon();
     await daemon.start();
     daemon.snapshotBody = {
+      'departments': [
+        {'id': 'd1', 'name': 'alpha', 'cwd': 'D:/x', 'headId': 'mH', 'createdAt': 'c'},
+      ],
       'teams': [
-        {'id': 't1', 'name': 'pixel', 'cwd': 'D:/x', 'leaderId': null, 'maxMembers': 5, 'allowedEngines': ['claude'], 'createdAt': 'c'},
+        {'id': 't1', 'departmentId': 'd1', 'name': 'pixel', 'cwd': 'D:/x', 'leaderId': null, 'maxMembers': 5, 'allowedEngines': ['claude'], 'createdAt': 'c'},
       ],
       'members': [member('m1', status: 'working'), member('m2', status: 'idle')],
       'pending': [
         {'id': 'a1', 'memberId': 'm1', 'type': 'approval', 'payload': {'tool_name': 'Bash', 'tool_input': {'command': 'ls'}}, 'status': 'open', 'createdAt': 'c', 'answeredAt': null, 'answer': null},
       ],
       'tasks': [
-        {'id': 1, 'teamId': 't1', 'fromMember': 'user', 'toMember': 'm1', 'instruction': 'go', 'status': 'assigned', 'reportText': null, 'reportStatus': null, 'createdAt': 'c', 'updatedAt': 'u'},
+        {'id': 1, 'departmentId': 'd1', 'fromMember': 'user', 'toMember': 'm1', 'instruction': 'go', 'status': 'assigned', 'reportText': null, 'reportStatus': null, 'createdAt': 'c', 'updatedAt': 'u'},
       ],
     };
     daemon.snapshotSeq = 10;
@@ -77,6 +83,102 @@ void main() {
     expect(container.read(openTasksProvider).keys, [1]);
     expect(container.read(lastSeqProvider), 10);
     expect(s.membersOf('t1').length, 2);
+  });
+
+  // ---- T37 rev 3: 부서 · 트리 프로바이더 -------------------------------------------
+
+  test('T37: 스냅샷 departments[] → departmentsProvider · teamsOfDepartmentProvider', () async {
+    daemon.snapshotBody = {
+      ...daemon.snapshotBody,
+      'departments': [
+        {'id': 'd1', 'name': 'alpha', 'cwd': 'D:/x', 'headId': 'mH', 'createdAt': '1'},
+        {'id': 'd2', 'name': 'beta', 'cwd': 'D:/y', 'headId': null, 'createdAt': '2'},
+      ],
+      'teams': [
+        {'id': 't1', 'departmentId': 'd1', 'name': 'pixel', 'cwd': 'D:/x', 'leaderId': 'mL', 'maxMembers': 5, 'allowedEngines': ['claude'], 'createdAt': '1'},
+        {'id': 't2', 'departmentId': 'd2', 'name': 'other', 'cwd': 'D:/y', 'leaderId': null, 'maxMembers': 5, 'allowedEngines': ['claude'], 'createdAt': '2'},
+      ],
+    };
+    await until(container, (s) => s.isConnected && s.departments.isNotEmpty);
+    expect(container.read(departmentsProvider).keys, ['d1', 'd2']);
+    expect(container.read(departmentProvider('d1'))?.cwd, 'D:/x');
+    expect(container.read(teamsOfDepartmentProvider('d1')).map((t) => t.id), ['t1']);
+    expect(container.read(teamsOfDepartmentProvider('d2')).map((t) => t.id), ['t2']);
+    expect(container.read(teamsOfDepartmentProvider(null)), isEmpty);
+  });
+
+  test('T37: liveHead/liveLead 는 행의 rank·status 로 판정한다(headId 가 아니라)', () async {
+    daemon.snapshotBody = {
+      ...daemon.snapshotBody,
+      'members': [
+        member('mH0', rank: 'head', status: 'exited', createdAt: '0'), // 나간 부장 — headId 는 아직 이쪽일 수 있다
+        member('mH', rank: 'head', name: '부장', createdAt: '1'),
+        member('mL', rank: 'lead', name: '반장', parentId: 'mH', createdAt: '2'),
+        member('m1', name: '이음', parentId: 'mL', createdAt: '3'),
+      ],
+    };
+    await until(container, (s) => s.isConnected && s.members.length == 4);
+    expect(container.read(liveHeadProvider('d1'))?.id, 'mH');
+    expect(container.read(liveLeadProvider('t1'))?.id, 'mL');
+    expect(container.read(liveHeadProvider('없는부서')), isNull);
+    expect(container.read(membersOfDepartmentProvider('d1')).length, 4);
+
+    // 부장이 나가면 살아 있는 부장이 없다 → 지시 바가 비활성되는 상태.
+    daemon.push('member.status', {'memberId': 'mH', 'status': 'exited', 'derived': 'exited'});
+    await until(container, (s) => s.members['mH']!.status == MemberStatus.exited);
+    expect(container.read(liveHeadProvider('d1')), isNull);
+  });
+
+  test('T37: childrenProvider / parentProvider 로 트리를 읽는다', () async {
+    daemon.snapshotBody = {
+      ...daemon.snapshotBody,
+      'members': [
+        member('mH', rank: 'head', name: '부장', createdAt: '1'),
+        member('mL', rank: 'lead', name: '반장', parentId: 'mH', createdAt: '2'),
+        member('m1', name: '이음', parentId: 'mL', createdAt: '3'),
+        member('m2', name: '하루', parentId: 'mL', createdAt: '4'),
+      ],
+    };
+    await until(container, (s) => s.isConnected && s.members.length == 4);
+    expect(container.read(childrenProvider('mH')).map((m) => m.id), ['mL']);
+    expect(container.read(childrenProvider('mL')).map((m) => m.id), ['m1', 'm2']); // createdAt 순
+    expect(container.read(childrenProvider('m1')), isEmpty);
+    expect(container.read(parentProvider('m1'))?.name, '반장');
+    expect(container.read(parentProvider('mH')), isNull); // 부장의 상사는 사용자
+  });
+
+  test('T37: department.create → 부서·부장이 응답 즉시 상태에 들어가고, delete 는 하위 트리를 지운다', () async {
+    await until(container, (s) => s.isConnected && s.members.isNotEmpty);
+    daemon.handlers['department.create'] = (p) => {
+          'department': {'id': 'dNew', 'name': p['name'], 'cwd': p['cwd'], 'headId': 'mNew', 'createdAt': 'z'},
+          'head': {...member('mNew', rank: 'head', name: (p['headName'] as String?) ?? '부장', status: 'starting'), 'departmentId': 'dNew'},
+        };
+    daemon.handlers['department.delete'] = (_) => {};
+    final n = container.read(officeProvider.notifier);
+    final r = await n.createDepartment(name: 'gamma', cwd: 'D:/z', headEngine: Engine.claude, headName: '부장');
+    expect(r.department.id, 'dNew');
+    expect(r.head?.id, 'mNew');
+    expect(daemon.paramsOf('department.create'), {'name': 'gamma', 'cwd': 'D:/z', 'headEngine': 'claude', 'headName': '부장'});
+    expect(container.read(departmentsProvider).keys, containsAll(['d1', 'dNew']));
+    expect(container.read(membersProvider).containsKey('mNew'), isTrue);
+
+    await n.deleteDepartment('d1');
+    expect(daemon.paramsOf('department.delete'), {'departmentId': 'd1'});
+    expect(container.read(departmentsProvider).keys, ['dNew']);
+    expect(container.read(teamsProvider), isEmpty); // d1 의 팀
+    expect(container.read(membersProvider).keys, ['mNew']); // d1 의 멤버는 빠지고 새 부장만
+  });
+
+  test('T37: events.query 는 departmentId 로 좁힐 수 있다(멤버 백필은 안 쓴다)', () async {
+    await until(container, (s) => s.isConnected);
+    daemon.handlers['events.query'] = (_) => {'events': [sampleEvent(3, memberId: 'm1')]};
+    final n = container.read(officeProvider.notifier);
+    final events = await n.queryEvents(departmentId: 'd1', limit: 50);
+    expect(events.single.seq, 3);
+    expect(daemon.paramsOf('events.query'), {'departmentId': 'd1', 'limit': 50});
+    // 부서를 안 주면 키 자체가 안 나간다(옛 이벤트 행의 department_id 가 '' 라 거르면 사라진다).
+    await n.queryEvents(memberId: 'm1');
+    expect(daemon.paramsOf('events.query'), {'memberId': 'm1'});
   });
 
   test('T28: 스냅샷 멤버 행의 derived 를 그대로 쓴다(앱이 다시 계산하지 않는다)', () async {
@@ -132,6 +234,26 @@ void main() {
     expect(container.read(openPendingProvider)['a2']?.summary, 'Bash rm -rf x');
     expect(container.read(openPendingProvider).containsKey('q1'), isFalse); // 만료됨
     expect(container.read(openTasksProvider), isEmpty); // reporting 으로 닫힘
+  });
+
+  test('T37: ask_parent asking 이벤트로 만든 pending 도 source/from/to 를 갖는다(사용자 몫으로 새지 않게)', () async {
+    await until(container, (s) => s.isConnected && s.members.isNotEmpty);
+    // 데몬(T35): asking{tool:'ask_parent', summary, options?, to, toName}.
+    daemon.emitEvent(sampleEvent(21, memberId: 'm2', kind: 'asking', detail: {
+      'tool': 'ask_parent',
+      'summary': '이 폴더 지워도 됩니까?',
+      'options': ['네', '아니오'],
+      'to': 'm1',
+      'toName': '하루',
+    }, ref: {'questionId': 'q_p1'}));
+    await until(container, (s) => s.pending.containsKey('q_p1'));
+    final p = container.read(openPendingProvider)['q_p1']!;
+    expect(p.isAskParent, isTrue);
+    expect(p.isAskUser, isFalse);
+    expect(p.askParentFrom, 'm2');
+    expect(p.askParentTo, 'm1');
+    expect(p.payload['options'], ['네', '아니오']);
+    expect(p.goesToUser(rank: MemberRank.member), isFalse);
   });
 
   test('T19b: ask_user asking → pending 생성(payload source/question/options), raw idle + 파생 waiting_answer 여도 유지', () async {

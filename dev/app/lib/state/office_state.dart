@@ -9,9 +9,15 @@
 // 제공 프로바이더(T12~T14 가 쓰는 이름):
 //  rpcClientProvider, daemonConnectorProvider, officeProvider(전체 OfficeState),
 //  connectionStateProvider, daemonVersionProvider, daemonPidProvider, reconnectAttemptsProvider, lastSeqProvider,
-//  teamsProvider, membersProvider, memberProvider(id), memberStatusProvider(id), derivedStatusProvider(id),
-//  membersOfTeamProvider(teamId), liveLeadersProvider, liveLeaderProvider(teamId), openPendingProvider, openTasksProvider,
+//  departmentsProvider, teamsProvider, teamsOfDepartmentProvider(departmentId), membersProvider, memberProvider(id),
+//  memberStatusProvider(id), derivedStatusProvider(id), membersOfTeamProvider(teamId), membersOfDepartmentProvider(id),
+//  liveHeadsProvider, liveHeadProvider(departmentId), liveLeadsProvider, liveLeadProvider(teamId),
+//  childrenProvider(memberId), parentProvider(memberId), openPendingProvider, openTasksProvider,
 //  globalEventsProvider, memberEventsProvider(id), latestEventProvider(id), noticesProvider.
+//
+// T37(rev 3): 최상위 단위가 팀 → **부서**다. 부서 = 프로젝트(cwd), 그 안에 부장 한 명 → 팀(팀장) → 팀원.
+// "살아 있는 부장/팀장" 은 `departments.headId`/`teams.leaderId` 가 아니라 멤버 행의 rank·status 로 판정한다
+// (데몬 `Store.liveHead`/`liveLead` 와 같은 규칙 — 나간 뒤에도 id 는 남는다).
 
 import 'dart:async';
 
@@ -61,6 +67,7 @@ class OfficeState {
     this.lastSeq = 0,
     this.reconnectAttempts = 0,
     this.lastError,
+    this.departments = const {},
     this.teams = const {},
     this.members = const {},
     this.derived = const {},
@@ -78,6 +85,9 @@ class OfficeState {
   final int lastSeq;
   final int reconnectAttempts;
   final String? lastError;
+
+  /// 부서 id → Department(T37). 상단 탭의 원본.
+  final Map<String, Department> departments;
 
   /// 팀 id → Team.
   final Map<String, Team> teams;
@@ -112,6 +122,10 @@ class OfficeState {
 
   List<Member> membersOf(String teamId) => members.values.where((m) => m.teamId == teamId).toList(growable: false);
 
+  /// 그 부서의 멤버 전부(부장 포함).
+  List<Member> membersOfDepartment(String departmentId) =>
+      members.values.where((m) => m.departmentId == departmentId).toList(growable: false);
+
   OfficeState copyWith({
     RpcConnectionState? connection,
     String? daemonVersion,
@@ -120,6 +134,7 @@ class OfficeState {
     int? reconnectAttempts,
     String? lastError,
     bool clearError = false,
+    Map<String, Department>? departments,
     Map<String, Team>? teams,
     Map<String, Member>? members,
     Map<String, DerivedStatus>? derived,
@@ -137,6 +152,7 @@ class OfficeState {
         lastSeq: lastSeq ?? this.lastSeq,
         reconnectAttempts: reconnectAttempts ?? this.reconnectAttempts,
         lastError: clearError ? null : (lastError ?? this.lastError),
+        departments: departments ?? this.departments,
         teams: teams ?? this.teams,
         members: members ?? this.members,
         derived: derived ?? this.derived,
@@ -188,7 +204,7 @@ class OfficeNotifier extends Notifier<OfficeState> {
     final now = DateTime.now().toUtc().toIso8601String();
     upsertTask(Task(
       id: taskId,
-      teamId: m?.teamId ?? '',
+      departmentId: m?.departmentId ?? '',
       fromMember: userActor,
       toMember: memberId,
       instruction: text,
@@ -199,6 +215,57 @@ class OfficeNotifier extends Notifier<OfficeState> {
       updatedAt: now,
     ));
     return taskId;
+  }
+
+  /// 부서 만들기 + 부장 임명(PROTOCOL `department.create`) → `{department, head}`. 사용자가 하는 유일한 생성(D-32).
+  /// 결과의 부서·부장은 스냅샷/알림이 오기 전에 미리 상태에 넣어 둔다(탭·지시 대상이 바로 잡히게).
+  Future<({Department department, Member? head})> createDepartment({
+    required String name,
+    required String cwd,
+    required Engine headEngine,
+    String? headName,
+  }) async {
+    final r = await client.call('department.create', {
+      'name': name,
+      'cwd': cwd,
+      'headEngine': headEngine.wire,
+      if (headName != null && headName.isNotEmpty) 'headName': headName,
+    });
+    final dept = Department.fromJson(Map<String, dynamic>.from(r['department'] as Map));
+    final headJson = r['head'];
+    final head = headJson == null ? null : Member.fromJson(Map<String, dynamic>.from(headJson as Map));
+    state = state.copyWith(
+      departments: {...state.departments, dept.id: dept},
+      members: head == null ? null : {...state.members, head.id: head},
+    );
+    return (department: dept, head: head);
+  }
+
+  /// 부서 삭제(PROTOCOL `department.delete`) — 하위 트리를 잎부터 정리한 뒤 행을 지운다.
+  Future<void> deleteDepartment(String departmentId) async {
+    await client.call('department.delete', {'departmentId': departmentId});
+    state = state.copyWith(
+      departments: {...state.departments}..remove(departmentId),
+      teams: {...state.teams}..removeWhere((_, t) => t.departmentId == departmentId),
+      members: {...state.members}..removeWhere((_, m) => m.departmentId == departmentId),
+    );
+  }
+
+  /// `events.query`(PROTOCOL). 부서·멤버로 좁힐 수 있다.
+  ///
+  /// **주의:** 멤버 로그 백필은 `departmentId` 를 **보내지 않는다** — T34 마이그레이션 이전 이벤트 행은
+  /// `department_id` 가 `''` 이라 부서로 거르면 옛 기록이 통째로 사라진다.
+  Future<List<OfficeEvent>> queryEvents({String? departmentId, String? memberId, int? beforeSeq, int? limit}) async {
+    final r = await client.call('events.query', {
+      'departmentId': ?departmentId,
+      'memberId': ?memberId,
+      'beforeSeq': ?beforeSeq,
+      'limit': ?limit,
+    });
+    return [
+      for (final e in (r['events'] as List?) ?? const [])
+        OfficeEvent.fromJson(Map<String, dynamic>.from(e as Map)),
+    ];
   }
 
   Future<void> respondApproval(String pendingId, {required bool allow, String? message, bool alwaysThisSession = false}) async {
@@ -251,6 +318,7 @@ class OfficeNotifier extends Notifier<OfficeState> {
   }
 
   static OfficeState _applySnapshot(OfficeState s, Snapshot snap) {
+    final departments = {for (final d in snap.departments) d.id: d};
     final teams = {for (final t in snap.teams) t.id: t};
     final members = {for (final m in snap.members) m.id: m};
     final pending = {for (final p in snap.pending) p.id: p};
@@ -269,6 +337,7 @@ class OfficeNotifier extends Notifier<OfficeState> {
             ),
     };
     return s.copyWith(
+      departments: departments,
       teams: teams,
       members: members,
       derived: derived,
@@ -375,9 +444,12 @@ class OfficeNotifier extends Notifier<OfficeState> {
       case OfficeEventKind.asking:
         final id = ev.ref.questionId;
         if (id != null && !pending.containsKey(id)) {
-          // TeamTools `ask_user`(T17) 는 `asking{tool:'ask_user', summary:<질문>, options?}` 로 온다 —
-          // 스냅샷 payload 와 같은 `{source:'ask_user', question, options}` 모양으로 만들어야 QuestionCard 가 옵션까지 그린다.
-          final isAskUser = ev.detail.tool == 'ask_user';
+          // TeamTools `ask_user`(T17) 는 `asking{tool:'ask_user', summary:<질문>, options?}`,
+          // `ask_parent`(T35) 는 `asking{tool:'ask_parent', summary, options?, to, toName}` 로 온다 —
+          // 스냅샷 payload 와 **같은 모양**(`{source, question, options[, from, to]}`)으로 만들어야 카드가 같게 그려지고,
+          // 무엇보다 `ask_parent` 가 사용자 몫(내 책상 줄·카드)으로 새지 않는다(T37).
+          final tool = ev.detail.tool;
+          final source = tool == 'ask_user' || tool == 'ask_parent' ? tool : null;
           final rawOptions = ev.detail['options'];
           final options = rawOptions is List ? [for (final o in rawOptions) o] : null;
           pending = {
@@ -387,9 +459,10 @@ class OfficeNotifier extends Notifier<OfficeState> {
               memberId: ev.memberId,
               type: PendingType.question,
               payload: {
-                if (isAskUser) 'source': 'ask_user',
+                'source': ?source,
                 'question': ev.detail.summary ?? ev.detail.text ?? '',
                 'options': ?options,
+                if (source == 'ask_parent') ...{'from': ev.memberId, 'to': ?ev.detail['to'] as String?},
                 'fromEvent': true,
               },
               status: PendingStatus.open,
@@ -429,7 +502,22 @@ final daemonPidProvider = Provider<int?>((ref) => ref.watch(officeProvider.selec
 final reconnectAttemptsProvider = Provider<int>((ref) => ref.watch(officeProvider.select((s) => s.reconnectAttempts)));
 final lastSeqProvider = Provider<int>((ref) => ref.watch(officeProvider.select((s) => s.lastSeq)));
 
+final departmentsProvider = Provider<Map<String, Department>>((ref) => ref.watch(officeProvider.select((s) => s.departments)));
+final departmentProvider = Provider.family<Department?, String?>(
+  (ref, id) => id == null ? null : ref.watch(departmentsProvider)[id],
+);
 final teamsProvider = Provider<Map<String, Team>>((ref) => ref.watch(officeProvider.select((s) => s.teams)));
+
+/// 그 부서의 팀(createdAt 순). 부서가 null 이면 빈 목록.
+final teamsOfDepartmentProvider = Provider.family<List<Team>, String?>((ref, departmentId) {
+  if (departmentId == null) return const [];
+  final list = ref.watch(teamsProvider).values.where((t) => t.departmentId == departmentId).toList()
+    ..sort((a, b) {
+      final c = a.createdAt.compareTo(b.createdAt);
+      return c != 0 ? c : a.id.compareTo(b.id);
+    });
+  return List<Team>.unmodifiable(list);
+});
 final membersProvider = Provider<Map<String, Member>>((ref) => ref.watch(officeProvider.select((s) => s.members)));
 final memberProvider = Provider.family<Member?, String>((ref, id) => ref.watch(membersProvider)[id]);
 final memberStatusProvider = Provider.family<MemberStatus?, String>((ref, id) => ref.watch(memberProvider(id))?.status);
@@ -439,29 +527,65 @@ final membersOfTeamProvider = Provider.family<List<Member>, String>(
   (ref, teamId) => ref.watch(membersProvider).values.where((m) => m.teamId == teamId).toList(growable: false),
 );
 
-/// 팀 id → **살아 있는 팀장**. 데몬 `Store.liveLeader` 와 같은 규칙: `rank == leader` 이고 status 가 exited/error 가
-/// 아닌 첫 멤버(createdAt 순). `Team.leaderId` 는 팀장이 나가도 남으므로 그것으로 판정하면 안 된다
-/// (PROTOCOL "팀·직급 (T24)"). 지시 게이트(-32004)의 클라이언트 쪽 기준이다.
-Map<String, Member> liveLeadersByTeam(Iterable<Member> members) {
-  final sorted = members.where((m) => m.rank == MemberRank.leader && !m.status.isGone).toList(growable: false)
+final membersOfDepartmentProvider = Provider.family<List<Member>, String?>(
+  (ref, departmentId) => departmentId == null
+      ? const []
+      : ref.watch(membersProvider).values.where((m) => m.departmentId == departmentId).toList(growable: false),
+);
+
+/// 살아 있는 상급자 판정의 공통 규칙: 그 직급이고 status 가 exited/error 가 아닌 **첫**(createdAt 순) 멤버.
+/// `departments.headId` / `teams.leaderId` 는 나간 뒤에도 남으므로 그것으로 판정하면 안 된다
+/// (PROTOCOL "팀·직급", 데몬 `Store.liveHead` / `Store.liveLead`).
+Map<String, Member> _liveByKey(Iterable<Member> members, MemberRank rank, String? Function(Member) key) {
+  final sorted = members.where((m) => m.rank == rank && !m.status.isGone).toList(growable: false)
     ..sort((a, b) {
       final c = a.createdAt.compareTo(b.createdAt);
       return c != 0 ? c : a.id.compareTo(b.id);
     });
-  final byTeam = <String, Member>{};
+  final out = <String, Member>{};
   for (final m in sorted) {
-    byTeam.putIfAbsent(m.teamId, () => m);
+    final k = key(m);
+    if (k != null) out.putIfAbsent(k, () => m);
   }
-  return byTeam;
+  return out;
 }
 
-/// 팀 id → 살아 있는 팀장(없는 팀은 키 없음).
-final liveLeadersProvider = Provider<Map<String, Member>>((ref) => liveLeadersByTeam(ref.watch(membersProvider).values));
+/// 부서 id → 살아 있는 부장.
+Map<String, Member> liveHeadsByDepartment(Iterable<Member> members) =>
+    _liveByKey(members, MemberRank.head, (m) => m.departmentId);
 
-/// 그 팀의 살아 있는 팀장(없으면 null). teamId 가 null 이면 null.
-final liveLeaderProvider = Provider.family<Member?, String?>(
-  (ref, teamId) => teamId == null ? null : ref.watch(liveLeadersProvider)[teamId],
+/// 팀 id → 살아 있는 팀장.
+Map<String, Member> liveLeadsByTeam(Iterable<Member> members) => _liveByKey(members, MemberRank.lead, (m) => m.teamId);
+
+final liveHeadsProvider = Provider<Map<String, Member>>((ref) => liveHeadsByDepartment(ref.watch(membersProvider).values));
+
+/// 그 부서의 살아 있는 부장(없으면 null). **사용자 지시가 갈 수 있는 유일한 대상**(D-32, 게이트 -32004).
+final liveHeadProvider = Provider.family<Member?, String?>(
+  (ref, departmentId) => departmentId == null ? null : ref.watch(liveHeadsProvider)[departmentId],
 );
+
+final liveLeadsProvider = Provider<Map<String, Member>>((ref) => liveLeadsByTeam(ref.watch(membersProvider).values));
+
+/// 그 팀의 살아 있는 팀장(없으면 null).
+final liveLeadProvider = Provider.family<Member?, String?>(
+  (ref, teamId) => teamId == null ? null : ref.watch(liveLeadsProvider)[teamId],
+);
+
+/// 직속 부하(`parentId` 가 이 멤버). createdAt 순, 나간 멤버도 포함(사무실은 회색 책상으로 남긴다).
+final childrenProvider = Provider.family<List<Member>, String>((ref, memberId) {
+  final list = ref.watch(membersProvider).values.where((m) => m.parentId == memberId).toList()
+    ..sort((a, b) {
+      final c = a.createdAt.compareTo(b.createdAt);
+      return c != 0 ? c : a.id.compareTo(b.id);
+    });
+  return List<Member>.unmodifiable(list);
+});
+
+/// 직속 상사(`parentId` 가 가리키는 멤버). 부장이거나 행이 없으면 null.
+final parentProvider = Provider.family<Member?, String>((ref, memberId) {
+  final parentId = ref.watch(membersProvider)[memberId]?.parentId;
+  return parentId == null ? null : ref.watch(membersProvider)[parentId];
+});
 
 final openPendingProvider = Provider<Map<String, Pending>>((ref) => ref.watch(officeProvider.select((s) => s.pending)));
 final openTasksProvider = Provider<Map<int, Task>>((ref) => ref.watch(officeProvider.select((s) => s.tasks)));

@@ -46,7 +46,7 @@ class OfficeShell extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final connection = ref.watch(connectionStateProvider);
     final selected = ref.watch(selectedMemberIdProvider);
-    final teamId = ref.watch(activeTeamIdProvider);
+    final departmentId = ref.watch(activeDepartmentIdProvider);
     return Scaffold(
       body: Column(
         children: [
@@ -63,7 +63,7 @@ class OfficeShell extends ConsumerWidget {
                             flex: 3,
                             child: OfficeView(
                               selectedMemberId: selected,
-                              teamId: teamId,
+                              departmentId: departmentId,
                               onSelectMember: (id) => ref.read(selectedMemberIdProvider.notifier).select(id),
                             ),
                           ),

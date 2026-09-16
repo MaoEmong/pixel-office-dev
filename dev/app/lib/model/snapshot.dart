@@ -1,5 +1,6 @@
 // Snapshot — PROTOCOL `snapshot` 알림 / `hello` 결과. types.ts `Snapshot`.
 
+import 'department.dart';
 import 'member.dart';
 import 'pending.dart';
 import 'task.dart';
@@ -8,6 +9,7 @@ import 'team.dart';
 class Snapshot {
   const Snapshot({
     required this.seq,
+    required this.departments,
     required this.teams,
     required this.members,
     required this.pending,
@@ -16,6 +18,10 @@ class Snapshot {
 
   /// 스냅샷 시점의 lastSeq. 클라이언트는 seq > 이 값만 적용한다(재접속 규칙 2).
   final int seq;
+
+  /// 부서 목록(T34). 상단 탭의 원본.
+  final List<Department> departments;
+
   final List<Team> teams;
   final List<Member> members;
 
@@ -27,6 +33,7 @@ class Snapshot {
 
   factory Snapshot.fromJson(Map<String, dynamic> j) => Snapshot(
         seq: (j['seq'] as num).toInt(),
+        departments: _list(j['departments'], Department.fromJson),
         teams: _list(j['teams'], Team.fromJson),
         members: _list(j['members'], Member.fromJson),
         pending: _list(j['pending'], Pending.fromJson),

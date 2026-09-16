@@ -29,7 +29,7 @@ Future<void> pumpHarness(
   FakeOfficeNotifier notifier, {
   String? selected,
   ValueChanged<String?>? onSelect,
-  String? teamId,
+  String? departmentId,
 }) async {
   tester.view.physicalSize = const Size(1200, 800);
   tester.view.devicePixelRatio = 1.0;
@@ -41,7 +41,7 @@ Future<void> pumpHarness(
         child: SizedBox(
           width: canvasSize.width,
           height: canvasSize.height,
-          child: OfficeView(selectedMemberId: selected, onSelectMember: onSelect, teamId: teamId),
+          child: OfficeView(selectedMemberId: selected, onSelectMember: onSelect, departmentId: departmentId),
         ),
       ),
     ),
@@ -61,16 +61,25 @@ Future<void> settleMotion(WidgetTester tester) async {
   await tester.pump(const Duration(seconds: 3));
 }
 
+/// 멤버 2명(하루 working · 모시 idle). [m2AsHead] 면 모시가 그 부서의 **부장**이다
+/// (T37: `ask_user` 질문은 부장만 사용자에게 올린다 → 내 책상 줄 테스트는 부장으로 해야 한다).
+/// 부장은 팀 밖(맨 윗줄)이라 책상 순서가 [모시, 하루] 가 된다.
 OfficeState twoMembers({
   MemberStatus m2Status = MemberStatus.idle,
   Map<String, Pending> pending = const {},
   Map<String, DerivedStatus> derived = const {},
   Map<String, OfficeEvent> extraEvents = const {},
+  bool m2AsHead = false,
 }) =>
     OfficeState(
       members: {
         'm1': member('m1', name: '하루', status: MemberStatus.working, createdAt: '1'),
-        'm2': member('m2', name: '모시', status: m2Status, engine: Engine.codex, createdAt: '2'),
+        'm2': member('m2',
+            name: '모시',
+            status: m2Status,
+            engine: Engine.codex,
+            createdAt: '2',
+            rank: m2AsHead ? MemberRank.head : MemberRank.member),
       },
       latestEvent: {
         'm1': event('m1', OfficeEventKind.running, detail: {'tool': 'Bash', 'cmd': 'flutter test test/stt_test.dart'}),

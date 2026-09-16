@@ -29,8 +29,21 @@ class FakeDaemon {
   final List<Map<String, dynamic>> history = [];
 
   /// 스냅샷 본문(seq 는 history 마지막 seq 또는 [snapshotSeq]).
-  Map<String, dynamic> snapshotBody = {'teams': [], 'members': [], 'pending': [], 'tasks': []};
+  Map<String, dynamic> snapshotBody = {'departments': [], 'teams': [], 'members': [], 'pending': [], 'tasks': []};
   int? snapshotSeq;
+
+  /// 메서드별 응답(등록 안 된 메서드는 아래 기본 동작 → -32601).
+  final Map<String, Map<String, dynamic> Function(Map<String, dynamic>)> handlers = {};
+
+  /// 마지막으로 받은 그 메서드의 params(없으면 null).
+  Map<String, dynamic>? paramsOf(String method) {
+    for (final r in requests.reversed) {
+      if (r.$1 == method) return r.$2;
+    }
+    return null;
+  }
+
+  int countOf(String method) => requests.where((r) => r.$1 == method).length;
 
   int get connections => _all.length;
   Uri get url => Uri.parse('ws://127.0.0.1:${_server.port}');
@@ -84,6 +97,11 @@ class FakeDaemon {
           }
           return;
         }
+        final handler = handlers[method];
+        if (handler != null) {
+          reply(handler(params));
+          return;
+        }
         switch (method) {
           case 'hello':
             authed = false;
@@ -135,6 +153,7 @@ class FakeDaemon {
 Map<String, dynamic> sampleEvent(int seq, {String memberId = 'm1', String kind = 'reading', Map<String, dynamic>? detail, Map<String, dynamic>? ref}) => {
       'seq': seq,
       'ts': '2026-09-15T00:00:${seq.toString().padLeft(2, '0')}.000Z',
+      'departmentId': 'd1',
       'teamId': 't1',
       'memberId': memberId,
       'kind': kind,

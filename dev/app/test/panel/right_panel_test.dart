@@ -1,7 +1,8 @@
-// RightPanel: null → 안내, 헤더(이름·엔진·상태·팀 cwd·경과), 탭 4개(로그·터미널·지시문·보고서),
+// RightPanel: null → 안내, 헤더(이름·엔진·상태·직급/상사/부하·부서·팀 cwd·경과), 탭 4개(로그·터미널·지시문·보고서),
 // 탭 전환으로 터미널 attach/detach, 보고서 자리(text 이벤트).
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:pixel_office/model/models.dart';
 import 'package:pixel_office/panel/right_panel.dart';
 import 'package:xterm/xterm.dart';
 
@@ -30,7 +31,10 @@ void main() {
       expect(find.text('하루'), findsOneWidget);
       expect(find.text('claude'), findsOneWidget);
       expect(find.text('작업 중'), findsOneWidget); // working
-      expect(find.text('pixel · D:/proj/pixel'), findsOneWidget); // 팀 이름 · 팀 cwd
+      expect(find.text('alpha · 팀 pixel · D:/proj/pixel'), findsOneWidget); // 부서 · 팀 · 부서 cwd
+      // T37: 직급·상사·직속 부하 줄. 상사(mH) 행이 스냅샷에 없으면 "없음".
+      expect(find.text(panelTreeLine(rank: MemberRank.member, parentName: null, childCount: 0)), findsOneWidget);
+      expect(find.byKey(const Key('panel.notInstructable')), findsOneWidget); // 팀원 → "지시는 부장에게"
       expect(find.textContaining('출근 1시간 30분'), findsOneWidget); // createdAt = now-90m
       expect(find.text('로그'), findsOneWidget);
       expect(find.text('터미널'), findsOneWidget);
@@ -47,6 +51,41 @@ void main() {
       await pumpPanel(tester, daemon, const RightPanel(memberId: 'ghost'), overrides: overrides);
       await tester.pump();
       expect(find.textContaining('멤버 정보 없음'), findsOneWidget);
+    });
+  });
+
+  testWidgets('T37: 헤더의 직급·상사·직속 부하 — 부장은 상사가 "사용자", 지시 안내가 없다', (tester) async {
+    daemon.snapshotBody['members'] = [
+      memberJson('mH', name: '부장', rank: 'head'),
+      memberJson('mL', name: '반장', rank: 'lead', parentId: 'mH'),
+      memberJson('m1', name: '이음', parentId: 'mL'),
+      memberJson('m2', name: '하루', parentId: 'mL'),
+    ];
+    final overrides = panelOverrides(daemon);
+    await tester.runAsync(() async {
+      final c = await pumpPanel(tester, daemon, const RightPanel(memberId: 'mH'), overrides: overrides);
+      await pumpUntilConnected(tester, c);
+      await tester.pump();
+      // 부장: 상사는 사용자, 직속 부하는 팀장 1명. 지시를 받는 직급이라 안내 문구가 없다.
+      expect(find.text(panelTreeLine(rank: MemberRank.head, parentName: null, childCount: 1)), findsOneWidget);
+      expect(find.text('부장 · 상사: 사용자 · 직속 부하 1명'), findsOneWidget);
+      expect(find.byKey(const Key('panel.notInstructable')), findsNothing);
+      // 부장은 팀에 속하지 않는다 — 부서 이름 · 부서 cwd 만.
+      expect(find.text('alpha · D:/proj/pixel'), findsOneWidget);
+
+      // 팀장: 상사는 부장, 직속 부하 2명 + "지시는 부장에게" 안내.
+      await pumpPanel(tester, daemon, const RightPanel(memberId: 'mL'), overrides: overrides);
+      await tester.pump();
+      expect(find.text('팀장 · 상사: 부장(부장) · 직속 부하 2명'), findsOneWidget);
+      expect(find.byKey(const Key('panel.notInstructable')), findsOneWidget);
+      expect(find.text(panelNotInstructableHint), findsOneWidget);
+      // 안내가 있어도 터미널 탭은 그대로 쓸 수 있다(직접 타이핑 허용).
+      expect(find.text('터미널'), findsOneWidget);
+
+      // 팀원: 부하 0명.
+      await pumpPanel(tester, daemon, const RightPanel(memberId: 'm1'), overrides: overrides);
+      await tester.pump();
+      expect(find.text('팀원 · 상사: 반장(팀장) · 직속 부하 0명'), findsOneWidget);
     });
   });
 

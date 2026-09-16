@@ -29,7 +29,10 @@ enum OfficeEventKind {
   bool get isAlert => this == waitingApproval || this == asking || this == reporting;
 }
 
-/// `detail`: `{ tool?, path?, cmd?, summary?, text?, ...자유 확장 }`.
+/// TeamTools MCP 도구 이름 접두사(`mcp__team__report` …).
+const String teamToolPrefix = 'mcp__team__';
+
+/// `detail`: `{ tool?, path?, cmd?, summary?, text?, waiting?, ...자유 확장 }`.
 class EventDetail {
   const EventDetail(this.raw);
 
@@ -40,6 +43,15 @@ class EventDetail {
   String? get cmd => raw['cmd'] as String?;
   String? get summary => raw['summary'] as String?;
   String? get text => raw['text'] as String?;
+
+  /// 무엇을 기다리는지(지금은 `'shell-lock'` 하나 — 데몬 `Office.noticeShellWait`). 값이 있으면
+  /// `running` 이벤트여도 **아직 실행이 시작되지 않았다** — 말풍선·모니터는 `cmd` 가 아니라 [summary] 를 써야 한다
+  /// (T29 결함 ③ / T37). `holder` 는 락을 쥔 멤버 id.
+  String? get waiting => raw['waiting'] as String?;
+  String? get holder => raw['holder'] as String?;
+
+  /// MCP 팀 도구 호출인가(`mcp__team__report` 등). 보고 방문을 취소하면 안 되는 이벤트다(T29 결함 ④ / T37).
+  bool get isTeamTool => (tool ?? '').startsWith(teamToolPrefix);
 
   /// 재시작 복구 `error{재지시 필요…}` 가 붙이는 만료 pending id.
   String? get pendingId => raw['pendingId'] as String?;
@@ -79,6 +91,7 @@ class OfficeEvent {
   const OfficeEvent({
     required this.seq,
     required this.ts,
+    required this.departmentId,
     required this.teamId,
     required this.memberId,
     required this.kind,
@@ -89,6 +102,11 @@ class OfficeEvent {
   /// 전역 단조 증가(재시작 후에도 되돌아가지 않음).
   final int seq;
   final String ts;
+
+  /// 이벤트를 낸 멤버의 부서(T34).
+  final String departmentId;
+
+  /// 그 멤버의 팀. **팀 없는 부장의 이벤트는 `''`**(PROTOCOL "오피스 이벤트").
   final String teamId;
   final String memberId;
   final OfficeEventKind kind;
@@ -98,7 +116,8 @@ class OfficeEvent {
   factory OfficeEvent.fromJson(Map<String, dynamic> j) => OfficeEvent(
         seq: (j['seq'] as num).toInt(),
         ts: j['ts'] as String,
-        teamId: j['teamId'] as String,
+        departmentId: j['departmentId'] as String? ?? '',
+        teamId: j['teamId'] as String? ?? '',
         memberId: j['memberId'] as String,
         kind: OfficeEventKind.parse(j['kind'] as String),
         detail: EventDetail(Map<String, dynamic>.from((j['detail'] as Map?) ?? const {})),

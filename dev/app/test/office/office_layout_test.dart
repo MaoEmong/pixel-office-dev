@@ -150,4 +150,97 @@ void main() {
       expect(l.emptyHintCenter.dy, lessThan(l.myDeskRect.top));
     });
   });
+
+  // ---- T37: 부장 책상 + 팀 클러스터 ---------------------------------------------------
+
+  group('클러스터 배치(T37)', () {
+    /// 부장 1 + 팀 t1(팀장 + 팀원 2) + 팀 t2(팀장 1).
+    OfficeScene deptScene() => OfficeScene.build(
+          members: {
+            'mH': head('mH', name: '부장', createdAt: '0'),
+            'mL': lead('mL', name: '반장', parentId: 'mH', createdAt: '1'),
+            'm1': member('m1', name: '이음', parentId: 'mL', createdAt: '2'),
+            'm2': member('m2', name: '하루', parentId: 'mL', createdAt: '3'),
+            'mL2': lead('mL2', name: '작가', teamId: 't2', parentId: 'mH', createdAt: '4'),
+          },
+          latestEvents: const {},
+          pending: const {},
+          teams: {'t1': team('t1', name: 't1', createdAt: '1'), 't2': team('t2', name: 't2', createdAt: '2')},
+        );
+
+    test('책상 순서 = 부장 → 팀별(팀장 먼저) → 미배정', () {
+      final scene = deptScene();
+      expect(scene.members.map((m) => m.id), ['mH', 'mL', 'm1', 'm2', 'mL2']);
+      expect(scene.members.map((m) => m.deskIndex), [0, 1, 2, 3, 4]);
+      expect(scene.plan.hasHead, isTrue);
+      expect(scene.plan.clusters.map((c) => c.teamId), ['t1', 't2']);
+      expect(scene.plan.clusters.map((c) => c.deskCount), [3, 1]);
+      expect(scene.plan.clusters.first.title, '팀 t1 · 3명');
+      expect(scene.plan.startOf(1), 4); // t2 의 첫 책상
+    });
+
+    test('부장 책상은 맨 윗줄 가운데, 팀 클러스터는 그 아래에 차례로', () {
+      final l = OfficeLayout(size: wide, plan: deptScene().plan);
+      final headDesk = l.deskRect(0);
+      expect(headDesk.center.dx, closeTo(wide.width / 2, 0.01));
+      expect(headDesk.top, l.topPadding);
+      // 클러스터 상자 2개(팀마다 하나), 부장 책상보다 아래·서로 겹치지 않는다.
+      expect(l.clusters.length, 2);
+      expect(l.clusters.first.rect.top, greaterThan(headDesk.bottom));
+      expect(l.clusters[1].rect.top, greaterThanOrEqualTo(l.clusters.first.rect.bottom));
+      expect(l.clusters.first.title, contains('t1'));
+      // 팀 책상은 자기 클러스터 상자 안에 있다.
+      for (final i in [1, 2, 3]) {
+        expect(l.clusters.first.rect.contains(l.deskRect(i).topLeft), isTrue, reason: 'desk $i in t1 box');
+      }
+      expect(l.clusters[1].rect.contains(l.deskRect(4).topLeft), isTrue);
+      // 내 책상과 겹치지 않고 화면 안에 들어간다.
+      for (var i = 0; i < l.deskCount; i++) {
+        expect(l.deskRect(i).bottom, lessThan(l.myDeskRect.top), reason: 'desk $i overlaps my desk');
+        expect(l.deskRect(i).right, lessThanOrEqualTo(wide.width));
+      }
+    });
+
+    test('팀 없는 멤버는 "미배정" 클러스터로 (정상 트리에는 없다)', () {
+      final scene = OfficeScene.build(
+        members: {
+          'mH': head('mH', createdAt: '0'),
+          'mX': member('mX', name: '떠돌이', teamId: null, createdAt: '1'),
+        },
+        latestEvents: const {},
+        pending: const {},
+      );
+      expect(scene.plan.clusters.single.teamId, isNull);
+      expect(scene.plan.clusters.single.title, '$unassignedClusterTitle · 1명');
+      expect(scene.members.map((m) => m.id), ['mH', 'mX']);
+    });
+
+    test('클러스터가 많으면 세로로 축소해 내 책상과 안 겹친다', () {
+      final plan = OfficeDeskPlan(hasHead: true, clusters: [
+        for (var i = 0; i < 4; i++) DeskCluster(teamId: 't$i', title: '팀 t$i · 4명', deskCount: 4),
+      ]);
+      final l = OfficeLayout(size: wide, plan: plan);
+      expect(l.scale, lessThan(1));
+      expect(l.deskCount, 17);
+      expect(l.deskRect(16).bottom, lessThan(l.myDeskRect.top));
+    });
+
+    test('계획 없이 deskCount 만 주면 T12 평면 격자와 같다(회귀)', () {
+      final flat = OfficeLayout(size: wide, deskCount: 6);
+      final viaPlan = OfficeLayout(size: wide, plan: OfficeDeskPlan.flat(6));
+      expect(flat.deskRects, viaPlan.deskRects);
+      expect(flat.clusters, isEmpty); // 제목 없는 클러스터는 상자를 그리지 않는다
+    });
+
+    test('ask_parent 방문 자리는 상사 책상 오른쪽 옆, 화면 밖으로 안 나간다', () {
+      final l = OfficeLayout(size: wide, plan: deptScene().plan);
+      final spot = l.visitorSpot(1); // 팀장 책상 옆
+      expect(spot.dx, greaterThan(l.deskRect(1).right));
+      expect(spot.dx, lessThanOrEqualTo(wide.width - l.charRadius));
+      expect(spot.dy, closeTo(l.seatCenter(1).dy, 0.01));
+      expect(l.visitorBubbleAnchor(1).dy, lessThan(spot.dy));
+      // 오른쪽 끝 책상도 화면 안에 머문다.
+      expect(l.visitorSpot(3).dx, lessThanOrEqualTo(wide.width - l.charRadius));
+    });
+  });
 }

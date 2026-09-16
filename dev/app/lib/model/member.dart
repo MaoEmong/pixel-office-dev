@@ -69,15 +69,40 @@ enum DerivedStatus {
   }
 }
 
+/// 직급 3단 트리(D-32 rev 3, 데몬 `MemberRank`). 부장은 부서에 한 명(사용자와 직접 말하는 유일한 직급),
+/// 팀장은 팀에 한 명(부장의 자식), 팀원은 팀장의 자식.
 enum MemberRank {
-  leader,
+  head,
+  lead,
   member;
 
+  /// 와이어 값. 레거시 `'leader'`(rev 2 의 팀장)는 `lead` 로 읽는다 — 데몬은 v2 마이그레이션에서 값을 이미
+  /// 바꿨지만(T34) 옛 데몬·옛 기록을 만나도 죽지 않게 한다.
   static MemberRank parse(String s) => switch (s) {
-        'leader' => MemberRank.leader,
+        'head' => MemberRank.head,
+        'lead' || 'leader' => MemberRank.lead,
         'member' => MemberRank.member,
         _ => throw FormatException('unknown rank: $s'),
       };
+
+  String get wire => name;
+
+  /// 한글 라벨(데몬 `RANK_LABEL` 과 같은 말).
+  String get label => switch (this) {
+        MemberRank.head => '부장',
+        MemberRank.lead => '팀장',
+        MemberRank.member => '팀원',
+      };
+
+  /// 배지 기호(부장 = 왕관, 팀장 = 별, 팀원 = 없음).
+  String get mark => switch (this) {
+        MemberRank.head => '♛',
+        MemberRank.lead => '★',
+        MemberRank.member => '',
+      };
+
+  /// 사용자와 직접 말하는 직급인가(D-32: 지시·`ask_user`·사용자 보고는 부장만).
+  bool get talksToUser => this == MemberRank.head;
 }
 
 enum HiredBy {
@@ -94,7 +119,9 @@ enum HiredBy {
 class Member {
   const Member({
     required this.id,
+    required this.departmentId,
     required this.teamId,
+    required this.parentId,
     required this.name,
     required this.rank,
     required this.engine,
@@ -111,7 +138,16 @@ class Member {
   });
 
   final String id;
-  final String teamId;
+
+  /// 소속 부서(T34). 모든 멤버가 부서 하나에 속한다.
+  final String departmentId;
+
+  /// 소속 팀. **부장은 null**(부서 직속 — D-33).
+  final String? teamId;
+
+  /// 트리 간선 — 부장 null, 팀장 = 부장, 팀원 = 팀장.
+  final String? parentId;
+
   final String name;
   final MemberRank rank;
   final Engine engine;
@@ -131,7 +167,9 @@ class Member {
 
   factory Member.fromJson(Map<String, dynamic> j) => Member(
         id: j['id'] as String,
-        teamId: j['teamId'] as String,
+        departmentId: j['departmentId'] as String? ?? '',
+        teamId: j['teamId'] as String?,
+        parentId: j['parentId'] as String?,
         name: j['name'] as String,
         rank: MemberRank.parse(j['rank'] as String),
         engine: Engine.parse(j['engine'] as String),
@@ -149,7 +187,9 @@ class Member {
 
   Member copyWith({MemberStatus? status, String? updatedAt}) => Member(
         id: id,
+        departmentId: departmentId,
         teamId: teamId,
+        parentId: parentId,
         name: name,
         rank: rank,
         engine: engine,
@@ -166,5 +206,5 @@ class Member {
       );
 
   @override
-  String toString() => 'Member($id $name [${engine.name}] ${status.wire})';
+  String toString() => 'Member($id $name [${engine.name}] ${rank.wire} ${status.wire})';
 }

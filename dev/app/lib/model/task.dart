@@ -36,7 +36,7 @@ enum ReportStatus {
 class Task {
   const Task({
     required this.id,
-    required this.teamId,
+    required this.departmentId,
     required this.fromMember,
     required this.toMember,
     required this.instruction,
@@ -48,7 +48,9 @@ class Task {
   });
 
   final int id;
-  final String teamId;
+
+  /// task 는 **부서 소유**다(T34, D-33) — 팀 없는 부장도 사용자 task 를 받는다.
+  final String departmentId;
 
   /// 'user' 또는 멤버 id.
   final String fromMember;
@@ -62,7 +64,7 @@ class Task {
 
   factory Task.fromJson(Map<String, dynamic> j) => Task(
         id: (j['id'] as num).toInt(),
-        teamId: j['teamId'] as String,
+        departmentId: (j['departmentId'] ?? j['teamId']) as String? ?? '',
         fromMember: j['fromMember'] as String,
         toMember: j['toMember'] as String,
         instruction: j['instruction'] as String,

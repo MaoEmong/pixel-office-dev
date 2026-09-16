@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:pixel_office/model/models.dart';
+import 'package:pixel_office/office/office_scene.dart' show askParentSummary;
 import 'package:pixel_office/office/office_view.dart';
 import 'package:pixel_office/state/office_state.dart';
 
@@ -193,6 +194,73 @@ void main() {
     expect(painterOf(tester).lastPlacements[0].center, layout.seatCenter(0));
     await tester.pump();
     expect(tester.binding.hasScheduledFrame, isFalse);
+  });
+
+  testWidgets('T29 결함 ④: 보고 직후 mcp__team__* 도구 호출은 방문을 취소하지 않는다', (tester) async {
+    final notifier = FakeOfficeNotifier(idlePair());
+    await pumpHarness(tester, notifier);
+    final layout = painterOf(tester).lastLayout!;
+    notifier.set(idlePair(events: {'m1': event('m1', OfficeEventKind.reporting, seq: 3)}));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 2500));
+    expect(painterOf(tester).lastPlacements[0].center, layout.queueSlot(0));
+
+    // 팀장이 보고한 뒤 곧바로 dismiss 를 부른다 — 보고에 딸린 뒷정리이지 새 작업이 아니다.
+    notifier.set(idlePair(
+      events: {'m1': event('m1', OfficeEventKind.running, seq: 4, detail: {'tool': 'mcp__team__dismiss'})},
+    ));
+    await tester.pump();
+    expect(painterOf(tester).bubbleOverrides, {'m1': reportVisitBubble}, reason: 'MCP 팀 도구는 취소 사유가 아니다');
+    expect(painterOf(tester).lastPlacements[0].center, layout.queueSlot(0));
+
+    // 보통 도구(Bash)면 예전대로 취소된다.
+    notifier.set(idlePair(
+      events: {'m1': event('m1', OfficeEventKind.running, seq: 5, detail: {'tool': 'Bash', 'cmd': 'flutter test'})},
+    ));
+    await tester.pump();
+    expect(painterOf(tester).bubbleOverrides, isEmpty);
+    await settleMotion(tester);
+    expect(painterOf(tester).lastPlacements[0].center, layout.seatCenter(0));
+    await tester.pump(const Duration(seconds: 7));
+    await tester.pump();
+    expect(tester.binding.hasScheduledFrame, isFalse);
+  });
+
+  testWidgets('T37: ask_parent 질문자는 내 책상이 아니라 상사 책상 옆으로 걸어간다', (tester) async {
+    // 부장(mH) · 팀장(mL) · 팀원(m1). 팀원이 팀장에게 ask_parent 로 물었다.
+    OfficeState tree({Map<String, Pending> pending = const {}}) => OfficeState(
+          members: {
+            'mH': head('mH', name: '부장', createdAt: '0'),
+            'mL': lead('mL', name: '반장', parentId: 'mH', createdAt: '1'),
+            'm1': member('m1', name: '이음', parentId: 'mL', createdAt: '2'),
+          },
+          teams: {'t1': team('t1', name: 't1')},
+          pending: pending,
+          derived: pending.isEmpty ? const {} : const {'m1': DerivedStatus.waitingAnswer},
+        );
+    final notifier = FakeOfficeNotifier(tree());
+    await pumpHarness(tester, notifier);
+    final layout = painterOf(tester).lastLayout!;
+    expect(painterOf(tester).lastPlacements[2].center, layout.seatCenter(2));
+
+    notifier.set(tree(pending: {'q1': askParentQuestion('q1', 'm1', '이 폴더 지워도 됩니까?', to: 'mL')}));
+    await tester.pump();
+    var scene = painterOf(tester).scene;
+    // 내 책상 줄에는 서지 않는다 — 사용자 몫이 아니다(D-32).
+    expect(scene.queue, isEmpty);
+    expect(scene.memberById('m1')!.queueIndex, isNull);
+    expect(scene.memberById('m1')!.askParentDeskIndex, 1); // 팀장 책상
+    expect(scene.memberById('m1')!.summary, askParentSummary);
+    expect(scene.memberById('m1')!.isAlert, isTrue);
+
+    await settleMotion(tester);
+    expect(painterOf(tester).lastPlacements[2].center, layout.visitorSpot(1));
+
+    // 답이 오면(pending 닫힘) 자기 자리로 돌아간다.
+    notifier.set(tree());
+    await tester.pump();
+    await settleMotion(tester);
+    expect(painterOf(tester).lastPlacements[2].center, layout.seatCenter(2));
   });
 
   testWidgets('퇴근: 문까지 갔다가 회색으로 자리에 돌아온다', (tester) async {

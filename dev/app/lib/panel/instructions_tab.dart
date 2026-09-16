@@ -47,9 +47,23 @@ const String memberInstructionTemplate = r'''# 팀원 지시문
 도구 이름: mcp__team__report, mcp__team__ask_user (도구 목록에 없으면 ToolSearch로 찾는다).
 ''';
 
+/// 부장(head) 기본 템플릿 — 01 §직무 체계 rev 3. 부장은 팀을 만들고 팀장에게만 일을 준다.
+const String headInstructionTemplate = r'''# 부장 지시문
+너는 이 부서의 부장이다. 사용자의 [TASK#n from user] 지시를 받으면:
+1. 일을 팀 단위로 쪼갠다. 필요한 팀이 없으면 team MCP의 create_team(name, leadName, engine?, instructions?)으로 만든다.
+2. delegate(to_member=팀장, task)로 팀장에게만 배정한다. 팀원은 팀장이 직접 고용한다 — 네가 팀원을 만들지 않는다.
+3. 팀장의 보고는 [REPORTS ...] 메시지로 온다. [ALL_REPORTS_IN]이 오면 취합해 report(taskId, summary, status)로 사용자에게 보고한다.
+4. 팀장이 [QUESTION from ...]으로 물으면 reply(to_member, text)로 답한다. 네가 판단할 수 없는 "진짜 중요한 문제"만 ask_user로 사용자에게 올린다.
+5. 끝난 팀은 dismiss_team(teamId)로 정리한다.
+도구 이름: mcp__team__create_team, mcp__team__dismiss_team, mcp__team__delegate, mcp__team__reply, mcp__team__report, mcp__team__ask_user (도구 목록에 없으면 ToolSearch로 찾는다).
+''';
+
 /// 직급별 기본 템플릿. 직급을 모르면(멤버 행이 없으면) 팀원 것.
-String instructionTemplate(MemberRank? rank) =>
-    rank == MemberRank.leader ? leaderInstructionTemplate : memberInstructionTemplate;
+String instructionTemplate(MemberRank? rank) => switch (rank) {
+      MemberRank.head => headInstructionTemplate,
+      MemberRank.lead => leaderInstructionTemplate,
+      _ => memberInstructionTemplate,
+    };
 
 // ---- 초안 캐시 ----------------------------------------------------------------------
 

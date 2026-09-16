@@ -4,21 +4,34 @@ import 'dart:convert';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:pixel_office/model/models.dart';
 
+const departmentJson = '''
+{ "id": "d1", "name": "alpha", "cwd": "D:\\\\myproject\\\\pixel-office", "headId": "mH",
+  "createdAt": "2026-09-16T10:00:00.000Z" }
+''';
+
 const teamJson = '''
-{ "id": "t1", "name": "pixel", "cwd": "D:\\\\myproject\\\\pixel-office", "leaderId": null,
+{ "id": "t1", "departmentId": "d1", "name": "pixel", "cwd": "D:\\\\myproject\\\\pixel-office", "leaderId": null,
   "maxMembers": 5, "allowedEngines": ["claude", "codex"], "createdAt": "2026-09-14T16:31:15.520Z" }
 ''';
 
 const memberJson = '''
-{ "id": "m3", "teamId": "t1", "name": "철수", "rank": "member", "engine": "claude",
+{ "id": "m3", "departmentId": "d1", "teamId": "t1", "parentId": "mL", "name": "철수", "rank": "member", "engine": "claude",
   "sessionId": "b2c1", "childPid": 1234, "cwd": "D:\\\\myproject\\\\pixel-office",
   "status": "waiting_approval", "hiredBy": "user", "memberToken": "abc",
   "instructionsPath": null, "createdAt": "2026-09-14T16:31:15.520Z", "updatedAt": "2026-09-14T16:40:00.000Z" }
 ''';
 
+/// 부장 행 — 팀에 속하지 않는다(`teamId`/`parentId` null, D-33).
+const headJson = '''
+{ "id": "mH", "departmentId": "d1", "teamId": null, "parentId": null, "name": "부장", "rank": "head", "engine": "claude",
+  "sessionId": null, "childPid": 20680, "cwd": "D:\\\\myproject\\\\pixel-office",
+  "status": "idle", "hiredBy": "user", "memberToken": "abc",
+  "instructionsPath": null, "createdAt": "2026-09-16T10:00:01.000Z", "updatedAt": "2026-09-16T10:00:02.000Z" }
+''';
+
 // 01-설계문서 §2 예시
 const eventJson = '''
-{ "seq": 812, "ts": "2026-09-14T16:40:00.000Z", "teamId": "t1", "memberId": "m3",
+{ "seq": 812, "ts": "2026-09-14T16:40:00.000Z", "departmentId": "d1", "teamId": "t1", "memberId": "m3",
   "kind": "waiting_approval",
   "detail": { "tool": "Bash", "path": "app/...", "cmd": "flutter test", "summary": "테스트 실행" },
   "ref": { "approvalId": "a9", "questionId": null, "taskId": null } }
@@ -36,8 +49,23 @@ const questionJson = '''
   "status": "open", "createdAt": "2026-09-14T16:40:00.000Z", "answeredAt": null, "answer": null }
 ''';
 
+/// TeamTools `ask_user`(T17, D-19) — 부장만 쓴다.
+const askUserJson = '''
+{ "id": "q2", "memberId": "mH", "type": "question",
+  "payload": { "source": "ask_user", "question": "배포할까요?", "options": ["네", "아니오"] },
+  "status": "open", "createdAt": "2026-09-16T10:05:00.000Z", "answeredAt": null, "answer": null }
+''';
+
+/// TeamTools `ask_parent`(T35) — 상사에게 가는 질문. 사용자 카드가 아니다(T37).
+const askParentJson = '''
+{ "id": "q3", "memberId": "m3", "type": "question",
+  "payload": { "source": "ask_parent", "question": "이 폴더 지워도 됩니까?", "options": ["네", "아니오"],
+               "from": "m3", "to": "mL" },
+  "status": "open", "createdAt": "2026-09-16T10:06:00.000Z", "answeredAt": null, "answer": null }
+''';
+
 const taskJson = '''
-{ "id": 7, "teamId": "t1", "fromMember": "user", "toMember": "m3", "instruction": "테스트 돌려줘",
+{ "id": 7, "departmentId": "d1", "fromMember": "user", "toMember": "m3", "instruction": "테스트 돌려줘",
   "status": "assigned", "reportText": null, "reportStatus": null,
   "createdAt": "2026-09-14T16:39:00.000Z", "updatedAt": "2026-09-14T16:39:30.000Z" }
 ''';
@@ -69,6 +97,117 @@ void main() {
       expect(MemberStatus.parse(s).wire, s);
     }
     expect(() => MemberStatus.parse('sleeping'), throwsFormatException);
+  });
+
+  // ---- T37 rev 3: 부서 · 트리 · 직급 -------------------------------------------------
+
+  test('Department.fromJson + 스냅샷 departments[]', () {
+    final d = Department.fromJson(j(departmentJson));
+    expect(d.id, 'd1');
+    expect(d.name, 'alpha');
+    expect(d.cwd, r'D:\myproject\pixel-office');
+    expect(d.headId, 'mH');
+    final s = Snapshot.fromJson({'seq': 3, 'departments': [j(departmentJson)]});
+    expect(s.departments.single.id, 'd1');
+    // 옛 데몬(부서 없는 스냅샷)도 죽지 않는다.
+    expect(Snapshot.fromJson({'seq': 0}).departments, isEmpty);
+  });
+
+  test('MemberRank: head|lead|member 와 레거시 leader→lead, 라벨·배지', () {
+    expect(MemberRank.parse('head'), MemberRank.head);
+    expect(MemberRank.parse('lead'), MemberRank.lead);
+    expect(MemberRank.parse('member'), MemberRank.member);
+    // rev 2 의 'leader' 를 만나도(옛 데몬·옛 기록) 팀장으로 읽는다.
+    expect(MemberRank.parse('leader'), MemberRank.lead);
+    expect(() => MemberRank.parse('boss'), throwsFormatException);
+    expect(MemberRank.head.label, '부장');
+    expect(MemberRank.lead.label, '팀장');
+    expect(MemberRank.member.label, '팀원');
+    // 사용자와 직접 말하는 직급은 부장뿐(D-32).
+    expect(MemberRank.head.talksToUser, isTrue);
+    expect(MemberRank.lead.talksToUser, isFalse);
+    expect(MemberRank.member.talksToUser, isFalse);
+  });
+
+  test('Member: departmentId · parentId · nullable teamId (부장은 팀 없음)', () {
+    final m = Member.fromJson(j(memberJson));
+    expect(m.departmentId, 'd1');
+    expect(m.teamId, 't1');
+    expect(m.parentId, 'mL');
+    expect(m.rank, MemberRank.member);
+
+    final h = Member.fromJson(j(headJson));
+    expect(h.rank, MemberRank.head);
+    expect(h.teamId, isNull); // 부서 직속(D-33)
+    expect(h.parentId, isNull);
+    expect(h.copyWith(status: MemberStatus.exited).parentId, isNull);
+
+    // 옛 데몬(부서·트리 칼럼 없는 행)도 파싱된다.
+    final legacy = Member.fromJson({...j(memberJson)}..removeWhere((k, _) => k == 'departmentId' || k == 'parentId'));
+    expect(legacy.departmentId, '');
+    expect(legacy.parentId, isNull);
+  });
+
+  test('Team.departmentId / Task.departmentId(옛 teamId 도 읽는다)', () {
+    expect(Team.fromJson(j(teamJson)).departmentId, 'd1');
+    expect(Task.fromJson(j(taskJson)).departmentId, 'd1');
+    // T34 이전 형태(tasks.teamId)도 죽지 않는다.
+    final old = Task.fromJson({...j(taskJson)}..['teamId'] = 't1'
+      ..remove('departmentId'));
+    expect(old.departmentId, 't1');
+  });
+
+  test('OfficeEvent.departmentId · detail.waiting · MCP 팀 도구 판정', () {
+    final e = OfficeEvent.fromJson(j(eventJson));
+    expect(e.departmentId, 'd1');
+    expect(e.teamId, 't1');
+    // T29 결함 ③: 셸 락 대기는 `running{waiting:'shell-lock', summary, cmd}` 로 온다.
+    final wait = OfficeEvent.fromJson({
+      'seq': 2,
+      'ts': 't',
+      'departmentId': 'd1',
+      'teamId': 't1',
+      'memberId': 'm3',
+      'kind': 'running',
+      'detail': {'summary': '셸 대기 중 (락: 작가)', 'waiting': 'shell-lock', 'holder': 'm9', 'cmd': 'flutter test'},
+    });
+    expect(wait.detail.waiting, 'shell-lock');
+    expect(wait.detail.holder, 'm9');
+    // T29 결함 ④: MCP 팀 도구 호출.
+    final tool = OfficeEvent.fromJson({
+      'seq': 3, 'ts': 't', 'departmentId': 'd1', 'teamId': 't1', 'memberId': 'm3',
+      'kind': 'running', 'detail': {'tool': 'mcp__team__dismiss'},
+    });
+    expect(tool.detail.isTeamTool, isTrue);
+    expect(e.detail.isTeamTool, isFalse);
+    // 팀 없는 부장의 이벤트는 teamId 가 '' 다.
+    final headEvent = OfficeEvent.fromJson({'seq': 4, 'ts': 't', 'departmentId': 'd1', 'teamId': '', 'memberId': 'mH', 'kind': 'idle'});
+    expect(headEvent.teamId, '');
+  });
+
+  test('Pending.goesToUser: 허가는 전부 · ask_user 는 부장만 · ask_parent 는 아무에게도', () {
+    final approval = Pending.fromJson(j(pendingJson));
+    for (final rank in MemberRank.values) {
+      expect(approval.goesToUser(rank: rank), isTrue, reason: '셸 허가는 직급 무관 사용자 몫(D-32 3)');
+    }
+    final askUser = Pending.fromJson(j(askUserJson));
+    expect(askUser.isAskUser, isTrue);
+    expect(askUser.goesToUser(rank: MemberRank.head), isTrue);
+    expect(askUser.goesToUser(rank: MemberRank.lead), isFalse);
+    expect(askUser.goesToUser(rank: MemberRank.member), isFalse);
+
+    final askParent = Pending.fromJson(j(askParentJson));
+    expect(askParent.isAskParent, isTrue);
+    expect(askParent.isAskUser, isFalse);
+    expect(askParent.askParentTo, 'mL');
+    expect(askParent.askParentFrom, 'm3');
+    expect(askParent.summary, '이 폴더 지워도 됩니까?');
+    for (final rank in MemberRank.values) {
+      expect(askParent.goesToUser(rank: rank), isFalse);
+    }
+    // TUI AskUserQuestion 은 턴을 붙잡으므로 직급과 무관하게 사용자가 풀어야 한다.
+    final tui = Pending.fromJson(j(questionJson));
+    expect(tui.goesToUser(rank: MemberRank.member), isTrue);
   });
 
   test('DerivedStatus: v1a 규칙 + waiting_reports', () {

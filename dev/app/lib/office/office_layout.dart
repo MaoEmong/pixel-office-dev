@@ -1,10 +1,15 @@
 // 사무실 레이아웃(순수 기하). 위젯 없이 Offset/Rect/Size 만 쓴다 — 단위 테스트 대상.
 //
-// 배치(docs/design/office-sketch.html):
-//   ┌ 문(왼쪽 가장자리, 세로 중앙)   책상 격자(위, 한 줄 4개, 필요한 만큼 줄 추가)
-//   │                                  캐릭터 = 책상 아래쪽 가장자리에 걸친 원, 말풍선 = 책상 위
+// 배치(T37, 01 §직무 체계 rev 3 "사무실 배치"):
+//   ┌ 문(왼쪽 가장자리, 세로 중앙)   ┌────────── 부장 책상(맨 윗줄 가운데) ──────────┐
+//   │                                 ┌ 팀 클러스터: 제목 줄 + 팀장·팀원 책상(한 줄 4개)
+//   │                                 ┌ 팀 클러스터 …
 //   │            내 책상(아래 가운데)  줄 서는 자리 = 내 책상 위쪽에 왼쪽부터 오른쪽으로
-// 너비 900 미만이면 [scale] 로 축소, 줄이 많아 내 책상과 겹치면 세로도 맞춰 축소.
+//   캐릭터 = 책상 아래쪽 가장자리에 걸친 원, 말풍선 = 책상 위.
+// 너비 900 미만이면 [scale] 로 축소, 클러스터가 많아 내 책상과 겹치면 세로도 맞춰 축소.
+//
+// 책상 번호(deskIndex)는 [OfficeDeskPlan] 순서 그대로다 — 부장 0, 그다음 클러스터 순.
+// 계획 없이 `deskCount` 만 주면 T12 때와 같은 평면 격자(제목 없는 클러스터 하나)다.
 
 import 'dart:math' as math;
 import 'dart:ui';
@@ -34,9 +39,22 @@ class CharacterPlacement {
   String toString() => 'Placement($memberId $center)';
 }
 
+/// 클러스터 하나가 차지하는 상자(제목 줄 포함) — 페인터가 테두리·제목을 그린다.
+class ClusterBox {
+  const ClusterBox({required this.rect, required this.title, required this.titleBaseline});
+
+  final Rect rect;
+  final String? title;
+
+  /// 제목 텍스트의 왼쪽 위 점.
+  final Offset titleBaseline;
+}
+
 class OfficeLayout {
-  OfficeLayout({required this.size, required this.deskCount}) {
+  OfficeLayout({required this.size, OfficeDeskPlan? plan, int? deskCount})
+      : plan = plan ?? OfficeDeskPlan.flat(deskCount ?? 0) {
     _computeScale();
+    _build();
   }
 
   static const int desksPerRow = 4;
@@ -57,12 +75,29 @@ class OfficeLayout {
   static const double baseDoorHeight = 60;
   static const double doorWidth = 8;
 
+  /// 클러스터 제목 줄 높이(T37). 제목 글자(약 14px) + **첫 줄 책상의 말풍선 자리**를 함께 낸다 —
+  /// 좁게 잡으면 말풍선이 제목 위로 올라앉는다(실기에서 확인).
+  static const double baseClusterTitleHeight = 42;
+
+  /// 클러스터 상자 사이 간격.
+  static const double baseClusterGap = 10;
+
+  /// 클러스터 상자가 책상 격자보다 바깥으로 나가는 여백.
+  static const double baseClusterInset = 16;
+
   final Size size;
-  final int deskCount;
+
+  /// 책상 배치 계획(부장 자리 + 팀 클러스터). `deskCount` 만 준 경우 평면 격자.
+  final OfficeDeskPlan plan;
 
   late final double scale;
+  late final List<Rect> _desks;
+  late final List<ClusterBox> clusters;
 
-  int get rowCount => (deskCount + desksPerRow - 1) ~/ desksPerRow;
+  int get deskCount => plan.deskCount;
+
+  /// 평면 배치일 때의 줄 수(T12 호환 — 클러스터 배치에서는 첫 클러스터 기준).
+  int get rowCount => (plan.clusters.isEmpty ? 0 : (plan.clusters.first.deskCount + desksPerRow - 1) ~/ desksPerRow);
 
   double get deskWidth => baseDeskWidth * scale;
   double get deskHeight => baseDeskHeight * scale;
@@ -71,38 +106,93 @@ class OfficeLayout {
   double get rowPitch => deskHeight + baseRowGap * scale;
   double get sideMargin => baseSideMargin * scale;
   double get columnPitch => (size.width - 2 * sideMargin) / desksPerRow;
+  double get clusterTitleHeight => baseClusterTitleHeight * scale;
 
   /// 글꼴 크기용 배율(너무 작아지지 않게 하한).
   double get fontScale => scale.clamp(0.75, 1.0);
 
   void _computeScale() {
     var s = size.width >= fullWidth ? 1.0 : (size.width / fullWidth).clamp(0.45, 1.0);
-    // 세로 여유: 격자 바닥 + 줄 서는 자리 + 내 책상이 높이 안에 들어가야 한다.
-    final needed = _gridBottomAt(s) + _queueBandAt(s) + baseMyDeskHeight * s + baseBottomMargin;
+    // 세로 여유: 마지막 클러스터 바닥 + 줄 서는 자리 + 내 책상이 높이 안에 들어가야 한다.
+    final needed = _bottomAt(s) + _queueBandAt(s) + baseMyDeskHeight * s + baseBottomMargin;
     if (needed > size.height && needed > 0) {
       s = (s * size.height / needed).clamp(0.45, s);
     }
     scale = s;
   }
 
-  double _gridBottomAt(double s) {
-    if (deskCount == 0) return baseTopPadding * s;
-    return baseTopPadding * s + rowCount * (baseDeskHeight + baseRowGap) * s;
-  }
+  /// 책상 영역의 바닥 y(주어진 배율에서).
+  double _bottomAt(double s) => _layoutAt(s).$3;
 
   double _queueBandAt(double s) => (baseCharRadius * 2 + 40) * s;
+
+  /// 배율 [s] 에서 (책상 사각형, 클러스터 상자, 바닥 y) 를 계산한다.
+  (List<Rect>, List<ClusterBox>, double) _layoutAt(double s) {
+    final deskW = baseDeskWidth * s;
+    final deskH = baseDeskHeight * s;
+    final side = baseSideMargin * s;
+    final pitchY = deskH + baseRowGap * s;
+    final colPitch = (size.width - 2 * side) / desksPerRow;
+    final titleH = baseClusterTitleHeight * s;
+    final inset = baseClusterInset * s;
+
+    final desks = <Rect>[];
+    final boxes = <ClusterBox>[];
+    var y = baseTopPadding * s;
+
+    if (plan.hasHead) {
+      desks.add(Rect.fromLTWH((size.width - deskW) / 2, y, deskW, deskH));
+      y += pitchY;
+    }
+    for (final c in plan.clusters) {
+      final hasTitle = c.title != null;
+      final boxTop = y;
+      final contentTop = y + (hasTitle ? titleH : 0);
+      for (var i = 0; i < c.deskCount; i++) {
+        final row = i ~/ desksPerRow;
+        final col = i % desksPerRow;
+        desks.add(Rect.fromLTWH(
+          side + col * colPitch + (colPitch - deskW) / 2,
+          contentTop + row * pitchY,
+          deskW,
+          deskH,
+        ));
+      }
+      final rows = c.deskCount == 0 ? 1 : (c.deskCount + desksPerRow - 1) ~/ desksPerRow;
+      final boxBottom = contentTop + rows * pitchY;
+      if (hasTitle) {
+        // 왼쪽은 문 라벨("문")을 가리지 않는 선까지만 물러난다.
+        final boxLeft = math.max(doorWidth + 26 * s, side - inset);
+        boxes.add(ClusterBox(
+          rect: Rect.fromLTRB(boxLeft, boxTop, math.min(size.width - 2, size.width - side + inset), boxBottom),
+          title: c.title,
+          titleBaseline: Offset(boxLeft + 6 * s, boxTop + 3 * s),
+        ));
+        y = boxBottom + baseClusterGap * s;
+      } else {
+        y = boxBottom;
+      }
+    }
+    return (desks, boxes, y);
+  }
+
+  void _build() {
+    final (desks, boxes, _) = _layoutAt(scale);
+    _desks = List<Rect>.unmodifiable(desks);
+    clusters = List<ClusterBox>.unmodifiable(boxes);
+  }
 
   // ---- 책상 -------------------------------------------------------------------
 
   Rect deskRect(int index) {
-    final row = index ~/ desksPerRow;
-    final col = index % desksPerRow;
-    final left = sideMargin + col * columnPitch + (columnPitch - deskWidth) / 2;
-    final top = topPadding + row * rowPitch;
-    return Rect.fromLTWH(left, top, deskWidth, deskHeight);
+    if (index < 0 || index >= _desks.length) {
+      // 장면과 계획이 한 프레임 어긋날 때(멤버가 막 늘었을 때) 화면 밖에 두는 대신 마지막 자리로.
+      return _desks.isEmpty ? Rect.fromLTWH(sideMargin, topPadding, deskWidth, deskHeight) : _desks.last;
+    }
+    return _desks[index];
   }
 
-  List<Rect> get deskRects => [for (var i = 0; i < deskCount; i++) deskRect(i)];
+  List<Rect> get deskRects => _desks;
 
   /// 책상 안 모니터.
   Rect monitorRect(int index) {
@@ -120,6 +210,20 @@ class OfficeLayout {
   Offset seatBubbleAnchor(int index) {
     final d = deskRect(index);
     return Offset(d.center.dx, d.top - 4 * scale);
+  }
+
+  // ---- 상사 책상 앞(ask_parent 방문) ---------------------------------------------
+
+  /// 상사에게 질문하러 간 캐릭터가 서는 자리 — 그 책상의 오른쪽 옆(화면 밖으로는 안 나간다).
+  Offset visitorSpot(int deskIndex) {
+    final d = deskRect(deskIndex);
+    final x = math.min(d.right + charRadius * 1.6, size.width - charRadius - 2);
+    return Offset(x, d.bottom + charRadius * 0.3);
+  }
+
+  Offset visitorBubbleAnchor(int deskIndex) {
+    final c = visitorSpot(deskIndex);
+    return Offset(c.dx, c.dy - charRadius - 4 * scale);
   }
 
   // ---- 내 책상 · 줄 -----------------------------------------------------------------
@@ -166,9 +270,16 @@ class OfficeLayout {
 
   List<CharacterPlacement> placements(OfficeScene scene) => [
         for (final m in scene.members)
-          m.isQueued
-              ? CharacterPlacement(memberId: m.id, center: queueSlot(m.queueIndex!), bubbleAnchor: queueBubbleAnchor(m.queueIndex!))
-              : CharacterPlacement(memberId: m.id, center: seatCenter(m.deskIndex), bubbleAnchor: seatBubbleAnchor(m.deskIndex)),
+          if (m.isQueued)
+            CharacterPlacement(memberId: m.id, center: queueSlot(m.queueIndex!), bubbleAnchor: queueBubbleAnchor(m.queueIndex!))
+          else if (m.isAskingParent)
+            CharacterPlacement(
+              memberId: m.id,
+              center: visitorSpot(m.askParentDeskIndex!),
+              bubbleAnchor: visitorBubbleAnchor(m.askParentDeskIndex!),
+            )
+          else
+            CharacterPlacement(memberId: m.id, center: seatCenter(m.deskIndex), bubbleAnchor: seatBubbleAnchor(m.deskIndex)),
       ];
 
   /// 점이 캐릭터(우선) 또는 책상 위에 있으면 그 멤버 id, 아니면 null.

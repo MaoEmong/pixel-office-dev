@@ -1,7 +1,8 @@
 // 사무실 CustomPainter(D-09). 외부 에셋 없이 평면 도형 + TextPainter 로 그린다.
-// 그리는 것: 바둑판 바닥, 문, 책상(라벨·엔진 배지·모니터), 내 책상(제목·대기 목록), 캐릭터(원 + 이름 첫 글자), 말풍선.
-// T24b: 팀장은 책상에 "팀장" 배지(엔진 배지 왼쪽)와 캐릭터 금색 링([OfficeColors.leaderMark])이 붙는다 — 그림만 바뀌고
-//   히트 테스트 반경(OfficeLayout.charRadius + 4)은 그대로다.
+// 그리는 것: 바둑판 바닥, 문, **팀 클러스터 상자(제목 줄)**, 책상(라벨·직급/엔진 배지·모니터),
+//   내 책상(제목·대기 목록), 캐릭터(원 + 이름 첫 글자), 말풍선.
+// T24b/T37: 부장은 "♛ 부장", 팀장은 "★ 팀장" 배지(엔진 배지 왼쪽)와 캐릭터 링이 붙는다(부장 금색 [OfficeColors.headMark],
+//   팀장 은색 [OfficeColors.leadMark]) — 그림만 바뀌고 히트 테스트 반경(OfficeLayout.charRadius + 4)은 그대로다.
 // 기하는 전부 OfficeLayout, 텍스트는 전부 OfficeScene 에서 온다 — 여기엔 색·글꼴·그리기 순서만.
 // T16: 캐릭터 위치는 [placements] 로 밖(OfficeMotion)에서 받을 수 있다(null 이면 레이아웃의 즉시 배치).
 //   [bob] 은 작업 중 흔들림(id → dy), [bubbleOverrides] 는 보고 방문 등 말풍선 덮어쓰기(항상 alert 스타일).
@@ -9,8 +10,16 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/semantics.dart';
 
+import '../model/models.dart';
 import 'office_layout.dart';
 import 'office_scene.dart';
+
+/// 직급 표시 색(부장 금색 · 팀장 은색 · 팀원 없음).
+Color rankMarkColor(MemberRank rank) => switch (rank) {
+      MemberRank.head => OfficeColors.headMark,
+      MemberRank.lead => OfficeColors.leadMark,
+      MemberRank.member => OfficeColors.deskLabel,
+    };
 
 /// 어두운 팔레트(main.dart 의 사무실 바탕 0xFF1B1F2A 와 맞춤).
 abstract final class OfficeColors {
@@ -22,8 +31,15 @@ abstract final class OfficeColors {
   static const badgeClaude = Color(0xFFE0956E);
   static const badgeCodex = Color(0xFF8FB4FF);
 
-  /// 팀장 표시(책상 "팀장" 배지 + 캐릭터 금색 링). T24b.
-  static const leaderMark = Color(0xFFFFD166);
+  /// 부장 표시(책상 "♛ 부장" 배지 + 캐릭터 금색 링). T24b 의 `leaderMark` 를 직급별로 나눈 것(T37).
+  static const headMark = Color(0xFFFFD166);
+
+  /// 팀장 표시(책상 "★ 팀장" 배지 + 캐릭터 은색 링).
+  static const leadMark = Color(0xFFBFC7DA);
+
+  /// 팀 클러스터 상자.
+  static const clusterBorder = Color(0xFF39415A);
+  static const clusterTitle = Color(0xFF8A93A8);
   static const monitorFill = Color(0xFF10141D);
   static const monitorBorder = Color(0xFF3A4258);
   static const monitorText = Color(0xFF9BE7A1);
@@ -48,6 +64,9 @@ abstract final class OfficeColors {
   static const bubbleText = Color(0xFF1B1F2A);
   static const bubbleAlertBorder = Color(0xFFFFB020);
 }
+
+/// 멤버가 하나도 없을 때 사무실 가운데 문구(T37: 출근 버튼이 없어졌다 — 사용자는 부서를 만든다).
+const String emptyOfficeHint = '"부서 만들기" 로 부장을 임명하세요';
 
 class OfficePainter extends CustomPainter {
   OfficePainter({
@@ -82,7 +101,7 @@ class OfficePainter extends CustomPainter {
   OfficeLayout? lastLayout;
   List<CharacterPlacement> lastPlacements = const [];
 
-  OfficeLayout layoutFor(Size size) => OfficeLayout(size: size, deskCount: scene.members.length);
+  OfficeLayout layoutFor(Size size) => OfficeLayout(size: size, plan: scene.plan);
 
   List<CharacterPlacement> _placementsFor(OfficeLayout layout) {
     final given = placements;
@@ -102,12 +121,13 @@ class OfficePainter extends CustomPainter {
 
     _paintFloor(canvas, size, layout);
     _paintDoor(canvas, layout);
+    _paintClusters(canvas, layout);
     for (var i = 0; i < scene.members.length; i++) {
       _paintDesk(canvas, layout, scene.members[i], away: _isAway(layout, scene.members[i], placements[i]));
     }
     _paintMyDesk(canvas, layout);
     if (scene.isEmpty) {
-      _text(canvas, '출근 버튼으로 캐릭터를 고용하세요', layout.emptyHintCenter,
+      _text(canvas, emptyOfficeHint, layout.emptyHintCenter,
           style: TextStyle(color: OfficeColors.hint, fontSize: 15 * layout.fontScale), anchor: Alignment.center);
     }
     // 캐릭터는 책상·내 책상 위에, 말풍선은 맨 위에.
@@ -139,6 +159,28 @@ class OfficePainter extends CustomPainter {
     canvas.drawRect(layout.doorRect, Paint()..color = OfficeColors.door);
     _text(canvas, '문', layout.doorLabelPos,
         style: TextStyle(color: OfficeColors.deskLabel, fontSize: 11 * layout.fontScale), anchor: Alignment.centerLeft);
+  }
+
+  // ---- 팀 클러스터 -----------------------------------------------------------------
+
+  /// 팀마다 상자 + 제목 줄("팀 t1 · 2명"). 부장 책상은 클러스터 밖(맨 윗줄)이다.
+  void _paintClusters(Canvas canvas, OfficeLayout layout) {
+    for (final c in layout.clusters) {
+      final rr = RRect.fromRectAndRadius(c.rect, Radius.circular(6 * layout.scale));
+      canvas.drawRRect(
+          rr,
+          Paint()
+            ..color = OfficeColors.clusterBorder
+            ..style = PaintingStyle.stroke
+            ..strokeWidth = 1);
+      final title = c.title;
+      if (title != null) {
+        _text(canvas, title, c.titleBaseline,
+            style: TextStyle(color: OfficeColors.clusterTitle, fontSize: 11 * layout.fontScale, fontWeight: FontWeight.w600),
+            anchor: Alignment.topLeft,
+            maxWidth: c.rect.width - 12 * layout.scale);
+      }
+    }
   }
 
   // ---- 책상 --------------------------------------------------------------------
@@ -173,21 +215,23 @@ class OfficePainter extends CustomPainter {
           ..strokeWidth = 1);
     badge.paint(canvas, Offset(badgeRect.left + 3, badgeRect.top + 1));
 
-    // 팀장 배지(엔진 배지 왼쪽). 사용자 지시는 이 책상으로만 간다(01 §4, T24).
+    // 직급 배지(엔진 배지 왼쪽). 사용자 지시는 "♛ 부장" 책상으로만 간다(01 §직무 체계 rev 3).
     var labelRight = badgeRect.left;
-    if (m.isLeader) {
-      final leaderStyle = TextStyle(color: OfficeColors.leaderMark, fontSize: 9 * fs, fontWeight: FontWeight.w600);
-      final leaderText = _layoutText(leaderBadgeLabel, leaderStyle);
-      final leaderRect = Rect.fromLTWH(
-          badgeRect.left - 4 * layout.scale - leaderText.width - 6, badgeRect.top, leaderText.width + 6, badgeRect.height);
+    final rankLabel = rankBadgeLabel(m.rank);
+    if (rankLabel.isNotEmpty) {
+      final rankColor = rankMarkColor(m.rank);
+      final rankStyle = TextStyle(color: rankColor, fontSize: 9 * fs, fontWeight: FontWeight.w600);
+      final rankText = _layoutText(rankLabel, rankStyle);
+      final rankRect = Rect.fromLTWH(
+          badgeRect.left - 4 * layout.scale - rankText.width - 6, badgeRect.top, rankText.width + 6, badgeRect.height);
       canvas.drawRRect(
-          RRect.fromRectAndRadius(leaderRect, const Radius.circular(3)),
+          RRect.fromRectAndRadius(rankRect, const Radius.circular(3)),
           Paint()
-            ..color = OfficeColors.leaderMark
+            ..color = rankColor
             ..style = PaintingStyle.stroke
             ..strokeWidth = 1);
-      leaderText.paint(canvas, Offset(leaderRect.left + 3, leaderRect.top + 1));
-      labelRight = leaderRect.left;
+      rankText.paint(canvas, Offset(rankRect.left + 3, rankRect.top + 1));
+      labelRight = rankRect.left;
     }
 
     _text(canvas, m.deskLabel, Offset(d.left + 6 * layout.scale, d.top + pad),
@@ -272,13 +316,14 @@ class OfficePainter extends CustomPainter {
   void _paintCharacter(Canvas canvas, OfficeLayout layout, SceneMember m, CharacterPlacement p) {
     final r = layout.charRadius;
     final c = p.center + Offset(0, bob[m.id] ?? 0);
-    // 팀장 링(금색). 선택 링(흰색, r+4)보다 안쪽이라 둘 다 보인다. 히트 테스트 반경(charRadius+4)은 그대로.
-    if (m.isLeader && !m.isGone) {
+    // 직급 링(부장 금색 · 팀장 은색). 선택 링(흰색, r+4)보다 안쪽이라 둘 다 보인다.
+    // 히트 테스트 반경(charRadius+4)은 그대로.
+    if (m.rank != MemberRank.member && !m.isGone) {
       canvas.drawCircle(
           c,
           r + 2,
           Paint()
-            ..color = OfficeColors.leaderMark
+            ..color = rankMarkColor(m.rank)
             ..style = PaintingStyle.stroke
             ..strokeWidth = 2);
     }
@@ -384,7 +429,8 @@ class OfficePainter extends CustomPainter {
                   : layout.deskRect(scene.members[i].deskIndex),
               properties: SemanticsProperties(
                 label: '${scene.members[i].deskLabel} · ${scene.members[i].engineLabel}'
-                    '${scene.members[i].isLeader ? ' · $leaderBadgeLabel' : ''} · ${scene.members[i].summary}'
+                    '${rankBadgeLabel(scene.members[i].rank).isEmpty ? '' : ' · ${scene.members[i].rank.label}'}'
+                    ' · ${scene.members[i].summary}'
                     '${scene.members[i].isQueued ? ' · 내 책상 줄' : bubbleOverrides.containsKey(scene.members[i].id) ? ' · ${bubbleOverrides[scene.members[i].id]}' : ''}',
                 selected: scene.members[i].id == selectedMemberId,
                 button: true,

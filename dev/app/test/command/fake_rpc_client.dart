@@ -70,6 +70,7 @@ class FakeRpcClient extends RpcClient {
     String version = '9.9.9',
     int pid = 4242,
     int seq = 0,
+    List<Map<String, dynamic>> departments = const [],
     List<Map<String, dynamic>> teams = const [],
     List<Map<String, dynamic>> members = const [],
     List<Map<String, dynamic>> pending = const [],
@@ -79,7 +80,14 @@ class FakeRpcClient extends RpcClient {
     _helloCtl.add(HelloResult(
       daemonVersion: version,
       daemonPid: pid,
-      snapshot: {'seq': seq, 'teams': teams, 'members': members, 'pending': pending, 'tasks': tasks},
+      snapshot: {
+        'seq': seq,
+        'departments': departments,
+        'teams': teams,
+        'members': members,
+        'pending': pending,
+        'tasks': tasks,
+      },
     ));
     setState(RpcConnectionState.connected);
   }
@@ -106,20 +114,36 @@ class FakeRpcClient extends RpcClient {
   late final overrides = [rpcClientProvider.overrideWithValue(this)];
 }
 
-Map<String, dynamic> fakeTeam(String id, {String name = 'pixel', String? leaderId}) =>
-    {'id': id, 'name': name, 'cwd': 'D:/x', 'leaderId': leaderId, 'maxMembers': 5, 'allowedEngines': ['claude', 'codex'], 'createdAt': 'c'};
+Map<String, dynamic> fakeDepartment(String id, {String name = 'alpha', String? headId, String cwd = 'D:/x', String createdAt = 'c'}) =>
+    {'id': id, 'name': name, 'cwd': cwd, 'headId': headId, 'createdAt': createdAt};
+
+Map<String, dynamic> fakeTeam(String id, {String name = 'pixel', String? leaderId, String departmentId = 'd1'}) => {
+      'id': id,
+      'departmentId': departmentId,
+      'name': name,
+      'cwd': 'D:/x',
+      'leaderId': leaderId,
+      'maxMembers': 5,
+      'allowedEngines': ['claude', 'codex'],
+      'createdAt': 'c',
+    };
 
 Map<String, dynamic> fakeMember(
   String id, {
   String status = 'idle',
   String name = '',
-  String teamId = 't1',
+  String departmentId = 'd1',
+  String? teamId = 't1',
+  String? parentId,
   String engine = 'claude',
   String rank = 'member',
+  String createdAt = 'c',
 }) =>
     {
       'id': id,
-      'teamId': teamId,
+      'departmentId': departmentId,
+      'teamId': rank == 'head' ? null : teamId,
+      'parentId': parentId,
       'name': name.isEmpty ? id : name,
       'rank': rank,
       'engine': engine,
@@ -130,6 +154,6 @@ Map<String, dynamic> fakeMember(
       'hiredBy': 'user',
       'memberToken': 'mt',
       'instructionsPath': null,
-      'createdAt': 'c',
+      'createdAt': createdAt,
       'updatedAt': 'u',
     };

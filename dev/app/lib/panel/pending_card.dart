@@ -69,7 +69,9 @@ class PendingInbox extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final all = ref.watch(openPendingProvider);
     final members = ref.watch(membersProvider);
-    final list = all.values.toList()..sort((a, b) => b.createdAt.compareTo(a.createdAt));
+    // 내 책상에는 사용자 몫만(T37): 허가는 전부, 질문은 부장의 것. `ask_parent` 는 상사에게 간 질문이라 뺀다.
+    final list = all.values.where((p) => p.goesToUser(rank: members[p.memberId]?.rank)).toList()
+      ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
     if (list.isEmpty) {
       return const Center(child: Text('기다리는 허가·질문 없음', style: TextStyle(color: Colors.white38)));
     }
@@ -98,17 +100,20 @@ class PendingInbox extends ConsumerWidget {
   }
 }
 
-/// type 분기.
+/// type 분기. `ask_parent` 질문(T35)은 **사용자 몫이 아니라** 상사에게 간 질문이라 안내 카드로만 보여 준다(T37).
 class PendingCard extends StatelessWidget {
   const PendingCard({super.key, required this.pending});
 
   final Pending pending;
 
   @override
-  Widget build(BuildContext context) => switch (pending.type) {
-        PendingType.approval => ApprovalCard(pending: pending),
-        PendingType.question => QuestionCard(pending: pending),
-      };
+  Widget build(BuildContext context) {
+    if (pending.isAskParent) return AskParentCard(pending: pending);
+    return switch (pending.type) {
+      PendingType.approval => ApprovalCard(pending: pending),
+      PendingType.question => QuestionCard(pending: pending),
+    };
+  }
 }
 
 // ---- 공용 틀 ------------------------------------------------------------------------
@@ -603,6 +608,72 @@ List<PendingOption> _parseOptions(Object? raw) {
       else if (o is String)
         PendingOption(label: o),
   ];
+}
+
+// ---- ask_parent 안내 카드(T37) -------------------------------------------------------
+
+/// 상사에게 올라간 질문 카드의 제목 앞머리.
+const String askParentCardTitle = '팀장/부장에게 질문 중';
+
+/// 사용자가 상사 대신 답하는 버튼(월권이지만 막히면 풀 방법이 있어야 한다).
+const String askParentOverrideLabel = '대신 답하기';
+
+/// `ask_parent`(payload `{source:'ask_parent', question, options, from, to}`) 질문 — **사용자 몫이 아니다**.
+/// 내 책상 줄·카드 목록에는 안 나오고, 질문한 멤버의 패널에만 "누구에게 무엇을 물었는지" 를 보여 준다.
+/// 상사가 답을 못 하고 멈춰 있으면 [askParentOverrideLabel] 로 사용자가 직접 `question.respond` 를 보낼 수 있다.
+class AskParentCard extends ConsumerStatefulWidget {
+  const AskParentCard({super.key, required this.pending});
+
+  final Pending pending;
+
+  @override
+  ConsumerState<AskParentCard> createState() => _AskParentCardState();
+}
+
+class _AskParentCardState extends ConsumerState<AskParentCard> {
+  bool _override = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final p = widget.pending;
+    final to = p.askParentTo;
+    final parent = to == null ? null : ref.watch(memberProvider(to));
+    final parentLabel = parent == null ? (to ?? '상사') : '${parent.name}(${parent.rank.label})';
+    final questions = parseQuestions(p.payload);
+    final q = questions.isEmpty ? '' : questions.first.question;
+    return _CardFrame(
+      accent: Colors.white38,
+      title: '↑ $askParentCardTitle',
+      focused: false,
+      children: [
+        Text(
+          '$parentLabel 에게: $q',
+          key: const Key('askParent.text'),
+          style: const TextStyle(fontSize: 12.5, color: Colors.white70),
+        ),
+        if (questions.isNotEmpty && questions.first.options.isNotEmpty) ...[
+          const SizedBox(height: 4),
+          Text(
+            '보기: ${questions.first.options.map((o) => o.label).join(' / ')}',
+            style: const TextStyle(fontSize: 11.5, color: Colors.white38),
+          ),
+        ],
+        const SizedBox(height: 6),
+        Align(
+          alignment: Alignment.centerLeft,
+          child: TextButton(
+            key: const Key('askParent.override'),
+            style: _smallButtonStyle(fg: Colors.white60),
+            onPressed: () => setState(() => _override = !_override),
+            child: Text(_override ? '접기' : askParentOverrideLabel),
+          ),
+        ),
+        // 답을 보내는 길은 질문 카드와 같다(`question.respond`) — 데몬은 출처와 무관하게 pending 을 닫고
+        // 질문한 멤버 큐에 `[ANSWER q#…]` 를 넣는다.
+        if (_override) QuestionCard(key: ValueKey('askParent-answer-${p.id}'), pending: p),
+      ],
+    );
+  }
 }
 
 class QuestionCard extends ConsumerStatefulWidget {
