@@ -5,7 +5,7 @@
 // 현재 위치 → 목표 로 걷는 트윈을 건다(ease-in-out, 220 px/s, 최소 250 ms).
 //   자리 ↔ 내 책상 줄(허가·질문 pending), 줄 순서 변경, 책상 번호 변경 → 걷기
 //   status starting 인 새 멤버 → 문에서 자리로 "입장"; exited/error 가 되면 자리 → 문 → (회색으로) 자리
-//   마지막 이벤트가 reporting → 내 책상으로 걸어와 [reportVisitDuration] 동안 "📄 보고" 말풍선, 그 뒤 돌아감
+//   마지막 이벤트가 reporting → 내 책상으로 걸어와 [reportVisitDuration] 동안 "▤ 보고" 말풍선, 그 뒤 돌아감
 //     (시간 만료는 위젯의 Timer 가 [endVisit] 로 알린다; idle/text·**MCP 팀 도구 호출** 이외의 새 이벤트·
 //      줄 서기·퇴근이면 즉시 취소 — [cancelsVisit], T29 결함 ④)
 //   `ask_parent` 로 상사 답을 기다리는 멤버 → 직속 상사 책상 옆으로 걸어가 서 있는다(T37)
@@ -22,7 +22,7 @@ import 'office_scene.dart';
 const Duration reportVisitDuration = Duration(seconds: 6);
 
 /// 보고 방문 중 말풍선.
-const String reportVisitBubble = '📄 보고';
+const String reportVisitBubble = '▤ 보고';
 
 /// 작업 중 흔들림(px, Hz).
 const double bobAmplitude = 1.5;

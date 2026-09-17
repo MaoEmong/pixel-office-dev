@@ -135,7 +135,7 @@ void main() {
     expect(tester.binding.hasScheduledFrame, isFalse);
   });
 
-  testWidgets('reporting 이벤트 → 내 책상에 와서 "📄 보고" 말풍선, 6초 뒤 자리로', (tester) async {
+  testWidgets('reporting 이벤트 → 내 책상에 와서 "▤ 보고" 말풍선, 6초 뒤 자리로', (tester) async {
     final handle = tester.ensureSemantics();
     final notifier = FakeOfficeNotifier(idlePair());
     await pumpHarness(tester, notifier);
@@ -151,7 +151,7 @@ void main() {
     painter = painterOf(tester);
     expect(painter.lastPlacements[0].center, layout.reportSpot(0));
     expect(painter.bubbleOverrides, {'m1': reportVisitBubble});
-    expect(find.semantics.byLabel(RegExp(r'책상 1 · 하루 .* · 📄 보고')), findsOne);
+    expect(find.semantics.byLabel(RegExp(r'책상 1 · 하루 .* · ▤ 보고')), findsOne);
     await tester.pump();
     expect(tester.binding.hasScheduledFrame, isFalse, reason: '머무는 동안은 Ticker 정지(타이머만)');
 
@@ -163,7 +163,7 @@ void main() {
     await tester.pump(const Duration(seconds: 4)); // 총 6.5초 → 타이머 만료 → 복귀 시작
     painter = painterOf(tester);
     expect(painter.bubbleOverrides, isEmpty);
-    expect(find.semantics.byLabel(RegExp(r'📄 보고')), findsNothing);
+    expect(find.semantics.byLabel(RegExp(r'▤ 보고')), findsNothing);
     await tester.pump(const Duration(milliseconds: 1000));
     final mid = painterOf(tester).lastPlacements[0].center;
     expect(mid.dy, lessThan(layout.reportSpot(0).dy));

@@ -101,6 +101,17 @@ abstract final class OfficeColors {
 /// 모든 모서리 곡률(패스 4: 4px 단일).
 const double officeRadius = 4;
 
+/// 캔버스 서체 — 라벨·말풍선·모니터 전부 **Galmuri11**(한글 픽셀 서체, OFL. 패스 4 구체성 · D-43 4).
+/// system-ui 를 표시 서체로 쓰지 않는다.
+const String officeFontFamily = 'Galmuri11';
+
+/// Galmuri11 에 없는 글자를 대신 낼 순서. **번들 서체를 먼저** 둔다 — T40 편차 ⑤ 에서 시스템 폴백이
+/// `♛`·`📨`·`⏳` 를 두부로 냈기 때문. `♛` 는 D2Coding 에만 있다(office_scene.dart 의 기호 표).
+const List<String> officeFontFallback = ['D2Coding', 'Pretendard', 'Malgun Gothic'];
+
+/// 픽셀 서체는 **정수 크기**에서만 또렷하다 — 캔버스 글자 크기는 반올림해서 쓴다(하한 1px).
+double officeFontPx(double base, double fontScale) => math.max(1, (base * fontScale).roundToDouble());
+
 /// 멤버가 하나도 없을 때 사무실 가운데 문구(T37 → T40-6 에서 부서 0 은 버튼으로 바뀐다).
 const String emptyOfficeHint = '"부서 만들기" 로 부장을 임명하세요';
 
@@ -113,8 +124,8 @@ class OfficePainter extends CustomPainter {
     this.selectedMemberId,
     this.hoveredMemberId,
     this.textDirection = TextDirection.ltr,
-    this.fontFamily,
-    this.fontFamilyFallback,
+    this.fontFamily = officeFontFamily,
+    this.fontFamilyFallback = officeFontFallback,
     this.placements,
     this.bob = const {},
     this.bubbleOverrides = const {},
@@ -136,7 +147,7 @@ class OfficePainter extends CustomPainter {
   /// 멤버 id → 세로 흔들림(px). 원만 흔들리고 말풍선·시맨틱은 그대로.
   final Map<String, double> bob;
 
-  /// 멤버 id → 말풍선 텍스트 덮어쓰기(alert 스타일). 보고 방문 중 "📄 보고", 복구 직후 "↻ 복구됨".
+  /// 멤버 id → 말풍선 텍스트 덮어쓰기(alert 스타일). 보고 방문 중 "▤ 보고", 복구 직후 "↻ 복구됨".
   final Map<String, String> bubbleOverrides;
 
   /// 스크롤 영역이 내려간 거리(px). 바(내 책상·범례)·문은 영향받지 않는다.
@@ -148,7 +159,7 @@ class OfficePainter extends CustomPainter {
   /// 빈 사무실 문구를 그릴지(부서 0 일 때는 위젯이 큰 버튼을 얹으므로 끈다 — T40-6).
   final bool showEmptyHint;
 
-  /// 글꼴 지정(앱에서는 null = 시스템 기본. 테스트 렌더링에서 FontLoader 로 올린 글꼴을 쓸 때).
+  /// 캔버스 글꼴(기본 [officeFontFamily] = Galmuri11). null 로 주면 시스템 기본으로 되돌린다.
   final String? fontFamily;
   final List<String>? fontFamilyFallback;
 
@@ -205,7 +216,7 @@ class OfficePainter extends CustomPainter {
     _paintScrollbar(canvas, layout, dy);
     if (scene.isEmpty && showEmptyHint) {
       _text(canvas, emptyOfficeHint, layout.emptyHintCenter,
-          style: TextStyle(color: OfficeColors.hint, fontSize: 15 * layout.fontScale), anchor: Alignment.center);
+          style: TextStyle(color: OfficeColors.hint, fontSize: officeFontPx(15, layout.fontScale)), anchor: Alignment.center);
     }
     _paintMyDesk(canvas, layout);
     _paintLegend(canvas, layout);
@@ -238,7 +249,7 @@ class OfficePainter extends CustomPainter {
   void _paintDoor(Canvas canvas, OfficeLayout layout) {
     canvas.drawRect(layout.doorRect, Paint()..color = OfficeColors.door);
     _text(canvas, '문', layout.doorLabelPos,
-        style: TextStyle(color: OfficeColors.deskLabel, fontSize: 11 * layout.fontScale), anchor: Alignment.centerLeft);
+        style: TextStyle(color: OfficeColors.deskLabel, fontSize: officeFontPx(11, layout.fontScale)), anchor: Alignment.centerLeft);
   }
 
   void _paintScrollbar(Canvas canvas, OfficeLayout layout, double dy) {
@@ -282,21 +293,21 @@ class OfficePainter extends CustomPainter {
       if (title == null) continue;
       if (c.isPlaceholder) {
         _text(canvas, title, c.rect.center,
-            style: TextStyle(color: OfficeColors.clusterTitle, fontSize: 12 * layout.fontScale),
+            style: TextStyle(color: OfficeColors.clusterTitle, fontSize: officeFontPx(12, layout.fontScale)),
             anchor: Alignment.center,
             maxWidth: c.rect.width - 12 * s);
         continue;
       }
       // 제목 태그: 상자 왼쪽 위에 -8px 걸침, 12px 굵게.
       final tagColor = lighten(color, 0.4);
-      final style = TextStyle(color: OfficeColors.floor, fontSize: 12 * layout.fontScale, fontWeight: FontWeight.bold);
+      final style = TextStyle(color: OfficeColors.floor, fontSize: officeFontPx(12, layout.fontScale), fontWeight: FontWeight.bold);
       final tp = _layoutText(title, style, maxWidth: c.rect.width);
       final tag = Rect.fromLTWH(c.rect.left - 8 * s, c.rect.top - 8 * s, tp.width + 10 * s, tp.height + 4 * s);
       canvas.drawRRect(RRect.fromRectAndRadius(tag, const Radius.circular(officeRadius)), Paint()..color = tagColor);
       tp.paint(canvas, Offset(tag.left + 5 * s, tag.top + 2 * s));
       // "퇴근 N" 배지(10분 넘게 퇴근한 책상을 접었다 — 클릭하면 펼친다).
       if (c.exitedFolded > 0) {
-        final badgeStyle = TextStyle(color: OfficeColors.charGoneText, fontSize: 10 * layout.fontScale);
+        final badgeStyle = TextStyle(color: OfficeColors.charGoneText, fontSize: officeFontPx(10, layout.fontScale));
         final bp = _layoutText('퇴근 ${c.exitedFolded}', badgeStyle);
         final br = Rect.fromLTWH(tag.right + 6 * s, tag.top, bp.width + 10 * s, tag.height);
         canvas.drawRRect(
@@ -377,7 +388,7 @@ class OfficePainter extends CustomPainter {
     if (showsEngineBadge(layout.scale)) {
       final badgeStyle = TextStyle(
         color: m.engine == Engine.claude ? OfficeColors.badgeClaude : OfficeColors.badgeCodex,
-        fontSize: 9 * fs,
+        fontSize: officeFontPx(9, fs),
         fontWeight: FontWeight.w600,
       );
       final badge = _layoutText(m.engineLabel, badgeStyle);
@@ -395,7 +406,7 @@ class OfficePainter extends CustomPainter {
     final rankLabel = rankBadgeAt(m.rank, layout.scale);
     if (rankLabel.isNotEmpty) {
       final rankColor = rankMarkColor(m.rank);
-      final rankStyle = TextStyle(color: rankColor, fontSize: 9 * fs, fontWeight: FontWeight.w600);
+      final rankStyle = TextStyle(color: rankColor, fontSize: officeFontPx(9, fs), fontWeight: FontWeight.w600);
       final rankText = _layoutText(rankLabel, rankStyle);
       final rankRect =
           Rect.fromLTWH(labelRight - 4 * s - rankText.width - 6, d.top + pad, rankText.width + 6, rankText.height + 2);
@@ -412,7 +423,7 @@ class OfficePainter extends CustomPainter {
     _text(canvas, m.deskLabel, Offset(d.left + 6 * s, d.top + pad),
         style: TextStyle(
           color: exited ? OfficeColors.charGoneText : OfficeColors.deskLabel,
-          fontSize: 11 * fs,
+          fontSize: officeFontPx(11, fs),
           fontWeight: FontWeight.bold,
         ),
         anchor: Alignment.topLeft,
@@ -429,11 +440,11 @@ class OfficePainter extends CustomPainter {
           ..strokeWidth = 1);
     final second = showsMonitorSecondLine(layout.scale) && !isAway ? m.monitorBottom : null;
     final dim = m.isGone || isAway || m.summary.startsWith('(');
+    // 모니터도 캔버스 서체(Galmuri11)다 — 패스 4 "캔버스 라벨·말풍선·모니터 = Galmuri11".
+    // 픽셀 서체는 자체가 고정폭에 가까워 옛 Consolas 지정은 뺐다.
     final monStyle = TextStyle(
       color: dim ? OfficeColors.monitorTextDim : OfficeColors.monitorText,
-      fontSize: 9 * fs,
-      fontFamily: 'Consolas',
-      fontFamilyFallback: const ['Cascadia Mono', 'Malgun Gothic', 'monospace'],
+      fontSize: officeFontPx(9, fs),
     );
     final topText = isAway ? awayMonitorText : m.monitorTop;
     if (second == null) {
@@ -462,7 +473,7 @@ class OfficePainter extends CustomPainter {
           ..style = PaintingStyle.stroke
           ..strokeWidth = 2);
     _text(canvas, scene.myDeskHeader, Offset(r.left + 8 * s, r.top + 5 * s),
-        style: TextStyle(color: OfficeColors.myDeskText, fontSize: 12 * fs, fontWeight: FontWeight.bold),
+        style: TextStyle(color: OfficeColors.myDeskText, fontSize: officeFontPx(12, fs), fontWeight: FontWeight.bold),
         anchor: Alignment.topLeft,
         maxWidth: r.width - 16 * s);
 
@@ -478,7 +489,7 @@ class OfficePainter extends CustomPainter {
       canvas.drawRRect(
           RRect.fromRectAndRadius(br, const Radius.circular(officeRadius)), Paint()..color = OfficeColors.charMyTurn);
       _text(canvas, '+${scene.slotOverflow}', br.center,
-          style: TextStyle(color: OfficeColors.floor, fontSize: 10 * fs, fontWeight: FontWeight.bold),
+          style: TextStyle(color: OfficeColors.floor, fontSize: officeFontPx(10, fs), fontWeight: FontWeight.bold),
           anchor: Alignment.center);
     }
   }
@@ -488,7 +499,7 @@ class OfficePainter extends CustomPainter {
   void _paintLegend(Canvas canvas, OfficeLayout layout) {
     final rect = layout.legendRect;
     final fs = layout.fontScale;
-    final style = TextStyle(color: OfficeColors.hint, fontSize: 11 * fs);
+    final style = TextStyle(color: OfficeColors.hint, fontSize: officeFontPx(11, fs));
     var x = rect.left;
     final cy = rect.center.dy;
     const dot = 8.0;
@@ -597,7 +608,7 @@ class OfficePainter extends CustomPainter {
     final fs = layout.fontScale;
     final style = TextStyle(
       color: OfficeColors.bubbleText,
-      fontSize: 11 * fs,
+      fontSize: officeFontPx(11, fs),
       fontWeight: alert ? FontWeight.bold : FontWeight.normal,
     );
     // 최대 폭 180×scale, 2줄(패스 4).

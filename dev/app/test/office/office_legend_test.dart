@@ -45,9 +45,9 @@ void main() {
       expect(LegendSlot.waiting.argb, 0xFFFFC857);
       expect(LegendSlot.error.argb, 0xFFFF6B6B);
       expect(LegendSlot.exited.argb, 0xFF474D5E);
-      expect(LegendSlot.waitingReports.icon, '📨');
+      expect(LegendSlot.waitingReports.icon, '✉');
       expect(LegendSlot.myTurn.icon, '❗');
-      expect(LegendSlot.waiting.icon, '⏳');
+      expect(LegendSlot.waiting.icon, '◷');
       expect(LegendSlot.error.icon, '⚠');
       expect(LegendSlot.working.icon, '');
     });

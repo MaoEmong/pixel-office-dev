@@ -33,14 +33,14 @@ void main() {
       expect(legendColor(LegendSlot.myTurn), const Color(0xFFFF9F43));
     });
 
-    test('대기(노랑 ⏳) = 상사 답 기다림 · 셸 락 · 출근 중', () {
+    test('대기(노랑 ◷) = 상사 답 기다림 · 셸 락 · 출근 중', () {
       expect(legendSlotFor(status: MemberStatus.waitingAnswer, askingParent: true), LegendSlot.waiting);
       expect(legendSlotFor(status: MemberStatus.working, shellWaiting: true), LegendSlot.waiting);
       expect(legendSlotFor(status: MemberStatus.starting), LegendSlot.waiting);
-      expect(LegendSlot.waiting.icon, '⏳');
+      expect(LegendSlot.waiting.icon, '◷');
     });
 
-    test('보고 대기는 초록 점선 링 + 📨, 한가는 초록 실선', () {
+    test('보고 대기는 초록 점선 링 + ✉, 한가는 초록 실선', () {
       expect(legendSlotFor(status: MemberStatus.idle, derived: DerivedStatus.waitingReports), LegendSlot.waitingReports);
       expect(LegendSlot.waitingReports.dashedRing, isTrue);
       expect(legendSlotFor(status: MemberStatus.idle, derived: DerivedStatus.free), LegendSlot.idle);

@@ -9,7 +9,7 @@ void main() {
   group('summarize', () {
     test('이벤트 kind 별 모니터·말풍선 텍스트', () {
       const w = MemberStatus.working;
-      expect(summarize(w, event('m', OfficeEventKind.reading, detail: {'tool': 'Read', 'path': 'lib/map/tiles.dart'})), '📖 tiles.dart');
+      expect(summarize(w, event('m', OfficeEventKind.reading, detail: {'tool': 'Read', 'path': 'lib/map/tiles.dart'})), '◫ tiles.dart');
       expect(summarize(w, event('m', OfficeEventKind.editing, detail: {'path': r'D:\proj\app\lib\main.dart'})), '✎ main.dart');
       expect(summarize(w, event('m', OfficeEventKind.running, detail: {'cmd': 'flutter test test/stt_test.dart'})), '▶ flutter test test/stt_test.dart');
       expect(summarize(w, event('m', OfficeEventKind.running, detail: {'cmd': 'x' * 60})), '▶ ${'x' * 39}…');
@@ -19,12 +19,12 @@ void main() {
       expect(summarize(w, event('m', OfficeEventKind.waitingApproval, detail: {'cmd': 'rm -rf x'})), '❗ 허가 대기');
       expect(summarize(w, event('m', OfficeEventKind.asking, detail: {'summary': '어느 폴더?'})), '❓ 질문');
       expect(summarize(w, event('m', OfficeEventKind.error, detail: {'summary': '재지시 필요'})), '⚠ 오류');
-      expect(summarize(w, event('m', OfficeEventKind.text, detail: {'text': '끝났어요'})), '💬 끝났어요');
+      expect(summarize(w, event('m', OfficeEventKind.text, detail: {'text': '끝났어요'})), '❝ 끝났어요');
       expect(summarize(w, event('m', OfficeEventKind.delegating)), '→ 위임');
-      expect(summarize(w, event('m', OfficeEventKind.reporting)), '📋 보고');
+      expect(summarize(w, event('m', OfficeEventKind.reporting)), '▤ 보고');
     });
 
-    test('T29 결함 ③: running 이어도 detail.waiting 이 있으면 cmd 가 아니라 summary + ⏳', () {
+    test('T29 결함 ③: running 이어도 detail.waiting 이 있으면 cmd 가 아니라 summary + ◷', () {
       // 데몬은 셸 락 대기를 `running{summary:"셸 대기 중 (락: 작가)", waiting:"shell-lock", cmd:"…"}` 로 보낸다.
       // cmd 를 우선하면 명령만 보여 "왜 안 도는지" 가 화면에 안 나왔다(T29).
       final waiting = event('m', OfficeEventKind.running, detail: {
@@ -52,7 +52,7 @@ void main() {
     });
 
     test('path 없는 reading/editing 은 oneLine 으로', () {
-      expect(summarize(MemberStatus.working, event('m', OfficeEventKind.reading, detail: {'tool': 'Grep', 'summary': 'MlKit'})), '📖 MlKit');
+      expect(summarize(MemberStatus.working, event('m', OfficeEventKind.reading, detail: {'tool': 'Grep', 'summary': 'MlKit'})), '◫ MlKit');
     });
 
     test('exited / error 상태는 이벤트보다 우선', () {
@@ -87,7 +87,7 @@ void main() {
       // 맡은 일이 남아 있으면(파생 idle) 그냥 "(대기)".
       expect(summarize(MemberStatus.idle, event('m', OfficeEventKind.idle), derived: DerivedStatus.idle), '(대기)');
       // 보고 직후처럼 마지막 이벤트가 말해 주는 게 있으면 그걸 남긴다.
-      expect(summarize(MemberStatus.idle, event('m', OfficeEventKind.reporting), derived: DerivedStatus.free), '📋 보고');
+      expect(summarize(MemberStatus.idle, event('m', OfficeEventKind.reporting), derived: DerivedStatus.free), '▤ 보고');
       expect(summarize(MemberStatus.idle, event('m', OfficeEventKind.idle), derived: DerivedStatus.waitingReports), waitingReportsSummary);
     });
 

@@ -560,7 +560,23 @@ Bitmap zoom(Bitmap src, int n, {int bg = kClear}) {
   return b;
 }
 
-/// `dart run tool/gen_sprites.dart [out.png] [--preview=<path> --zoom=8]`
+/// 셀 하나에서 **투명하지 않은 부분의 최소 사각형**(셀 기준 좌표). 소품·아이콘은 셀 전체가 아니라
+/// 이 상자만 그려야 크기가 맞는다 — `office_sprites.dart` 의 상수와 `office_sprites_test` 가 이 값을 쓴다.
+List<int> tightBounds(Bitmap b, int col, int row) {
+  var minX = cell, minY = cell, maxX = -1, maxY = -1;
+  for (var j = 0; j < cell; j++) {
+    for (var i = 0; i < cell; i++) {
+      if (b.get(col * cell + i, row * cell + j) == kClear) continue;
+      if (i < minX) minX = i;
+      if (j < minY) minY = j;
+      if (i > maxX) maxX = i;
+      if (j > maxY) maxY = j;
+    }
+  }
+  return maxX < 0 ? const [0, 0, 0, 0] : [minX, minY, maxX - minX + 1, maxY - minY + 1];
+}
+
+/// `dart run tool/gen_sprites.dart [out.png] [--preview=<path> --zoom=8] [--bounds]`
 void main(List<String> args) {
   final positional = args.where((a) => !a.startsWith('--')).toList();
   final flags = {
@@ -573,6 +589,12 @@ void main(List<String> args) {
   f.parent.createSync(recursive: true);
   f.writeAsBytesSync(encodePng(b));
   stdout.writeln('wrote $out (${b.w}x${b.h}, ${f.lengthSync()} bytes)');
+  if (flags.containsKey('bounds')) {
+    for (var c = 0; c < propColumns.length; c++) {
+      final t = tightBounds(b, c, 2);
+      stdout.writeln('  ${propColumns[c].padRight(10)} x=${t[0]} y=${t[1]} w=${t[2]} h=${t[3]}');
+    }
+  }
   final preview = flags['preview'];
   if (preview != null && preview.isNotEmpty) {
     final n = int.tryParse(flags['zoom'] ?? '8') ?? 8;
