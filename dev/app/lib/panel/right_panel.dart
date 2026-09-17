@@ -119,7 +119,8 @@ class RightPanel extends ConsumerWidget {
         color: surface,
         child: const Column(
           children: [
-            Flexible(child: SingleChildScrollView(child: PendingInbox())),
+            // 인박스가 제 높이 안에서 스크롤한다(T40d ②).
+            Flexible(child: PendingInbox()),
             Expanded(
               child: Center(child: Text(panelNoSelectionHint, style: TextStyle(color: Colors.white38, fontSize: 14))),
             ),
@@ -145,18 +146,20 @@ class RightPanel extends ConsumerWidget {
               ],
               // 전역 인박스(헤더 바로 아래, 선택 멤버와 무관 — D6) + 이 멤버의 안내 카드.
               // `backfillMemberId` 는 목록에 영향을 주지 않고 **만료 흔적**만 그 멤버의 백필에서 더 긁어온다.
-              // 패널 높이의 [inboxMaxHeightFraction] 까지만 차지하고 그 안에서 스크롤한다(탭이 밀려나지 않게).
+              // 블록 높이는 `min(패널 높이 × inboxMaxHeightFraction, 내용)` 이고, 카드는 그 안에서
+              // 스크롤한다. 헤더와 "+N" 줄은 스크롤 밖에 고정이라 접힘선 아래로 밀리지 않는다(T40d ②).
               ConstrainedBox(
                 constraints: BoxConstraints(
                   maxHeight: box.hasBoundedHeight ? box.maxHeight * inboxMaxHeightFraction : pendingCardsMaxHeight,
                 ),
-                child: SingleChildScrollView(
-                  child: Column(
+                child: PendingInbox(
+                  backfillMemberId: id,
+                  belowCards: Column(
                     mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [
-                      PendingInbox(backfillMemberId: id),
                       RecoveryHint(memberId: id),
-                      // 이 멤버 패널에만 남는 카드 = `ask_parent` 안내("대신 답하기"). 인박스 아래 · 탭 위.
+                      // 이 멤버 패널에만 남는 카드 = `ask_parent` 안내("대신 답하기"). 인박스 카드 뒤 · 탭 위.
                       PendingCards(memberId: id),
                     ],
                   ),
