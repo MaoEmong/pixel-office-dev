@@ -24,7 +24,7 @@ AI 코딩 에이전트(Claude Code, Codex) 팀을 **픽셀아트 사무실**에�
 | M4 | 팀 · 오케스트레이터 · TeamTools · 지시문 · 셸 뮤텍스 | 완료 (T29) |
 | M4b | 직무 체계 rev 3 (부장→팀장→팀원 트리) | 완료 (T39) |
 | M5 | 안정화 (오류 포즈·재고용·보존·단일 데몬) — **v1b** | 완료 (T30·T31) |
-| M6 | 디자인 (레이아웃 v2, 스프라이트) | **진행 중** — T32 레이아웃 v2 확정([docs/design/레이아웃-v2.md](docs/design/레이아웃-v2.md)), T40 구현·T33 스프라이트 남음 |
+| M6 | 디자인 (레이아웃 v2, 스프라이트) | **진행 중** — T32 레이아웃 v2 확정([docs/design/레이아웃-v2.md](docs/design/레이아웃-v2.md)) · **T40 구현 완료**([worklog/T40-LayoutV2.md](docs/worklog/T40-LayoutV2.md), 실기 캡처 16장) · **T33 스프라이트**만 남음 |
 
 **Codex 실기만 이월돼 있다.** ChatGPT 사용량 한도(D-23, 리셋 2026-09-21 13:58) 때문에 *모델 턴이 필요한* Codex 항목은 못 돌렸다. Codex 어댑터·MCP 주입·화면 패턴 자체는 실측 로그로 만든 단위 테스트가 덮고 있고, 이월분은 **한 목록**으로 모아 뒀다 — [worklog/T23-MixedTeam.md §"9/21 이후 확인 목록 A~J"](docs/worklog/T23-MixedTeam.md). Claude 쪽 기능은 전부 실기로 닫혔다.
 
@@ -35,8 +35,8 @@ pixel-office/
   docs/               설계·계획·결정·작업 기록  → docs/README.md 부터
     01-설계문서.md        설계(rev 2) + 직무 체계 rev 3 + 실측 반영 + 설계 변경 이력
     02-실측-체크리스트.md  CLI·hooks·pty 실측 결과와 근거
-    03-작업계획.md        태스크 분해 T00~T39·T31 과 진행 상태 — **진행 상태의 단일 기준**
-    04-결정기록.md        D-01~D-41 (append-only, 맨 위에 목차 표)
+    03-작업계획.md        태스크 분해 T00~T40 과 진행 상태 — **진행 상태의 단일 기준**
+    04-결정기록.md        D-01~D-43 (append-only, 맨 위에 목차 표)
     worklog/            태스크별 기록 T##-*.md + 창 캡처 img/
     design/             와이어프레임
   dev/
@@ -47,7 +47,7 @@ pixel-office/
       test/               node:test (509건)
     app/                Flutter 데스크탑 앱 (Windows)  → dev/app/README.md
       lib/                rpc · model · state · topbar · office · panel · command
-      test/               위젯·상태 테스트 (193건)
+      test/               위젯·상태 테스트 (344건)
       tool/capture-window.ps1   창 단위 캡처 (worklog 증거용, 전체 화면 캡처 금지)
     spike-0/            0단계 실측 스파이크와 sandbox(실기용 작업 폴더)
 ```
