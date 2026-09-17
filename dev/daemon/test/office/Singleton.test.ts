@@ -9,10 +9,14 @@ import path from 'node:path';
 import { Office } from '../../src/office/Office.js';
 import {
   assertSingleDaemon,
+  bindOrRefuse,
   DaemonAlreadyRunningError,
+  DaemonPortInUseError,
+  DaemonStartRefusedError,
   DAEMON_BUSY_EXIT_CODE,
   FORCE_START_ENV,
   defaultSingletonProbe,
+  isAddrInUse,
   readDaemonJsonHead,
   type SingletonProbe,
 } from '../../src/office/singleton.js';
@@ -116,6 +120,59 @@ describe('T30 데몬 단일 기동 가드', () => {
     });
     await assert.rejects(office.start(), (e: unknown) => e instanceof DaemonAlreadyRunningError && e.pid === 4242);
     assert.deepEqual(JSON.parse(fs.readFileSync(daemonJsonPath, 'utf8')), before, 'daemon.json 은 그대로다');
+    assert.equal(office.daemonInfo, undefined);
+  });
+
+  // T41: daemon.json 이 **없는데** 포트만 잡혀 있는 경우(다른 환경에서 띄운 데몬).
+  test('포트가 EADDRINUSE 면 같은 문구·같은 exit 3 으로 거부한다 — 포트 번호와 찾는 법이 들어간다', async () => {
+    const inUse = Object.assign(new Error('listen EADDRINUSE: address already in use 127.0.0.1:7421'), {
+      code: 'EADDRINUSE',
+    });
+    const err = await bindOrRefuse('hook', 7421, daemonJsonPath, () => Promise.reject(inUse)).then(
+      () => null,
+      (e: unknown) => e as DaemonPortInUseError,
+    );
+    assert.ok(err instanceof DaemonPortInUseError);
+    assert.ok(err instanceof DaemonStartRefusedError, '진입점은 조상 하나만 보고 exit 3 한다');
+    assert.equal(err.exitCode, DAEMON_BUSY_EXIT_CODE);
+    assert.equal(err.port, 7421);
+    assert.equal(err.role, 'hook');
+    assert.match(err.message, /^이미 데몬이 돌고 있습니다/, 'pid 거부와 같은 첫 문장');
+    assert.match(err.message, /127\.0\.0\.1:7421/);
+    assert.match(err.message, /netstat -ano \| findstr :7421/);
+    assert.match(err.message, /PIXEL_HOOK_PORT/);
+    assert.ok(err.message.includes(daemonJsonPath));
+    assert.equal(err.cause, inUse);
+  });
+
+  test('EADDRINUSE 가 아닌 오류는 그대로 올린다 / isAddrInUse 는 cause 사슬도 본다', async () => {
+    const other = Object.assign(new Error('EACCES'), { code: 'EACCES' });
+    await assert.rejects(
+      bindOrRefuse('ws', 7420, daemonJsonPath, () => Promise.reject(other)),
+      (e: unknown) => e === other,
+    );
+    assert.equal(isAddrInUse(other), false);
+    assert.equal(isAddrInUse(new Error('wrapped', { cause: Object.assign(new Error('x'), { code: 'EADDRINUSE' }) })), true);
+    assert.equal(isAddrInUse(undefined), false);
+
+    // 성공하면 그냥 값을 돌려준다.
+    assert.equal(await bindOrRefuse('mcp', 0, daemonJsonPath, async () => 45679), 45679);
+  });
+
+  test('Office.start(): daemon.json 이 없어도 hook 포트가 잡혀 있으면 거부한다(daemon.json 을 쓰지 않는다)', async () => {
+    const receiver = new FakeReceiver();
+    receiver.listen = () =>
+      Promise.reject(Object.assign(new Error('listen EADDRINUSE 127.0.0.1:7421'), { code: 'EADDRINUSE' }));
+    const office = new Office({
+      config: { dataDir: dir, hookPort: 7421, wsPort: 0, mcpPort: 0 },
+      store: new Store(':memory:'),
+      pty: new FakePty(),
+      receiver,
+      mcp: new FakeMcp(),
+      retentionIntervalMs: 0,
+    });
+    await assert.rejects(office.start(), (e: unknown) => e instanceof DaemonPortInUseError && e.port === 7421);
+    assert.equal(fs.existsSync(daemonJsonPath), false, '반쯤 뜬 데몬의 daemon.json 을 남기지 않는다');
     assert.equal(office.daemonInfo, undefined);
   });
 

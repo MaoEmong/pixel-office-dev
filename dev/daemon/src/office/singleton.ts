@@ -5,6 +5,11 @@
 // 듣고 있으면** 거부한다(exit 3). pid 가 죽었으면 옛날처럼 그냥 덮어쓴다 — 크래시 후 재기동을 막으면 안 된다.
 //
 // 탈출구: `PIXEL_FORCE_START=1`. 통합 테스트는 그 대신 **각자의 `PIXEL_DATA_DIR`** 을 쓴다(그게 원래 규칙이다).
+//
+// T41(실기): daemon.json 이 **안 보이는데 포트만 잡혀 있는** 경우가 있다 — 다른 환경(샌드박스·다른 사용자)에서
+// 띄운 데몬은 자기 `%LOCALAPPDATA%` 에 daemon.json 을 쓰므로 이쪽 pid 검사는 통과해 버리고, 그다음 hook/mcp/ws
+// 바인딩이 EADDRINUSE 로 터진다. 예전에는 그게 **잡히지 않은 스택 트레이스**로 나왔다. 이제는 pid 검사와 **같은
+// 문구·같은 exit 3** 으로 거부한다(`bindOrRefuse`).
 import fs from 'node:fs';
 import net from 'node:net';
 
@@ -22,9 +27,13 @@ export interface SingletonProbe {
   isPortOpen(port: number): Promise<boolean>;
 }
 
-/** 이미 다른 데몬이 돌고 있어 기동을 거부했다. */
-export class DaemonAlreadyRunningError extends Error {
+/** 기동 거부의 공통 조상 — 진입점은 이것만 보고 "메시지 한 문단 + exit 3" 으로 끝낸다. */
+export class DaemonStartRefusedError extends Error {
   readonly exitCode = DAEMON_BUSY_EXIT_CODE;
+}
+
+/** 이미 다른 데몬이 돌고 있어 기동을 거부했다. */
+export class DaemonAlreadyRunningError extends DaemonStartRefusedError {
   constructor(
     readonly pid: number,
     readonly wsPort: number,
@@ -38,6 +47,65 @@ export class DaemonAlreadyRunningError extends Error {
         `  daemon.json: ${daemonJsonPath}`,
     );
     this.name = 'DaemonAlreadyRunningError';
+  }
+}
+
+/** 데몬이 여는 포트 셋. 오류 문구에 이 이름이 그대로 나간다. */
+export type DaemonPortRole = 'hook' | 'mcp' | 'ws';
+
+const PORT_ROLE: Record<DaemonPortRole, { label: string; env: string }> = {
+  hook: { label: 'hook(HTTP)', env: 'PIXEL_HOOK_PORT' },
+  mcp: { label: 'MCP(HTTP)', env: 'PIXEL_MCP_PORT' },
+  ws: { label: 'ws(JSON-RPC)', env: 'PIXEL_WS_PORT' },
+};
+
+/** EADDRINUSE 인가. `cause` 사슬까지 본다(감싸인 채로 올라오는 경우). */
+export function isAddrInUse(err: unknown): boolean {
+  let e: unknown = err;
+  for (let i = 0; e != null && i < 5; i++) {
+    const node = e as NodeJS.ErrnoException;
+    if (node.code === 'EADDRINUSE') return true;
+    e = (node as { cause?: unknown }).cause;
+  }
+  return false;
+}
+
+/**
+ * 포트를 다른 프로세스가 쥐고 있어 기동을 거부했다(T41).
+ * daemon.json 이 안 보이는데 포트만 잡혀 있으면 **다른 환경에서 띄운 우리 데몬**이 범인이다.
+ */
+export class DaemonPortInUseError extends DaemonStartRefusedError {
+  constructor(
+    readonly role: DaemonPortRole,
+    readonly port: number,
+    readonly daemonJsonPath: string,
+    options?: { cause?: unknown },
+  ) {
+    super(
+      `이미 데몬이 돌고 있습니다 — ${PORT_ROLE[role].label} 포트 127.0.0.1:${port} 를 다른 프로세스가 쓰고 있습니다(EADDRINUSE).\n` +
+        `  daemon.json 은 안 보이는데 포트만 잡혀 있으면 **다른 환경(샌드박스·다른 사용자)에서 띄운 데몬**입니다 —\n` +
+        `  그 데몬은 자기 %LOCALAPPDATA% 에 daemon.json 을 씁니다. 범인을 찾으려면:\n` +
+        `    netstat -ano | findstr :${port}   →   taskkill /F /PID <pid>\n` +
+        `  포트를 바꾸려면 ${PORT_ROLE[role].env} (테스트는 PIXEL_DATA_DIR 과 포트 0 을 함께 쓰세요).\n` +
+        `  daemon.json: ${daemonJsonPath}`,
+      options,
+    );
+    this.name = 'DaemonPortInUseError';
+  }
+}
+
+/** 포트 바인딩을 감싼다: EADDRINUSE 만 [DaemonPortInUseError] 로 바꾸고 나머지 오류는 그대로 올린다. */
+export async function bindOrRefuse<T>(
+  role: DaemonPortRole,
+  port: number,
+  daemonJsonPath: string,
+  listen: () => Promise<T>,
+): Promise<T> {
+  try {
+    return await listen();
+  } catch (err) {
+    if (isAddrInUse(err)) throw new DaemonPortInUseError(role, port, daemonJsonPath, { cause: err });
+    throw err;
   }
 }
 

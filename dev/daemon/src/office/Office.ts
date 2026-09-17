@@ -54,7 +54,7 @@ import { settleMember, type SettleCtx, type SettleReason, type SettleSummary } f
 import { derivedStatus } from './derived.js';
 import { CODEX_FALLBACK, detectQuestion, isFallbackQuestion, type FallbackQuestionPayload } from './codexFallback.js';
 import { defaultOrphanOps, reapOrphan, type OrphanOps } from './orphans.js';
-import { assertSingleDaemon, defaultSingletonProbe, type SingletonProbe } from './singleton.js';
+import { assertSingleDaemon, bindOrRefuse, defaultSingletonProbe, type SingletonProbe } from './singleton.js';
 import { ShellMutex, shellLockCommand, type ShellLockInfo } from './ShellMutex.js';
 import { RANK_LABEL, defaultInstructions, type TemplateScope } from './instructions/templates.js';
 import { buildSessionContext, type RosterEntry } from './instructions/context.js';
@@ -386,8 +386,10 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
     fs.mkdirSync(this.cfg.dataDir, { recursive: true });
     // 데몬은 하나만(T30 / T38 함정 ⑤) — 포트를 열기 전에 확인한다. 거부는 DaemonAlreadyRunningError(exit 3).
     await assertSingleDaemon({ daemonJsonPath: this.daemonJsonPath, probe: this.singletonProbe });
-    const hookPort = await this.receiver.listen(this.cfg.hookPort);
-    const mcpPort = await this.mcp.listen(this.cfg.mcpPort);
+    // daemon.json 이 없어도(= 다른 환경에서 띄운 데몬) 포트는 잡혀 있을 수 있다 — EADDRINUSE 를 같은 문구·
+    // 같은 exit 3 으로 바꾼다(T41). 스택 트레이스로 끝나면 사용자가 할 수 있는 게 없다.
+    const hookPort = await bindOrRefuse('hook', this.cfg.hookPort, this.daemonJsonPath, () => this.receiver.listen(this.cfg.hookPort));
+    const mcpPort = await bindOrRefuse('mcp', this.cfg.mcpPort, this.daemonJsonPath, () => this.mcp.listen(this.cfg.mcpPort));
     this.info = {
       wsPort: this.cfg.wsPort,
       hookPort,
