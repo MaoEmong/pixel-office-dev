@@ -7,7 +7,8 @@
 | [03-작업계획.md](03-작업계획.md) | **태스크 분해(T00~T39)와 진행 상태. 문서화 규칙.** | **M0~M5 완료(v1b, 2026-09-17) · 다음 M6** |
 | [04-결정기록.md](04-결정기록.md) | 결정 기록 D-## (append-only) — 맨 위 목차 표에서 번호로 찾는다 | **D-01~D-41** (2026-09-17) |
 | [worklog/](worklog/) | 태스크별 작업 기록 (`T##-slug.md`), 템플릿 `_template.md`, 창 캡처 `img/` | T00~T39 · T31 (44편 + 템플릿) |
-| [design/office-sketch.png](design/office-sketch.png) | 첫 와이어프레임 (팀 위계·터미널 탭 반영 전) | 구조만 확정 — 갱신은 M6(T32) |
+| [design/레이아웃-v2.md](design/레이아웃-v2.md) | **레이아웃 v2 (T32 /plan-design-review 산출물)** — 시선 서열·상태 매핑·규모·패널·토큰·스프라이트 규격·구현 태스크 T40/T33 | **확정** 2026-09-17 (D-42·D-43) · 실사용 후 수정은 04 에 append |
+| [design/office-sketch.png](design/office-sketch.png) | 첫 와이어프레임 (팀 위계·터미널 탭 반영 전) | 역사 기록 — v2 로 대체 |
 
 ## 읽는 순서
 
