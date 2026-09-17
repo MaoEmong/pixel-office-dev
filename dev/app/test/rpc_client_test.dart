@@ -149,7 +149,8 @@ void main() {
     client.hellos.listen(hellos.add);
 
     client.start(urlProvider: () => daemon.url, tokenProvider: () => 'tok');
-    await firstWhere(client.stateStream, (s) => s == RpcConnectionState.connected);
+    // 폴링으로 기다린다 — stateStream 은 브로드캐스트라 구독 전에 붙어 버리면 이벤트를 놓친다(T40c).
+    await waitFor(() => client.state == RpcConnectionState.connected, timeout: const Duration(seconds: 10));
     expect(daemon.helloParams.length, 1);
     expect(daemon.helloParams[0].containsKey('since'), isFalse);
 
@@ -190,7 +191,7 @@ void main() {
     await daemon.stop();
     client.start(urlProvider: () => Uri.parse('ws://127.0.0.1:$port'), tokenProvider: () => 'tok');
     // Windows 는 닫힌 loopback 포트 접속 실패에 ~2초 걸린다(SYN 재전송) → 넉넉히 기다린다.
-    await waitFor(() => client.reconnectAttempts >= 2, timeout: const Duration(seconds: 15));
+    await waitFor(() => client.reconnectAttempts >= 2, timeout: const Duration(seconds: 30));
     expect(client.state, RpcConnectionState.disconnected);
     expect(client.lastError, isNotNull);
 
@@ -211,7 +212,8 @@ void main() {
     await daemon.start();
     client = RpcClient(minBackoff: const Duration(milliseconds: 20), maxBackoff: const Duration(milliseconds: 40));
     client.start(urlProvider: () => daemon.url, tokenProvider: () => 'tok');
-    await firstWhere(client.stateStream, (s) => s == RpcConnectionState.connected);
+    // 폴링으로 기다린다 — stateStream 은 브로드캐스트라 구독 전에 붙어 버리면 이벤트를 놓친다(T40c).
+    await waitFor(() => client.state == RpcConnectionState.connected, timeout: const Duration(seconds: 10));
     expect(client.reconnectAttempts, 0);
   });
 }

@@ -7,6 +7,11 @@
 //  - [AppShortcuts] 로 Ctrl+K/L/T/I/R · Esc 를 한 곳에서 묶는다(인박스의 Alt+Y/N 은 인박스가 직접 듣는다).
 //  - 끊김 오버레이는 `topbar/disconnected_overlay.dart` 로 옮겼다(pill 과 같은 문구 + 진행 바 + "자세히" 접힘).
 //  - 테마에 팔레트 포커스 링(2px `#FFFFFF` 알파 0.8)과 6px 스크롤바를 심었다(패스 6 접근성).
+//
+// T40c(두 절반의 접점)에서 배선한 것 — 이 파일이 사무실과 패널을 이어 주는 **유일한** 자리다:
+//  - `OfficeView.onSelectPending` → [selectPendingFromOffice] (내 책상 슬롯 클릭 = 그 멤버 + 인박스 스크롤, D6).
+//  - `OfficeView.onCreateDepartment` → 상단 바와 **같은** `showCreateDepartmentDialog`(부서 0 개 빈 상태).
+//  접점 회귀는 `test/app_shell_test.dart` 가 본다.
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -92,9 +97,10 @@ class OfficeShell extends ConsumerWidget {
                             selectedMemberId: selected,
                             departmentId: departmentId,
                             onSelectMember: (id) => ref.read(selectedMemberIdProvider.notifier).select(id),
-                            // TODO(T40a 병합): OfficeView 에 `onSelectPending` 이 생기면 아래 한 줄을 넣는다 —
-                            //   onSelectPending: (pendingId) => selectPendingFromOffice(ref, pendingId),
                             // 내 책상 슬롯 클릭 = 그 멤버 선택 + 인박스에서 그 카드로 스크롤(D6).
+                            onSelectPending: (pendingId) => selectPendingFromOffice(ref, pendingId),
+                            // 부서 0 개일 때 캔버스 가운데 큰 버튼 → 상단 바와 같은 다이얼로그(패스 2 이슈 7).
+                            onCreateDepartment: () => showCreateDepartmentDialog(context),
                           ),
                           panel: RightPanel(memberId: selected),
                         ),
@@ -115,7 +121,7 @@ class OfficeShell extends ConsumerWidget {
 }
 
 /// 사무실 내 책상 슬롯 클릭 → 그 pending 을 낸 멤버를 고르고 인박스에서 그 카드로 스크롤한다(D6).
-/// T40a 의 `OfficeView.onSelectPending` 이 이것을 부른다.
+/// `OfficeView.onSelectPending` 이 이것을 부른다(T40c 배선).
 void selectPendingFromOffice(WidgetRef ref, String pendingId) {
   final pending = ref.read(openPendingProvider)[pendingId];
   if (pending != null) ref.read(selectedMemberIdProvider.notifier).select(pending.memberId);

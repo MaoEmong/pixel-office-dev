@@ -96,6 +96,27 @@ void main() {
       expect(queued.every((m) => m.legendSlot == LegendSlot.myTurn), isTrue);
     });
 
+    test('T40c: 한 멤버가 카드 2장을 들어도 슬롯 번호 = 카드 번호(옆 사람 카드가 열리지 않는다)', () {
+      // mH 가 허가 2건(a0·a1), m0 이 1건(a2). 슬롯 0·1 은 mH 의 두 카드, 슬롯 2 는 m0 의 카드다.
+      final scene = OfficeScene.build(
+        members: waitingOffice(2).members,
+        latestEvents: const {},
+        pending: {
+          'a0': approval('a0', 'mH', 'cmd0', createdAt: '2026-09-15T00:00:00Z'),
+          'a1': approval('a1', 'mH', 'cmd1', createdAt: '2026-09-15T00:00:01Z'),
+          'a2': approval('a2', 'm0', 'cmd2', createdAt: '2026-09-15T00:00:02Z'),
+        },
+      );
+      expect(scene.queue.map((q) => q.pendingId), ['a0', 'a1', 'a2']);
+      expect(scene.myDeskHeader, '내 책상 · 대기 3');
+      // 카드 2장을 든 부장은 자기 **첫 카드** 자리에 서고, 옆 사람은 자기 카드 자리에 선다.
+      expect(scene.memberById('mH')!.queueIndex, 0);
+      expect(scene.memberById('m0')!.queueIndex, 2);
+      for (var k = 0; k < 3; k++) {
+        expect(scene.slotEntry(k)!.memberId, scene.queue[k].memberId, reason: '슬롯 $k 의 카드 주인');
+      }
+    });
+
     test('슬롯을 못 받은 대기자는 배치가 자기 자리 그대로', () {
       final state = waitingOffice(6);
       final scene = OfficeScene.build(members: state.members, latestEvents: const {}, pending: state.pending);

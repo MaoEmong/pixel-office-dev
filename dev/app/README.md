@@ -15,7 +15,7 @@ cd dev/app
 flutter pub get
 flutter run -d windows          # 개발 실행
 flutter build windows --release # build\windows\x64\runner\Release\pixel_office.exe
-flutter analyze && flutter test # 검증 (위젯·상태 340건)
+flutter analyze && flutter test # 검증 (위젯·상태 343건)
 ```
 
 데몬이 먼저 떠 있어야 한다(`cd dev/daemon && npm start`). 없으면 앱은 회색 오버레이 + "데몬 연결 안 됨" 을 보이며 1→2→4→5초 간격으로 계속 재접속을 시도한다("데몬 시작" 버튼은 T14).
@@ -83,13 +83,15 @@ Codex 팀원이 각자 책상·배지·터미널 탭(실제 Codex TUI)으로 보
 - **상태 13종 → 범례 7칸**: `LegendSlot`(작업 `#6C8EFF` · 한가 `#7ED3A1` · 보고 대기 초록 **점선** 📨 ·
   내 차례 `#FF9F43` ❗ · 대기 `#FFC857` ⏳ · 오류 `#FF6B6B` ⚠ · 퇴근 `#474D5E`) + `legendSlotOf(SceneMember)`.
   캐릭터 원 색·하단 범례가 이 함수를 쓰고, 오른쪽 패널의 상태 점도 **같은 함수를 import 해서 쓴다**
-  (`office_scene.dart` 의 `legendSlotOf` + `office_painter.dart` 의 `legendColor`).
+  (`office_scene.dart` 의 `legendSlotFor`/`legendSlotOf` + `office_painter.dart` 의 `legendColor` — T40c 에 사본을 없앴다).
   오류는 책상 테두리도 빨강, 퇴근은 **회색 책상 + 의자만**(캐릭터 원 없음).
 - **말풍선**: alert(내 차례·대기·오류·보고 방문·복구)는 항상, **작업 말풍선은 선택 멤버나 호버일 때만**(8명 화면이 말풍선 밭이 되지 않게).
   최대 28자 · 폭 180×scale · 2줄.
 - **내 책상 = 인박스 그림**: 슬롯 **4칸**(오래된 것부터 왼쪽, 빈 칸은 점선 실루엣), 5명째부터는 자기 책상에 남고
   맨 오른쪽 슬롯 위 **"+N"**. 헤더 "내 책상 · 대기 N"(N = 전체). 슬롯·배지 클릭 = 그 멤버 선택 +
-  **`OfficeView.onSelectPending(pendingId)`**(오른쪽 패널이 인박스에서 그 카드로 스크롤 — T40b 가 배선).
+  **`OfficeView.onSelectPending(pendingId)`**(오른쪽 패널이 인박스에서 그 카드로 스크롤 — `main.dart` 가 배선, T40c).
+  슬롯 k 는 **인박스 카드 k 와 1:1** 이다 — 한 멤버가 카드 2장을 들면 그 멤버는 자기 첫 카드 자리에 서고
+  나머지 칸은 카드만 있는 빈 슬롯으로 남는다(T40c).
   `ask_parent` 로 같은 상사에게 몰리면 `visitorSpot(desk, k)` 가 `2r+8` 씩 벌리고 **최대 2명**, 3명째부터 "+N" 말풍선
   (오른쪽 끝이면 왼쪽으로 접는다). 보고 방문은 슬롯을 차지하지 않고 내 책상 오른쪽(`reportSpot`)에 선다.
 - **빈 상태·연출**: 부서 0 → 가운데 큰 "부서 만들기" 버튼(**`OfficeView.onCreateDepartment`**, 다이얼로그는 상단 바 몫)
@@ -160,7 +162,7 @@ Alt+Y 허가 · Alt+N 거부                               ← 인박스 맨 위
   안내 문구로 바뀐다 — **같은 멤버에 `member.attach` 를 두 번 걸면 나중 detach 가 먼저 것을 끊기 때문**. 터미널은 한 곳에만 붙는다.
   크기가 바뀌면 `member.resize{cols, rows}` 는 그대로 나간다(`terminal_cache.dart` 의 `onResize`).
 
-### 상태 범례 7칸 (`labels.dart` `legendCategory`, D-42 3)
+### 상태 범례 7칸 (`office/office_scene.dart` `legendSlotFor`, D-42 3)
 
 | 칸 | 색 | 아이콘 | 포함 |
 |---|---|---|---|
@@ -172,8 +174,10 @@ Alt+Y 허가 · Alt+N 거부                               ← 인박스 맨 위
 | 오류 | `#FF6B6B` | ⚠ | error |
 | 퇴근 | `#474D5E` | — | exited |
 
-패널 헤더 상태 점이 이 표를 쓴다. 사무실 캔버스(T40a)도 같은 매핑을 써야 하며,
-`office_scene.dart` 가 같은 함수를 export 하면 `labels.dart` 의 사본을 지운다(코드 안 TODO).
+매핑 함수는 **하나뿐이다**(T40c): `legendSlotFor({status, derived, eventKind, askingParent, shellWaiting, queued})`,
+장면이 있는 사무실은 껍데기 `legendSlotOf(SceneMember)`. 색은 `office_painter.dart` 의 `legendColor(LegendSlot)`.
+캐릭터 링·하단 범례·패널 헤더 상태 점·보고서 탭 배지가 전부 이 둘을 import 해서 쓴다
+(`panel/labels.dart` 에 있던 사본 `LegendCategory`/`legendCategory` 는 지웠다).
 
 ### 상단 바 · 지시 바 · 끊김 오버레이 (T40-5)
 
@@ -252,7 +256,8 @@ test/
   rpc_client_test.dart      상관·에러 매핑·replay 중복 제거·재접속(since)·backoff
   model_test.dart           PROTOCOL/설계문서 예시 JSON 파싱
   office_state_test.dart    스냅샷 → 맵, member.status, event → 링버퍼/pending 파생, 재접속, **밀려온 snapshot**(T38)
-  command/ office/ panel/ state/   위젯·배치·카드 테스트(T12~T40a — office/ 는 layout·scene·painter·legend·mydesk·states·motion·movement·view)
+  app_shell_test.dart       T40c 접점 — OfficeShell 통째로: 슬롯 클릭 → 인박스 스크롤, 부서 0 버튼 → 부서 만들기 다이얼로그
+  command/ office/ panel/ state/   위젯·배치·카드 테스트(T12~T40 — office/ 는 layout·scene·painter·legend·mydesk·states·motion·movement·view)
 windows/runner/main.cpp     창 제목 "픽셀 오피스"
 ```
 

@@ -21,6 +21,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../model/models.dart';
+import '../office/office_painter.dart' show legendColor;
+import '../office/office_scene.dart' show LegendSlot, legendSlotFor;
 import '../state/office_state.dart';
 import 'inbox.dart';
 import 'instructions_tab.dart';
@@ -64,8 +66,6 @@ export 'labels.dart'
         eventKindLabel,
         memberStatusLabel,
         derivedStatusLabel,
-        LegendCategory,
-        legendCategory,
         panelFocusRing,
         panelFocusRingWidth,
         panelScrollbarThickness,
@@ -269,7 +269,7 @@ class _PanelTabBarState extends ConsumerState<_PanelTabBar> {
                 Container(
                   key: const Key('panel.reportBadge'),
                   padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
-                  decoration: BoxDecoration(color: LegendCategory.free.color, borderRadius: BorderRadius.circular(8)),
+                  decoration: BoxDecoration(color: legendColor(LegendSlot.idle), borderRadius: BorderRadius.circular(8)),
                   child: Text(
                     '$unread',
                     style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Colors.black87),
@@ -332,7 +332,7 @@ class PanelHeader extends ConsumerWidget {
     // 상태 점은 범례 7칸 매핑을 쓴다(D-42 3) — 사무실 링 색·하단 범례와 같은 색.
     // `ask_parent` 로 상사 답을 기다리는 중이면 "내 차례" 가 아니라 "대기" 다.
     final askingParent = ref.watch(openPendingProvider).values.any((p) => p.isAskParent && p.memberId == member.id);
-    final legend = legendCategory(member.status, derived: derived, askingParent: askingParent);
+    final legend = legendSlotFor(status: member.status, derived: derived, askingParent: askingParent);
     final hired = DateTime.tryParse(member.createdAt);
     final cwd = department?.cwd ?? team?.cwd ?? member.cwd;
     final scope = [
@@ -352,12 +352,12 @@ class PanelHeader extends ConsumerWidget {
               _Badge(member.engine.name),
               const SizedBox(width: 8),
               Tooltip(
-                message: '${legend.label}${legend.icon == null ? '' : ' ${legend.icon}'}',
+                message: '${legend.label}${legend.icon.isEmpty ? '' : ' ${legend.icon}'}',
                 child: Icon(
                   legend.dashedRing ? Icons.circle_outlined : Icons.circle,
                   key: const Key('panel.statusDot'),
                   size: 9,
-                  color: legend.color,
+                  color: legendColor(legend),
                 ),
               ),
               const SizedBox(width: 4),

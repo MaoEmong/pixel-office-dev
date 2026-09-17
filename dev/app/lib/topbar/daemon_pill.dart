@@ -11,7 +11,8 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import '../panel/labels.dart' show LegendCategory;
+import '../office/office_painter.dart' show legendColor;
+import '../office/office_scene.dart' show LegendSlot;
 import '../rpc/rpc_client.dart';
 import '../state/office_state.dart';
 
@@ -137,11 +138,11 @@ class ReportCountBadge extends StatelessWidget {
           padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
           decoration: BoxDecoration(
             borderRadius: BorderRadius.circular(10),
-            color: LegendCategory.free.color.withValues(alpha: 0.18),
+            color: legendColor(LegendSlot.idle).withValues(alpha: 0.18),
           ),
           child: Text(
             '보고 $count',
-            style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: LegendCategory.free.color),
+            style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: legendColor(LegendSlot.idle)),
           ),
         ),
       );

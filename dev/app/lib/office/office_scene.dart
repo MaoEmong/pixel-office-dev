@@ -98,25 +98,49 @@ enum LegendSlot {
   final bool dashedRing;
 }
 
-/// 코드 상태 13종 → 범례 7칸. **이 함수 하나가 유일한 매핑**이다(링 색·범례·패널 상태 점 공용).
-LegendSlot legendSlotOf(SceneMember m) {
-  if (m.status == MemberStatus.exited) return LegendSlot.exited;
-  if (m.status == MemberStatus.error) return LegendSlot.error;
+/// 코드 상태 13종 → 범례 7칸. **이 함수 하나가 유일한 매핑**이다(링 색·범례·패널 헤더 상태 점 공용).
+///
+/// 사무실은 [SceneMember] 를 들고 있으므로 [legendSlotOf] 를, 패널처럼 장면이 없는 곳은 이 함수를 직접 쓴다
+/// (T40c: `panel/labels.dart` 에 있던 사본 `LegendCategory`/`legendCategory` 를 지우고 여기로 합쳤다).
+///
+/// - [askingParent] `ask_parent` 로 상사 답을 기다리는 중 — 사용자 몫이 아니라 `대기`.
+/// - [shellWaiting] 셸 락 대기(`running{detail.waiting}`).
+/// - [queued] 내 책상 줄(슬롯)에 서 있다.
+LegendSlot legendSlotFor({
+  required MemberStatus status,
+  DerivedStatus? derived,
+  OfficeEventKind? eventKind,
+  bool askingParent = false,
+  bool shellWaiting = false,
+  bool queued = false,
+}) {
+  if (status == MemberStatus.exited) return LegendSlot.exited;
+  if (status == MemberStatus.error) return LegendSlot.error;
   // ask_parent 답 대기는 "대기"(노랑) — 사용자가 할 일이 없다.
-  if (m.isAskingParent) return LegendSlot.waiting;
+  if (askingParent) return LegendSlot.waiting;
   // 내 차례: 허가 대기 · 부장 ask_user · TUI 질문(= 내 책상 줄에 선 사람).
-  if (m.isQueued || m.status.isWaiting || (m.derived?.isWaiting ?? false)) return LegendSlot.myTurn;
-  if (m.status == MemberStatus.starting) return LegendSlot.waiting;
-  if (m.isShellWaiting) return LegendSlot.waiting;
-  if (m.derived == DerivedStatus.waitingReports) return LegendSlot.waitingReports;
-  if (m.derived == DerivedStatus.free) return LegendSlot.idle;
-  if (m.eventKind == OfficeEventKind.delegating || m.eventKind == OfficeEventKind.reporting) return LegendSlot.working;
-  return switch (m.status) {
+  if (queued || status.isWaiting || (derived?.isWaiting ?? false)) return LegendSlot.myTurn;
+  if (status == MemberStatus.starting) return LegendSlot.waiting;
+  if (shellWaiting) return LegendSlot.waiting;
+  if (derived == DerivedStatus.waitingReports) return LegendSlot.waitingReports;
+  if (derived == DerivedStatus.free) return LegendSlot.idle;
+  if (eventKind == OfficeEventKind.delegating || eventKind == OfficeEventKind.reporting) return LegendSlot.working;
+  return switch (status) {
     MemberStatus.working => LegendSlot.working,
     MemberStatus.idle => LegendSlot.idle,
     _ => LegendSlot.idle,
   };
 }
+
+/// 장면 멤버의 범례 칸. [legendSlotFor] 에 그 멤버의 플래그를 넘기는 얇은 껍데기다.
+LegendSlot legendSlotOf(SceneMember m) => legendSlotFor(
+      status: m.status,
+      derived: m.derived,
+      eventKind: m.eventKind,
+      askingParent: m.isAskingParent,
+      shellWaiting: m.isShellWaiting,
+      queued: m.isQueued,
+    );
 
 /// 파생 상태 `waiting_reports`(상사가 위임하고 부하 보고를 기다리는 중 — 01 §3) 의 모니터·말풍선 문구.
 const String waitingReportsSummary = '📨 보고 대기';
@@ -539,18 +563,28 @@ class OfficeScene {
         withUserPending.contains(m.id) ||
         (!otherPending.contains(m.id) && ((derived[m.id]?.isWaiting ?? false) || m.status.isWaiting));
 
-    // 줄 순서: pending 생성 순으로 멤버가 처음 나타나는 순서. pending 없이 waiting 인 멤버는 그 뒤에 createdAt 순.
-    final queueOrder = <String>[];
-    for (final p in userPending) {
-      if (!queueOrder.contains(p.memberId) && members.containsKey(p.memberId)) queueOrder.add(p.memberId);
-    }
-    for (final m in ordered) {
-      if (isQueuedMember(m) && !queueOrder.contains(m.id)) queueOrder.add(m.id);
-    }
+    // 줄(슬롯)은 **인박스 카드와 1:1** 이다(D6) — `queue[k]` 가 슬롯 k 의 카드고, 슬롯 k 에 서는 사람은
+    // 그 카드의 주인이다. 그래서 멤버의 슬롯 번호를 따로 매기지 않고 **카드 목록에서 찾는다**
+    // (T40c: 전에는 멤버 순번과 카드 순번을 따로 압축해서, 한 멤버가 카드 2장을 들면 옆 사람 슬롯을 누를 때
+    //  남의 카드가 열렸다). 카드 2장을 든 멤버는 자기 **첫 카드** 자리에 서고 나머지 칸은 빈 슬롯으로 남는다.
+    final queue = <QueueEntry>[
+      for (final p in userPending)
+        if (members.containsKey(p.memberId))
+          QueueEntry(
+            pendingId: p.id,
+            memberId: p.memberId,
+            memberName: members[p.memberId]?.name ?? p.memberId,
+            label: pendingLabel(p),
+          ),
+    ];
     final queued = <String, int>{};
-    for (final id in queueOrder) {
-      final m = members[id];
-      if (m != null && isQueuedMember(m)) queued[id] = queued.length;
+    for (var k = 0; k < queue.length; k++) {
+      queued.putIfAbsent(queue[k].memberId, () => k);
+    }
+    // 카드 없이 상태만 waiting 인 멤버(pending 이 아직 안 온 찰나)는 카드 뒤에 createdAt 순으로 선다.
+    var tail = queue.length;
+    for (final m in ordered) {
+      if (isQueuedMember(m) && !queued.containsKey(m.id)) queued[m.id] = tail++;
     }
 
     final sceneMembers = <SceneMember>[
@@ -593,15 +627,6 @@ class OfficeScene {
         ),
     ];
 
-    final queue = <QueueEntry>[
-      for (final p in userPending)
-        QueueEntry(
-          pendingId: p.id,
-          memberId: p.memberId,
-          memberName: members[p.memberId]?.name ?? p.memberId,
-          label: pendingLabel(p),
-        ),
-    ];
     return OfficeScene(members: sceneMembers, queue: queue, plan: plan);
   }
 

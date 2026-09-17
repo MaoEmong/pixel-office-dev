@@ -14,6 +14,8 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../model/models.dart';
+import '../office/office_painter.dart' show legendColor;
+import '../office/office_scene.dart' show LegendSlot;
 import '../rpc/rpc_client.dart';
 import '../state/office_state.dart';
 import 'labels.dart';
@@ -223,7 +225,7 @@ class _PendingInboxState extends ConsumerState<PendingInbox> {
                 Icon(
                   Icons.inbox,
                   size: 14,
-                  color: items.isEmpty ? Colors.white38 : LegendCategory.myTurn.color,
+                  color: items.isEmpty ? Colors.white38 : legendColor(LegendSlot.myTurn),
                 ),
                 const SizedBox(width: 6),
                 Text(
@@ -232,7 +234,7 @@ class _PendingInboxState extends ConsumerState<PendingInbox> {
                   style: TextStyle(
                     fontSize: 12.5,
                     fontWeight: FontWeight.bold,
-                    color: items.isEmpty ? Colors.white54 : LegendCategory.myTurn.color,
+                    color: items.isEmpty ? Colors.white54 : legendColor(LegendSlot.myTurn),
                   ),
                 ),
                 const Spacer(),
