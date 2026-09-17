@@ -4,12 +4,17 @@
 //   [다음 재시도까지의 진행 바]  (RpcClient 의 backoff 주기 1→2→4→5초)
 //   [데몬 시작]  [다시 연결]        ← 주 버튼 하나 + 보조 하나
 //   자세히 ▸  (예외 문자열은 접힘 — 사무실 전체에 스택 트레이스를 뿌리지 않는다)
+//
+// T41: "자세히" 는 오류가 없을 때도 열린다. 안에는 **찾아본 daemon.json 경로**와 한 줄 힌트가 늘 있다 —
+// 실기 사고에서 "daemon.json 없음" 만 보고는 어느 폴더를 보고 하는 말인지 알 수가 없었다(샌드박스의
+// %LOCALAPPDATA% 와 탐색기에서 띄운 앱의 %LOCALAPPDATA% 가 달랐다).
 
 import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../rpc/daemon_info.dart';
 import '../rpc/rpc_client.dart';
 import '../state/office_state.dart';
 import 'daemon_launcher.dart';
@@ -33,7 +38,10 @@ Duration backoffForAttempt(int attempts, {required Duration min, required Durati
 }
 
 class DisconnectedOverlay extends ConsumerStatefulWidget {
-  const DisconnectedOverlay({super.key});
+  const DisconnectedOverlay({super.key, this.daemonJsonPath});
+
+  /// "자세히" 에 보여 줄 daemon.json 경로. 기본은 이 프로세스가 실제로 보는 곳(`DaemonInfo.defaultPath()`).
+  final String? daemonJsonPath;
 
   @override
   ConsumerState<DisconnectedOverlay> createState() => _DisconnectedOverlayState();
@@ -124,20 +132,21 @@ class _DisconnectedOverlayState extends ConsumerState<DisconnectedOverlay> {
                   ),
                 ],
               ),
-              if (error != null) ...[
-                const SizedBox(height: 8),
-                TextButton(
-                  key: const Key('overlay.details'),
-                  style: TextButton.styleFrom(
-                    visualDensity: VisualDensity.compact,
-                    tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                    foregroundColor: Colors.white38,
-                    textStyle: const TextStyle(fontSize: 12),
-                  ),
-                  onPressed: () => setState(() => _details = !_details),
-                  child: Text(_details ? '$disconnectedDetailsLabel 접기' : '$disconnectedDetailsLabel ▸'),
+              const SizedBox(height: 8),
+              // 오류가 없어도 열 수 있다 — 경로와 힌트는 늘 안에 있다(T41).
+              TextButton(
+                key: const Key('overlay.details'),
+                style: TextButton.styleFrom(
+                  visualDensity: VisualDensity.compact,
+                  tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                  foregroundColor: Colors.white38,
+                  textStyle: const TextStyle(fontSize: 12),
                 ),
-                if (_details)
+                onPressed: () => setState(() => _details = !_details),
+                child: Text(_details ? '$disconnectedDetailsLabel 접기' : '$disconnectedDetailsLabel ▸'),
+              ),
+              if (_details) ...[
+                if (error != null)
                   Padding(
                     padding: const EdgeInsets.only(top: 4),
                     child: SelectableText(
@@ -147,6 +156,24 @@ class _DisconnectedOverlayState extends ConsumerState<DisconnectedOverlay> {
                       textAlign: TextAlign.center,
                     ),
                   ),
+                Padding(
+                  padding: const EdgeInsets.only(top: 4),
+                  child: SelectableText(
+                    'daemon.json: ${widget.daemonJsonPath ?? DaemonInfo.defaultPath() ?? daemonNoDataDir}',
+                    key: const Key('overlay.daemonPath'),
+                    style: const TextStyle(color: Colors.white38, fontSize: 11),
+                    textAlign: TextAlign.center,
+                  ),
+                ),
+                const Padding(
+                  padding: EdgeInsets.only(top: 4),
+                  child: Text(
+                    daemonPathHint,
+                    key: Key('overlay.pathHint'),
+                    style: TextStyle(color: Colors.white30, fontSize: 11),
+                    textAlign: TextAlign.center,
+                  ),
+                ),
               ],
             ],
           ),

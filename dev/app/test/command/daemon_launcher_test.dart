@@ -57,6 +57,45 @@ void main() {
     expect(fake.retryNowCount, 3);
   });
 
+  testWidgets('T41: 6초 안에 daemon.json 이 안 생기면 "데몬이 뜨지 않았습니다"', (tester) async {
+    final fake = FakeRpcClient();
+    addTearDown(fake.close);
+    await tester.pumpWidget(ProviderScope(
+      overrides: fake.overrides,
+      child: MaterialApp(
+        home: Scaffold(
+          body: DaemonStartButton(launcher: () async {}, checkDaemonJson: () async => false),
+        ),
+      ),
+    ));
+    await tester.tap(find.byKey(const Key('daemon.start')));
+    await tester.pump();
+    expect(find.text('데몬 시작 중… (npm start)'), findsOneWidget);
+
+    await tester.pump(daemonStartTimeout);
+    await tester.pump(); // 확인(Future) → setState
+    expect(find.text(daemonNotStartedMessage), findsOneWidget);
+    expect(find.textContaining('7420~7422'), findsOneWidget);
+  });
+
+  testWidgets('T41: daemon.json 이 생겼으면 실패 문구를 안 띄운다', (tester) async {
+    final fake = FakeRpcClient();
+    addTearDown(fake.close);
+    await tester.pumpWidget(ProviderScope(
+      overrides: fake.overrides,
+      child: MaterialApp(
+        home: Scaffold(
+          body: DaemonStartButton(launcher: () async {}, checkDaemonJson: () async => true),
+        ),
+      ),
+    ));
+    await tester.tap(find.byKey(const Key('daemon.start')));
+    await tester.pump(daemonStartTimeout);
+    await tester.pump();
+    expect(find.text(daemonNotStartedMessage), findsNothing);
+    expect(find.text('데몬 시작 중… (npm start)'), findsOneWidget);
+  });
+
   testWidgets('DaemonStartButton: 실패하면 오류 문구, retryNow 안 부름', (tester) async {
     final fake = FakeRpcClient();
     addTearDown(fake.close);

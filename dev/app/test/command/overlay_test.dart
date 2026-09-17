@@ -3,16 +3,20 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:pixel_office/rpc/daemon_info.dart';
 import 'package:pixel_office/rpc/rpc_client.dart';
 import 'package:pixel_office/topbar/disconnected_overlay.dart';
 
 import 'fake_rpc_client.dart';
 
+/// T41: 테스트가 이 프로세스의 진짜 %LOCALAPPDATA% 에 기대지 않게 경로를 넣어 준다.
+const String fakeDaemonJsonPath = r'C:\fake\pixel-office\daemon.json';
+
 Future<void> pumpOverlay(WidgetTester tester, FakeRpcClient fake) async {
   await tester.pumpWidget(ProviderScope(
     overrides: fake.overrides,
     child: const MaterialApp(
-      home: Scaffold(body: Stack(children: [DisconnectedOverlay()])),
+      home: Scaffold(body: Stack(children: [DisconnectedOverlay(daemonJsonPath: fakeDaemonJsonPath)])),
     ),
   ));
   await tester.pump();
@@ -65,9 +69,20 @@ void main() {
     expect(find.text('붙는 중…'), findsOneWidget);
   });
 
+  testWidgets('T41: "자세히" 에는 오류가 없어도 daemon.json 경로와 한 줄 힌트가 있다', (tester) async {
+    await pumpOverlay(tester, fake);
+    // 접혀 있을 때는 경로도 안 보인다(사무실 전체에 경로를 뿌리지 않는다).
+    expect(find.byKey(const Key('overlay.daemonPath')), findsNothing);
+
+    await tester.tap(find.byKey(const Key('overlay.details')));
+    await tester.pump();
+    expect(find.text('daemon.json: $fakeDaemonJsonPath'), findsOneWidget);
+    expect(find.text(daemonPathHint), findsOneWidget);
+    expect(find.byKey(const Key('overlay.error')), findsNothing); // 오류가 아직 없다
+  });
+
   testWidgets('예외 문자열은 기본으로 접혀 있고 "자세히" 로만 펼친다', (tester) async {
     await pumpOverlay(tester, fake);
-    expect(find.byKey(const Key('overlay.details')), findsNothing); // 오류가 없으면 버튼도 없다
 
     fake.emitAttempt(1, error: 'SocketException: 연결이 거부되었습니다 (OS Error: ...)');
     await tester.pump();
@@ -79,6 +94,7 @@ void main() {
     await tester.pump();
     expect(find.byKey(const Key('overlay.error')), findsOneWidget);
     expect(find.textContaining('SocketException'), findsOneWidget);
+    expect(find.byKey(const Key('overlay.daemonPath')), findsOneWidget); // 경로는 늘 같이 나온다
 
     await tester.tap(find.byKey(const Key('overlay.details')));
     await tester.pump();

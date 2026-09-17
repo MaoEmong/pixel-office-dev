@@ -52,7 +52,8 @@ class DaemonConnector {
 final daemonConnectorProvider = Provider<DaemonConnector>((ref) => DaemonConnector.fromDaemonJson());
 
 final rpcClientProvider = Provider<RpcClient>((ref) {
-  final client = RpcClient();
+  // 못 붙을 때의 문구에 **찾아본 daemon.json 경로**와 환경변수 유무를 싣는다(T41 실기 사고).
+  final client = RpcClient(noDaemonInfoMessage: daemonJsonMissingMessage());
   ref.onDispose(() => client.close());
   return client;
 });

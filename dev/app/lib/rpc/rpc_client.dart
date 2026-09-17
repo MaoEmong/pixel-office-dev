@@ -83,7 +83,12 @@ class RpcClient {
     this.maxBackoff = const Duration(seconds: 5),
     this.clientName = 'pixel-office',
     this.clientVersion = '0.1.0',
+    this.noDaemonInfoMessage = defaultNoDaemonInfoMessage,
   }) : _connector = connector ?? _defaultConnector;
+
+  /// url/token 을 못 구했을 때(= daemon.json 없음) 쓰는 기본 문구. 앱은 찾아본 경로까지 담은 문구를
+  /// 넣어 준다(`daemonJsonMissingMessage()`, T41) — 이 층은 파일 경로를 모른다.
+  static const String defaultNoDaemonInfoMessage = 'daemon.json 없음(데몬 미기동)';
 
   final WebSocketConnector _connector;
   final Duration callTimeout;
@@ -91,6 +96,9 @@ class RpcClient {
   final Duration maxBackoff;
   final String clientName;
   final String clientVersion;
+
+  /// daemon.json 을 못 읽었을 때의 오류 문구(오버레이 "자세히" 에 그대로 나온다).
+  final String noDaemonInfoMessage;
 
   WebSocketChannel? _channel;
   StreamSubscription<dynamic>? _sub;
@@ -344,7 +352,7 @@ class RpcClient {
         final url = await urlProvider();
         final token = await tokenProvider();
         if (url == null || token == null) {
-          throw const RpcException(RpcException.closed, 'daemon.json 없음(데몬 미기동)');
+          throw RpcException(RpcException.closed, noDaemonInfoMessage);
         }
         await connect(url);
         await hello(token, since: _synced ? _lastSeq : null);

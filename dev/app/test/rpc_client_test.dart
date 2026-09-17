@@ -197,12 +197,17 @@ void main() {
 
     // daemon.json 이 없는 경우(null) 도 같은 경로
     await client.stop();
-    final c2 = RpcClient(minBackoff: const Duration(milliseconds: 20), maxBackoff: const Duration(milliseconds: 20));
+    // T41: 문구는 주입 가능하다 — 앱은 여기에 "찾아본 경로 + 환경변수 유무" 를 넣는다.
+    final c2 = RpcClient(
+      minBackoff: const Duration(milliseconds: 20),
+      maxBackoff: const Duration(milliseconds: 20),
+      noDaemonInfoMessage: 'daemon.json 없음 — 찾은 곳: C:/fake/daemon.json',
+    );
     final attempts = <int>[];
     c2.attemptStream.listen(attempts.add);
     c2.start(urlProvider: () => null, tokenProvider: () => null);
     await waitFor(() => c2.reconnectAttempts >= 2);
-    expect(c2.lastError.toString(), contains('daemon.json'));
+    expect(c2.lastError.toString(), contains('C:/fake/daemon.json'));
     await waitFor(() => attempts.length >= 2);
     expect(attempts.take(2), [1, 2]); // 소켓을 열지 못한 시도도 attemptStream 으로 알린다
     await c2.close();
