@@ -77,6 +77,83 @@ export function resolveCodexExe(env: NodeJS.ProcessEnv = process.env, platform: 
   return onPath(exeName, env.PATH ?? env.Path) ?? 'codex';
 }
 
+/** 버전 폴더 이름(`2.1.270`) 비교 — 내림차순(높은 버전이 앞). 숫자 조각만 본다. */
+function compareVersionDesc(a: string, b: string): number {
+  const pa = a.split('.').map(Number);
+  const pb = b.split('.').map(Number);
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    const d = (pb[i] ?? 0) - (pa[i] ?? 0);
+    if (d !== 0) return d;
+  }
+  return 0;
+}
+
+/** `%APPDATA%\Claude\claude-code\<semver>\claude.exe` 중 **가장 높은 버전** 의 실행 파일. */
+function newestClaudeBundle(appData: string, exeName: string): { exe?: string; root: string } {
+  const root = path.join(appData, 'Claude', 'claude-code');
+  let entries: string[];
+  try {
+    entries = fs.readdirSync(root);
+  } catch {
+    return { root };
+  }
+  for (const v of entries.filter((n) => /^\d+(\.\d+)*$/.test(n)).sort(compareVersionDesc)) {
+    const exe = path.join(root, v, exeName);
+    if (isFile(exe)) return { exe, root };
+  }
+  return { root };
+}
+
+/** [resolveClaudeExe] 가 무엇을 어디서 찾았는지 — 못 찾았을 때 콘솔에 그대로 뿌린다. */
+export interface ExeResolution {
+  /** 쓸 실행 파일(못 찾으면 마지막 폴백 `claude`). */
+  exe: string;
+  /** 실제 파일을 찾았는가. */
+  found: boolean;
+  /** 찾아본 곳(사람이 읽는 한 줄씩). */
+  tried: string[];
+}
+
+/**
+ * `config.claudeExe` 결정(T41). **예전에는 데스크탑 앱 번들의 버전 폴더를 박아 뒀다**
+ * (`%APPDATA%\Claude\claude-code\2.1.270\claude.exe`) — 앱이 업데이트되면 그 폴더가 사라져
+ * `dept create` 가 `-32000 File not found: ...\2.1.270\claude.exe` 로 죽었다(실기).
+ *   1. `PIXEL_CLAUDE_EXE` (지정한 경로를 그대로 쓴다)
+ *   2. PATH 의 **진짜** 실행 파일 — `.cmd`/`.ps1` 셰임은 node-pty 가 못 띄운다(T20 함정 4)
+ *   3. `%APPDATA%\Claude\claude-code\<버전>\claude.exe` 중 가장 높은 버전
+ *   4. 못 찾으면 `'claude'` + [ExeResolution.tried] 로 "어디를 봤는지" 를 남긴다
+ */
+export function resolveClaudeExeDetailed(
+  env: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
+): ExeResolution {
+  const tried: string[] = [];
+  if (env.PIXEL_CLAUDE_EXE) return { exe: env.PIXEL_CLAUDE_EXE, found: true, tried: ['PIXEL_CLAUDE_EXE'] };
+  tried.push('PIXEL_CLAUDE_EXE 없음');
+
+  const win = platform === 'win32';
+  const exeName = win ? 'claude.exe' : 'claude';
+  const onPathExe = onPath(exeName, env.PATH ?? env.Path);
+  if (onPathExe) return { exe: onPathExe, found: true, tried: [...tried, `PATH: ${onPathExe}`] };
+  tried.push(`PATH 에 ${exeName} 없음(.cmd/.ps1 셰임은 세지 않는다)`);
+
+  if (win) {
+    const appData = env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming');
+    const { exe, root } = newestClaudeBundle(appData, exeName);
+    if (exe) return { exe, found: true, tried: [...tried, `번들: ${exe}`] };
+    tried.push(`번들 없음: ${root}\\<버전>\\${exeName}`);
+  }
+  return { exe: 'claude', found: false, tried };
+}
+
+/** [resolveClaudeExeDetailed] 의 경로만. */
+export function resolveClaudeExe(
+  env: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
+): string {
+  return resolveClaudeExeDetailed(env, platform).exe;
+}
+
 export const config = {
   /** WebSocket(JSON-RPC) 포트. */
   wsPort: Number(process.env.PIXEL_WS_PORT || 7420),
@@ -86,10 +163,11 @@ export const config = {
   mcpPort: Number(process.env.PIXEL_MCP_PORT || 7422),
   /** 데몬 상태·토큰·DB·멤버 지시문이 놓이는 폴더. */
   dataDir: process.env.PIXEL_DATA_DIR || path.join(localAppData, 'pixel-office'),
-  /** claude 실행 파일. PATH 에 있으면 'claude', 없으면 데스크탑 앱 번들 경로. */
-  claudeExe:
-    process.env.PIXEL_CLAUDE_EXE ||
-    path.join(process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming'), 'Claude', 'claude-code', '2.1.270', 'claude.exe'),
+  /**
+   * claude 실행 파일. `PIXEL_CLAUDE_EXE` → PATH 의 진짜 실행 파일 → 데스크탑 앱 번들의 **최신 버전 폴더**
+   * 순으로 찾는다(resolveClaudeExe, T41). 버전 폴더를 박아 두면 앱이 업데이트될 때마다 부서 생성이 죽는다.
+   */
+  claudeExe: resolveClaudeExe(),
   /**
    * codex 실행 파일. `PIXEL_CODEX_EXE` 로 덮어쓸 수 있고, 없으면 npm 전역의 실제 `codex.exe` 를 찾는다(resolveCodexExe).
    * PATH 의 `codex`(.cmd/.ps1 셰임)는 node-pty 가 못 띄우므로 기본값으로 쓰지 않는다(T20 함정 4).
