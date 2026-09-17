@@ -257,12 +257,13 @@ class _OfficeViewState extends ConsumerState<OfficeView> with SingleTickerProvid
     // 1. 내 책상 슬롯·"+N" 배지 → 그 멤버 선택 + 인박스 카드로.
     final slot = layout.slotAt(local);
     if (slot != null) {
-      final entry = scene.slotEntry(slot) ?? (scene.queue.isNotEmpty ? scene.queue[scene.queue.length - 1] : null);
+      // 빈 슬롯(점선 실루엣)은 아무 일도 하지 않는다 — 선택을 지우지도 않는다.
+      final entry = scene.slotEntry(slot);
       if (entry != null) {
         widget.onSelectMember?.call(entry.memberId);
         widget.onSelectPending?.call(entry.pendingId);
-        return;
       }
+      return;
     }
     // 2. 클러스터 제목 줄 → "퇴근 N" 접기 토글.
     final teamId = layout.clusterTitleAt(local, _scroll);
@@ -281,7 +282,8 @@ class _OfficeViewState extends ConsumerState<OfficeView> with SingleTickerProvid
   @override
   Widget build(BuildContext context) {
     final scene = ref.watch(officeSceneProvider(widget.departmentId));
-    final noDepartment = ref.watch(departmentsProvider).isEmpty;
+    // 부서 0 개(= 아직 아무도 없는 사무실)일 때만 큰 "부서 만들기" 버튼을 얹는다(T40-6).
+    final noDepartment = ref.watch(departmentsProvider).isEmpty && scene.isEmpty;
     final textDirection = Directionality.maybeOf(context) ?? TextDirection.ltr;
     return LayoutBuilder(
       builder: (context, constraints) {

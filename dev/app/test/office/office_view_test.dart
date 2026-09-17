@@ -124,8 +124,11 @@ void main() {
 
     await tester.tapAt(origin + layout.seatCenter(0));
     await tester.tapAt(origin + layout.deskRect(1).center);
-    await tester.tapAt(origin + layout.myDeskRect.center);
+    await tester.tapAt(origin + layout.myDeskRect.topLeft + const Offset(4, 4)); // 내 책상 헤더(슬롯 밖)
     await tester.tapAt(origin + const Offset(3, 3));
+    expect(picks, ['m1', 'm2', null, null]);
+    // T40-3: 빈 슬롯(점선 실루엣)은 선택을 바꾸지 않는다 — 콜백 자체가 없다.
+    await tester.tapAt(origin + layout.slotCenter(0));
     expect(picks, ['m1', 'm2', null, null]);
   });
 
