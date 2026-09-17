@@ -15,7 +15,7 @@ cd dev/app
 flutter pub get
 flutter run -d windows          # 개발 실행
 flutter build windows --release # build\windows\x64\runner\Release\pixel_office.exe
-flutter analyze && flutter test # 검증 (위젯·상태 193건)
+flutter analyze && flutter test # 검증 (위젯·상태 273건)
 ```
 
 데몬이 먼저 떠 있어야 한다(`cd dev/daemon && npm start`). 없으면 앱은 회색 오버레이 + "데몬 연결 안 됨" 을 보이며 1→2→4→5초 간격으로 계속 재접속을 시도한다("데몬 시작" 버튼은 T14).
@@ -50,6 +50,7 @@ Codex 팀원이 각자 책상·배지·터미널 탭(실제 Codex TUI)으로 보
   팀원 뒤). 팀 없는 멤버는 "미배정" 클러스터(정상 트리에는 없다). 배치 계획은 `OfficeScene.plan`(`OfficeDeskPlan`/`DeskCluster`)
   이고 `OfficeLayout` 이 그것으로 책상·클러스터 상자를 계산한다. 직급 배지는 "♛ 부장"(금색 `OfficeColors.headMark`) ·
   "★ 팀장"(은색 `leadMark`), 캐릭터에는 같은 색 링. 엔진 배지는 그대로.
+  **레이아웃 v2(T40a, `docs/design/레이아웃-v2.md` · D-42/D-43)** 가 그 위에 올라간다 — 아래 절.
 - **내 책상**에는 **사용자 몫만** 선다: 허가는 직급과 무관하게 전부(셸 허가는 안전 문제 — D-32), 질문은 부장의 `ask_user`
   (와 턴을 붙잡는 TUI `AskUserQuestion`). 판정은 `Pending.goesToUser(rank:)` 한 곳이다.
 - **`ask_parent`(T35)** 질문(payload `{source:'ask_parent', question, options, from, to}`)은 상사에게 간 질문이라
@@ -63,6 +64,41 @@ Codex 팀원이 각자 책상·배지·터미널 탭(실제 Codex TUI)으로 보
 - **다른 클라이언트가 지운 부서·팀**(콘솔 `dept delete` 등)은 데몬이 미는 `snapshot` 알림으로 사라진다(T38).
   `_onNotification` 의 `snapshot` 가지가 `hello` 와 **같은 `_applySnapshot`** 을 쓰므로 부서 탭·책상·pending·task 가 한 번에 맞춰진다
   (이벤트 링버퍼·말풍선은 유지). 재접속이나 수동 새로고침이 필요 없다.
+
+### 사무실 캔버스 레이아웃 v2 (T40a — `lib/office/`)
+
+기준 문서는 `docs/design/레이아웃-v2.md`(D-42 · D-43). 숫자는 전부 거기서 왔고, **색 토큰의 코드 쪽 단일 소스는
+`OfficeColors`**, **상태 → 색 매핑의 단일 소스는 `office_scene.dart` 의 `legendSlotOf`** 다.
+
+- **좌표계가 둘이다**(`OfficeLayout`): 스크롤되는 **콘텐츠**(책상·클러스터·자리·방문 자리)와 고정된 **뷰포트**
+  (문·내 책상·범례·스크롤바). `scrollOffset` 이 0 이면 둘이 같다. 화면 = 위쪽 스크롤 영역 + **바닥 고정 바**
+  (내 책상 120 + 범례 24, × scale). 스크롤은 `OfficeView` 가 들고 있다(휠·세로 드래그, `clampScroll` 로 0~`maxScroll`).
+- **배율**은 폭만 본다(세로는 스크롤이 받는다): 하한 **0.6** · 폭 900 에서 1.0 · 1440 부터 커져 2080 에서 상한 **1.5**.
+  폭 **1600 이상이면 5열**. 클러스터 상자 폭 = `min(인원, 열 수)` 열 + inset, **왼쪽 정렬**, 둘이 들어가면 한 줄에 나란히.
+- **팀 카펫 6색**(`OfficeColors.carpets`, 팀 **생성 순서**로 순환) + 제목 태그(같은 색 40% 밝게, 상자 왼쪽 위 -8px, 12px 굵게).
+  부장은 책상 크기는 그대로 두고 **금색 카펫(사방 +20px, 알파 0.12) + 왕관**으로 앵커한다(왕관 스프라이트는 T33).
+- **책상 라벨은 이름만**(번호는 `deskTooltip`·시맨틱·로그). 좁아지면 **엔진 배지 → 직급 배지 글자(아이콘만) → 이름 말줄임** 순.
+  모니터는 **2줄**(위: 명령/도구 `monitorTop`, 아래: 결과 요약 `monitorBottom`, 각 22자, scale < 0.7 이면 둘째 줄 숨김).
+- **상태 13종 → 범례 7칸**: `LegendSlot`(작업 `#6C8EFF` · 한가 `#7ED3A1` · 보고 대기 초록 **점선** 📨 ·
+  내 차례 `#FF9F43` ❗ · 대기 `#FFC857` ⏳ · 오류 `#FF6B6B` ⚠ · 퇴근 `#474D5E`) + `legendSlotOf(SceneMember)`.
+  캐릭터 원 색·하단 범례가 이 함수를 쓰고, 오른쪽 패널의 상태 점도 **같은 함수를 import 해서 쓴다**
+  (`office_scene.dart` 의 `legendSlotOf` + `office_painter.dart` 의 `legendColor`).
+  오류는 책상 테두리도 빨강, 퇴근은 **회색 책상 + 의자만**(캐릭터 원 없음).
+- **말풍선**: alert(내 차례·대기·오류·보고 방문·복구)는 항상, **작업 말풍선은 선택 멤버나 호버일 때만**(8명 화면이 말풍선 밭이 되지 않게).
+  최대 28자 · 폭 180×scale · 2줄.
+- **내 책상 = 인박스 그림**: 슬롯 **4칸**(오래된 것부터 왼쪽, 빈 칸은 점선 실루엣), 5명째부터는 자기 책상에 남고
+  맨 오른쪽 슬롯 위 **"+N"**. 헤더 "내 책상 · 대기 N"(N = 전체). 슬롯·배지 클릭 = 그 멤버 선택 +
+  **`OfficeView.onSelectPending(pendingId)`**(오른쪽 패널이 인박스에서 그 카드로 스크롤 — T40b 가 배선).
+  `ask_parent` 로 같은 상사에게 몰리면 `visitorSpot(desk, k)` 가 `2r+8` 씩 벌리고 **최대 2명**, 3명째부터 "+N" 말풍선
+  (오른쪽 끝이면 왼쪽으로 접는다). 보고 방문은 슬롯을 차지하지 않고 내 책상 오른쪽(`reportSpot`)에 선다.
+- **빈 상태·연출**: 부서 0 → 가운데 큰 "부서 만들기" 버튼(**`OfficeView.onCreateDepartment`**, 다이얼로그는 상단 바 몫)
+  + 한 줄 안내 / 부장만 → 점선 클러스터 자리 / `starting` → 문에서 **1.2초** 걸어와 앉고 모니터 "(출근 중)" · 노란 링 /
+  복구(`text{summary:'resumed'}`·`[RESUMED]`) → 책상 점선 **3초** + `↻ 복구됨` / 퇴근 **10분** 뒤 클러스터 제목의
+  **"퇴근 N"** 배지로 접힘(제목 줄 클릭 = 토글, `expandedExitedTeamsProvider` — 앱 로컬) /
+  전원 퇴근 팀 → 제목만 남은 낮은 상자 "팀 X · 전원 퇴근 · 보고 N건"(보고 수 = `officeReportCountsProvider`).
+- **T33 스프라이트 훅**: `OfficeLayout.spriteScale`(scale ≥ 0.75 → 2, 아니면 1 — **정수 배율만**, D-43 3) +
+  `spriteCell(center)` / `spriteCellOf(deskIndex)`(32×32 셀, 지금은 원 중심과 같은 자리). 지금은 여전히 원을 그린다.
+- 그리기 규칙: **곡률 4px 하나(`officeRadius`), 그림자·글로우·그라데이션 0** — 페인터 테스트가 이걸 고정한다.
 
 ### T29 결함 수정(T37)
 
@@ -103,7 +139,7 @@ lib/
     top_bar.dart            부서 탭 + "부서 만들기"(부장 임명) · 부서 삭제 · 선택 멤버 직급 배지·비상 퇴근(T37)
     selected_department.dart  상단 부서 탭 상태(T37, T24 의 selected_team.dart 를 대체)
     daemon_launcher.dart notices.dart   데몬 시작 버튼(T14) · daemon.notice 배너
-  office/                   사무실 캔버스(T12·T16·T37): office_scene/layout/painter/motion/view — 부장 책상 + 팀 클러스터 배치
+  office/                   사무실 캔버스(T12·T16·T37·T40a): office_scene/layout/painter/motion/view — 세로 스크롤 + 바닥 고정 바(내 책상·범례)
   panel/                    오른쪽 패널(T13·T15·T18·T26a·T37): 로그·터미널·지시문·보고서 탭, 허가/질문 카드, AskParentCard
   command/command_bar.dart  지시 바 — 대상은 그 부서의 살아 있는 부장 하나로 고정(T37)
 test/
@@ -111,7 +147,7 @@ test/
   rpc_client_test.dart      상관·에러 매핑·replay 중복 제거·재접속(since)·backoff
   model_test.dart           PROTOCOL/설계문서 예시 JSON 파싱
   office_state_test.dart    스냅샷 → 맵, member.status, event → 링버퍼/pending 파생, 재접속, **밀려온 snapshot**(T38)
-  command/ office/ panel/ state/   위젯·배치·카드 테스트(T12~T37)
+  command/ office/ panel/ state/   위젯·배치·카드 테스트(T12~T40a — office/ 는 layout·scene·painter·legend·mydesk·states·motion·movement·view)
 windows/runner/main.cpp     창 제목 "픽셀 오피스"
 ```
 

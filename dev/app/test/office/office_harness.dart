@@ -29,6 +29,8 @@ Future<void> pumpHarness(
   FakeOfficeNotifier notifier, {
   String? selected,
   ValueChanged<String?>? onSelect,
+  ValueChanged<String>? onSelectPending,
+  VoidCallback? onCreateDepartment,
   String? departmentId,
 }) async {
   tester.view.physicalSize = const Size(1200, 800);
@@ -41,7 +43,13 @@ Future<void> pumpHarness(
         child: SizedBox(
           width: canvasSize.width,
           height: canvasSize.height,
-          child: OfficeView(selectedMemberId: selected, onSelectMember: onSelect, departmentId: departmentId),
+          child: OfficeView(
+            selectedMemberId: selected,
+            onSelectMember: onSelect,
+            onSelectPending: onSelectPending,
+            onCreateDepartment: onCreateDepartment,
+            departmentId: departmentId,
+          ),
         ),
       ),
     ),

@@ -120,8 +120,11 @@ void main() {
         pending: const {},
       );
       expect(scene.members.map((m) => m.id), ['a', 'b']);
-      expect(scene.members[0].deskLabel, '책상 1 · 하루');
-      expect(scene.members[1].deskLabel, '책상 2 · 모시');
+      // T40-2(D7): 책상 라벨은 이름만. 번호는 툴팁·시맨틱에만 남는다.
+      expect(scene.members[0].deskLabel, '하루');
+      expect(scene.members[1].deskLabel, '모시');
+      expect(scene.members[0].deskTooltip, '책상 1 · 하루');
+      expect(scene.members[1].deskTooltip, '책상 2 · 모시');
       expect(scene.members[1].engineLabel, 'Codex');
       expect(scene.members[0].initial, '하');
       expect(scene.members[0].bubbleText.runes.length, bubbleMaxChars);

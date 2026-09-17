@@ -18,10 +18,10 @@ void main() {
     await pumpHarness(tester, FakeOfficeNotifier(twoMembers()));
     final painter = painterOf(tester);
     expect(painter.scene.members, hasLength(2));
-    expect(painter.scene.members[0].deskLabel, '책상 1 · 하루');
+    expect(painter.scene.members[0].deskLabel, '하루'); // T40-2: 라벨은 이름만
     expect(painter.scene.members[0].engineLabel, 'Claude');
     expect(painter.scene.members[0].summary, '▶ flutter test test/stt_test.dart');
-    expect(painter.scene.members[1].deskLabel, '책상 2 · 모시');
+    expect(painter.scene.members[1].deskLabel, '모시');
     expect(painter.scene.members[1].engineLabel, 'Codex');
     expect(painter.scene.members[1].summary, '(대기)');
     expect(painter.scene.queue, isEmpty);
@@ -66,7 +66,7 @@ void main() {
     expect(painter.lastPlacements[1].center, layout.queueSlot(0));
     expect(painter.lastPlacements[1].center.dy, greaterThan(layout.deskRect(1).bottom)); // 책상보다 아래(내 책상 쪽)
     expect(painter.lastPlacements[0].center, layout.seatCenter(0)); // m1 은 그대로
-    expect(find.semantics.byLabel(RegExp(r'내 책상 · 1\. 모시 — 허가: rm -rf build/')), findsOne);
+    expect(find.semantics.byLabel(RegExp(r'내 책상 · 대기 1 · 1\. 모시 — 허가: rm -rf build/')), findsOne);
     expect(find.semantics.byLabel(RegExp(r'책상 2 · 모시 .* · 내 책상 줄')), findsOne);
     handle.dispose();
   });
@@ -96,7 +96,7 @@ void main() {
     expect(painter.scene.queue.single.line(0), '1. 모시 — 질문: 점심은?');
     // 부장은 맨 윗줄(책상 0) 이라 장면 순서의 첫 자리다.
     expect(painter.lastPlacements[0].center, painter.lastLayout!.queueSlot(0));
-    expect(find.semantics.byLabel(RegExp(r'내 책상 · 1\. 모시 — 질문: 점심은\?')), findsOne);
+    expect(find.semantics.byLabel(RegExp(r'내 책상 · 대기 1 · 1\. 모시 — 질문: 점심은\?')), findsOne);
 
     // 답한 뒤: pending 이 닫히고 파생이 free → 자기 자리로.
     notifier.set(twoMembers(
@@ -124,8 +124,11 @@ void main() {
 
     await tester.tapAt(origin + layout.seatCenter(0));
     await tester.tapAt(origin + layout.deskRect(1).center);
-    await tester.tapAt(origin + layout.myDeskRect.center);
+    await tester.tapAt(origin + layout.myDeskRect.topLeft + const Offset(4, 4)); // 내 책상 헤더(슬롯 밖)
     await tester.tapAt(origin + const Offset(3, 3));
+    expect(picks, ['m1', 'm2', null, null]);
+    // T40-3: 빈 슬롯(점선 실루엣)은 선택을 바꾸지 않는다 — 콜백 자체가 없다.
+    await tester.tapAt(origin + layout.slotCenter(0));
     expect(picks, ['m1', 'm2', null, null]);
   });
 
@@ -171,7 +174,7 @@ void main() {
     await tester.pumpWidget(app('dA'));
     var painter = painterOf(tester);
     expect(painter.scene.members.map((m) => m.id), ['m1', 'm3']);
-    expect(painter.scene.members[1].deskLabel, '책상 2 · 이음');
+    expect(painter.scene.members[1].deskLabel, '이음');
     expect(painter.lastLayout!.deskCount, 2);
 
     await tester.pumpWidget(app(null));

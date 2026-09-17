@@ -156,7 +156,8 @@ void main() {
       expect(motion.isVisiting('m1'), isTrue);
       expect(motion.visits.single.seq, 5);
       expect(motion.bubbleOverrides, {'m1': reportVisitBubble});
-      expect(motion.movements['m1']!.to.center, layout.queueSlot(0));
+      // T40-3: 보고 방문은 슬롯을 차지하지 않고 내 책상 **오른쪽**에 선다.
+      expect(motion.movements['m1']!.to.center, layout.reportSpot(0));
 
       // 같은 seq 를 다시 줘도 방문 하나.
       motion.sync(sceneOf(idle2, events: report), layout, ms(20));
@@ -166,11 +167,11 @@ void main() {
       motion.sync(sceneOf(idle2, events: {'m1': event('m1', OfficeEventKind.idle, seq: 6)}), layout, ms(30));
       expect(motion.isVisiting('m1'), isTrue);
 
-      // 줄에 선 멤버가 있으면 그 뒤 자리.
+      // 줄에 선 멤버가 있어도 방문 자리는 그대로(슬롯과 겹치지 않는다 — T40-3).
       final queued = [member('m1', createdAt: '1'), member('m2', createdAt: '2', status: MemberStatus.waitingAnswer)];
       motion.sync(sceneOf(queued, events: {'m1': event('m1', OfficeEventKind.idle, seq: 6)}, pending: {'q1': question('q1', 'm2', '?')}), layout, ms(40));
       expect(motion.movements['m2']!.to.center, layout.queueSlot(0));
-      expect(motion.movements['m1']!.to.center, layout.queueSlot(1));
+      expect(motion.movements['m1']!.to.center, layout.reportSpot(0));
 
       // endVisit → 자리로.
       motion.endVisit('m1', ms(50));

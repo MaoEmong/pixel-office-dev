@@ -1,11 +1,18 @@
-// 사무실 CustomPainter(D-09). 외부 에셋 없이 평면 도형 + TextPainter 로 그린다.
-// 그리는 것: 바둑판 바닥, 문, **팀 클러스터 상자(제목 줄)**, 책상(라벨·직급/엔진 배지·모니터),
-//   내 책상(제목·대기 목록), 캐릭터(원 + 이름 첫 글자), 말풍선.
-// T24b/T37: 부장은 "♛ 부장", 팀장은 "★ 팀장" 배지(엔진 배지 왼쪽)와 캐릭터 링이 붙는다(부장 금색 [OfficeColors.headMark],
-//   팀장 은색 [OfficeColors.leadMark]) — 그림만 바뀌고 히트 테스트 반경(OfficeLayout.charRadius + 4)은 그대로다.
-// 기하는 전부 OfficeLayout, 텍스트는 전부 OfficeScene 에서 온다 — 여기엔 색·글꼴·그리기 순서만.
+// 사무실 CustomPainter(D-09 · 레이아웃 v2 T40-2). 외부 에셋 없이 평면 도형 + TextPainter 로 그린다.
+// 곡률은 전부 4px 하나, 그림자·글로우·그라데이션 없음(패스 4 리트머스 7).
+//
+// 그리는 것(스크롤 영역): 바닥 격자, **팀 카펫**(6색 토큰 순환 + 제목 태그), **부장 금색 카펫 + 왕관**,
+//   책상(이름·직급/엔진 배지·모니터 2줄·오류 테두리 빨강·복구 점선·퇴근 의자), 캐릭터(원 + 링), 말풍선.
+// 그리는 것(바닥 고정 바): 내 책상(헤더 "내 책상 · 대기 N" + 슬롯 4칸 + "+N" 배지), **범례 7칸**.
+// 문과 스크롤바는 뷰포트 좌표로 고정.
+//
+// 색·문구 토큰의 출처는 docs/design/레이아웃-v2.md §4(패스 4 구체성) — [OfficeColors] 가 코드 쪽 단일 소스다.
+// 상태 → 색·아이콘 매핑은 **office_scene.dart 의 [legendSlotOf] 하나**만 쓴다(링·범례·패널 공용, D-42 3).
+//
 // T16: 캐릭터 위치는 [placements] 로 밖(OfficeMotion)에서 받을 수 있다(null 이면 레이아웃의 즉시 배치).
 //   [bob] 은 작업 중 흔들림(id → dy), [bubbleOverrides] 는 보고 방문 등 말풍선 덮어쓰기(항상 alert 스타일).
+
+import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/semantics.dart';
@@ -21,7 +28,11 @@ Color rankMarkColor(MemberRank rank) => switch (rank) {
       MemberRank.member => OfficeColors.deskLabel,
     };
 
+/// 범례 칸의 색(= 캐릭터 링 색). 매핑은 [legendSlotOf] 하나뿐이다.
+Color legendColor(LegendSlot slot) => Color(slot.argb);
+
 /// 어두운 팔레트(main.dart 의 사무실 바탕 0xFF1B1F2A 와 맞춤).
+/// 문서 쪽 단일 소스: docs/design/레이아웃-v2.md §4 토큰 표(패스 5 이슈 12).
 abstract final class OfficeColors {
   static const floor = Color(0xFF1B1F2A);
   static const floorGrid = Color(0xFF222736);
@@ -31,13 +42,23 @@ abstract final class OfficeColors {
   static const badgeClaude = Color(0xFFE0956E);
   static const badgeCodex = Color(0xFF8FB4FF);
 
-  /// 부장 표시(책상 "♛ 부장" 배지 + 캐릭터 금색 링). T24b 의 `leaderMark` 를 직급별로 나눈 것(T37).
+  /// 부장 표시(왕관 · 금색 카펫 · 캐릭터 금색 링).
   static const headMark = Color(0xFFFFD166);
 
   /// 팀장 표시(책상 "★ 팀장" 배지 + 캐릭터 은색 링).
   static const leadMark = Color(0xFFBFC7DA);
 
-  /// 팀 클러스터 상자.
+  /// 팀 카펫 6색 토큰 — **팀 생성 순서로 순환**(패스 4 구체성 · 패스 7 등록부).
+  static const carpets = <Color>[
+    Color(0xFF2F4A3A),
+    Color(0xFF2F3D5A),
+    Color(0xFF4A3A2F),
+    Color(0xFF432F4A),
+    Color(0xFF2F4A4A),
+    Color(0xFF4A2F38),
+  ];
+
+  /// 팀 클러스터(테두리는 카펫 위 옅은 선).
   static const clusterBorder = Color(0xFF39415A);
   static const clusterTitle = Color(0xFF8A93A8);
   static const monitorFill = Color(0xFF10141D);
@@ -53,12 +74,14 @@ abstract final class OfficeColors {
   static const charWorking = Color(0xFF6C8EFF);
   static const charIdle = Color(0xFF7ED3A1);
   static const charWaiting = Color(0xFFFFC857);
+
+  /// "내 차례"(주황, 신규 — 패스 2 매핑표): 사용자가 답해야 하는 상태.
+  static const charMyTurn = Color(0xFFFF9F43);
   static const charStarting = Color(0xFF8A93A8);
   static const charGone = Color(0xFF474D5E);
   static const charGoneText = Color(0xFF8A93A8);
 
-  /// 오류 포즈(T30): 비정상 종료한 멤버의 붉은 링 + 말풍선 테두리. 퇴근(exited)에는 붙지 않는다 —
-  /// "내가 내보낸 것"과 "죽은 것"을 한눈에 가르는 표시다.
+  /// 오류 포즈(T30): 비정상 종료한 멤버의 붉은 링 + **책상 테두리**(패스 2).
   static const charError = Color(0xFFFF6B6B);
   static const charText = Color(0xFFFFFFFF);
   static const charOutline = Color(0xFF10141D);
@@ -67,25 +90,44 @@ abstract final class OfficeColors {
   static const bubbleBorder = Color(0xFF9AA3B8);
   static const bubbleText = Color(0xFF1B1F2A);
   static const bubbleAlertBorder = Color(0xFFFFB020);
+
+  /// 의자(퇴근한 책상에 남는 것).
+  static const chair = Color(0xFF3A4054);
+
+  /// 스크롤바(패스 6: 6px 팔레트 색).
+  static const scrollbar = Color(0xFF4A5268);
 }
 
-/// 멤버가 하나도 없을 때 사무실 가운데 문구(T37: 출근 버튼이 없어졌다 — 사용자는 부서를 만든다).
+/// 모든 모서리 곡률(패스 4: 4px 단일).
+const double officeRadius = 4;
+
+/// 멤버가 하나도 없을 때 사무실 가운데 문구(T37 → T40-6 에서 부서 0 은 버튼으로 바뀐다).
 const String emptyOfficeHint = '"부서 만들기" 로 부장을 임명하세요';
+
+/// 자리를 비운 책상의 모니터 문구.
+const String awayMonitorText = '(자리 비움)';
 
 class OfficePainter extends CustomPainter {
   OfficePainter({
     required this.scene,
     this.selectedMemberId,
+    this.hoveredMemberId,
     this.textDirection = TextDirection.ltr,
     this.fontFamily,
     this.fontFamilyFallback,
     this.placements,
     this.bob = const {},
     this.bubbleOverrides = const {},
+    this.scrollOffset = 0,
+    this.resumedIds = const {},
+    this.showEmptyHint = true,
   });
 
   final OfficeScene scene;
   final String? selectedMemberId;
+
+  /// 마우스가 올라간 멤버 — 작업 말풍선은 선택·호버일 때만 보인다(패스 4: 말풍선 밭 방지).
+  final String? hoveredMemberId;
   final TextDirection textDirection;
 
   /// 캐릭터 위치(장면 순서). null 이면 `OfficeLayout.placements(scene)`(즉시 배치).
@@ -94,8 +136,17 @@ class OfficePainter extends CustomPainter {
   /// 멤버 id → 세로 흔들림(px). 원만 흔들리고 말풍선·시맨틱은 그대로.
   final Map<String, double> bob;
 
-  /// 멤버 id → 말풍선 텍스트 덮어쓰기(alert 스타일). 보고 방문 중 "📄 보고".
+  /// 멤버 id → 말풍선 텍스트 덮어쓰기(alert 스타일). 보고 방문 중 "📄 보고", 복구 직후 "↻ 복구됨".
   final Map<String, String> bubbleOverrides;
+
+  /// 스크롤 영역이 내려간 거리(px). 바(내 책상·범례)·문은 영향받지 않는다.
+  final double scrollOffset;
+
+  /// 복구 표시(책상 점선) 중인 멤버.
+  final Set<String> resumedIds;
+
+  /// 빈 사무실 문구를 그릴지(부서 0 일 때는 위젯이 큰 버튼을 얹으므로 끈다 — T40-6).
+  final bool showEmptyHint;
 
   /// 글꼴 지정(앱에서는 null = 시스템 기본. 테스트 렌더링에서 FontLoader 로 올린 글꼴을 쓸 때).
   final String? fontFamily;
@@ -116,34 +167,59 @@ class OfficePainter extends CustomPainter {
   bool _isAway(OfficeLayout layout, SceneMember m, CharacterPlacement p) =>
       !m.isGone && (p.center - layout.seatCenter(m.deskIndex)).distance > 0.5;
 
+  /// **바닥 고정 바**에 그리는 캐릭터인가 — 내 책상 슬롯에 선 대기자와 보고 방문 중인 멤버.
+  bool _inBar(OfficeLayout layout, SceneMember m) => layout.drawsInBar(m) || bubbleOverrides.containsKey(m.id);
+
   @override
   void paint(Canvas canvas, Size size) {
     final layout = layoutFor(size);
-    final placements = _placementsFor(layout);
+    final placed = _placementsFor(layout);
     lastLayout = layout;
-    lastPlacements = placements;
+    lastPlacements = placed;
+    final dy = layout.clampScroll(scrollOffset);
 
     _paintFloor(canvas, size, layout);
-    _paintDoor(canvas, layout);
+
+    // ---- 스크롤 영역(콘텐츠 좌표) ----
+    canvas.save();
+    canvas.clipRect(layout.viewportRect);
+    canvas.translate(0, -dy);
     _paintClusters(canvas, layout);
+    if (scene.plan.hasHead) _paintHeadAnchor(canvas, layout);
     for (var i = 0; i < scene.members.length; i++) {
-      _paintDesk(canvas, layout, scene.members[i], away: _isAway(layout, scene.members[i], placements[i]));
+      _paintDesk(canvas, layout, scene.members[i], away: _isAway(layout, scene.members[i], placed[i]));
     }
-    _paintMyDesk(canvas, layout);
-    if (scene.isEmpty) {
+    for (var i = 0; i < scene.members.length; i++) {
+      if (_inBar(layout, scene.members[i])) continue;
+      _paintCharacter(canvas, layout, scene.members[i], placed[i]);
+    }
+    for (var i = 0; i < scene.members.length; i++) {
+      if (_inBar(layout, scene.members[i])) continue;
+      _paintBubble(canvas, layout, scene.members[i], placed[i]);
+    }
+    _paintVisitorOverflow(canvas, layout);
+    canvas.restore();
+
+    // ---- 고정(뷰포트 좌표) ----
+    _paintDoor(canvas, layout);
+    _paintScrollbar(canvas, layout, dy);
+    if (scene.isEmpty && showEmptyHint) {
       _text(canvas, emptyOfficeHint, layout.emptyHintCenter,
           style: TextStyle(color: OfficeColors.hint, fontSize: 15 * layout.fontScale), anchor: Alignment.center);
     }
-    // 캐릭터는 책상·내 책상 위에, 말풍선은 맨 위에.
+    _paintMyDesk(canvas, layout);
+    _paintLegend(canvas, layout);
     for (var i = 0; i < scene.members.length; i++) {
-      _paintCharacter(canvas, layout, scene.members[i], placements[i]);
+      if (!_inBar(layout, scene.members[i])) continue;
+      _paintCharacter(canvas, layout, scene.members[i], placed[i]);
     }
     for (var i = 0; i < scene.members.length; i++) {
-      _paintBubble(canvas, layout, scene.members[i], placements[i]);
+      if (!_inBar(layout, scene.members[i])) continue;
+      _paintBubble(canvas, layout, scene.members[i], placed[i]);
     }
   }
 
-  // ---- 바닥 · 문 -----------------------------------------------------------------
+  // ---- 바닥 · 문 · 스크롤바 -----------------------------------------------------------
 
   void _paintFloor(Canvas canvas, Size size, OfficeLayout layout) {
     canvas.drawRect(Offset.zero & size, Paint()..color = OfficeColors.floor);
@@ -152,9 +228,9 @@ class OfficePainter extends CustomPainter {
       ..strokeWidth = 1;
     final step = 40.0 * layout.scale;
     for (var x = step; x < size.width; x += step) {
-      canvas.drawLine(Offset(x, 0), Offset(x, size.height), grid);
+      canvas.drawLine(Offset(x, 0), Offset(x, layout.viewportHeight), grid);
     }
-    for (var y = step; y < size.height; y += step) {
+    for (var y = step; y < layout.viewportHeight; y += step) {
       canvas.drawLine(Offset(0, y), Offset(size.width, y), grid);
     }
   }
@@ -165,26 +241,96 @@ class OfficePainter extends CustomPainter {
         style: TextStyle(color: OfficeColors.deskLabel, fontSize: 11 * layout.fontScale), anchor: Alignment.centerLeft);
   }
 
-  // ---- 팀 클러스터 -----------------------------------------------------------------
+  void _paintScrollbar(Canvas canvas, OfficeLayout layout, double dy) {
+    if (!layout.isScrollable) return;
+    const w = 6.0;
+    final track = layout.viewportHeight;
+    final thumbH = math.max(24.0, track * track / layout.contentHeight);
+    final top = (track - thumbH) * (dy / layout.maxScroll);
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(Rect.fromLTWH(layout.size.width - w - 2, top, w, thumbH), const Radius.circular(officeRadius)),
+      Paint()..color = OfficeColors.scrollbar,
+    );
+  }
 
-  /// 팀마다 상자 + 제목 줄("팀 t1 · 2명"). 부장 책상은 클러스터 밖(맨 윗줄)이다.
+  // ---- 팀 카펫 · 부장 앵커 ----------------------------------------------------------
+
+  Color carpetColor(int i) => OfficeColors.carpets[i % OfficeColors.carpets.length];
+
+  /// 제목 태그 색 = 카펫 색을 40% 밝힌 값(패스 4).
+  static Color lighten(Color c, double amount) => Color.lerp(c, const Color(0xFFFFFFFF), amount)!;
+
+  /// 팀마다 색 카펫 + 왼쪽 위에 -8px 걸친 제목 태그. 부장 책상은 클러스터 밖(맨 윗줄)이다.
   void _paintClusters(Canvas canvas, OfficeLayout layout) {
+    final s = layout.scale;
     for (final c in layout.clusters) {
-      final rr = RRect.fromRectAndRadius(c.rect, Radius.circular(6 * layout.scale));
-      canvas.drawRRect(
-          rr,
-          Paint()
-            ..color = OfficeColors.clusterBorder
-            ..style = PaintingStyle.stroke
-            ..strokeWidth = 1);
+      final rr = RRect.fromRectAndRadius(c.rect, const Radius.circular(officeRadius));
+      final color = carpetColor(c.colorIndex);
+      if (c.isPlaceholder) {
+        // 아직 팀이 없다 — 점선 자리(T40-6).
+        _dashedRRect(canvas, rr, OfficeColors.clusterBorder, 1);
+      } else {
+        canvas.drawRRect(rr, Paint()..color = color);
+        canvas.drawRRect(
+            rr,
+            Paint()
+              ..color = lighten(color, 0.15)
+              ..style = PaintingStyle.stroke
+              ..strokeWidth = 1);
+      }
       final title = c.title;
-      if (title != null) {
-        _text(canvas, title, c.titleBaseline,
-            style: TextStyle(color: OfficeColors.clusterTitle, fontSize: 11 * layout.fontScale, fontWeight: FontWeight.w600),
-            anchor: Alignment.topLeft,
-            maxWidth: c.rect.width - 12 * layout.scale);
+      if (title == null) continue;
+      if (c.isPlaceholder) {
+        _text(canvas, title, c.rect.center,
+            style: TextStyle(color: OfficeColors.clusterTitle, fontSize: 12 * layout.fontScale),
+            anchor: Alignment.center,
+            maxWidth: c.rect.width - 12 * s);
+        continue;
+      }
+      // 제목 태그: 상자 왼쪽 위에 -8px 걸침, 12px 굵게.
+      final tagColor = lighten(color, 0.4);
+      final style = TextStyle(color: OfficeColors.floor, fontSize: 12 * layout.fontScale, fontWeight: FontWeight.bold);
+      final tp = _layoutText(title, style, maxWidth: c.rect.width);
+      final tag = Rect.fromLTWH(c.rect.left - 8 * s, c.rect.top - 8 * s, tp.width + 10 * s, tp.height + 4 * s);
+      canvas.drawRRect(RRect.fromRectAndRadius(tag, const Radius.circular(officeRadius)), Paint()..color = tagColor);
+      tp.paint(canvas, Offset(tag.left + 5 * s, tag.top + 2 * s));
+      // "퇴근 N" 배지(10분 넘게 퇴근한 책상을 접었다 — 클릭하면 펼친다).
+      if (c.exitedFolded > 0) {
+        final badgeStyle = TextStyle(color: OfficeColors.charGoneText, fontSize: 10 * layout.fontScale);
+        final bp = _layoutText('퇴근 ${c.exitedFolded}', badgeStyle);
+        final br = Rect.fromLTWH(tag.right + 6 * s, tag.top, bp.width + 10 * s, tag.height);
+        canvas.drawRRect(
+            RRect.fromRectAndRadius(br, const Radius.circular(officeRadius)),
+            Paint()
+              ..color = OfficeColors.charGone
+              ..style = PaintingStyle.fill);
+        bp.paint(canvas, Offset(br.left + 5 * s, br.top + 2 * s));
       }
     }
+  }
+
+  /// 부장 앵커(패스 1 D5): 책상 사방 +20px 금색 카펫(알파 0.12) + 책상 위 16px 왕관.
+  /// 왕관은 T33 에서 스프라이트로 바뀐다 — 지금은 같은 자리에 도형으로 그린다.
+  void _paintHeadAnchor(Canvas canvas, OfficeLayout layout) {
+    final desk = layout.deskRect(0);
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(layout.headCarpetRect(0), const Radius.circular(officeRadius)),
+      Paint()..color = OfficeColors.headMark.withValues(alpha: 0.12),
+    );
+    final w = 16.0 * layout.scale;
+    final h = 11.0 * layout.scale;
+    final cx = desk.center.dx;
+    final bottom = desk.top - 16 * layout.scale;
+    final crown = Path()
+      ..moveTo(cx - w / 2, bottom)
+      ..lineTo(cx - w / 2, bottom - h)
+      ..lineTo(cx - w / 4, bottom - h * 0.45)
+      ..lineTo(cx, bottom - h * 1.15)
+      ..lineTo(cx + w / 4, bottom - h * 0.45)
+      ..lineTo(cx + w / 2, bottom - h)
+      ..lineTo(cx + w / 2, bottom)
+      ..close();
+    canvas.drawPath(crown, Paint()..color = OfficeColors.headMark);
   }
 
   // ---- 책상 --------------------------------------------------------------------
@@ -193,43 +339,68 @@ class OfficePainter extends CustomPainter {
     final isAway = away ?? m.isQueued;
     final d = layout.deskRect(m.deskIndex);
     final fs = layout.fontScale;
-    final rr = RRect.fromRectAndRadius(d, Radius.circular(4 * layout.scale));
-    canvas.drawRRect(rr, Paint()..color = OfficeColors.deskFill);
-    canvas.drawRRect(
-        rr,
-        Paint()
-          ..color = OfficeColors.deskBorder
-          ..style = PaintingStyle.stroke
-          ..strokeWidth = 1);
+    final s = layout.scale;
+    final exited = m.status == MemberStatus.exited;
+    final rr = RRect.fromRectAndRadius(d, const Radius.circular(officeRadius));
+    canvas.drawRRect(rr, Paint()..color = exited ? OfficeColors.charGone.withValues(alpha: 0.35) : OfficeColors.deskFill);
+    if (m.isError) {
+      // 오류: 책상 테두리 빨강(패스 2 매핑표).
+      canvas.drawRRect(
+          rr,
+          Paint()
+            ..color = OfficeColors.charError
+            ..style = PaintingStyle.stroke
+            ..strokeWidth = 2);
+    } else if (resumedIds.contains(m.id)) {
+      // 복구 직후 3초: 점선 테두리(패스 2 D10).
+      _dashedRRect(canvas, rr, OfficeColors.headMark, 1.5);
+    } else {
+      canvas.drawRRect(
+          rr,
+          Paint()
+            ..color = OfficeColors.deskBorder
+            ..style = PaintingStyle.stroke
+            ..strokeWidth = 1);
+    }
 
-    // 라벨 "책상 N · 이름" (왼쪽 위), 엔진 배지(오른쪽 위).
-    final badgeStyle = TextStyle(
-      color: m.engine.name == 'claude' ? OfficeColors.badgeClaude : OfficeColors.badgeCodex,
-      fontSize: 9 * fs,
-      fontWeight: FontWeight.w600,
-    );
-    final badge = _layoutText(m.engineLabel, badgeStyle);
-    final pad = 4 * layout.scale;
-    final badgeRect = Rect.fromLTWH(d.right - pad - badge.width - 6, d.top + pad, badge.width + 6, badge.height + 2);
-    canvas.drawRRect(
-        RRect.fromRectAndRadius(badgeRect, const Radius.circular(3)),
-        Paint()
-          ..color = badgeStyle.color!
-          ..style = PaintingStyle.stroke
-          ..strokeWidth = 1);
-    badge.paint(canvas, Offset(badgeRect.left + 3, badgeRect.top + 1));
+    // 퇴근한 책상은 **의자만** 남긴다(캐릭터 원은 안 그린다 — [_paintCharacter]).
+    if (exited) {
+      final cw = 18 * s, ch = 12 * s;
+      final chair = Rect.fromCenter(center: Offset(d.center.dx, d.bottom + ch * 0.6), width: cw, height: ch);
+      canvas.drawRRect(
+          RRect.fromRectAndRadius(chair, const Radius.circular(officeRadius)), Paint()..color = OfficeColors.chair);
+    }
 
-    // 직급 배지(엔진 배지 왼쪽). 사용자 지시는 "♛ 부장" 책상으로만 간다(01 §직무 체계 rev 3).
-    var labelRight = badgeRect.left;
-    final rankLabel = rankBadgeLabel(m.rank);
+    // 라벨 = **이름(굵게)** + 직급 배지 + 엔진 배지(패스 1 D7). 좁아지면 엔진 → 직급 글자 → 이름 순으로 줄인다.
+    final pad = 4 * s;
+    var labelRight = d.right - pad;
+    if (showsEngineBadge(layout.scale)) {
+      final badgeStyle = TextStyle(
+        color: m.engine == Engine.claude ? OfficeColors.badgeClaude : OfficeColors.badgeCodex,
+        fontSize: 9 * fs,
+        fontWeight: FontWeight.w600,
+      );
+      final badge = _layoutText(m.engineLabel, badgeStyle);
+      final badgeRect = Rect.fromLTWH(d.right - pad - badge.width - 6, d.top + pad, badge.width + 6, badge.height + 2);
+      canvas.drawRRect(
+          RRect.fromRectAndRadius(badgeRect, const Radius.circular(officeRadius)),
+          Paint()
+            ..color = badgeStyle.color!
+            ..style = PaintingStyle.stroke
+            ..strokeWidth = 1);
+      badge.paint(canvas, Offset(badgeRect.left + 3, badgeRect.top + 1));
+      labelRight = badgeRect.left;
+    }
+
+    final rankLabel = rankBadgeAt(m.rank, layout.scale);
     if (rankLabel.isNotEmpty) {
       final rankColor = rankMarkColor(m.rank);
       final rankStyle = TextStyle(color: rankColor, fontSize: 9 * fs, fontWeight: FontWeight.w600);
       final rankText = _layoutText(rankLabel, rankStyle);
-      final rankRect = Rect.fromLTWH(
-          badgeRect.left - 4 * layout.scale - rankText.width - 6, badgeRect.top, rankText.width + 6, badgeRect.height);
+      final rankRect =
+          Rect.fromLTWH(labelRight - 4 * s - rankText.width - 6, d.top + pad, rankText.width + 6, rankText.height + 2);
       canvas.drawRRect(
-          RRect.fromRectAndRadius(rankRect, const Radius.circular(3)),
+          RRect.fromRectAndRadius(rankRect, const Radius.circular(officeRadius)),
           Paint()
             ..color = rankColor
             ..style = PaintingStyle.stroke
@@ -238,12 +409,16 @@ class OfficePainter extends CustomPainter {
       labelRight = rankRect.left;
     }
 
-    _text(canvas, m.deskLabel, Offset(d.left + 6 * layout.scale, d.top + pad),
-        style: TextStyle(color: OfficeColors.deskLabel, fontSize: 11 * fs),
+    _text(canvas, m.deskLabel, Offset(d.left + 6 * s, d.top + pad),
+        style: TextStyle(
+          color: exited ? OfficeColors.charGoneText : OfficeColors.deskLabel,
+          fontSize: 11 * fs,
+          fontWeight: FontWeight.bold,
+        ),
         anchor: Alignment.topLeft,
-        maxWidth: labelRight - d.left - 8 * layout.scale);
+        maxWidth: labelRight - d.left - 8 * s);
 
-    // 모니터.
+    // 모니터 2줄(위: 명령/도구, 아래: 결과 요약). 좁으면 둘째 줄을 숨긴다.
     final mon = layout.monitorRect(m.deskIndex);
     canvas.drawRect(mon, Paint()..color = OfficeColors.monitorFill);
     canvas.drawRect(
@@ -252,24 +427,33 @@ class OfficePainter extends CustomPainter {
           ..color = OfficeColors.monitorBorder
           ..style = PaintingStyle.stroke
           ..strokeWidth = 1);
+    final second = showsMonitorSecondLine(layout.scale) && !isAway ? m.monitorBottom : null;
     final dim = m.isGone || isAway || m.summary.startsWith('(');
-    _text(canvas, isAway ? '(자리 비움)' : m.summary, Offset(mon.left + 4, mon.center.dy),
-        style: TextStyle(
-          color: dim ? OfficeColors.monitorTextDim : OfficeColors.monitorText,
-          fontSize: 10 * fs,
-          fontFamily: 'Consolas',
-          fontFamilyFallback: const ['Cascadia Mono', 'Malgun Gothic', 'monospace'],
-        ),
-        anchor: Alignment.centerLeft,
-        maxWidth: mon.width - 8);
+    final monStyle = TextStyle(
+      color: dim ? OfficeColors.monitorTextDim : OfficeColors.monitorText,
+      fontSize: 9 * fs,
+      fontFamily: 'Consolas',
+      fontFamilyFallback: const ['Cascadia Mono', 'Malgun Gothic', 'monospace'],
+    );
+    final topText = isAway ? awayMonitorText : m.monitorTop;
+    if (second == null) {
+      _text(canvas, topText, Offset(mon.left + 4, mon.center.dy),
+          style: monStyle, anchor: Alignment.centerLeft, maxWidth: mon.width - 8);
+    } else {
+      _text(canvas, topText, Offset(mon.left + 4, mon.top + mon.height * 0.28),
+          style: monStyle, anchor: Alignment.centerLeft, maxWidth: mon.width - 8);
+      _text(canvas, second, Offset(mon.left + 4, mon.top + mon.height * 0.72),
+          style: monStyle.copyWith(color: OfficeColors.monitorTextDim), anchor: Alignment.centerLeft, maxWidth: mon.width - 8);
+    }
   }
 
-  // ---- 내 책상 -------------------------------------------------------------------
+  // ---- 내 책상(바닥 고정 바) ----------------------------------------------------------
 
   void _paintMyDesk(Canvas canvas, OfficeLayout layout) {
     final r = layout.myDeskRect;
     final fs = layout.fontScale;
-    final rr = RRect.fromRectAndRadius(r, Radius.circular(6 * layout.scale));
+    final s = layout.scale;
+    final rr = RRect.fromRectAndRadius(r, const Radius.circular(officeRadius));
     canvas.drawRRect(rr, Paint()..color = OfficeColors.myDeskFill);
     canvas.drawRRect(
         rr,
@@ -277,50 +461,63 @@ class OfficePainter extends CustomPainter {
           ..color = OfficeColors.myDeskBorder
           ..style = PaintingStyle.stroke
           ..strokeWidth = 2);
-    final pad = 8 * layout.scale;
-    _text(canvas, '내 책상', Offset(r.left + pad, r.top + 6 * layout.scale),
-        style: TextStyle(color: OfficeColors.myDeskText, fontSize: 13 * fs, fontWeight: FontWeight.bold),
-        anchor: Alignment.topLeft);
-    final lineH = 15 * fs;
-    var y = r.top + 6 * layout.scale + 13 * fs + 8 * layout.scale;
-    final maxLines = ((r.bottom - pad - y) / lineH).floor();
-    if (scene.queue.isEmpty) {
-      _text(canvas, '(대기 없음)', Offset(r.left + pad, y),
-          style: TextStyle(color: OfficeColors.myDeskTextDim, fontSize: 11 * fs), anchor: Alignment.topLeft);
-      return;
+    _text(canvas, scene.myDeskHeader, Offset(r.left + 8 * s, r.top + 5 * s),
+        style: TextStyle(color: OfficeColors.myDeskText, fontSize: 12 * fs, fontWeight: FontWeight.bold),
+        anchor: Alignment.topLeft,
+        maxWidth: r.width - 16 * s);
+
+    // 슬롯 4칸(오래된 것부터 왼쪽). 빈 슬롯은 점선 실루엣, 찬 슬롯의 캐릭터는 따로 그린다.
+    for (var k = 0; k < OfficeLayout.myDeskSlots; k++) {
+      final c = layout.slotCenter(k);
+      if (scene.slotEntry(k) != null) continue;
+      _dashedCircle(canvas, c, layout.slotRadius, OfficeColors.myDeskTextDim, 1);
     }
-    final sep = Paint()
-      ..color = OfficeColors.myDeskTextDim.withValues(alpha: 0.5)
-      ..strokeWidth = 1;
-    for (var i = 0; i < scene.queue.length && i < maxLines; i++) {
-      if (i > 0) canvas.drawLine(Offset(r.left + pad, y - 2), Offset(r.right - pad, y - 2), sep);
-      final more = i == maxLines - 1 && scene.queue.length > maxLines;
-      final label = more ? '… 외 ${scene.queue.length - maxLines + 1}건' : scene.queue[i].line(i);
-      _text(canvas, label, Offset(r.left + pad, y),
-          style: TextStyle(color: OfficeColors.myDeskText, fontSize: 11 * fs),
-          anchor: Alignment.topLeft,
-          maxWidth: r.width - 2 * pad);
-      y += lineH;
+    // 5명째부터 "+N" 배지(맨 오른쪽 슬롯 위).
+    if (scene.slotOverflow > 0) {
+      final br = layout.overflowBadgeRect;
+      canvas.drawRRect(
+          RRect.fromRectAndRadius(br, const Radius.circular(officeRadius)), Paint()..color = OfficeColors.charMyTurn);
+      _text(canvas, '+${scene.slotOverflow}', br.center,
+          style: TextStyle(color: OfficeColors.floor, fontSize: 10 * fs, fontWeight: FontWeight.bold),
+          anchor: Alignment.center);
+    }
+  }
+
+  // ---- 범례 7칸 -------------------------------------------------------------------
+
+  void _paintLegend(Canvas canvas, OfficeLayout layout) {
+    final rect = layout.legendRect;
+    final fs = layout.fontScale;
+    final style = TextStyle(color: OfficeColors.hint, fontSize: 11 * fs);
+    var x = rect.left;
+    final cy = rect.center.dy;
+    const dot = 8.0;
+    for (final slot in LegendSlot.values) {
+      final label = slot.icon.isEmpty ? slot.label : '${slot.icon} ${slot.label}';
+      final tp = _layoutText(label, style);
+      final w = dot + 5 + tp.width + 14 * layout.scale;
+      if (x + w > rect.right) break;
+      final center = Offset(x + dot / 2, cy);
+      if (slot.dashedRing) {
+        _dashedCircle(canvas, center, dot / 2, legendColor(slot), 1.5);
+      } else {
+        canvas.drawCircle(center, dot / 2, Paint()..color = legendColor(slot));
+      }
+      tp.paint(canvas, Offset(x + dot + 5, cy - tp.height / 2));
+      x += w;
     }
   }
 
   // ---- 캐릭터 · 말풍선 -------------------------------------------------------------
 
-  Color _charColor(SceneMember m) {
-    if (m.isGone) return OfficeColors.charGone;
-    if (m.status.isWaiting) return OfficeColors.charWaiting;
-    return switch (m.status.name) {
-      'working' => OfficeColors.charWorking,
-      'idle' => OfficeColors.charIdle,
-      'starting' => OfficeColors.charStarting,
-      _ => OfficeColors.charStarting,
-    };
-  }
+  Color charColor(SceneMember m) => legendColor(m.legendSlot);
 
   void _paintCharacter(Canvas canvas, OfficeLayout layout, SceneMember m, CharacterPlacement p) {
+    // 퇴근한 책상에는 **의자만** 남는다(패스 2 매핑표 "퇴근").
+    if (m.status == MemberStatus.exited) return;
     final r = layout.charRadius;
     final c = p.center + Offset(0, bob[m.id] ?? 0);
-    // 오류 포즈(T30): 비정상 종료는 붉은 링. 직급 링 자리를 쓴다(죽은 세션의 직급보다 "죽었다" 가 먼저 보여야 한다).
+    final slot = m.legendSlot;
     if (m.isError) {
       canvas.drawCircle(
           c,
@@ -329,9 +526,11 @@ class OfficePainter extends CustomPainter {
             ..color = OfficeColors.charError
             ..style = PaintingStyle.stroke
             ..strokeWidth = 2.5);
+    } else if (slot.dashedRing) {
+      // 보고 대기: 초록 **점선** 링(색만으로 구분하지 않는다).
+      _dashedCircle(canvas, c, r + 2, legendColor(slot), 2);
     } else if (m.rank != MemberRank.member && !m.isGone) {
       // 직급 링(부장 금색 · 팀장 은색). 선택 링(흰색, r+4)보다 안쪽이라 둘 다 보인다.
-      // 히트 테스트 반경(charRadius+4)은 그대로.
       canvas.drawCircle(
           c,
           r + 2,
@@ -349,7 +548,7 @@ class OfficePainter extends CustomPainter {
             ..style = PaintingStyle.stroke
             ..strokeWidth = 2.5);
     }
-    canvas.drawCircle(c, r, Paint()..color = _charColor(m));
+    canvas.drawCircle(c, r, Paint()..color = charColor(m));
     canvas.drawCircle(
         c,
         r,
@@ -366,36 +565,59 @@ class OfficePainter extends CustomPainter {
         anchor: Alignment.center);
   }
 
+  /// 말풍선을 지금 보여 주는가(패스 4): alert(내 차례·대기·오류·보고 방문)는 항상, 작업 말풍선은 선택·호버일 때만.
+  bool showsBubble(SceneMember m) {
+    if (m.status == MemberStatus.exited) return false;
+    if (bubbleOverrides.containsKey(m.id) || m.isAlert || m.isError) return true;
+    return m.id == selectedMemberId || m.id == hoveredMemberId;
+  }
+
   void _paintBubble(Canvas canvas, OfficeLayout layout, SceneMember m, CharacterPlacement p) {
-    // 퇴근은 모니터·회색 원으로만. **오류는 말풍선을 띄운다**(T30) — "⚠ 오류" 가 사무실에서 바로 보여야
-    // 사용자가 그 캐릭터를 눌러 재고용 배너로 간다.
-    if (m.status == MemberStatus.exited) return;
-    final fs = layout.fontScale;
+    if (!showsBubble(m)) return;
     final override = bubbleOverrides[m.id];
     final alert = override != null || m.isAlert || m.isError;
+    _bubble(canvas, layout, p.bubbleAnchor, override != null ? truncate(override, bubbleMaxChars) : m.bubbleText,
+        alert: alert, error: m.isError);
+  }
+
+  /// 상사 책상 옆 3명째부터의 "+N" 말풍선(두 번째 자리 위 — 패스 2 이슈 5).
+  void _paintVisitorOverflow(Canvas canvas, OfficeLayout layout) {
+    final counts = <int, int>{};
+    for (final m in scene.members) {
+      final idx = m.askParentDeskIndex;
+      if (idx != null) counts[idx] = (counts[idx] ?? 0) + 1;
+    }
+    for (final e in counts.entries) {
+      if (e.value <= visitorMaxShown) continue;
+      _bubble(canvas, layout, layout.visitorOverflowAnchor(e.key), '+${e.value - visitorMaxShown}', alert: true);
+    }
+  }
+
+  void _bubble(Canvas canvas, OfficeLayout layout, Offset anchor, String text, {bool alert = false, bool error = false}) {
+    final fs = layout.fontScale;
     final style = TextStyle(
       color: OfficeColors.bubbleText,
       fontSize: 11 * fs,
       fontWeight: alert ? FontWeight.bold : FontWeight.normal,
     );
-    final tp = _layoutText(override != null ? truncate(override, bubbleMaxChars) : m.bubbleText, style);
+    // 최대 폭 180×scale, 2줄(패스 4).
+    final tp = _layoutText(text, style, maxWidth: 180 * layout.scale, maxLines: 2);
     final padX = 6 * layout.scale, padY = 3 * layout.scale;
     final w = tp.width + padX * 2, h = tp.height + padY * 2;
     final tail = 6 * layout.scale;
-    // 화면 밖으로 안 나가게 가로만 밀어 넣는다.
-    var left = p.bubbleAnchor.dx - w / 2;
-    left = left.clamp(2.0, (layout.size.width - w - 2).clamp(2.0, double.infinity));
-    final top = (p.bubbleAnchor.dy - tail - h).clamp(2.0, double.infinity);
+    var left = anchor.dx - w / 2;
+    left = left.clamp(2.0, math.max(2.0, layout.size.width - w - 2));
+    final top = math.max(2.0, anchor.dy - tail - h);
     final rect = Rect.fromLTWH(left, top, w, h);
-    final rr = RRect.fromRectAndRadius(rect, Radius.circular(4 * layout.scale));
+    final rr = RRect.fromRectAndRadius(rect, const Radius.circular(officeRadius));
     final tailPath = Path()
-      ..moveTo(p.bubbleAnchor.dx - tail, rect.bottom - 0.5)
-      ..lineTo(p.bubbleAnchor.dx, rect.bottom + tail)
-      ..lineTo(p.bubbleAnchor.dx + tail, rect.bottom - 0.5)
+      ..moveTo(anchor.dx - tail, rect.bottom - 0.5)
+      ..lineTo(anchor.dx, rect.bottom + tail)
+      ..lineTo(anchor.dx + tail, rect.bottom - 0.5)
       ..close();
     final fill = Paint()..color = OfficeColors.bubbleFill;
     final border = Paint()
-      ..color = m.isError
+      ..color = error
           ? OfficeColors.charError
           : alert
               ? OfficeColors.bubbleAlertBorder
@@ -406,14 +628,43 @@ class OfficePainter extends CustomPainter {
     canvas.drawPath(tailPath, fill);
     canvas.drawRRect(rr, border);
     canvas.drawPath(tailPath, border);
-    // 꼬리와 몸통 사이 테두리 지우기.
-    canvas.drawLine(Offset(p.bubbleAnchor.dx - tail + 1, rect.bottom), Offset(p.bubbleAnchor.dx + tail - 1, rect.bottom), fill..strokeWidth = 2);
+    canvas.drawLine(Offset(anchor.dx - tail + 1, rect.bottom), Offset(anchor.dx + tail - 1, rect.bottom), fill..strokeWidth = 2);
     tp.paint(canvas, Offset(rect.left + padX, rect.top + padY));
+  }
+
+  // ---- 점선 도형 --------------------------------------------------------------------
+
+  void _dashedRRect(Canvas canvas, RRect rr, Color color, double stroke) {
+    final paint = Paint()
+      ..color = color
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = stroke;
+    final path = Path()..addRRect(rr);
+    _dashPath(canvas, path, paint, 6, 4);
+  }
+
+  void _dashedCircle(Canvas canvas, Offset center, double radius, Color color, double stroke) {
+    final paint = Paint()
+      ..color = color
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = stroke;
+    final path = Path()..addOval(Rect.fromCircle(center: center, radius: radius));
+    _dashPath(canvas, path, paint, math.max(3, radius * 0.7), math.max(2, radius * 0.5));
+  }
+
+  void _dashPath(Canvas canvas, Path path, Paint paint, double dash, double gap) {
+    for (final metric in path.computeMetrics()) {
+      var d = 0.0;
+      while (d < metric.length) {
+        canvas.drawPath(metric.extractPath(d, math.min(d + dash, metric.length)), paint);
+        d += dash + gap;
+      }
+    }
   }
 
   // ---- 텍스트 -----------------------------------------------------------------------
 
-  TextPainter _layoutText(String s, TextStyle style, {double? maxWidth}) => TextPainter(
+  TextPainter _layoutText(String s, TextStyle style, {double? maxWidth, int maxLines = 1}) => TextPainter(
         text: TextSpan(
           text: s,
           style: style.copyWith(
@@ -422,7 +673,7 @@ class OfficePainter extends CustomPainter {
           ),
         ),
         textDirection: textDirection,
-        maxLines: 1,
+        maxLines: maxLines,
         ellipsis: '…',
       )..layout(maxWidth: maxWidth ?? double.infinity);
 
@@ -438,16 +689,17 @@ class OfficePainter extends CustomPainter {
   @override
   SemanticsBuilderCallback get semanticsBuilder => (Size size) {
         final layout = layoutFor(size);
-        final placements = _placementsFor(layout);
+        final placed = _placementsFor(layout);
+        final dy = layout.clampScroll(scrollOffset);
         return [
           for (var i = 0; i < scene.members.length; i++)
             CustomPainterSemantics(
               // 자리를 비운 캐릭터(줄·보고·걷는 중)는 지금 위치의 원, 자리에 있으면 책상.
-              rect: _isAway(layout, scene.members[i], placements[i])
-                  ? Rect.fromCircle(center: placements[i].center, radius: layout.charRadius)
-                  : layout.deskRect(scene.members[i].deskIndex),
+              rect: _isAway(layout, scene.members[i], placed[i])
+                  ? Rect.fromCircle(center: placed[i].center, radius: layout.charRadius)
+                  : layout.deskRect(scene.members[i].deskIndex).shift(Offset(0, -dy)),
               properties: SemanticsProperties(
-                label: '${scene.members[i].deskLabel} · ${scene.members[i].engineLabel}'
+                label: '${scene.members[i].deskTooltip} · ${scene.members[i].engineLabel}'
                     '${rankBadgeLabel(scene.members[i].rank).isEmpty ? '' : ' · ${scene.members[i].rank.label}'}'
                     ' · ${scene.members[i].summary}'
                     '${scene.members[i].isQueued ? ' · 내 책상 줄' : bubbleOverrides.containsKey(scene.members[i].id) ? ' · ${bubbleOverrides[scene.members[i].id]}' : ''}',
@@ -460,8 +712,15 @@ class OfficePainter extends CustomPainter {
             rect: layout.myDeskRect,
             properties: SemanticsProperties(
               label: scene.queue.isEmpty
-                  ? '내 책상 · 대기 없음'
-                  : '내 책상 · ${[for (var i = 0; i < scene.queue.length; i++) scene.queue[i].line(i)].join(' / ')}',
+                  ? scene.myDeskHeader
+                  : '${scene.myDeskHeader} · ${[for (var i = 0; i < scene.queue.length; i++) scene.queue[i].line(i)].join(' / ')}',
+              textDirection: textDirection,
+            ),
+          ),
+          CustomPainterSemantics(
+            rect: layout.legendRect,
+            properties: SemanticsProperties(
+              label: '상태 범례 · ${LegendSlot.values.map((s) => s.label).join(' · ')}',
               textDirection: textDirection,
             ),
           ),
@@ -474,13 +733,18 @@ class OfficePainter extends CustomPainter {
 
   @override
   bool shouldRepaint(OfficePainter oldDelegate) =>
-      shouldRebuildSemantics(oldDelegate) || !_mapEq(oldDelegate.bob, bob);
+      shouldRebuildSemantics(oldDelegate) ||
+      !_mapEq(oldDelegate.bob, bob) ||
+      oldDelegate.hoveredMemberId != hoveredMemberId ||
+      !_setEq(oldDelegate.resumedIds, resumedIds);
 
-  /// 흔들림(bob)은 시맨틱에 영향 없음 — 장면·선택·위치·말풍선 덮어쓰기만.
+  /// 흔들림(bob)·호버는 시맨틱에 영향 없음 — 장면·선택·위치·말풍선 덮어쓰기·스크롤만.
   @override
   bool shouldRebuildSemantics(OfficePainter oldDelegate) =>
       oldDelegate.scene != scene ||
       oldDelegate.selectedMemberId != selectedMemberId ||
+      oldDelegate.scrollOffset != scrollOffset ||
+      oldDelegate.showEmptyHint != showEmptyHint ||
       !_listEq(oldDelegate.placements, placements) ||
       !_mapEq(oldDelegate.bubbleOverrides, bubbleOverrides);
 
@@ -501,4 +765,6 @@ class OfficePainter extends CustomPainter {
     }
     return true;
   }
+
+  static bool _setEq<T>(Set<T> a, Set<T> b) => a.length == b.length && a.containsAll(b);
 }
