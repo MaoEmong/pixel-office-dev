@@ -66,6 +66,10 @@ const String emptyDepartmentHint = '프로젝트 폴더 하나 = 부서 하나. 
 /// 부장만 있고 팀이 없을 때 점선 클러스터 자리에 쓰는 문구.
 const String noTeamPlaceholderHint = '팀은 부장이 만듭니다 — 아래 지시 바에 첫 지시를';
 
+/// 내 책상 헤더 문구. **사무실 캔버스와 오른쪽 패널 인박스가 같은 말을 쓴다**(T40c — 전에는 0 일 때
+/// 캔버스가 "대기 없음", 패널이 "대기 0" 이라 한 화면에 두 말이 같이 떴다).
+String myDeskHeaderLabel(int count) => count == 0 ? '내 책상 · 대기 없음' : '내 책상 · 대기 $count';
+
 /// 엔진 배지·직급 배지·이름을 이 배율에서 어떻게 줄일지(패스 1 D7 — 숨기는 순서).
 bool showsEngineBadge(double scale) => scale >= engineBadgeMinScale;
 bool showsRankLabel(double scale) => scale >= rankLabelMinScale;
@@ -441,7 +445,7 @@ class OfficeScene {
   bool get isEmpty => members.isEmpty;
 
   /// 내 책상 헤더(패스 2 이슈 5: N 은 **전체** 대기 수 — 슬롯 4칸을 넘어도 다 센다).
-  String get myDeskHeader => queue.isEmpty ? '내 책상 · 대기 없음' : '내 책상 · 대기 ${queue.length}';
+  String get myDeskHeader => myDeskHeaderLabel(queue.length);
 
   /// 슬롯 4칸을 넘은 대기 수("+N" 배지). 0 이면 배지 없음.
   int get slotOverflow => queue.length > mySlotCount ? queue.length - mySlotCount : 0;

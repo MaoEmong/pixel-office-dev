@@ -15,7 +15,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../model/models.dart';
 import '../office/office_painter.dart' show legendColor;
-import '../office/office_scene.dart' show LegendSlot;
+import '../office/office_scene.dart' show LegendSlot, myDeskHeaderLabel;
 import '../rpc/rpc_client.dart';
 import '../state/office_state.dart';
 import 'labels.dart';
@@ -31,8 +31,8 @@ const double inboxMaxHeightFraction = 0.55;
 /// 인박스가 비었을 때.
 const String inboxEmptyLabel = '대기 없음';
 
-/// 인박스 헤더(N = 전체 대기 수, 접힌 것 포함).
-String inboxHeaderLabel(int count) => '내 책상 · 대기 $count';
+/// 인박스 헤더(N = 전체 대기 수, 접힌 것 포함). 문구는 사무실 내 책상과 **같은 함수**를 쓴다(T40c).
+String inboxHeaderLabel(int count) => myDeskHeaderLabel(count);
 
 /// "+N" 접힌 줄.
 String inboxMoreLabel(int n) => '+$n';

@@ -102,6 +102,22 @@ void main() {
     expect(c.read(selectedMemberIdProvider), isNull);
   });
 
+  testWidgets('T40c: 포커스가 빠져도(터미널 노드 dispose 등) 단축키가 계속 듣는다', (tester) async {
+    final c = await pumpShortcuts(tester, fake);
+    // 터미널 탭에 있다가 다른 탭으로 가면 터미널 FocusNode 가 사라지고 포커스가 풀린다 —
+    // 그때 포커스가 AppShortcuts **밖**(라우트 스코프)으로 올라가면 단축키가 통째로 죽었다(실기에서 발견).
+    FocusManager.instance.primaryFocus?.unfocus();
+    await tester.pump(); // 포커스 해제 프레임 — 여기서 _keepFocusInside 가 다음 프레임을 예약한다
+    await tester.pump(); // 예약된 콜백이 스코프로 포커스를 되돌리는 프레임
+    await tester.pump();
+
+    await press(tester, LogicalKeyboardKey.keyL);
+    expect(c.read(panelTabRequestProvider)?.tab, RightPanelTab.log, reason: '포커스가 풀려도 Ctrl+L 은 듣는다');
+
+    await press(tester, LogicalKeyboardKey.keyR);
+    expect(c.read(panelTabRequestProvider)?.tab, RightPanelTab.report);
+  });
+
   test('단축키 힌트 줄에 6가지가 다 들어 있다', () {
     for (final s in ['Ctrl+K', 'Ctrl+L', 'Ctrl+T', 'Ctrl+I', 'Ctrl+R', 'Esc']) {
       expect(shortcutHintLine, contains(s));
