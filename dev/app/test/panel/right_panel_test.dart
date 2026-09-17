@@ -14,11 +14,14 @@ void main() {
   setUp(() async => daemon = await startDaemon());
   tearDown(() => daemon.stop());
 
-  testWidgets('memberId null → "캐릭터를 선택하세요"', (tester) async {
+  testWidgets('memberId null → "캐릭터를 선택하세요" + 인박스는 그대로', (tester) async {
     await tester.runAsync(() async {
       await pumpPanel(tester, daemon, const RightPanel(memberId: null));
       expect(find.text('캐릭터를 선택하세요'), findsOneWidget);
       expect(find.byType(TabBar), findsNothing);
+      // T40-4 D6: 인박스는 선택 멤버와 무관하다 — 멤버를 안 골라도 헤더 자리에 선다.
+      expect(find.byKey(const Key('inbox')), findsOneWidget);
+      expect(find.text(inboxHeaderLabel(0)), findsOneWidget);
     });
   });
 
@@ -105,7 +108,7 @@ void main() {
     });
   });
 
-  testWidgets('허가 카드: 선택 멤버의 pending 만 헤더 아래에, 닫히면 사라짐(T15)', (tester) async {
+  testWidgets('T40-4: 인박스는 선택 멤버와 무관 — 헤더 아래 · 탭 위, 답하면 사라짐', (tester) async {
     daemon.snapshotBody['pending'] = [
       pendingJson('a1', memberId: 'm1', payload: {'tool_name': 'Bash', 'tool_input': {'command': 'flutter test'}}),
       pendingJson('q2', memberId: 'm2', type: 'question', payload: {'question': '모시의 질문?'}),
@@ -115,26 +118,27 @@ void main() {
     await tester.runAsync(() async {
       final c = await pumpPanel(tester, daemon, const RightPanel(memberId: 'm1'), overrides: overrides);
       await pumpUntilConnected(tester, c);
-      await pumpUntil(tester, () => find.byType(ApprovalCard).evaluate().isNotEmpty, reason: 'm1 card');
+      await pumpUntil(tester, () => find.byType(ApprovalCard).evaluate().isNotEmpty, reason: 'inbox card');
       expect(find.text('flutter test'), findsOneWidget);
-      expect(find.byType(QuestionCard), findsNothing); // m2 것은 안 보임
-      // 카드는 헤더 아래 · 탭 위
-      expect(tester.getTopLeft(find.byType(ApprovalCard)).dy, greaterThan(tester.getBottomLeft(find.byType(PanelHeader)).dy - 1));
+      // m2 의 TUI 질문도 사용자 몫이라 같은 인박스에 있다(선택 멤버가 m1 이어도).
+      expect(find.byType(QuestionCard), findsOneWidget);
+      expect(find.text('모시의 질문?'), findsOneWidget);
+      expect(find.text(inboxHeaderLabel(2)), findsOneWidget);
+      // 인박스는 헤더 아래 · 탭 위
+      expect(tester.getTopLeft(find.byKey(const Key('inbox'))).dy, greaterThan(tester.getBottomLeft(find.byType(PanelHeader)).dy - 1));
       expect(tester.getBottomLeft(find.byType(ApprovalCard)).dy, lessThanOrEqualTo(tester.getTopLeft(find.byType(TabBar)).dy + 1));
 
-      // m2 로 바꾸면 m2 의 질문 카드
+      // m2 로 바꿔도 같은 목록이 그대로(선택 무관).
       await pumpPanel(tester, daemon, const RightPanel(memberId: 'm2'), overrides: overrides);
       await tester.pump();
       expect(find.byType(QuestionCard), findsOneWidget);
-      expect(find.text('모시의 질문?'), findsOneWidget);
-      expect(find.byType(ApprovalCard), findsNothing);
+      expect(find.byType(ApprovalCard), findsOneWidget);
 
-      // 다시 m1 → 허가 → 카드 사라짐
-      await pumpPanel(tester, daemon, const RightPanel(memberId: 'm1'), overrides: overrides);
-      await tester.pump();
+      // 허가 → 그 카드만 사라진다
       await tester.tap(find.text('허가'));
       await pumpUntil(tester, () => daemon.countOf('approval.respond') == 1);
       await pumpUntil(tester, () => find.byType(ApprovalCard).evaluate().isEmpty, reason: 'card gone after allow');
+      expect(find.text(inboxHeaderLabel(1)), findsOneWidget);
       expect(find.byType(TabBar), findsOneWidget);
     });
   });
@@ -155,8 +159,9 @@ void main() {
       expect(find.textContaining('첫 번째 응답'), findsOneWidget); // 이전 보고도 남는다
       final cards = tester.widgetList<ReportCard>(find.byType(ReportCard)).map((c) => c.report.seq).toList();
       expect(cards, [12, 4]); // 최신 먼저
-      expect(find.text('보고(작업 없음)'), findsNWidgets(2));
-      expect(find.textContaining('#12'), findsOneWidget);
+      // T40-4: 문서 흐름 — 카드 제목이 아니라 헤더 줄 `보고 · 이름 · HH:MM · 작업 없음`.
+      expect(find.textContaining('보고 · 하루 ·'), findsNWidgets(2));
+      expect(find.textContaining('· 작업 없음'), findsNWidgets(2));
     });
   });
 }

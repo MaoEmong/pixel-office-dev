@@ -15,7 +15,7 @@ cd dev/app
 flutter pub get
 flutter run -d windows          # 개발 실행
 flutter build windows --release # build\windows\x64\runner\Release\pixel_office.exe
-flutter analyze && flutter test # 검증 (위젯·상태 273건)
+flutter analyze && flutter test # 검증 (위젯·상태 340건)
 ```
 
 데몬이 먼저 떠 있어야 한다(`cd dev/daemon && npm start`). 없으면 앱은 회색 오버레이 + "데몬 연결 안 됨" 을 보이며 1→2→4→5초 간격으로 계속 재접속을 시도한다("데몬 시작" 버튼은 T14).
@@ -57,8 +57,9 @@ Codex 팀원이 각자 책상·배지·터미널 탭(실제 Codex TUI)으로 보
   사용자 카드·줄에 나오지 않는다. 대신 그 멤버는 **직속 상사 책상 옆으로 걸어가** "❓ 상사에게 질문" 말풍선을 띄우고,
   질문한 멤버의 패널에는 안내 카드 `AskParentCard`("↑ 팀장/부장에게 질문 중")가 뜬다. 상사가 멈춰 있을 때를 위해
   "대신 답하기" 버튼으로 사용자가 `question.respond` 를 대신 보낼 수 있다(월권 경로).
-- **오른쪽 패널 헤더**: `직급 · 상사: 이름(직급) · 직속 부하 N명` 한 줄(`panelTreeLine`). 부장이 아니면
-  "지시는 부장에게 — 이 멤버는 상사가 일을 줍니다 (터미널 직접 입력은 가능)" 안내가 붙는다. 탭(로그·터미널·지시문·보고서)은 그대로다.
+- **오른쪽 패널 헤더**: `이름 · 엔진 칩 · 상태 점 + 상태` / `직급 · 상사: 이름(직급) · 직속 부하 N명`(`panelTreeLine`) / `부서 · 팀 · cwd`.
+  부장이 아니면 "지시는 부장에게 — 이 멤버는 상사가 일을 줍니다 (터미널 직접 입력은 가능)" 안내가 붙는다.
+  상태 점 색은 **범례 7칸**(아래 "레이아웃 v2" 절)을 따른다. 탭(로그·터미널·지시문·보고서)은 그대로다.
 - **선택 멤버**는 `lib/state/selection.dart`(`selectedMemberIdProvider`). 멤버 행이 사라지면 선택이 자동 해제된다
   (퇴근은 행이 남으므로 유지).
 - **다른 클라이언트가 지운 부서·팀**(콘솔 `dept delete` 등)은 데몬이 미는 `snapshot` 알림으로 사라진다(T38).
@@ -100,6 +101,99 @@ Codex 팀원이 각자 책상·배지·터미널 탭(실제 Codex TUI)으로 보
   `spriteCell(center)` / `spriteCellOf(deskIndex)`(32×32 셀, 지금은 원 중심과 같은 자리). 지금은 여전히 원을 그린다.
 - 그리기 규칙: **곡률 4px 하나(`officeRadius`), 그림자·글로우·그라데이션 0** — 페인터 테스트가 이걸 고정한다.
 
+## 레이아웃 v2 — 오른쪽 패널 · 상단 바 · 지시 바 (T40-4·T40-5, D-42)
+
+전문은 `docs/design/레이아웃-v2.md`. 앱 쪽 요약:
+
+### 전역 인박스 "내 책상 · 대기 N" (`lib/panel/inbox.dart`, D6)
+
+**pending 의 주인은 하나다.** 오른쪽 패널 헤더 바로 아래 인박스가 사용자 몫 pending
+(`Pending.goesToUser` — 허가 전부 + 부장 `ask_user` + TUI 질문) 전부를 **선택 멤버와 무관하게** 오래된 순으로 보여 준다.
+사무실 내 책상의 슬롯·배지(T40a)는 같은 목록의 그림이고, 카드에 답하면 양쪽에서 같이 사라진다.
+
+- 카드 **2장까지 펼치고**(`inboxExpandedCards`) 3장째부터 `+N` 줄로 접는다(클릭 = 펼침, "접기" 로 되돌림).
+- 복구로 만료된 요청(`error{pendingId}`)은 회색 **"만료 — 재지시"** 카드(`RedoCard(expired: true)`)로 같은 목록에 섞인다.
+  출처는 전역 이벤트 링 + **선택 멤버의 백필**(`PendingInbox(backfillMemberId:)` — 백필은 고른 멤버 것만 있으므로).
+- 맨 위 카드에 **`Alt+Y` 허가 / `Alt+N` 거부**(카드에 힌트 글자). 인박스가 `HardwareKeyboard` 핸들러로 직접 듣는다
+  — 목록 순서를 아는 쪽이 처리해야 해서. 맨 위가 질문 카드면 아무 일도 하지 않는다.
+- `inboxFocusProvider.focus(pendingId)` → 그 카드로 스크롤(접혀 있으면 펼친다). 사무실 슬롯 클릭이 이걸 부른다
+  (`main.dart` 의 `selectPendingFromOffice`).
+- `PendingCards(memberId)` 에 남는 것은 이제 **그 멤버 몫이 아닌 카드**뿐이다 = `ask_parent` 안내("대신 답하기").
+  인박스 아래 · 탭 위에 선다.
+
+### 허가·질문 카드 (`pending_card.dart` + `approval_summary.dart`, D12)
+
+```
+❗ PowerShell · demo39-c.txt 쓰기   [위험]        요청 2분 전 · 내일 10:32 만료
+클린 빌드가 필요해요                                  ← CLI description, 가변폭 13px
+Set-Content demo39-c.txt -Value …                    ← 고정폭 12px, 3줄 클램프 + "전체 보기"
+[ 허가 ]  [ 거부 ]              이번 세션 항상 허가 · 수정해서 허가
+Alt+Y 허가 · Alt+N 거부                               ← 인박스 맨 위 카드에만
+```
+
+- **동사 추출**(`approvalVerb`): Write → 쓰기 / Edit·MultiEdit·NotebookEdit → 수정 /
+  Bash·PowerShell → `Set-Content`·`Add-Content`·`Out-File`·리다이렉션(`>`/`>>`) → 쓰기, `rm`·`Remove-Item`·`del` → 삭제,
+  `git push` → 푸시, 그 밖에는 실행 / 그 밖의 도구는 명령 첫 토큰(없으면 실행).
+- **대상**(`approvalTarget`): `file_path|notebook_path|path` 의 마지막 조각, 없으면 명령의 마지막 "경로 같은" 토큰.
+  둘 다 없으면 생략한다(`❗ Bash · 삭제`).
+- **위험 패턴**(`isDangerousCommand`): `rm -rf`(`-fr` 포함) · `Remove-Item -Recurse` · `git push --force|-f` · `del /s` ·
+  줄 첫머리 `format` → 첫 줄 배경 `#FF6B6B` 알파 0.15 + `위험` 태그. `dart format` 은 오탐이 아니다.
+- **만료**: `createdAt + 86400초`(hook 보류 상한). 메타는 `요청 N분 전 · <오늘 10:32 | 내일 10:32 | 9/19 10:32> 만료`,
+  남은 1시간부터 주황, 지나면 카드 전체가 회색 "만료 — 재지시".
+- 질문 카드도 같은 골격 — 옵션 버튼이 주(채움), 자유 입력이 보조.
+
+### 보고서 탭 — 문서 흐름 (`report_tab.dart`, 하드리젝션 ①)
+
+카드 스택이 아니다. 보고 하나 = 헤더 줄 `보고 · 부장 · 23:08 · task#12 · done`(11px 회색) +
+본문 **가변폭 14px / 행간 1.6**(코드·경로 줄만 고정폭 — `splitReportBody`), **6줄 클램프 + "펼치기"**,
+보고 사이 1px 구분선, 날짜가 바뀌면 `2026-09-16` 구분선. `[TASK]` 지시는 왼쪽 세로선 대신 **배경 틴트 블록**.
+**미확인 배지**: 마지막으로 보고서 탭을 연 뒤 도착한 `reporting` 수(`reportUnreadProvider`, 앱 로컬 `reportReadProvider`)를
+탭 라벨 옆에 — 탭을 열면 지워진다. 상단 바 `보고 N` 은 그 부서 **부장**의 미확인 수다.
+
+### 패널 폭 · 터미널 오버레이 (`panel_splitter.dart`, `ui_prefs.dart`)
+
+- 드래그 손잡이로 **420~720**(기본 480), `%LOCALAPPDATA%\pixel-office\app-ui.json` 의 `panelWidth` 에 저장
+  (300ms 모아서 쓰고 실패는 삼킨다). 테스트는 `uiPrefsStoreProvider` 를 `MemoryUiPrefsStore` 로 덮는다.
+- **터미널 탭이 열려 있는 동안 660**(80열 × D2Coding 13px + 패딩 + 스크롤바)으로 자동 확장, 다른 탭으로 가면 원래 폭.
+  이미 660 보다 넓으면 그대로 둔다.
+- **`Ctrl+T`** = 사무실을 덮는 전체 폭 터미널 오버레이(Esc·닫기 버튼). 오버레이가 열리면 패널의 터미널 탭 자리는
+  안내 문구로 바뀐다 — **같은 멤버에 `member.attach` 를 두 번 걸면 나중 detach 가 먼저 것을 끊기 때문**. 터미널은 한 곳에만 붙는다.
+  크기가 바뀌면 `member.resize{cols, rows}` 는 그대로 나간다(`terminal_cache.dart` 의 `onResize`).
+
+### 상태 범례 7칸 (`labels.dart` `legendCategory`, D-42 3)
+
+| 칸 | 색 | 아이콘 | 포함 |
+|---|---|---|---|
+| 작업 | `#6C8EFF` | — | working · delegating · reporting |
+| 한가 | `#7ED3A1` | — | idle · free |
+| 보고 대기 | `#7ED3A1` 점선 | 📨 | waiting_reports |
+| **내 차례** | `#FF9F43` | ❗ | waiting_approval · 부장 `ask_user` · TUI 질문 |
+| 대기 | `#FFC857` | ⏳ | `ask_parent` 답 대기 · 셸 락 · starting |
+| 오류 | `#FF6B6B` | ⚠ | error |
+| 퇴근 | `#474D5E` | — | exited |
+
+패널 헤더 상태 점이 이 표를 쓴다. 사무실 캔버스(T40a)도 같은 매핑을 써야 하며,
+`office_scene.dart` 가 같은 함수를 export 하면 `labels.dart` 의 사본을 지운다(코드 안 TODO).
+
+### 상단 바 · 지시 바 · 끊김 오버레이 (T40-5)
+
+- **데몬 pill 3상태**(`topbar/daemon_pill.dart`): 초록 `데몬 v1.0 · pid 1234` / 노랑 1Hz 점멸 `연결 중 · N초` /
+  빨강 `끊김 · 재시도 N회`.
+- **끊김 오버레이**(`topbar/disconnected_overlay.dart`): pill 과 **같은 문구** + 다음 재시도까지의 진행 바
+  (RpcClient backoff 1→2→4→5초, `backoffForAttempt`) + 주 버튼 **데몬 시작** / 보조 **다시 연결**.
+  예외 문자열은 `자세히` 를 눌러야 펼쳐진다 — 첫 화면이 스택 트레이스면 안 된다(T39-8).
+- **부서 탭**: 폴더 아이콘 + 이름(활성은 채운 폴더), 툴팁 cwd. 오른쪽에 `멤버 N · 대기 N`
+  (대기 N = 인박스와 같은 수) 과 미확인 `보고 N` 배지(클릭 = 부장 선택 + 보고서 탭).
+- **지시 바**: 드롭다운을 없애고 정적 칩 **`♛ <부장이름>에게`**(부장 없으면 회색 `부장 없음` + 입력 비활성).
+  placeholder 는 예시 문장 `예: 이 저장소 구조를 파악해서 보고해`. 전송 스피너는 최소 200ms 보인다.
+  `-32004` 처리(데몬 문구 그대로 + `data.headId` 로 대상 복구, `force` 안 씀)는 그대로다.
+- **단축키**(`command/shortcuts.dart`, `AppShortcuts` 가 앱 전체를 감싼다):
+  `Ctrl+K` 지시 바 포커스 · `Ctrl+L` 로그 · `Ctrl+T` 터미널 오버레이 토글 · `Ctrl+I` 지시문 · `Ctrl+R` 보고서 ·
+  `Esc`(오버레이가 열려 있으면 닫고, 아니면 부장 선택으로 복귀). 단축키는 **포커스된 노드에서 위로** 올라오므로
+  터미널·입력란이 먼저 먹은 키는 여기까지 오지 않는다. 인박스의 `Alt+Y`/`Alt+N` 은 인박스가 직접 듣는다.
+- **포커스 링·스크롤바**: `pixelOfficeTheme()` 이 포커스 링 2px `#FFFFFF` 알파 0.8(`panelFocusRing`)과
+  6px 팔레트 스크롤바(`panelScrollbarThickness`/`panelScrollbarThumb`)를 심는다.
+
 ### T29 결함 수정(T37)
 
 - **③ 셸 대기가 안 보이던 것**: `running` 이벤트에 `detail.waiting`(예 `shell-lock`) 이 있으면 모니터·말풍선이 `cmd` 대신
@@ -125,7 +219,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tool\capture-window.ps1 -Out
 
 ```
 lib/
-  main.dart                 MaterialApp(dark) + 레이아웃 자리: TopBar / OfficeArea(T12) / RightPanel 탭(T13) / CommandBar(T14) / DisconnectedOverlay
+  main.dart                 MaterialApp(dark, pixelOfficeTheme) + AppShortcuts + TopBar / PanelSplitter(OfficeView · RightPanel) / CommandBar / DisconnectedOverlay
   rpc/
     daemon_info.dart        %LOCALAPPDATA%\pixel-office\daemon.json 읽기 (wsPort, token, pid, version …)
     rpc_client.dart         JSON-RPC 2.0 over WebSocket: connect / hello / call / 알림 스트림 / lastSeq / 자동 재접속
@@ -136,12 +230,23 @@ lib/
     office_state.dart       Riverpod 프로바이더 (아래 표)
     selection.dart          selectedMemberIdProvider (사무실·패널·지시 바가 공유하는 선택 멤버, T24b)
   topbar/
-    top_bar.dart            부서 탭 + "부서 만들기"(부장 임명) · 부서 삭제 · 선택 멤버 직급 배지·비상 퇴근(T37)
+    top_bar.dart            부서 탭(폴더 아이콘) + 개수·"보고 N" · "부서 만들기"(부장 임명) · 부서 삭제 · 비상 퇴근
+    daemon_pill.dart        데몬 상태 pill 3상태 + 상단 바 "보고 N" 배지(T40-5)
+    disconnected_overlay.dart  끊김 오버레이 — 진행 바 · "데몬 시작"/"다시 연결" · 예외 "자세히" 접힘(T40-5)
     selected_department.dart  상단 부서 탭 상태(T37, T24 의 selected_team.dart 를 대체)
     daemon_launcher.dart notices.dart   데몬 시작 버튼(T14) · daemon.notice 배너
   office/                   사무실 캔버스(T12·T16·T37·T40a): office_scene/layout/painter/motion/view — 세로 스크롤 + 바닥 고정 바(내 책상·범례)
-  panel/                    오른쪽 패널(T13·T15·T18·T26a·T37): 로그·터미널·지시문·보고서 탭, 허가/질문 카드, AskParentCard
-  command/command_bar.dart  지시 바 — 대상은 그 부서의 살아 있는 부장 하나로 고정(T37)
+  panel/                    오른쪽 패널(T13·T15·T18·T26a·T37·T40-4):
+    right_panel.dart          헤더(상태 점 = 범례 7칸) + 인박스 + 탭 4종(보고서 탭에 미확인 배지)
+    inbox.dart                전역 인박스 "내 책상 · 대기 N"(2장 펼침 + "+N", Alt+Y/N, 스크롤 포커스)
+    approval_summary.dart     허가 카드 첫 줄·동사·위험 패턴·만료 메타(순수 함수)
+    pending_card.dart         허가/질문 카드, AskParentCard
+    report_tab.dart           보고서 문서 흐름 + 미확인 배지 프로바이더
+    panel_splitter.dart       사무실↔패널 드래그 분할 + Ctrl+T 터미널 오버레이
+    ui_prefs.dart             앱 로컬 UI 설정(패널 폭 저장, 터미널 오버레이 상태)
+  command/
+    command_bar.dart          지시 바 — 대상은 그 부서의 살아 있는 부장 하나로 고정, 정적 칩(T37·T40-5)
+    shortcuts.dart            앱 전역 단축키 Ctrl+K/L/T/I/R · Esc(T40-5)
 test/
   fake_daemon.dart          dart:io HttpServer + WebSocketTransformer 로 만든 가짜 데몬(hello/replay/echo/fail/hang/push)
   rpc_client_test.dart      상관·에러 매핑·replay 중복 제거·재접속(since)·backoff

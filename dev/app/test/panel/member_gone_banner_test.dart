@@ -2,7 +2,8 @@
 // error → "⚠ 오류로 종료됨 (code N)" + resume failed 줄; -32003 사유; RecoveryHint(재시작 만료 N건).
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:pixel_office/panel/right_panel.dart';
+import 'package:pixel_office/panel/inbox.dart' show inboxMoreLabel;
+import 'package:pixel_office/panel/right_panel.dart' hide inboxMoreLabel;
 
 import 'panel_harness.dart';
 
@@ -77,6 +78,13 @@ void main() {
       await pumpUntilConnected(tester, c);
       expect(find.byKey(const Key('panel.goneBanner')), findsNothing);
       await pumpUntil(tester, () => find.text('데몬이 재시작됐어요 — 만료된 요청 2건').evaluate().isNotEmpty, reason: 'hint');
+      // T40-4: 만료 카드는 인박스 안 — 2장까지 펼치고 나머지는 "+N" 으로 접힌다(D6).
+      expect(find.byType(RedoCard), findsNWidgets(2));
+      expect(find.text(inboxMoreLabel(1)), findsOneWidget);
+      await tester.ensureVisible(find.byKey(const Key('inbox.more')));
+      await tester.pump();
+      await tester.tap(find.byKey(const Key('inbox.more')));
+      await tester.pump();
       expect(find.byType(RedoCard), findsNWidgets(3));
       daemon.emitEvent(ev(20, kind: 'text', detail: {'text': '점검 끝, 이어서 진행합니다'}));
       await pumpUntil(tester, () => find.byKey(const Key('panel.recoveryHint')).evaluate().isEmpty, reason: 'hint gone');

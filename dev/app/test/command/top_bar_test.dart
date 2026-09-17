@@ -37,15 +37,21 @@ void main() {
   setUp(() => fake = FakeRpcClient());
   tearDown(() async => fake.close());
 
-  testWidgets('연결 칩: 끊김 → 연결됨 v버전 · pid, 멤버·대기 개수', (tester) async {
+  testWidgets('데몬 pill 3상태: 끊김 · 재시도 N회 → 연결 중 · N초 → 데몬 v버전 · pid; 멤버·대기 개수', (tester) async {
     await pumpApp(tester, fake);
-    expect(find.text('데몬 연결 안 됨'), findsOneWidget);
+    expect(find.text('끊김 · 재시도 0회'), findsOneWidget); // T40-5 D10
     expect(find.text('멤버 0 · 대기 0'), findsOneWidget);
     expect(tester.widget<FilledButton>(find.byKey(const Key('topbar.createDepartment'))).onPressed, isNull);
 
     fake.setState(RpcConnectionState.connecting);
     await pump2(tester);
-    expect(find.text('데몬 연결 중'), findsOneWidget);
+    expect(find.text('연결 중 · 0초'), findsOneWidget);
+    // 노랑은 1Hz 로 점멸한다.
+    expect(tester.widget<AnimatedOpacity>(find.byKey(const Key('topbar.daemon.dot'))).opacity, 1);
+    await tester.pump(daemonBlinkHalfPeriod);
+    expect(tester.widget<AnimatedOpacity>(find.byKey(const Key('topbar.daemon.dot'))).opacity, lessThan(1));
+    await tester.pump(daemonBlinkHalfPeriod);
+    expect(tester.widget<AnimatedOpacity>(find.byKey(const Key('topbar.daemon.dot'))).opacity, 1);
 
     fake.emitHello(
       version: '1.2.3',
