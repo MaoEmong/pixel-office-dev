@@ -89,11 +89,12 @@ void main() {
     expect(mid, isNot(layout.seatCenter(1)));
     expect(mid, isNot(layout.queueSlot(0)));
 
-    // 걷는 중인 캐릭터를 탭하면 그 멤버, 비운 자리(책상 아래 원 자리)를 탭하면 null, 도착 자리도 아직 null.
+    // 걷는 중인 캐릭터를 탭하면 그 멤버, 비운 자리(책상 아래 원 자리)를 탭하면 null.
+    // T40-3: 내 책상 **슬롯**은 아직 도착 전이라도 그 대기 건의 멤버를 고른다(슬롯 = 인박스 그림).
     await tester.tapAt(origin + mid);
     await tester.tapAt(origin + layout.seatCenter(1) + Offset(0, layout.charRadius));
     await tester.tapAt(origin + layout.queueSlot(0));
-    expect(picks, ['m2', null, null]);
+    expect(picks, ['m2', null, 'm2']);
 
     // 시맨틱 사각형도 지금 위치의 원.
     final node = find.semantics.byLabel(RegExp(r'책상 2 · 모시 .* · 내 책상 줄')).evaluate().single;
@@ -146,9 +147,9 @@ void main() {
     expect(painter.bubbleOverrides, {'m1': reportVisitBubble});
     expect(painter.lastPlacements[0].center, layout.seatCenter(0));
 
-    await tester.pump(const Duration(milliseconds: 2500)); // 자리 → 줄 자리(약 460px, 2.1초)
+    await tester.pump(const Duration(milliseconds: 2500)); // 자리 → 내 책상 앞(약 460px, 2.1초)
     painter = painterOf(tester);
-    expect(painter.lastPlacements[0].center, layout.queueSlot(0));
+    expect(painter.lastPlacements[0].center, layout.reportSpot(0));
     expect(painter.bubbleOverrides, {'m1': reportVisitBubble});
     expect(find.semantics.byLabel(RegExp(r'책상 1 · 하루 .* · 📄 보고')), findsOne);
     await tester.pump();
@@ -165,7 +166,7 @@ void main() {
     expect(find.semantics.byLabel(RegExp(r'📄 보고')), findsNothing);
     await tester.pump(const Duration(milliseconds: 1000));
     final mid = painterOf(tester).lastPlacements[0].center;
-    expect(mid.dy, lessThan(layout.queueSlot(0).dy));
+    expect(mid.dy, lessThan(layout.reportSpot(0).dy));
     expect(mid.dy, greaterThan(layout.seatCenter(0).dy));
     await settleMotion(tester);
     expect(painterOf(tester).lastPlacements[0].center, layout.seatCenter(0));
@@ -203,7 +204,7 @@ void main() {
     notifier.set(idlePair(events: {'m1': event('m1', OfficeEventKind.reporting, seq: 3)}));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 2500));
-    expect(painterOf(tester).lastPlacements[0].center, layout.queueSlot(0));
+    expect(painterOf(tester).lastPlacements[0].center, layout.reportSpot(0));
 
     // 팀장이 보고한 뒤 곧바로 dismiss 를 부른다 — 보고에 딸린 뒷정리이지 새 작업이 아니다.
     notifier.set(idlePair(
@@ -211,7 +212,7 @@ void main() {
     ));
     await tester.pump();
     expect(painterOf(tester).bubbleOverrides, {'m1': reportVisitBubble}, reason: 'MCP 팀 도구는 취소 사유가 아니다');
-    expect(painterOf(tester).lastPlacements[0].center, layout.queueSlot(0));
+    expect(painterOf(tester).lastPlacements[0].center, layout.reportSpot(0));
 
     // 보통 도구(Bash)면 예전대로 취소된다.
     notifier.set(idlePair(

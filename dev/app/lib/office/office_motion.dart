@@ -43,6 +43,15 @@ class MovementState {
     return MovementState(from: from, to: to, startedAt: now, durationMs: ms);
   }
 
+  /// 시간을 못 박은 걷기 — 출근 연출은 거리와 무관하게 [arrivalWalkDuration](1.2초)다(패스 2 D10).
+  factory MovementState.walkFor({
+    required CharacterPlacement from,
+    required CharacterPlacement to,
+    required Duration now,
+    required Duration duration,
+  }) =>
+      MovementState(from: from, to: to, startedAt: now, durationMs: duration.inMilliseconds);
+
   static const double speedPxPerSec = 220;
   static const int minDurationMs = 250;
 
@@ -211,25 +220,26 @@ class OfficeMotion {
     for (final v in visits) {
       visitorRank[v.memberId] = visitorRank.length;
     }
-    final queuedCount = _scene.members.where((m) => m.isQueued).length;
     final door = layout.doorSpawn;
 
     for (final m in _scene.members) {
-      final target = _targetFor(m, layout, queuedCount, visitorRank[m.id]);
+      final target = _targetFor(m, layout, visitorRank[m.id]);
       final track = _tracks[m.id];
       final current = _movements[m.id];
       if (track == null || current == null) {
-        // 새 멤버: 출근 중(starting)이면 문에서 입장, 그 외(스냅샷 복원 등)는 즉시 배치.
+        // 새 멤버: 출근 중(starting)이면 문에서 **1.2초** 동안 걸어 들어온다(패스 2 D10), 그 외(스냅샷 복원 등)는 즉시 배치.
         if (_initialized && m.status == MemberStatus.starting && !m.isGone) {
-          _movements[m.id] = MovementState.walk(from: _doorPlacement(m.id, door, layout), to: target, now: now);
+          _movements[m.id] = MovementState.walkFor(
+              from: _doorPlacement(m.id, door, layout), to: target, now: now, duration: arrivalWalkDuration);
         } else {
           _movements[m.id] = MovementState.instant(target, now);
         }
         _nextLeg.remove(m.id);
       } else if (track.gone && !m.isGone) {
-        // 재출근: 문에서 다시 들어온다.
+        // 재출근: 문에서 다시 들어온다(출근과 같은 1.2초).
         _nextLeg.remove(m.id);
-        _movements[m.id] = MovementState.walk(from: _doorPlacement(m.id, door, layout), to: target, now: now);
+        _movements[m.id] = MovementState.walkFor(
+            from: _doorPlacement(m.id, door, layout), to: target, now: now, duration: arrivalWalkDuration);
       } else if (!track.gone && m.isGone) {
         // 퇴근: 문까지 걸어간 뒤 회색으로 자리에 돌아와 앉는다(T12 의 "회색 책상" 표현 유지).
         _movements[m.id] = MovementState.walk(from: current.at(now), to: _doorPlacement(m.id, door, layout), now: now);
@@ -244,20 +254,24 @@ class OfficeMotion {
     }
   }
 
-  CharacterPlacement _targetFor(SceneMember m, OfficeLayout layout, int queuedCount, int? visitorRank) {
+  CharacterPlacement _targetFor(SceneMember m, OfficeLayout layout, int? visitorRank) {
     if (visitorRank != null) {
-      final k = queuedCount + visitorRank;
-      return CharacterPlacement(memberId: m.id, center: layout.queueSlot(k), bubbleAnchor: layout.queueBubbleAnchor(k));
+      // 보고 방문은 슬롯을 차지하지 않는다 — 내 책상 오른쪽에 선다(T40-3).
+      return CharacterPlacement(
+          memberId: m.id, center: layout.reportSpot(visitorRank), bubbleAnchor: layout.reportBubbleAnchor(visitorRank));
     }
-    if (m.isQueued) {
+    // 슬롯 4칸이 차면 5명째부터는 **자기 책상에 남는다**(주황 링 + "+N" 배지, D-42 3).
+    if (m.hasSlot) {
       return CharacterPlacement(memberId: m.id, center: layout.queueSlot(m.queueIndex!), bubbleAnchor: layout.queueBubbleAnchor(m.queueIndex!));
     }
     // `ask_parent` 로 답을 기다리는 중 — 내 책상이 아니라 **직속 상사 책상 옆**으로 간다(T37, D-32).
-    if (m.isAskingParent) {
+    // 3명째부터는 자기 자리에 남고 "+N" 말풍선만 뜬다.
+    if (m.showsAsVisitor) {
+      final k = m.askParentVisitorIndex ?? 0;
       return CharacterPlacement(
         memberId: m.id,
-        center: layout.visitorSpot(m.askParentDeskIndex!),
-        bubbleAnchor: layout.visitorBubbleAnchor(m.askParentDeskIndex!),
+        center: layout.visitorSpot(m.askParentDeskIndex!, k),
+        bubbleAnchor: layout.visitorBubbleAnchor(m.askParentDeskIndex!, k),
       );
     }
     return CharacterPlacement(memberId: m.id, center: layout.seatCenter(m.deskIndex), bubbleAnchor: layout.seatBubbleAnchor(m.deskIndex));

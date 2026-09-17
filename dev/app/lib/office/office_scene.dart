@@ -27,6 +27,97 @@ const int bubbleMaxChars = 28;
 /// running 요약에 쓰는 명령 최대 글자 수.
 const int cmdMaxChars = 40;
 
+// ---- 레이아웃 v2 상수(docs/design/레이아웃-v2.md 패스 2·4) --------------------------
+
+/// 모니터 한 줄의 최대 글자 수(2줄 × 22자 — 패스 4 구체성).
+const int monitorMaxChars = 22;
+
+/// 이 배율 미만이면 모니터 둘째 줄을 숨긴다.
+const double monitorSecondLineMinScale = 0.7;
+
+/// 이 배율 미만이면 엔진 배지를 숨긴다(글자 빼기 1단계 — 패스 1 D7).
+const double engineBadgeMinScale = 0.8;
+
+/// 이 배율 미만이면 직급 배지에서 글자를 빼고 아이콘(♛/★)만 남긴다(2단계).
+const double rankLabelMinScale = 0.7;
+
+/// 내 책상 대기 슬롯 수(D-42 3).
+const int mySlotCount = 4;
+
+/// 상사 책상 옆에 동시에 보여 주는 방문자 수(3명째부터 "+N").
+const int visitorMaxShown = 2;
+
+/// 퇴근한 책상이 "퇴근 N" 배지로 접히기까지(패스 2 이슈 7, 앱 로컬).
+const Duration exitFoldAfter = Duration(minutes: 10);
+
+/// 복구(`[RESUMED]`) 표시가 유지되는 시간(패스 2 D10).
+const Duration resumedMarkDuration = Duration(seconds: 3);
+
+/// 복구 말풍선.
+const String resumedBubble = '↻ 복구됨';
+
+/// 출근 걷기 시간(문 → 책상, 패스 2 D10).
+const Duration arrivalWalkDuration = Duration(milliseconds: 1200);
+
+/// 부서가 하나도 없을 때의 가운데 버튼·한 줄(패스 2 이슈 7).
+const String createDepartmentLabel = '부서 만들기';
+const String emptyDepartmentHint = '프로젝트 폴더 하나 = 부서 하나. 부장이 팀을 꾸립니다.';
+
+/// 부장만 있고 팀이 없을 때 점선 클러스터 자리에 쓰는 문구.
+const String noTeamPlaceholderHint = '팀은 부장이 만듭니다 — 아래 지시 바에 첫 지시를';
+
+/// 엔진 배지·직급 배지·이름을 이 배율에서 어떻게 줄일지(패스 1 D7 — 숨기는 순서).
+bool showsEngineBadge(double scale) => scale >= engineBadgeMinScale;
+bool showsRankLabel(double scale) => scale >= rankLabelMinScale;
+bool showsMonitorSecondLine(double scale) => scale >= monitorSecondLineMinScale;
+
+/// 이 배율에서 책상에 그릴 직급 배지 글자(팀원은 빈 문자열, 좁아지면 아이콘만).
+String rankBadgeAt(MemberRank rank, double scale) {
+  if (rank == MemberRank.member) return '';
+  return showsRankLabel(scale) ? '${rank.mark} ${rank.label}' : rank.mark;
+}
+
+/// 상태 범례 7칸(D-42 3 · 패스 2 매핑표). 캐릭터 링 색 · 하단 범례 · 패널 상태 점의 **단일 기준**이다.
+/// 색은 ARGB 값(이 파일은 순수 Dart — 페인터가 `Color(...)` 로 쓴다).
+enum LegendSlot {
+  working('작업', 0xFF6C8EFF, ''),
+  idle('한가', 0xFF7ED3A1, ''),
+  waitingReports('보고 대기', 0xFF7ED3A1, '📨', dashedRing: true),
+  myTurn('내 차례', 0xFFFF9F43, '❗'),
+  waiting('대기', 0xFFFFC857, '⏳'),
+  error('오류', 0xFFFF6B6B, '⚠'),
+  exited('퇴근', 0xFF474D5E, '');
+
+  const LegendSlot(this.label, this.argb, this.icon, {this.dashedRing = false});
+
+  final String label;
+  final int argb;
+  final String icon;
+
+  /// 점선 링으로 그린다(색만으로 구분하지 않는다 — 패스 6 색약 대응).
+  final bool dashedRing;
+}
+
+/// 코드 상태 13종 → 범례 7칸. **이 함수 하나가 유일한 매핑**이다(링 색·범례·패널 상태 점 공용).
+LegendSlot legendSlotOf(SceneMember m) {
+  if (m.status == MemberStatus.exited) return LegendSlot.exited;
+  if (m.status == MemberStatus.error) return LegendSlot.error;
+  // ask_parent 답 대기는 "대기"(노랑) — 사용자가 할 일이 없다.
+  if (m.isAskingParent) return LegendSlot.waiting;
+  // 내 차례: 허가 대기 · 부장 ask_user · TUI 질문(= 내 책상 줄에 선 사람).
+  if (m.isQueued || m.status.isWaiting || (m.derived?.isWaiting ?? false)) return LegendSlot.myTurn;
+  if (m.status == MemberStatus.starting) return LegendSlot.waiting;
+  if (m.isShellWaiting) return LegendSlot.waiting;
+  if (m.derived == DerivedStatus.waitingReports) return LegendSlot.waitingReports;
+  if (m.derived == DerivedStatus.free) return LegendSlot.idle;
+  if (m.eventKind == OfficeEventKind.delegating || m.eventKind == OfficeEventKind.reporting) return LegendSlot.working;
+  return switch (m.status) {
+    MemberStatus.working => LegendSlot.working,
+    MemberStatus.idle => LegendSlot.idle,
+    _ => LegendSlot.idle,
+  };
+}
+
 /// 파생 상태 `waiting_reports`(상사가 위임하고 부하 보고를 기다리는 중 — 01 §3) 의 모니터·말풍선 문구.
 const String waitingReportsSummary = '📨 보고 대기';
 
@@ -63,6 +154,11 @@ class SceneMember {
     this.eventSeq,
     this.eventTool,
     this.askParentDeskIndex,
+    this.derived,
+    this.monitorSecond,
+    this.askParentVisitorIndex,
+    this.isShellWaiting = false,
+    this.isResumed = false,
   });
 
   final String id;
@@ -98,7 +194,28 @@ class SceneMember {
   /// 이 멤버는 내 책상 줄이 아니라 상사 책상 옆으로 걸어간다(T37).
   final int? askParentDeskIndex;
 
+  /// 파생 상태(`waiting_reports`·`free`·`waiting_answer` …). 범례 매핑([legendSlotOf])의 입력이다.
+  final DerivedStatus? derived;
+
+  /// 모니터 둘째 줄(결과 요약). 없으면 null — 배율이 작으면 페인터가 숨긴다.
+  final String? monitorSecond;
+
+  /// 같은 상사에게 동시에 질문하러 간 사람 중 몇 번째인가(0부터, T40-3).
+  final int? askParentVisitorIndex;
+
+  /// 셸 락 대기(`running{waiting:'shell-lock'}`) 중인가 — 범례 "대기"(노랑).
+  final bool isShellWaiting;
+
+  /// 방금 복구된(`[RESUMED]`) 멤버인가 — 책상 점선 3초 + "↻ 복구됨" 말풍선(패스 2 D10).
+  final bool isResumed;
+
   bool get isQueued => queueIndex != null;
+
+  /// 내 책상 슬롯(4칸)에 자리가 있는 대기자인가. 5명째부터는 자기 책상에 남는다(D-42 3).
+  bool get hasSlot => queueIndex != null && queueIndex! < mySlotCount;
+
+  /// 상사 책상 옆에 실제로 서 있는가(3명째부터는 자기 자리에 남고 "+N" 만 뜬다).
+  bool get showsAsVisitor => isAskingParent && (askParentVisitorIndex ?? 0) < visitorMaxShown;
 
   /// 상사 책상으로 질문하러 간 상태인가.
   bool get isAskingParent => askParentDeskIndex != null;
@@ -123,9 +240,22 @@ class SceneMember {
         Engine.codex => 'Codex',
       };
 
-  String get deskLabel => '책상 ${deskIndex + 1} · $name';
+  /// 책상 라벨 = **이름만**(패스 1 D7: "책상 N ·" 접두어 삭제 — 번호는 툴팁·로그에만).
+  String get deskLabel => name;
+
+  /// 툴팁·시맨틱·로그용(번호 포함).
+  String get deskTooltip => '책상 ${deskIndex + 1} · $name';
 
   String get bubbleText => truncate(summary, bubbleMaxChars);
+
+  /// 모니터 첫 줄(명령·도구) — 22자.
+  String get monitorTop => truncate(summary, monitorMaxChars);
+
+  /// 모니터 둘째 줄(결과 요약) — 22자, 없으면 null.
+  String? get monitorBottom => monitorSecond == null ? null : truncate(monitorSecond!, monitorMaxChars);
+
+  /// 이 멤버의 범례 칸(링 색·상태 점의 단일 기준).
+  LegendSlot get legendSlot => legendSlotOf(this);
 
   @override
   bool operator ==(Object other) =>
@@ -143,11 +273,16 @@ class SceneMember {
       other.eventKind == eventKind &&
       other.eventSeq == eventSeq &&
       other.eventTool == eventTool &&
-      other.askParentDeskIndex == askParentDeskIndex;
+      other.askParentDeskIndex == askParentDeskIndex &&
+      other.derived == derived &&
+      other.monitorSecond == monitorSecond &&
+      other.askParentVisitorIndex == askParentVisitorIndex &&
+      other.isShellWaiting == isShellWaiting &&
+      other.isResumed == isResumed;
 
   @override
-  int get hashCode => Object.hash(
-      id, name, engine, status, rank, teamId, deskIndex, summary, isAlert, queueIndex, eventKind, eventSeq, eventTool, askParentDeskIndex);
+  int get hashCode => Object.hash(id, name, engine, status, rank, teamId, deskIndex, summary, isAlert, queueIndex, eventKind,
+      eventSeq, eventTool, askParentDeskIndex, derived, monitorSecond, askParentVisitorIndex, isShellWaiting, isResumed);
 
   @override
   String toString() => 'SceneMember($id $name ${rank.wire} desk=$deskIndex queue=$queueIndex "$summary")';
@@ -183,7 +318,14 @@ class QueueEntry {
 
 /// 책상 한 무리 = 팀 하나(T37). 제목 줄 + 그 팀의 책상들(팀장이 먼저).
 class DeskCluster {
-  const DeskCluster({required this.deskCount, this.teamId, this.title});
+  const DeskCluster({
+    required this.deskCount,
+    this.teamId,
+    this.title,
+    this.exitedFolded = 0,
+    this.allExited = false,
+    this.isPlaceholder = false,
+  });
 
   /// 팀 id(미배정 클러스터·평면 배치는 null).
   final String? teamId;
@@ -193,12 +335,27 @@ class DeskCluster {
 
   final int deskCount;
 
-  @override
-  bool operator ==(Object other) =>
-      other is DeskCluster && other.teamId == teamId && other.title == title && other.deskCount == deskCount;
+  /// 10분 넘게 퇴근해 접힌 책상 수 — 제목 줄의 "퇴근 N" 배지(패스 2 이슈 7).
+  final int exitedFolded;
+
+  /// 팀원이 전원 퇴근 — 제목 줄만 남긴 낮은 상자.
+  final bool allExited;
+
+  /// 아직 팀이 없을 때의 **점선 자리**(부장만 있는 부서, T40-6).
+  final bool isPlaceholder;
 
   @override
-  int get hashCode => Object.hash(teamId, title, deskCount);
+  bool operator ==(Object other) =>
+      other is DeskCluster &&
+      other.teamId == teamId &&
+      other.title == title &&
+      other.deskCount == deskCount &&
+      other.exitedFolded == exitedFolded &&
+      other.allExited == allExited &&
+      other.isPlaceholder == isPlaceholder;
+
+  @override
+  int get hashCode => Object.hash(teamId, title, deskCount, exitedFolded, allExited, isPlaceholder);
 
   @override
   String toString() => 'DeskCluster(${title ?? '-'} × $deskCount)';
@@ -259,6 +416,18 @@ class OfficeScene {
 
   bool get isEmpty => members.isEmpty;
 
+  /// 내 책상 헤더(패스 2 이슈 5: N 은 **전체** 대기 수 — 슬롯 4칸을 넘어도 다 센다).
+  String get myDeskHeader => queue.isEmpty ? '내 책상 · 대기 없음' : '내 책상 · 대기 ${queue.length}';
+
+  /// 슬롯 4칸을 넘은 대기 수("+N" 배지). 0 이면 배지 없음.
+  int get slotOverflow => queue.length > mySlotCount ? queue.length - mySlotCount : 0;
+
+  /// 슬롯 [k] 에 선 대기 항목(없으면 null — 빈 슬롯은 점선 실루엣).
+  QueueEntry? slotEntry(int k) => k >= 0 && k < queue.length && k < mySlotCount ? queue[k] : null;
+
+  /// 상사 책상 [deskIndex] 옆에서 답을 기다리는 사람 수(3명째부터 "+N" 말풍선).
+  int visitorsAt(int deskIndex) => members.where((m) => m.askParentDeskIndex == deskIndex).length;
+
   SceneMember? memberById(String id) {
     for (final m in members) {
       if (m.id == id) return m;
@@ -275,6 +444,9 @@ class OfficeScene {
     Map<String, DerivedStatus> derived = const {},
     Map<String, Team> teams = const {},
     String? departmentId,
+    DateTime? now,
+    Set<String> expandedTeamIds = const {},
+    Map<String, int> reportCounts = const {},
   }) {
     if (departmentId != null) {
       members = {for (final e in members.entries) if (e.value.departmentId == departmentId) e.key: e.value};
@@ -301,8 +473,29 @@ class OfficeScene {
     if (head != null) ordered.add(head);
     for (final tid in teamIds) {
       final crew = all.where((m) => m.teamId == tid && m.id != head?.id).toList(growable: false)..sort(_byRankThenCreatedAt);
-      clusters.add(DeskCluster(teamId: tid, title: _clusterTitle(teams[tid]?.name ?? tid, crew.length), deskCount: crew.length));
-      ordered.addAll(crew);
+      final name = teams[tid]?.name ?? tid;
+      // 전원 퇴근 팀 = 제목 줄만 남긴 낮은 상자(패스 2 이슈 7).
+      if (crew.isNotEmpty && crew.every((m) => m.status == MemberStatus.exited)) {
+        clusters.add(DeskCluster(
+          teamId: tid,
+          title: '팀 $name · 전원 퇴근 · 보고 ${reportCounts[tid] ?? 0}건',
+          deskCount: 0,
+          allExited: true,
+        ));
+        continue;
+      }
+      // 10분 넘게 퇴근한 책상은 접어 제목 줄의 "퇴근 N" 배지로(펼치면 다시 보인다 — 앱 로컬).
+      final folded = expandedTeamIds.contains(tid)
+          ? const <Member>[]
+          : crew.where((m) => _isFoldableExit(m, now)).toList(growable: false);
+      final shown = folded.isEmpty ? crew : crew.where((m) => !folded.contains(m)).toList(growable: false);
+      clusters.add(DeskCluster(
+        teamId: tid,
+        title: _clusterTitle(name, crew.length),
+        deskCount: shown.length,
+        exitedFolded: folded.length,
+      ));
+      ordered.addAll(shown);
     }
     final orphans = all
         .where((m) => m.id != head?.id && (m.teamId == null || !teamIds.contains(m.teamId)))
@@ -311,6 +504,10 @@ class OfficeScene {
     if (orphans.isNotEmpty) {
       clusters.add(DeskCluster(title: '$unassignedClusterTitle · ${orphans.length}명', deskCount: orphans.length));
       ordered.addAll(orphans);
+    }
+    // 부장만 있고 팀이 하나도 없으면 점선 클러스터 자리 하나(T40-6).
+    if (head != null && clusters.isEmpty) {
+      clusters.add(const DeskCluster(title: noTeamPlaceholderHint, deskCount: 0, isPlaceholder: true));
     }
     final plan = OfficeDeskPlan(hasHead: head != null, clusters: clusters);
     final deskIndexOf = {for (var i = 0; i < ordered.length; i++) ordered[i].id: i};
@@ -323,11 +520,17 @@ class OfficeScene {
     final otherPending = {for (final p in openPending) if (!p.goesToUser(rank: members[p.memberId]?.rank)) p.memberId};
     // `ask_parent` 질문자 → 답을 기다리는 상사(같은 화면에 있을 때만 책상 번호를 얻는다).
     final askParentTarget = <String, int>{};
+    // 같은 상사에게 동시에 질문한 사람의 순번(오래된 질문부터 0, 1, 2 …) — 방문 자리 배정(T40-3).
+    final askParentVisitorIndex = <String, int>{};
+    final visitorsPerDesk = <int, int>{};
     for (final p in openPending) {
       if (!p.isAskParent) continue;
       final to = p.askParentTo ?? members[p.memberId]?.parentId;
       final idx = to == null ? null : deskIndexOf[to];
-      if (idx != null) askParentTarget[p.memberId] = idx;
+      if (idx == null || askParentTarget.containsKey(p.memberId)) continue;
+      askParentTarget[p.memberId] = idx;
+      askParentVisitorIndex[p.memberId] = visitorsPerDesk[idx] ?? 0;
+      visitorsPerDesk[idx] = (visitorsPerDesk[idx] ?? 0) + 1;
     }
 
     // 줄에 서는 기준(T19 함정 1): "사용자 몫 pending 이 있다" 또는 "파생/raw status 가 waiting".
@@ -378,6 +581,15 @@ class OfficeScene {
           eventTool: latestEvents[ordered[i].id]?.detail.tool,
           // 줄에 선(= 사용자 몫이 있는) 멤버는 상사 방문보다 내 책상이 우선.
           askParentDeskIndex: queued.containsKey(ordered[i].id) ? null : askParentTarget[ordered[i].id],
+          askParentVisitorIndex: queued.containsKey(ordered[i].id) ? null : askParentVisitorIndex[ordered[i].id],
+          derived: derived[ordered[i].id] ?? ordered[i].derived,
+          monitorSecond: monitorSecondLine(
+            ordered[i].status,
+            latestEvents[ordered[i].id],
+            askingParent: askParentTarget.containsKey(ordered[i].id),
+          ),
+          isShellWaiting: latestEvents[ordered[i].id]?.detail.waiting != null,
+          isResumed: isResumeEvent(latestEvents[ordered[i].id]),
         ),
     ];
 
@@ -394,6 +606,13 @@ class OfficeScene {
   }
 
   static String _clusterTitle(String name, int count) => '팀 $name · $count명';
+
+  /// 10분 넘게 퇴근해 있는 책상인가(기준 시각 [now] 가 없으면 접지 않는다).
+  static bool _isFoldableExit(Member m, DateTime? now) {
+    if (now == null || m.status != MemberStatus.exited) return false;
+    final t = DateTime.tryParse(m.updatedAt);
+    return t != null && now.difference(t.toUtc()) >= exitFoldAfter;
+  }
 
   static int _byCreatedAt(Member a, Member b) {
     final c = a.createdAt.compareTo(b.createdAt);
@@ -476,6 +695,29 @@ String _statusSummary(MemberStatus s) => switch (s) {
       MemberStatus.exited => '(퇴근)',
       MemberStatus.error => '⚠ 오류',
     };
+
+/// 모니터 **둘째 줄**(결과 요약, 패스 4). 첫 줄은 명령·도구([summarize]) 이므로 같은 내용은 되풀이하지 않는다.
+/// 퇴근·오류·상사 질문 중이거나 요약이 없으면 null(= 한 줄).
+String? monitorSecondLine(MemberStatus status, OfficeEvent? event, {bool askingParent = false}) {
+  if (status.isGone || askingParent || event == null) return null;
+  final d = event.detail;
+  // 셸 락 대기는 첫 줄이 이미 summary 다(T29 결함 ③).
+  if (d.waiting != null) return null;
+  final raw = d.summary ?? (event.kind == OfficeEventKind.text ? null : d.text);
+  if (raw == null) return null;
+  final line = firstLine(raw);
+  if (line.isEmpty) return null;
+  final top = summarize(status, event);
+  if (top.contains(line)) return null;
+  return truncate(line, monitorMaxChars);
+}
+
+/// 재시작 복구 이벤트인가 — 데몬은 `--resume` 재스폰 뒤 `text{summary:'resumed'}` 를 내고 큐에 `[RESUMED] …` 를 넣는다.
+bool isResumeEvent(OfficeEvent? event) {
+  if (event == null || event.kind != OfficeEventKind.text) return false;
+  final d = event.detail;
+  return (d.summary ?? '') == 'resumed' || (d.text ?? '').startsWith('[RESUMED]');
+}
 
 /// alert 말풍선 여부: 마지막 이벤트가 waiting_approval/asking/reporting 이거나 멤버가 (raw·파생) waiting 상태.
 bool isAlertFor(MemberStatus status, OfficeEvent? event, {DerivedStatus? derived, bool askingParent = false}) {
