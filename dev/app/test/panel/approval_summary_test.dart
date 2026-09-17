@@ -50,6 +50,44 @@ void main() {
       expect(approvalTarget('cmd', {'command': 'del /s tmp'}), isNull); // `/s` 는 플래그
     });
 
+    // T40d ③ — `❗ PowerShell · t40-a.txt") 실행` 처럼 따옴표·괄호가 딸려 나오던 자리.
+    test('감싼 따옴표·괄호와 꼬리 구두점은 벗긴다', () {
+      expect(
+        approvalTarget('PowerShell', {'command': r'[System.IO.File]::ReadAllBytes("D:\proj\sandbox\t40-a.txt")'}),
+        't40-a.txt',
+      );
+      expect(approvalTarget('Bash', {'command': 'cat "a b.txt" | head'}), 'a b.txt'); // 따옴표 안 공백은 한 토큰
+      expect(approvalTarget('PowerShell', {'command': "Set-Content -Path 'x.txt'"}), 'x.txt');
+      expect(approvalTarget('Bash', {'command': 'git push origin main'}), isNull);
+      expect(approvalTarget('Bash', {'command': 'rm -rf build/'}), 'build');
+      expect(approvalTarget('Bash', {'command': 'cat (report.md),'}), 'report.md');
+      // 앞 점(숨김 파일)·확장자 점은 그대로.
+      expect(approvalTarget('Bash', {'command': 'cat ./.gitignore'}), '.gitignore');
+    });
+
+    test('첫 줄도 꼬리 없이 — 셸 카드 회귀(T40d ③)', () {
+      expect(
+        approvalHeadline('PowerShell', {'command': r'[System.IO.File]::ReadAllBytes("D:\proj\sandbox\t40-a.txt")'}),
+        '❗ PowerShell · t40-a.txt 실행',
+      );
+      expect(approvalHeadline('Bash', {'command': 'rm -rf build/'}), '❗ Bash · build 삭제');
+      expect(approvalHeadline('Bash', {'command': 'git push origin main'}), '❗ Bash · 푸시');
+    });
+
+    test('shellTokens: 따옴표 안 공백은 자르지 않고 따옴표는 떨군다', () {
+      expect(shellTokens('cat "a b.txt" | head'), ['cat', 'a b.txt', '|', 'head']);
+      expect(shellTokens("Set-Content -Path 'x y.txt' -Value 'hi there'"), ['Set-Content', '-Path', 'x y.txt', '-Value', 'hi there']);
+      expect(shellTokens('   '), isEmpty);
+    });
+
+    test('stripTargetWrappers', () {
+      expect(stripTargetWrappers('t40-a.txt")'), 't40-a.txt');
+      expect(stripTargetWrappers('[a.txt]'), 'a.txt');
+      expect(stripTargetWrappers('a.txt,'), 'a.txt');
+      expect(stripTargetWrappers('.gitignore'), '.gitignore');
+      expect(stripTargetWrappers('""'), '');
+    });
+
     test('첫 줄 = `❗ 도구 · 대상 동사`(대상이 없으면 동사만)', () {
       expect(
         approvalHeadline('PowerShell', {'command': 'Set-Content demo39-c.txt -Value hi'}),

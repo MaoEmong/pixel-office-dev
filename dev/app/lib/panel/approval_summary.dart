@@ -9,6 +9,8 @@
 //           그 밖의 도구 → 명령이 있으면 첫 토큰 그대로, 없으면 실행.
 //     대상: file_path|notebook_path|path 의 마지막 조각. 없으면 명령에서 **마지막 경로 같은 토큰**(`/`·`\`·확장자)의
 //           마지막 조각. 둘 다 없으면 생략한다(`❗ Bash · 삭제`).
+//           토큰은 따옴표를 아는 쪼개기(`shellTokens`)로 끊고 감싼 따옴표·괄호·꼬리 구두점을 벗긴다
+//           (T40d ③ — `t40-a.txt") 실행` 처럼 꼬리가 붙어 나오던 자리).
 //  위험 패턴(`rm -rf` · `Remove-Item -Recurse` · `git push --force` · `del /s` · 줄 첫머리 `format`)이면
 //     첫 줄 배경에 빨강 틴트(#FF6B6B 알파 0.15) + 태그 `위험`.
 //  메타(오른쪽 위) `요청 2분 전 · 내일 10:32 만료` — 만료 = createdAt + 86400초(hook 보류 상한, D10).
@@ -116,20 +118,81 @@ String lastPathSegment(String path) {
 
 final RegExp _pathLike = RegExp(r'[/\\]|\.[A-Za-z0-9]{1,6}$');
 
+/// 대상 앞뒤에 붙어 오는 군더더기 — 따옴표·괄호·꼬리 구두점(T40d ③).
+const String _openers = '([{<"\'`';
+const String _closers = ')]}>"\'`,;:!?';
+
+/// 대상에서 감싼 따옴표·괄호와 꼬리 구두점을 벗긴다 — `t40-a.txt")` → `t40-a.txt`.
+/// 확장자의 점(`.txt`)이나 숨김 파일의 앞 점(`.gitignore`)은 건드리지 않는다.
+String stripTargetWrappers(String s) {
+  var t = s.trim();
+  var changed = true;
+  while (changed && t.isNotEmpty) {
+    changed = false;
+    while (t.isNotEmpty && _openers.contains(t[0])) {
+      t = t.substring(1);
+      changed = true;
+    }
+    while (t.isNotEmpty && _closers.contains(t[t.length - 1])) {
+      t = t.substring(0, t.length - 1);
+      changed = true;
+    }
+  }
+  return t;
+}
+
+/// 셸 명령을 토큰으로 — **따옴표 안의 공백은 자르지 않고**(`cat "a b.txt"` → `cat`, `a b.txt`)
+/// 따옴표 자체는 떨어뜨린다. PowerShell 의 `…ReadAllBytes("D:\x\a.txt")` 처럼 토큰 가운데에 낀
+/// 따옴표도 같이 벗겨져 뒤에 `")` 가 남지 않는다.
+List<String> shellTokens(String command) {
+  final out = <String>[];
+  final buf = StringBuffer();
+  String? quote;
+  void flush() {
+    if (buf.isNotEmpty) {
+      out.add(buf.toString());
+      buf.clear();
+    }
+  }
+
+  for (final ch in command.split('')) {
+    if (quote != null) {
+      if (ch == quote) {
+        quote = null;
+      } else {
+        buf.write(ch);
+      }
+      continue;
+    }
+    if (ch == '"' || ch == "'") {
+      quote = ch;
+      continue;
+    }
+    if (ch.trim().isEmpty) {
+      flush();
+      continue;
+    }
+    buf.write(ch);
+  }
+  flush();
+  return List<String>.unmodifiable(out);
+}
+
 /// 명령에서 마지막 "경로 같은" 토큰(플래그·리다이렉션 기호는 뺀다). 없으면 null.
 String? commandTarget(String? command) {
   final cmd = (command ?? '').trim();
   if (cmd.isEmpty) return null;
   String? found;
-  for (final raw in cmd.split(RegExp(r'\s+'))) {
-    var t = raw.trim();
-    // 따옴표·리다이렉션 기호 벗기기.
-    t = t.replaceAll(RegExp(r'''^["'>]+|["']+$'''), '');
+  for (final raw in shellTokens(cmd)) {
+    // 리다이렉션 기호·감싼 따옴표·괄호·꼬리 구두점 벗기기.
+    final t = stripTargetWrappers(raw.replaceAll(RegExp(r'^>+'), ''));
     if (t.isEmpty || t.startsWith('-') || t.startsWith('/')) continue; // 플래그(`-rf`, `/s`)
     if (!_pathLike.hasMatch(t)) continue;
     found = t;
   }
-  return found == null ? null : lastPathSegment(found);
+  if (found == null) return null;
+  final seg = stripTargetWrappers(lastPathSegment(found));
+  return seg.isEmpty ? null : seg;
 }
 
 /// 허가 카드 첫 줄의 대상(없으면 null).
