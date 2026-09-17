@@ -125,14 +125,14 @@ GlobalKey _keyForThisTest() {
   return key;
 }
 
-/// ProviderScope + MaterialApp(dark) + 고정 크기(오른쪽 패널 폭 380) 로 child 를 띄운다.
+/// ProviderScope + MaterialApp(dark) + 고정 크기(오른쪽 패널 기본 폭 480 — T40-4 에서 420~720 이 됐다) 로 child 를 띄운다.
 /// 같은 테스트 안에서 자식만 바꿔 다시 띄우려면(dispose·멤버 교체) `overrides` 를 같은 리스트로 넘긴다
 /// — ProviderScope 는 overrides 목록이 바뀌는 것을 허용하지 않는다.
 Future<ProviderContainer> pumpPanel(
   WidgetTester tester,
   PanelFakeDaemon daemon,
   Widget child, {
-  Size size = const Size(380, 600),
+  Size size = const Size(480, 700),
   List<Override>? overrides,
 }) async {
   // 키를 고정해 같은 테스트 안에서 다시 띄우면 MaterialApp 아래 트리가 유지된다(멤버 교체 = didUpdateWidget 경로).

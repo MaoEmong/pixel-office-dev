@@ -4,7 +4,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:pixel_office/model/models.dart';
-import 'package:pixel_office/panel/right_panel.dart';
+import 'package:pixel_office/panel/inbox.dart';
+import 'package:pixel_office/panel/right_panel.dart' hide PendingInbox, inboxHeaderLabel;
 import 'package:pixel_office/state/office_state.dart';
 import 'package:xterm/xterm.dart';
 
@@ -64,6 +65,24 @@ void main() {
     });
   });
 
+  testWidgets('T40-4: 만료 카드는 전역 인박스 안에 회색 "만료 — 재지시" 로 들어온다', (tester) async {
+    await tester.runAsync(() async {
+      final c = await pumpPanel(tester, daemon, const PendingInbox());
+      await pumpUntilConnected(tester, c);
+      expect(find.byType(RedoCard), findsNothing);
+      daemon.emitEvent({
+        ...ev(30, kind: 'error', detail: {'summary': '재지시 필요: 허가 요청이 재시작으로 만료됨', 'pendingId': 'a1', 'pendingType': 'approval'}),
+      });
+      await pumpUntil(tester, () => find.byType(RedoCard).evaluate().isNotEmpty, reason: 'expired card in inbox');
+      expect(find.text(redoExpiredTitle), findsOneWidget);
+      expect(find.text('⚠ 재지시 필요'), findsNothing); // 인박스 안에서는 회색 만료 카드
+      expect(find.text(inboxHeaderLabel(1)), findsOneWidget); // 대기 수에 같이 센다
+      // 같은 멤버가 새 턴을 끝내면 사라진다.
+      daemon.emitEvent(ev(31, kind: 'idle', detail: {}));
+      await pumpUntil(tester, () => find.byType(RedoCard).evaluate().isEmpty, reason: 'gone after idle');
+    });
+  });
+
   testWidgets('RightPanel 안에서: 터미널에서 답하기 → 터미널 탭으로; 다시 지시 → 원래 지시문 클립보드 + 스낵바', (tester) async {
     String? copied;
     final messenger = TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
@@ -81,6 +100,7 @@ void main() {
     await tester.runAsync(() async {
       final c = await pumpPanel(tester, daemon, const RightPanel(memberId: 'm1'));
       await pumpUntilConnected(tester, c);
+      // T40-4: 만료 흔적은 전역 인박스가 들고 있다(선택 멤버의 백필까지 합쳐서).
       await pumpUntil(tester, () => find.byType(RedoCard).evaluate().isNotEmpty, reason: 'card');
       // 카드는 헤더 아래 · 탭 위
       expect(tester.getBottomLeft(find.byType(RedoCard)).dy, lessThanOrEqualTo(tester.getTopLeft(find.byType(TabBar)).dy + 1));

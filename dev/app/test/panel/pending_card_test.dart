@@ -4,6 +4,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:pixel_office/model/models.dart';
+import 'package:pixel_office/panel/inbox.dart';
+import 'package:pixel_office/panel/labels.dart' show panelDangerTint;
 import 'package:pixel_office/panel/pending_card.dart';
 import 'package:pixel_office/state/office_state.dart';
 
@@ -49,7 +51,8 @@ void main() {
         final c = await pumpPanel(tester, daemon, ApprovalCard(pending: pendingOf(bashPending)));
         await pumpUntilConnected(tester, c);
         await tester.pump();
-        expect(find.text('❗ 허가 요청 — Bash'), findsOneWidget);
+        expect(find.text('❗ Bash · 삭제'), findsOneWidget); // T40-4: 도구 · 동사(대상 없음)
+        expect(find.byKey(const Key('approval.dangerTag')), findsOneWidget); // rm -rf → 위험
         expect(find.text('rm -rf build && flutter build apk'), findsOneWidget);
         expect(find.text('클린 빌드가 필요해요'), findsOneWidget);
         expect(find.text('허가'), findsOneWidget);
@@ -121,7 +124,7 @@ void main() {
         final c = await pumpPanel(tester, daemon, ApprovalCard(pending: pendingOf(bashPending)));
         await pumpUntilConnected(tester, c);
         // 카드 본문(제목)을 눌러 포커스
-        await tester.tap(find.text('❗ 허가 요청 — Bash'));
+        await tester.tap(find.text('❗ Bash · 삭제'));
         await tester.pump();
         final node = tester.widget<Focus>(find.byWidgetPredicate((w) => w is Focus && w.focusNode?.debugLabel == 'approvalCard'));
         expect(node.focusNode!.hasPrimaryFocus, isTrue);
@@ -129,7 +132,7 @@ void main() {
         await tester.pump();
         expect(node.focusNode!.hasFocus, isFalse);
         // 다시 포커스 → Enter
-        await tester.tap(find.text('❗ 허가 요청 — Bash'));
+        await tester.tap(find.text('❗ Bash · 삭제'));
         await tester.pump();
         await tester.sendKeyEvent(LogicalKeyboardKey.enter);
         await pumpUntil(tester, () => daemon.countOf('approval.respond') == 1, reason: 'enter → allow');
@@ -149,7 +152,7 @@ void main() {
       await tester.runAsync(() async {
         final c = await pumpPanel(tester, daemon, ApprovalCard(pending: pendingOf(editPending)));
         await pumpUntilConnected(tester, c);
-        expect(find.text('❗ 허가 요청 — Edit'), findsOneWidget);
+        expect(find.text('❗ Edit · main.dart 수정'), findsOneWidget);
         expect(find.text('D:/proj/lib/main.dart'), findsOneWidget);
         expect(find.textContaining('- a\n- b\n+ n0'), findsOneWidget);
         expect(find.textContaining('+ n13'), findsNothing); // 12줄 넘는 부분은 잘림
@@ -162,7 +165,7 @@ void main() {
         });
         await pumpPanel(tester, daemon, ApprovalCard(pending: pendingOf(mcpPending)));
         await tester.pump();
-        expect(find.text('❗ 허가 요청 — mcp__notion__search'), findsOneWidget);
+        expect(find.text('❗ mcp__notion__search · 실행'), findsOneWidget);
         expect(find.textContaining('"k19": 19'), findsNothing);
         await tester.tap(find.textContaining('줄 더 보기'));
         await tester.pump();
@@ -180,6 +183,93 @@ void main() {
         await pumpUntil(tester, () => find.textContaining('전송 실패: db locked').evaluate().isNotEmpty, reason: 'error shown');
         expect(find.text('전송됨'), findsNothing);
         expect(tester.widget<FilledButton>(find.widgetWithText(FilledButton, '허가')).onPressed, isNotNull);
+      });
+    });
+  });
+
+  group('T40-4 허가 카드 골격', () {
+    testWidgets('명령은 3줄 클램프 + "전체 보기" 로 펼친다', (tester) async {
+      final long = pendingJson('c1', payload: {
+        'tool_name': 'Bash',
+        'tool_input': {'command': List.generate(6, (i) => 'line$i').join('\n')},
+      });
+      await tester.runAsync(() async {
+        final c = await pumpPanel(tester, daemon, ApprovalCard(pending: pendingOf(long)));
+        await pumpUntilConnected(tester, c);
+        final box = find.byKey(const Key('approval.command'));
+        expect(tester.widget<SelectableText>(box).maxLines, approvalCommandLines);
+        expect(find.text(approvalShowAllLabel), findsOneWidget);
+        await tester.tap(find.byKey(const Key('approval.showAll')));
+        await tester.pump();
+        expect(tester.widget<SelectableText>(box).maxLines, isNull);
+        expect(find.text('접기'), findsOneWidget);
+      });
+    });
+
+    testWidgets('짧은 명령은 "전체 보기" 가 없다', (tester) async {
+      await tester.runAsync(() async {
+        final c = await pumpPanel(tester, daemon, ApprovalCard(pending: pendingOf(bashPending)));
+        await pumpUntilConnected(tester, c);
+        expect(find.byKey(const Key('approval.showAll')), findsNothing);
+        expect(tester.widget<SelectableText>(find.byKey(const Key('approval.command'))).maxLines, isNull);
+      });
+    });
+
+    testWidgets('메타: `요청 N분 전 · <만료 시각> 만료`, 만료되면 회색 카드', (tester) async {
+      final fresh = pendingJson('m1', createdAt: DateTime.now().toUtc().subtract(const Duration(minutes: 2)).toIso8601String(),
+          payload: {'tool_name': 'Bash', 'tool_input': {'command': 'ls'}});
+      await tester.runAsync(() async {
+        final c = await pumpPanel(tester, daemon, ApprovalCard(pending: pendingOf(fresh)));
+        await pumpUntilConnected(tester, c);
+        final meta = tester.widget<Text>(find.byKey(const Key('approval.meta'))).data!;
+        expect(meta, startsWith('요청 2분 전 · '));
+        expect(meta, endsWith(' 만료'));
+
+        // 하루가 지난 요청 → 회색 "만료 — 재지시"
+        final old = pendingJson('m2', createdAt: DateTime.now().toUtc().subtract(const Duration(hours: 25)).toIso8601String(),
+            payload: {'tool_name': 'Bash', 'tool_input': {'command': 'ls'}});
+        await pumpPanel(tester, daemon, ApprovalCard(pending: pendingOf(old)));
+        await tester.pump();
+        expect(tester.widget<Text>(find.byKey(const Key('approval.meta'))).data, '$approvalExpiredLabel 필요');
+        expect(find.textContaining(approvalExpiredLabel), findsWidgets);
+      });
+    });
+
+    testWidgets('위험 패턴이면 첫 줄 배경 틴트 + 태그, 아니면 둘 다 없다', (tester) async {
+      await tester.runAsync(() async {
+        final c = await pumpPanel(tester, daemon, ApprovalCard(pending: pendingOf(bashPending)));
+        await pumpUntilConnected(tester, c);
+        expect(find.byKey(const Key('approval.dangerTag')), findsOneWidget);
+        expect(tester.widget<Container>(find.byKey(const Key('approval.headline'))).color, panelDangerTint);
+
+        final safe = pendingJson('s1', payload: {'tool_name': 'Bash', 'tool_input': {'command': 'flutter test'}});
+        await pumpPanel(tester, daemon, ApprovalCard(pending: pendingOf(safe)));
+        await tester.pump();
+        expect(find.byKey(const Key('approval.dangerTag')), findsNothing);
+        expect(tester.widget<Container>(find.byKey(const Key('approval.headline'))).color, isNull);
+        expect(find.text('❗ Bash · 실행'), findsOneWidget);
+      });
+    });
+
+    testWidgets('주 버튼(허가·거부)은 높이 32, 보조는 작은 텍스트 버튼', (tester) async {
+      await tester.runAsync(() async {
+        final c = await pumpPanel(tester, daemon, ApprovalCard(pending: pendingOf(bashPending)));
+        await pumpUntilConnected(tester, c);
+        expect(tester.getSize(find.byKey(const Key('approval.allow'))).height, approvalPrimaryButtonHeight);
+        expect(tester.getSize(find.byKey(const Key('approval.deny'))).height, approvalPrimaryButtonHeight);
+        expect(find.widgetWithText(TextButton, '이번 세션 항상 허가'), findsOneWidget);
+        expect(find.widgetWithText(TextButton, '수정해서 허가'), findsOneWidget);
+      });
+    });
+
+    testWidgets('인박스 밖(그 멤버 패널)에서는 단축키 힌트가 없다', (tester) async {
+      await tester.runAsync(() async {
+        final c = await pumpPanel(tester, daemon, ApprovalCard(pending: pendingOf(bashPending)));
+        await pumpUntilConnected(tester, c);
+        expect(find.text(approvalShortcutHint), findsNothing);
+        await pumpPanel(tester, daemon, ApprovalCard(pending: pendingOf(bashPending), shortcutHint: true));
+        await tester.pump();
+        expect(find.text(approvalShortcutHint), findsOneWidget);
       });
     });
   });
@@ -207,7 +297,7 @@ void main() {
           'pendingId': 'q1',
           'answers': {'점심 뭐 먹을까?': '라면'},
         });
-        expect(tester.widget<OutlinedButton>(find.widgetWithText(OutlinedButton, '김밥')).onPressed, isNull);
+        expect(tester.widget<FilledButton>(find.widgetWithText(FilledButton, '김밥')).onPressed, isNull); // 옵션 = 주 버튼
       });
     });
 
@@ -283,19 +373,21 @@ void main() {
     testWidgets('스냅샷 pending 이 카드로; 닫히면(member.status 로 waiting 해제) 카드가 사라진다', (tester) async {
       daemon.snapshotBody['pending'] = [bashPending, pendingJson('b2', memberId: 'm2', payload: {'tool_name': 'Write', 'tool_input': {'file_path': 'x.txt', 'content': 'hi'}})];
       await tester.runAsync(() async {
-        final c = await pumpPanel(tester, daemon, const PendingCards(memberId: 'm1'));
+        // T40-4: 허가는 선택 멤버와 무관한 전역 인박스가 가진다(D6) — 두 멤버 것이 다 보인다.
+        final c = await pumpPanel(tester, daemon, const PendingInbox());
         await pumpUntilConnected(tester, c);
-        await pumpUntil(tester, () => find.byType(ApprovalCard).evaluate().isNotEmpty, reason: 'card from snapshot');
-        expect(find.text('❗ 허가 요청 — Bash'), findsOneWidget);
-        expect(find.text('❗ 허가 요청 — Write'), findsNothing); // m2 것은 안 보임
+        await pumpUntil(tester, () => find.byType(ApprovalCard).evaluate().length == 2, reason: 'cards from snapshot');
+        expect(find.text('❗ Bash · 삭제'), findsOneWidget);
+        expect(find.text('❗ Write · x.txt 쓰기'), findsOneWidget);
         daemon.push('member.status', {'memberId': 'm1', 'status': 'working', 'derived': 'working'});
-        await pumpUntil(tester, () => find.byType(ApprovalCard).evaluate().isEmpty, reason: 'card gone');
+        await pumpUntil(tester, () => find.byType(ApprovalCard).evaluate().length == 1, reason: 'm1 card gone');
+        expect(find.text('❗ Bash · 삭제'), findsNothing);
       });
     });
 
     testWidgets('라이브 waiting_approval 이벤트로 카드가 뜨고 error{pendingId} 로 사라진다', (tester) async {
       await tester.runAsync(() async {
-        final c = await pumpPanel(tester, daemon, const PendingCards(memberId: 'm1'));
+        final c = await pumpPanel(tester, daemon, const PendingInbox());
         await pumpUntilConnected(tester, c);
         expect(find.byType(ApprovalCard), findsNothing);
         daemon.emitEvent({
@@ -314,6 +406,7 @@ void main() {
 
     testWidgets('T19b: 라이브 ask_user asking 이벤트 → 질문 카드(옵션 포함), raw idle 여도 유지, 답하면 사라진다', (tester) async {
       await tester.runAsync(() async {
+        // m2 는 팀원 — `ask_user` 는 부장 것만 사용자 몫이라(D-32) 인박스가 아니라 그 멤버 패널에 남는다.
         final c = await pumpPanel(tester, daemon, const PendingCards(memberId: 'm2'));
         await pumpUntilConnected(tester, c);
         expect(find.byType(QuestionCard), findsNothing);
@@ -345,7 +438,7 @@ void main() {
       });
     });
 
-    testWidgets('PendingInbox: 전 멤버, 최신 먼저, 멤버 이름 표시', (tester) async {
+    testWidgets('PendingInbox: 전 멤버, 오래된 순, 멤버 이름 표시', (tester) async {
       daemon.snapshotBody['pending'] = [
         pendingJson('old', memberId: 'm1', createdAt: '2026-09-15T01:00:00.000Z', payload: {'tool_name': 'Bash', 'tool_input': {'command': 'ls'}}),
         pendingJson('new', memberId: 'm2', type: 'question', createdAt: '2026-09-15T02:00:00.000Z', payload: {'question': '어디로?'}),
@@ -355,7 +448,7 @@ void main() {
         await pumpUntilConnected(tester, c);
         await pumpUntil(tester, () => find.byType(PendingCard).evaluate().length == 2, reason: 'two cards');
         final cards = tester.widgetList<PendingCard>(find.byType(PendingCard)).toList();
-        expect(cards.map((c) => c.pending.id), ['new', 'old']);
+        expect(cards.map((c) => c.pending.id), ['old', 'new']); // 오래된 순(D6)
         expect(find.textContaining('모시 ·'), findsOneWidget);
         expect(find.textContaining('하루 ·'), findsOneWidget);
       });

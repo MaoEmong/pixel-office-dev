@@ -45,10 +45,10 @@ void main() {
       expect(cards[0].instruction, '테스트를 고쳐줘');
       expect(cards[0].body, '고쳤습니다.\n3개 테스트가 통과합니다.');
       expect(cards[1].taskId, isNull);
-      expect(find.text('task#7'), findsOneWidget);
+      expect(find.textContaining('task#7 · done'), findsOneWidget); // 헤더 줄(T40-4 문서 흐름)
       expect(find.text('지시: 테스트를 고쳐줘'), findsOneWidget);
       expect(find.textContaining('3개 테스트가 통과합니다'), findsOneWidget);
-      expect(find.text('보고(작업 없음)'), findsOneWidget);
+      expect(find.textContaining('· 작업 없음'), findsOneWidget);
       expect(find.textContaining('터미널에서 직접 나눈'), findsOneWidget);
 
       // 라이브로 다음 턴이 끝나면 위에 쌓인다. resumed(본문 없는 text) 는 카드가 되지 않는다.
@@ -59,10 +59,10 @@ void main() {
       // 카드 수(3)로 기다리면 안 된다 — text(32) 만 와도 "작업 없음" 카드로 3장이 되어,
       // reporting(33) 이 그 카드를 task#8 로 합치기 전에 조건이 참이 된다(간헐 실패 [32, 24, 4]).
       // 33 이 들어와야만 생기는 것(task#8 제목)으로 기다린다.
-      await pumpUntil(tester, () => find.text('task#8').evaluate().isNotEmpty, reason: 'task#8 report');
+      await pumpUntil(tester, () => find.textContaining('task#8 · done').evaluate().isNotEmpty, reason: 'task#8 report');
       final seqs = tester.widgetList<ReportCard>(find.byType(ReportCard)).map((w) => w.report.seq).toList();
       expect(seqs, [33, 24, 4]);
-      expect(find.text('task#8'), findsOneWidget);
+      expect(find.textContaining('task#8 · done'), findsOneWidget);
       expect(find.text('지시: 문서도 고쳐줘'), findsOneWidget);
     });
   });
@@ -93,7 +93,7 @@ void main() {
       await pumpUntilConnected(tester, c);
       await pumpUntil(tester, () => c.read(taskInstructionsProvider('m1')).containsKey(9), reason: 'instruction known');
       expect(c.read(taskInstructionsProvider('m1'))[9], long); // 전문
-      expect(find.text('아직 보고 없음'), findsOneWidget);
+      expect(find.text('아직 보고 없음 — 부장이 보고하면 여기에'), findsOneWidget);
 
       // text 없이 reporting 만(예: 마지막 메시지가 없던 턴) → summary 가 본문
       daemon.emitEvent({...ev(41, kind: 'reporting', detail: {'summary': 'task#9 done'}), 'ref': {'taskId': 9}});

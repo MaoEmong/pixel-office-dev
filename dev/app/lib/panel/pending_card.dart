@@ -1,13 +1,15 @@
-// 허가·질문 카드(T15) — 설계 §3 "허가·질문 카드", 모달 없음.
+// 허가·질문 카드(T15 → T40-4 레이아웃 v2 §3 패스 3 D12) — 설계 §3 "허가·질문 카드", 모달 없음.
 //
-//  PendingCards(memberId)   그 멤버의 열린 pending 을 오래된 순으로 카드로(RightPanel 헤더 아래). 보통 0~1장.
-//  PendingInbox()           전 멤버의 열린 pending, 최신 먼저 + 멤버 이름 (내 책상 UI 용, 아직 배선 안 함).
+//  PendingCards(memberId)   그 멤버 패널에만 남는 카드 = `ask_parent` 안내뿐(T40-4 D6: 사용자 몫 pending 의
+//                           주인은 전역 인박스 하나다 → `inbox.dart` 의 `PendingInbox`).
+//  PendingInbox()           → `inbox.dart` 로 옮겼다(전역 인박스, 오래된 순, 2장 펼침 + "+N").
 //  PendingCard(pending)     type 으로 ApprovalCard / QuestionCard 분기.
-//  ApprovalCard(pending)    "❗ 허가 요청 — <tool_name>"
-//     Bash/PowerShell: command 고정폭 박스 + description.  Edit/Write: 파일 경로 + diff/내용 미리보기(12줄).
-//     그 외: tool_input JSON(12줄 넘으면 접음).
-//     버튼: 허가 / 거부(사유 입력란이 인라인으로) / 이번 세션 항상 허가 / 수정해서 허가(명령 박스가 편집 가능해짐 → updatedInput).
-//     키: 카드 자체가 포커스를 가질 때 Enter = 허가, Esc = 포커스 해제. 전역 단축키 없음(지시 바를 뺏지 않는다).
+//  ApprovalCard(pending)    첫 줄 `❗ <도구> · <대상> <동사>`(approval_summary.dart) + 위험 태그 + 만료 메타,
+//     둘째 줄 CLI 설명(가변폭 13px), 셋째 줄 명령(고정폭 12px, **3줄 클램프** + "전체 보기").
+//     Edit/Write: 파일 경로 + diff/내용 미리보기(12줄). 그 외: tool_input JSON(12줄 넘으면 접음).
+//     버튼: 허가(채움 초록)·거부(테두리 빨강)를 높이 32 로 크게, "이번 세션 항상 허가"·"수정해서 허가" 는
+//     오른쪽 끝 작은 텍스트 버튼. 거부를 누르면 사유 입력란이 인라인으로 열린다.
+//     키: 카드 자체가 포커스를 가질 때 Enter = 허가, Esc = 포커스 해제. 인박스 맨 위 카드는 `Alt+Y`/`Alt+N`(inbox.dart).
 //  QuestionCard(pending)    AskUserQuestion `{questions:[{question, header?, options:[{label, description?}], multiSelect?}]}`
 //     또는 M2 ask_user `{question, options?}`(질문 하나). 옵션 버튼(설명은 툴팁) + "직접 입력" 란.
 //     질문 하나·단일 선택이면 옵션을 누르는 즉시 전송, 그 외(여러 질문·multiSelect·직접 입력)는 확인 버튼.
@@ -25,13 +27,31 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../model/models.dart';
 import '../rpc/rpc_client.dart';
 import '../state/office_state.dart';
+import 'approval_summary.dart';
 import 'labels.dart';
 
 /// 미리보기(내용·diff·JSON)에 보여 줄 최대 줄 수.
 const int pendingPreviewLines = 12;
 
-const Color _approvalColor = Colors.amber;
+/// 명령 줄(셋째 줄) 클램프 — 넘으면 "전체 보기"(D12 3).
+const int approvalCommandLines = 3;
+
+/// 명령 전문 펼치기 토글 문구.
+const String approvalShowAllLabel = '전체 보기';
+
+/// 주 버튼(허가·거부) 높이(D12 4 · 패스 6 클릭 목표 32px).
+const double approvalPrimaryButtonHeight = 32;
+
+/// 인박스 맨 위 카드에 붙는 단축키 힌트(패스 6 키보드).
+const String approvalShortcutHint = 'Alt+Y 허가 · Alt+N 거부';
+
+/// 만료된 카드의 문구(현행 재지시 카드와 같은 말 — 인박스 안에서 회색으로 보인다, D10).
+const String approvalExpiredLabel = '만료 — 재지시';
+
+const Color _approvalColor = Color(0xFFFF9F43); // 범례 "내 차례" 주황
 const Color _questionColor = Colors.cyanAccent;
+const Color _expiredColor = Color(0xFF8A93A8);
+const Color _allowColor = Color(0xFF7ED3A1);
 
 const TextStyle _monoStyle = TextStyle(
   fontSize: 12,
@@ -43,7 +63,18 @@ const TextStyle _monoStyle = TextStyle(
 
 // ---- 목록 --------------------------------------------------------------------------
 
-/// 한 멤버의 열린 pending(오래된 순). 없으면 빈 위젯.
+/// 사용자 몫 pending 목록(오래된 순) — 전역 인박스의 원천(D6). `ask_parent` 는 빠진다.
+List<Pending> userInboxPendings(Map<String, Pending> pending, Map<String, Member> members) {
+  final list = pending.values.where((p) => p.goesToUser(rank: members[p.memberId]?.rank)).toList()
+    ..sort((a, b) {
+      final c = a.createdAt.compareTo(b.createdAt);
+      return c != 0 ? c : a.id.compareTo(b.id);
+    });
+  return List<Pending>.unmodifiable(list);
+}
+
+/// 그 멤버 패널에만 남는 카드 — **사용자 몫이 아닌 것**(= `ask_parent` 안내, "대신 답하기")뿐이다.
+/// 허가·질문은 선택 멤버와 무관하게 전역 인박스(`PendingInbox`)가 가진다(D6: pending 의 주인은 하나).
 class PendingCards extends ConsumerWidget {
   const PendingCards({super.key, required this.memberId});
 
@@ -52,7 +83,9 @@ class PendingCards extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final all = ref.watch(openPendingProvider);
-    final mine = all.values.where((p) => p.memberId == memberId).toList()..sort((a, b) => a.createdAt.compareTo(b.createdAt));
+    final rank = ref.watch(memberProvider(memberId))?.rank;
+    final mine = all.values.where((p) => p.memberId == memberId && !p.goesToUser(rank: rank)).toList()
+      ..sort((a, b) => a.createdAt.compareTo(b.createdAt));
     if (mine.isEmpty) return const SizedBox.shrink();
     return Column(
       mainAxisSize: MainAxisSize.min,
@@ -61,56 +94,20 @@ class PendingCards extends ConsumerWidget {
   }
 }
 
-/// 전 멤버의 열린 pending, 최신 먼저. 카드 위에 멤버 이름을 붙인다. (내 책상 인박스 — 아직 배선하지 않음)
-class PendingInbox extends ConsumerWidget {
-  const PendingInbox({super.key});
-
-  @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final all = ref.watch(openPendingProvider);
-    final members = ref.watch(membersProvider);
-    // 내 책상에는 사용자 몫만(T37): 허가는 전부, 질문은 부장의 것. `ask_parent` 는 상사에게 간 질문이라 뺀다.
-    final list = all.values.where((p) => p.goesToUser(rank: members[p.memberId]?.rank)).toList()
-      ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
-    if (list.isEmpty) {
-      return const Center(child: Text('기다리는 허가·질문 없음', style: TextStyle(color: Colors.white38)));
-    }
-    return ListView.builder(
-      itemCount: list.length,
-      itemBuilder: (context, i) {
-        final p = list[i];
-        final m = members[p.memberId];
-        return Column(
-          key: ValueKey('inbox-${p.id}'),
-          crossAxisAlignment: CrossAxisAlignment.start,
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Padding(
-              padding: const EdgeInsets.fromLTRB(14, 8, 12, 0),
-              child: Text(
-                '${m?.name ?? p.memberId} · ${formatClock(p.createdAt)}',
-                style: const TextStyle(fontSize: 11, color: Colors.white54),
-              ),
-            ),
-            PendingCard(pending: p),
-          ],
-        );
-      },
-    );
-  }
-}
-
 /// type 분기. `ask_parent` 질문(T35)은 **사용자 몫이 아니라** 상사에게 간 질문이라 안내 카드로만 보여 준다(T37).
 class PendingCard extends StatelessWidget {
-  const PendingCard({super.key, required this.pending});
+  const PendingCard({super.key, required this.pending, this.shortcutHint = false});
 
   final Pending pending;
+
+  /// 인박스 맨 위 카드(= `Alt+Y`/`Alt+N` 대상)에만 true.
+  final bool shortcutHint;
 
   @override
   Widget build(BuildContext context) {
     if (pending.isAskParent) return AskParentCard(pending: pending);
     return switch (pending.type) {
-      PendingType.approval => ApprovalCard(pending: pending),
+      PendingType.approval => ApprovalCard(pending: pending, shortcutHint: shortcutHint),
       PendingType.question => QuestionCard(pending: pending),
     };
   }
@@ -119,32 +116,104 @@ class PendingCard extends StatelessWidget {
 // ---- 공용 틀 ------------------------------------------------------------------------
 
 class _CardFrame extends StatelessWidget {
-  const _CardFrame({required this.accent, required this.title, required this.focused, required this.children});
+  const _CardFrame({
+    required this.accent,
+    required this.title,
+    required this.focused,
+    required this.children,
+    this.danger = false,
+    this.meta,
+    this.metaColor,
+    this.footer,
+  });
 
   final Color accent;
   final String title;
   final bool focused;
   final List<Widget> children;
 
+  /// 위험 패턴 — 첫 줄 배경 빨강 틴트 + `위험` 태그(D12 1).
+  final bool danger;
+
+  /// 오른쪽 위 메타(`요청 2분 전 · 내일 10:32 만료`).
+  final String? meta;
+  final Color? metaColor;
+
+  /// 카드 맨 아래 작은 안내(단축키 힌트 등).
+  final String? footer;
+
   @override
-  Widget build(BuildContext context) => Container(
-        margin: const EdgeInsets.fromLTRB(8, 8, 8, 4),
-        padding: const EdgeInsets.fromLTRB(10, 8, 10, 8),
-        decoration: BoxDecoration(
-          color: Theme.of(context).colorScheme.surfaceContainerHigh,
-          border: Border.all(color: focused ? accent : accent.withValues(alpha: 0.6), width: focused ? 2 : 1.5),
-          borderRadius: BorderRadius.circular(4),
+  Widget build(BuildContext context) {
+    final metaText = meta;
+    final headline = Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Flexible(
+          child: Text(title, style: TextStyle(fontSize: 13.5, fontWeight: FontWeight.bold, color: accent)),
         ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Text(title, style: TextStyle(fontSize: 13.5, fontWeight: FontWeight.bold, color: accent)),
-            const SizedBox(height: 6),
-            ...children,
-          ],
-        ),
-      );
+        if (danger) ...[
+          const SizedBox(width: 6),
+          Container(
+            key: const Key('approval.dangerTag'),
+            padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+            decoration: BoxDecoration(
+              color: panelDangerColor.withValues(alpha: 0.25),
+              borderRadius: BorderRadius.circular(3),
+            ),
+            child: const Text(
+              approvalDangerTag,
+              style: TextStyle(fontSize: 10.5, fontWeight: FontWeight.bold, color: panelDangerColor),
+            ),
+          ),
+        ],
+        const Spacer(),
+        if (metaText != null)
+          Padding(
+            padding: const EdgeInsets.only(left: 8, top: 1),
+            child: Text(
+              metaText,
+              key: const Key('approval.meta'),
+              style: TextStyle(fontSize: 10.5, color: metaColor ?? Colors.white38),
+              textAlign: TextAlign.right,
+            ),
+          ),
+      ],
+    );
+    return Container(
+      margin: const EdgeInsets.fromLTRB(8, 8, 8, 4),
+      decoration: BoxDecoration(
+        color: Theme.of(context).colorScheme.surfaceContainerHigh,
+        border: Border.all(color: focused ? accent : accent.withValues(alpha: 0.6), width: focused ? 2 : 1.5),
+        borderRadius: BorderRadius.circular(4),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Container(
+            key: const Key('approval.headline'),
+            padding: const EdgeInsets.fromLTRB(10, 7, 10, 6),
+            color: danger ? panelDangerTint : null,
+            child: headline,
+          ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(10, 0, 10, 8),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                ...children,
+                if (footer != null) ...[
+                  const SizedBox(height: 6),
+                  Text(footer!, style: const TextStyle(fontSize: 10.5, color: Colors.white38)),
+                ],
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
 }
 
 class _MonoBox extends StatelessWidget {
@@ -202,6 +271,20 @@ ButtonStyle _smallButtonStyle({Color? fg, Color? bg}) => ButtonStyle(
       shape: WidgetStatePropertyAll(RoundedRectangleBorder(borderRadius: BorderRadius.circular(3))),
     );
 
+/// 주 버튼(허가·거부) — 높이 [approvalPrimaryButtonHeight], 큼직하게(D12 4).
+ButtonStyle _primaryButtonStyle({Color? fg, Color? bg, Color? border}) => ButtonStyle(
+      visualDensity: VisualDensity.compact,
+      padding: const WidgetStatePropertyAll(EdgeInsets.symmetric(horizontal: 18)),
+      minimumSize: const WidgetStatePropertyAll(Size(72, approvalPrimaryButtonHeight)),
+      fixedSize: const WidgetStatePropertyAll(Size.fromHeight(approvalPrimaryButtonHeight)),
+      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+      textStyle: const WidgetStatePropertyAll(TextStyle(fontSize: 13.5, fontWeight: FontWeight.bold)),
+      foregroundColor: fg == null ? null : WidgetStatePropertyAll(fg),
+      backgroundColor: bg == null ? null : WidgetStatePropertyAll(bg),
+      side: border == null ? null : WidgetStatePropertyAll(BorderSide(color: border, width: 1.5)),
+      shape: WidgetStatePropertyAll(RoundedRectangleBorder(borderRadius: BorderRadius.circular(4))),
+    );
+
 String _describeError(Object e) => e is RpcException ? '${e.message} (${e.code})' : e.toString();
 
 /// 데몬 오류 중 "이미 닫힌 pending"(-32002 없음, -32003 이미 answered/expired) — 재시도해도 소용없다.
@@ -219,9 +302,12 @@ bool isShellTool(String toolName) {
 bool isFileTool(String toolName) => const {'Edit', 'Write', 'MultiEdit', 'NotebookEdit'}.contains(toolName);
 
 class ApprovalCard extends ConsumerStatefulWidget {
-  const ApprovalCard({super.key, required this.pending});
+  const ApprovalCard({super.key, required this.pending, this.shortcutHint = false});
 
   final Pending pending;
+
+  /// 인박스 맨 위 카드에만 true — `Alt+Y`/`Alt+N` 힌트를 붙인다.
+  final bool shortcutHint;
 
   @override
   ConsumerState<ApprovalCard> createState() => _ApprovalCardState();
@@ -339,6 +425,10 @@ class _ApprovalCardState extends ConsumerState<ApprovalCard> {
   Widget build(BuildContext context) {
     final connected = ref.watch(connectionStateProvider) == RpcConnectionState.connected;
     final locked = _sent || !connected;
+    final input = _toolInput;
+    final danger = isDangerousApproval(_toolName, input);
+    final expired = isApprovalExpired(widget.pending.createdAt);
+    final soon = !expired && isApprovalExpirySoon(widget.pending.createdAt);
     return Listener(
       // 카드 빈 곳을 누르면 카드에 포커스(Enter = 허가). 버튼·입력란은 자기 포커스를 가진다.
       onPointerDown: (_) {
@@ -349,9 +439,17 @@ class _ApprovalCardState extends ConsumerState<ApprovalCard> {
         child: ListenableBuilder(
           listenable: _focus,
           builder: (context, _) => _CardFrame(
-            accent: _approvalColor,
-            title: '❗ 허가 요청 — $_toolName',
+            accent: expired ? _expiredColor : _approvalColor,
+            title: expired ? '$approvalExpiredLabel · ${approvalHeadline(_toolName, input)}' : approvalHeadline(_toolName, input),
+            danger: danger && !expired,
+            meta: expired ? '$approvalExpiredLabel 필요' : approvalMetaLine(widget.pending.createdAt),
+            metaColor: expired
+                ? _expiredColor
+                : soon
+                    ? _approvalColor
+                    : null,
             focused: _focus.hasPrimaryFocus,
+            footer: widget.shortcutHint && !_sent ? approvalShortcutHint : null,
             children: [
               _body(),
               if (_denying) _denyField(locked),
@@ -379,6 +477,12 @@ class _ApprovalCardState extends ConsumerState<ApprovalCard> {
         crossAxisAlignment: CrossAxisAlignment.stretch,
         mainAxisSize: MainAxisSize.min,
         children: [
+          // 둘째 줄 — CLI 가 준 설명(가변폭 13px). 명령보다 먼저 온다(D12 2).
+          if (description != null && description.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 6),
+              child: Text(description, style: const TextStyle(fontSize: 13, color: Colors.white70, height: 1.35)),
+            ),
           if (editor != null)
             TextField(
               key: const ValueKey('approval-command-editor'),
@@ -396,12 +500,7 @@ class _ApprovalCardState extends ConsumerState<ApprovalCard> {
               ),
             )
           else
-            _MonoBox(text: _command ?? '(명령 없음)'),
-          if (description != null && description.isNotEmpty)
-            Padding(
-              padding: const EdgeInsets.only(top: 6),
-              child: Text(description, style: const TextStyle(fontSize: 12, color: Colors.white70)),
-            ),
+            _commandBox(_command ?? '(명령 없음)'),
         ],
       );
     }
@@ -448,6 +547,44 @@ class _ApprovalCardState extends ConsumerState<ApprovalCard> {
     );
   }
 
+  /// 셋째 줄 — 명령 고정폭 12px, [approvalCommandLines] 줄 클램프 + "전체 보기"(D12 3).
+  Widget _commandBox(String text) {
+    final lines = text.split('\n');
+    final clampable = lines.length > approvalCommandLines || text.length > 160;
+    final clamped = clampable && !_expanded;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Container(
+          width: double.infinity,
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+          decoration: BoxDecoration(
+            color: Colors.black26,
+            border: Border.all(color: Colors.white24),
+            borderRadius: BorderRadius.circular(3),
+          ),
+          child: SelectableText(
+            text,
+            key: const Key('approval.command'),
+            maxLines: clamped ? approvalCommandLines : null,
+            style: _monoStyle,
+          ),
+        ),
+        if (clampable)
+          Align(
+            alignment: Alignment.centerLeft,
+            child: TextButton(
+              key: const Key('approval.showAll'),
+              style: _smallButtonStyle(fg: Colors.white54),
+              onPressed: () => setState(() => _expanded = !_expanded),
+              child: Text(_expanded ? '접기' : approvalShowAllLabel),
+            ),
+          ),
+      ],
+    );
+  }
+
   Widget _denyField(bool locked) => Padding(
         padding: const EdgeInsets.only(top: 8),
         child: TextField(
@@ -466,51 +603,42 @@ class _ApprovalCardState extends ConsumerState<ApprovalCard> {
         ),
       );
 
+  /// 주 버튼 둘(허가 채움 초록 · 거부 테두리 빨강, 높이 32)은 왼쪽에 크게,
+  /// "이번 세션 항상 허가"·"수정해서 허가" 는 오른쪽 끝 작은 텍스트 버튼(D12 4).
   Widget _buttons(bool locked) {
     final editing = _editor != null;
     final shell = isShellTool(_toolName) || _command != null;
-    return Wrap(
-      spacing: 6,
-      runSpacing: 6,
-      crossAxisAlignment: WrapCrossAlignment.center,
+    return Row(
       children: [
         if (editing)
           FilledButton(
-            style: _smallButtonStyle(),
+            style: _primaryButtonStyle(bg: _allowColor, fg: Colors.black87),
             onPressed: locked ? null : _allowEdited,
             child: const Text('수정한 명령으로 허가'),
           )
         else
           FilledButton(
-            style: _smallButtonStyle(),
+            key: const Key('approval.allow'),
+            style: _primaryButtonStyle(bg: _allowColor, fg: Colors.black87),
             onPressed: locked ? null : _allow,
             child: const Text('허가'),
           ),
+        const SizedBox(width: 8),
         if (_denying)
           OutlinedButton(
-            style: _smallButtonStyle(fg: Colors.redAccent),
+            style: _primaryButtonStyle(fg: panelDangerColor, border: panelDangerColor),
             onPressed: locked ? null : _deny,
             child: const Text('거부 전송'),
           )
         else
           OutlinedButton(
-            style: _smallButtonStyle(fg: Colors.redAccent),
+            key: const Key('approval.deny'),
+            style: _primaryButtonStyle(fg: panelDangerColor, border: panelDangerColor),
             onPressed: locked ? null : () => setState(() => _denying = true),
             child: const Text('거부'),
           ),
-        if (!editing)
-          OutlinedButton(
-            style: _smallButtonStyle(),
-            onPressed: locked ? null : _allowAlways,
-            child: const Text('이번 세션 항상 허가'),
-          ),
-        if (shell && !editing)
-          OutlinedButton(
-            style: _smallButtonStyle(),
-            onPressed: locked ? null : _startEdit,
-            child: const Text('수정해서 허가'),
-          ),
-        if (editing || _denying)
+        if (editing || _denying) ...[
+          const SizedBox(width: 4),
           TextButton(
             style: _smallButtonStyle(fg: Colors.white54),
             onPressed: locked
@@ -521,7 +649,35 @@ class _ApprovalCardState extends ConsumerState<ApprovalCard> {
                   },
             child: const Text('취소'),
           ),
-        if (_sent) const _SentBadge(),
+        ],
+        const SizedBox(width: 6),
+        // 보조 버튼은 오른쪽 끝. 폭이 모자라면 아래 줄로 접힌다(패널 폭 420 하한에서도 넘치지 않게).
+        Expanded(
+          child: Wrap(
+            alignment: WrapAlignment.end,
+            crossAxisAlignment: WrapCrossAlignment.center,
+            spacing: 2,
+            runSpacing: 2,
+            children: [
+              if (_sent)
+                const _SentBadge()
+              else ...[
+                if (!editing)
+                  TextButton(
+                    style: _smallButtonStyle(fg: Colors.white54),
+                    onPressed: locked ? null : _allowAlways,
+                    child: const Text('이번 세션 항상 허가'),
+                  ),
+                if (shell && !editing)
+                  TextButton(
+                    style: _smallButtonStyle(fg: Colors.white54),
+                    onPressed: locked ? null : _startEdit,
+                    child: const Text('수정해서 허가'),
+                  ),
+              ],
+            ],
+          ),
+        ),
       ],
     );
   }
@@ -764,6 +920,8 @@ class _QuestionCardState extends ConsumerState<QuestionCard> {
     final connected = ref.watch(connectionStateProvider) == RpcConnectionState.connected;
     final locked = _sent || !connected;
     final title = _questions.length == 1 ? '❓ 질문' : '❓ 질문 ${_questions.length}개';
+    // 허가 카드와 같은 골격 — 만료 메타도 같이(D12 5). `ask_parent` 안내 카드 안에 들어갈 때는 메타를 숨긴다.
+    final expired = isApprovalExpired(widget.pending.createdAt);
     return Listener(
       onPointerDown: (_) {
         if (!_focus.hasFocus) _focus.requestFocus();
@@ -773,8 +931,18 @@ class _QuestionCardState extends ConsumerState<QuestionCard> {
         child: ListenableBuilder(
           listenable: _focus,
           builder: (context, _) => _CardFrame(
-            accent: _questionColor,
-            title: title,
+            accent: expired ? _expiredColor : _questionColor,
+            title: expired ? '$approvalExpiredLabel · $title' : title,
+            meta: widget.pending.isAskParent
+                ? null
+                : expired
+                    ? '$approvalExpiredLabel 필요'
+                    : approvalMetaLine(widget.pending.createdAt),
+            metaColor: expired
+                ? _expiredColor
+                : isApprovalExpirySoon(widget.pending.createdAt)
+                    ? _approvalColor
+                    : null,
             focused: _focus.hasPrimaryFocus,
             children: [
               for (var i = 0; i < _questions.length; i++) ...[
@@ -852,16 +1020,17 @@ class _QuestionCardState extends ConsumerState<QuestionCard> {
     );
   }
 
+  /// 옵션 버튼 = 주(채움), 자유 입력 = 보조(D12 4). 고른 것은 더 진하게.
   Widget _optionButton(int i, PendingOption o, bool locked) {
     final selected = _selected[i].contains(o.label);
     final button = selected
-        ? FilledButton.tonal(
-            style: _smallButtonStyle(),
+        ? FilledButton(
+            style: _primaryButtonStyle(),
             onPressed: locked ? null : () => _pick(i, o.label),
             child: Text(o.label),
           )
-        : OutlinedButton(
-            style: _smallButtonStyle(),
+        : FilledButton.tonal(
+            style: _primaryButtonStyle(),
             onPressed: locked ? null : () => _pick(i, o.label),
             child: Text(o.label),
           );

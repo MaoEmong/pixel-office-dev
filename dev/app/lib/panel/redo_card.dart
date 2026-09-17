@@ -28,6 +28,9 @@ import 'report_tab.dart' show parseTaskPrompt;
 
 const Color _redoColor = Colors.deepOrangeAccent;
 
+/// 인박스 안의 만료 카드 — 회색(레이아웃 v2 §3 패스 2 D10).
+const Color _expiredColor = Color(0xFF8A93A8);
+
 /// 재지시 필요 흔적(error{pendingId})인가.
 bool isRedoEvent(OfficeEvent ev) => ev.kind == OfficeEventKind.error && ev.detail.pendingId != null;
 
@@ -46,6 +49,21 @@ final redoNeededProvider = Provider.family<List<OfficeEvent>, String>((ref, memb
     }
   }
   return byPending.values.toList(growable: false);
+});
+
+/// 전 멤버의 재지시 흔적(seq 순) — 전역 인박스가 쓴다(T40-4 D10: 만료 카드가 인박스 안으로).
+/// 멤버별 [redoNeededProvider] 와 달리 **전역 이벤트 링**만 본다(백필은 선택 멤버 것만 있으므로 섞지 않는다).
+final globalRedoNeededProvider = Provider<List<OfficeEvent>>((ref) {
+  final byMember = <String, Map<String, OfficeEvent>>{};
+  for (final ev in ref.watch(globalEventsProvider)) {
+    if (isTurnBoundary(ev)) {
+      byMember[ev.memberId]?.clear();
+    } else if (isRedoEvent(ev)) {
+      (byMember[ev.memberId] ??= <String, OfficeEvent>{})[ev.detail.pendingId!] = ev;
+    }
+  }
+  final out = [for (final m in byMember.values) ...m.values]..sort((a, b) => a.seq.compareTo(b.seq));
+  return List<OfficeEvent>.unmodifiable(out);
 });
 
 final redoInstructionProvider = Provider.family<String?, String>((ref, memberId) {
@@ -95,10 +113,16 @@ class RedoCards extends ConsumerWidget {
   }
 }
 
+/// 인박스 안에서 쓰는 회색 카드의 제목(D10: "복구로 만료된 허가는 인박스에 회색 만료 — 재지시 카드").
+const String redoExpiredTitle = '만료 — 재지시';
+
 class RedoCard extends ConsumerWidget {
-  const RedoCard({super.key, required this.event});
+  const RedoCard({super.key, required this.event, this.expired = false});
 
   final OfficeEvent event;
+
+  /// 전역 인박스 안 — 회색 "만료 — 재지시" 카드(D10). 멤버 패널의 주황 "⚠ 재지시 필요" 와 같은 내용이다.
+  final bool expired;
 
   Future<void> _copyInstruction(BuildContext context, WidgetRef ref) async {
     final instruction = ref.read(redoInstructionProvider(event.memberId));
@@ -114,12 +138,13 @@ class RedoCard extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final pendingType = event.detail['pendingType']?.toString();
+    final accent = expired ? _expiredColor : _redoColor;
     return Container(
       margin: const EdgeInsets.fromLTRB(8, 8, 8, 4),
       padding: const EdgeInsets.fromLTRB(10, 8, 10, 8),
       decoration: BoxDecoration(
         color: Theme.of(context).colorScheme.surfaceContainerHigh,
-        border: Border.all(color: _redoColor.withValues(alpha: 0.7), width: 1.5),
+        border: Border.all(color: accent.withValues(alpha: 0.7), width: 1.5),
         borderRadius: BorderRadius.circular(4),
       ),
       child: Column(
@@ -128,7 +153,10 @@ class RedoCard extends ConsumerWidget {
         children: [
           Row(
             children: [
-              const Text('⚠ 재지시 필요', style: TextStyle(fontSize: 13.5, fontWeight: FontWeight.bold, color: _redoColor)),
+              Text(
+                expired ? redoExpiredTitle : '⚠ 재지시 필요',
+                style: TextStyle(fontSize: 13.5, fontWeight: FontWeight.bold, color: accent),
+              ),
               const Spacer(),
               Text(formatClock(event.ts), style: const TextStyle(fontSize: 11, color: Colors.white38)),
             ],

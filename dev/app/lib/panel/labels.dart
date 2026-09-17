@@ -102,3 +102,67 @@ String eventDetailLine(OfficeEvent e, {int maxLength = 200}) {
 /// 패널 공용 고정폭 글꼴(스파이크 실측: Cascadia Mono 로 한글·이모지 OK).
 const String panelMonoFamily = 'Cascadia Mono';
 const List<String> panelMonoFallback = ['Consolas', 'D2Coding', 'Malgun Gothic', 'monospace'];
+
+// ---- 팔레트(레이아웃 v2 §4) --------------------------------------------------------
+// 코드 쪽 단일 소스는 `office/office_painter.dart` 의 `OfficeColors` 다(패스 5). 패널·상단 바는
+// `lib/office/` 를 import 하지 않으므로(T40a 와 파일을 나눠 가진다) 같은 값만 여기에 다시 적는다.
+
+/// 포커스 링 — 2px `#FFFFFF` 알파 0.8(브라우저/Flutter 기본 대신 팔레트로, 패스 6).
+const Color panelFocusRing = Color(0xCCFFFFFF);
+const double panelFocusRingWidth = 2;
+
+/// 스크롤바 6px 팔레트 색(패스 6).
+const double panelScrollbarThickness = 6;
+const Color panelScrollbarThumb = Color(0x66BFC7DA);
+
+/// 위험 태그 틴트(`#FF6B6B` 알파 0.15).
+const Color panelDangerTint = Color(0x26FF6B6B);
+const Color panelDangerColor = Color(0xFFFF6B6B);
+
+// ---- 상태 범례 7칸(레이아웃 v2 §3 패스 2, D-42 3) ------------------------------------
+// TODO(T40a 병합): `office/office_scene.dart` 가 같은 매핑 함수를 export 하면 이 표를 지우고 그것을 쓴다.
+//   지금은 T40a 와 파일을 나눠 갖는 동안 패널이 `lib/office/` 를 건드리지 않으려고 같은 7칸을 여기에 둔다.
+
+/// 캐릭터 링 색 · 하단 범례 · 패널 헤더 상태 점 · T33 포즈의 단일 기준(13종 상태 → 7칸).
+enum LegendCategory {
+  working('작업', Color(0xFF6C8EFF)),
+  free('한가', Color(0xFF7ED3A1)),
+  waitingReports('보고 대기', Color(0xFF7ED3A1), icon: '📨'),
+  myTurn('내 차례', Color(0xFFFF9F43), icon: '❗'),
+  waiting('대기', Color(0xFFFFC857), icon: '⏳'),
+  error('오류', Color(0xFFFF6B6B), icon: '⚠'),
+  gone('퇴근', Color(0xFF474D5E));
+
+  const LegendCategory(this.label, this.color, {this.icon});
+
+  final String label;
+  final Color color;
+
+  /// 색약 대응 — 색 말고도 구분되는 아이콘(없는 칸은 null).
+  final String? icon;
+
+  /// `보고 대기` 만 점선 링으로 그린다(색이 `한가` 와 같기 때문).
+  bool get dashedRing => this == LegendCategory.waitingReports;
+}
+
+/// 상태 → 범례 7칸. [askingParent] 는 상사에게 물어보고 기다리는 중(사용자 몫이 아니라 `대기`),
+/// [shellLock] 은 셸 락 대기(`running{detail.waiting}`).
+LegendCategory legendCategory(
+  MemberStatus status, {
+  DerivedStatus? derived,
+  bool askingParent = false,
+  bool shellLock = false,
+}) {
+  if (status == MemberStatus.exited) return LegendCategory.gone;
+  if (status == MemberStatus.error) return LegendCategory.error;
+  if (askingParent || shellLock || status == MemberStatus.starting) return LegendCategory.waiting;
+  if (derived == DerivedStatus.waitingReports) return LegendCategory.waitingReports;
+  if (derived == DerivedStatus.waitingApproval ||
+      derived == DerivedStatus.waitingAnswer ||
+      status == MemberStatus.waitingApproval ||
+      status == MemberStatus.waitingAnswer) {
+    return LegendCategory.myTurn;
+  }
+  if (derived == DerivedStatus.free || status == MemberStatus.idle) return LegendCategory.free;
+  return LegendCategory.working;
+}
