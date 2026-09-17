@@ -470,7 +470,8 @@ class OfficeLayout {
   /// [p] 는 **뷰포트 좌표**다 — 바(내 책상 슬롯)는 그대로, 스크롤 영역은 [scrollOffset] 만큼 내려 콘텐츠 좌표로 본다.
   String? hitTest(Offset p, OfficeScene scene, [List<CharacterPlacement>? placed, double scrollOffset = 0]) {
     final ps = placed ?? placements(scene);
-    final r = charRadius + 4;
+    // 클릭 목표는 최소 18px(패스 6) — 축소해도 캐릭터를 누를 수 있어야 한다.
+    final r = math.max(18.0, charRadius + 4);
     // 1. 바(슬롯)에 그려진 대기자 — 뷰포트 좌표 그대로.
     for (var i = ps.length - 1; i >= 0; i--) {
       if (!drawsInBar(scene.members[i])) continue;

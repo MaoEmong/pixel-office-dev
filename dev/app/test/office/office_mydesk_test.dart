@@ -4,7 +4,9 @@
 //   - 헤더 "내 책상 · 대기 N"(N = 전체 수).
 //   - 같은 상사에게 동시에 질문하면 `visitorSpot(desk, k)` 로 겹치지 않게 서고, 3명째부터 "+N".
 //   - 슬롯·배지 클릭 = 그 멤버 선택 + onSelectPending(pendingId).
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:pixel_office/model/models.dart';
 import 'package:pixel_office/office/office_layout.dart';
@@ -203,6 +205,74 @@ void main() {
       for (final m in rest) {
         expect(placed[m.id], layout.seatCenter(m.deskIndex), reason: '${m.id} 는 자기 책상');
       }
+    });
+
+    testWidgets('휠 스크롤: 사무실만 움직이고 바(내 책상)는 그대로, 0~maxScroll 로 잘린다', (tester) async {
+      // 팀 8개 → 세로 스크롤이 필요한 사무실.
+      final state = OfficeState(
+        departments: {'d1': department('d1')},
+        members: {
+          'mH': head('mH', name: '부장', createdAt: '0'),
+          for (var t = 0; t < 8; t++)
+            for (var i = 0; i < 3; i++)
+              'm$t$i': member('m$t$i', name: '팀원$t$i', teamId: 't$t', parentId: 'mH', createdAt: '$t$i'),
+        },
+        teams: {for (var t = 0; t < 8; t++) 't$t': team('t$t', name: 't$t', createdAt: '$t')},
+      );
+      await pumpHarness(tester, FakeOfficeNotifier(state));
+      var painter = painterOf(tester);
+      final layout = painter.lastLayout!;
+      expect(layout.isScrollable, isTrue);
+      expect(painter.scrollOffset, 0);
+      final myDesk = layout.myDeskRect;
+
+      final pointer = TestPointer(1, PointerDeviceKind.mouse);
+      final origin = tester.getTopLeft(find.byType(OfficeView));
+      pointer.hover(origin + const Offset(300, 100));
+      await tester.sendEventToBinding(pointer.scroll(const Offset(0, 200)));
+      await tester.pump();
+      painter = painterOf(tester);
+      expect(painter.scrollOffset, 200);
+      expect(painter.lastLayout!.myDeskRect, myDesk, reason: '바는 스크롤과 무관');
+      expect(painter.lastLayout!.doorRect, layout.doorRect);
+
+      // 위로 더 굴려도 0 아래로 내려가지 않는다.
+      await tester.sendEventToBinding(pointer.scroll(const Offset(0, -900)));
+      await tester.pump();
+      expect(painterOf(tester).scrollOffset, 0);
+
+      // 아래로 많이 굴려도 maxScroll 에서 멈춘다.
+      await tester.sendEventToBinding(pointer.scroll(const Offset(0, 99999)));
+      await tester.pump();
+      expect(painterOf(tester).scrollOffset, layout.maxScroll);
+    });
+
+    testWidgets('스크롤이 필요 없는 사무실은 휠에 반응하지 않는다', (tester) async {
+      final small = OfficeState(
+        departments: {'d1': department('d1')},
+        members: {'mH': head('mH', name: '부장', createdAt: '0')},
+      );
+      await pumpHarness(tester, FakeOfficeNotifier(small));
+      expect(painterOf(tester).lastLayout!.isScrollable, isFalse);
+      final pointer = TestPointer(2, PointerDeviceKind.mouse);
+      final origin = tester.getTopLeft(find.byType(OfficeView));
+      pointer.hover(origin + const Offset(300, 100));
+      await tester.sendEventToBinding(pointer.scroll(const Offset(0, 300)));
+      await tester.pump();
+      expect(painterOf(tester).scrollOffset, 0);
+    });
+
+    testWidgets('캐릭터 클릭 목표는 축소해도 최소 18px', (tester) async {
+      await tester.pumpWidget(ProviderScope(
+        overrides: [officeProvider.overrideWith(() => FakeOfficeNotifier(waitingOffice(0)))],
+        child: const MaterialApp(home: Center(child: SizedBox(width: 620, height: 600, child: OfficeView()))),
+      ));
+      final painter = painterOf(tester);
+      final layout = painter.lastLayout!;
+      expect(layout.scale, lessThan(1));
+      expect(layout.charRadius + 4, lessThan(18), reason: '반지름만으로는 18px 이 안 된다');
+      final seat = layout.seatCenter(0);
+      expect(layout.hitTest(seat + const Offset(16, 0), painter.scene), painter.scene.members.first.id);
     });
 
     testWidgets('내 책상 시맨틱에 "대기 N" 과 목록이 들어간다', (tester) async {
