@@ -47,7 +47,7 @@ pixel-office/
       test/               node:test (509건)
     app/                Flutter 데스크탑 앱 (Windows)  → dev/app/README.md
       lib/                rpc · model · state · topbar · office · panel · command
-      test/               위젯·상태 테스트 (344건)
+      test/               위젯·상태 테스트 (365건)
       tool/capture-window.ps1   창 단위 캡처 (worklog 증거용, 전체 화면 캡처 금지)
     spike-0/            0단계 실측 스파이크와 sandbox(실기용 작업 폴더)
 ```
@@ -80,7 +80,7 @@ cd dev/daemon && npm run cli      # help 로 명령 목록
 
 ```bash
 cd dev/daemon && npx tsc --noEmit && npm test     # 509건 (PIXEL_IT=1 이면 실제 CLI 통합 테스트 포함)
-cd dev/app    && flutter analyze && flutter test  # 193건
+cd dev/app    && flutter analyze && flutter test  # 365건
 ```
 
 ## 더 읽을 것
