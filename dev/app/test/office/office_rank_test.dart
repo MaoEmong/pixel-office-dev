@@ -102,8 +102,8 @@ void main() {
     expect(summarize(MemberStatus.idle, event('mL', OfficeEventKind.idle), derived: DerivedStatus.waitingReports),
         waitingReportsSummary);
     final m = sceneOf(leadDerived: DerivedStatus.waitingReports).memberById('mL')!;
-    expect(m.summary, '📨 보고 대기');
-    expect(m.bubbleText, '📨 보고 대기');
+    expect(m.summary, '✉ 보고 대기');
+    expect(m.bubbleText, '✉ 보고 대기');
     // 사용자 응답 대기가 아니므로 내 책상 줄에 서지 않고 alert 말풍선도 아니다.
     expect(m.isQueued, isFalse);
     expect(m.isAlert, isFalse);

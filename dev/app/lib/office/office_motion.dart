@@ -5,7 +5,7 @@
 // 현재 위치 → 목표 로 걷는 트윈을 건다(ease-in-out, 220 px/s, 최소 250 ms).
 //   자리 ↔ 내 책상 줄(허가·질문 pending), 줄 순서 변경, 책상 번호 변경 → 걷기
 //   status starting 인 새 멤버 → 문에서 자리로 "입장"; exited/error 가 되면 자리 → 문 → (회색으로) 자리
-//   마지막 이벤트가 reporting → 내 책상으로 걸어와 [reportVisitDuration] 동안 "📄 보고" 말풍선, 그 뒤 돌아감
+//   마지막 이벤트가 reporting → 내 책상으로 걸어와 [reportVisitDuration] 동안 "▤ 보고" 말풍선, 그 뒤 돌아감
 //     (시간 만료는 위젯의 Timer 가 [endVisit] 로 알린다; idle/text·**MCP 팀 도구 호출** 이외의 새 이벤트·
 //      줄 서기·퇴근이면 즉시 취소 — [cancelsVisit], T29 결함 ④)
 //   `ask_parent` 로 상사 답을 기다리는 멤버 → 직속 상사 책상 옆으로 걸어가 서 있는다(T37)
@@ -17,12 +17,13 @@ import 'dart:ui';
 import '../model/models.dart';
 import 'office_layout.dart';
 import 'office_scene.dart';
+import 'office_sprites.dart';
 
 /// 보고하러 온 멤버가 내 책상 앞에 머무는 시간.
 const Duration reportVisitDuration = Duration(seconds: 6);
 
 /// 보고 방문 중 말풍선.
-const String reportVisitBubble = '📄 보고';
+const String reportVisitBubble = '▤ 보고';
 
 /// 작업 중 흔들림(px, Hz).
 const double bobAmplitude = 1.5;
@@ -292,6 +293,23 @@ class OfficeMotion {
                 ? CharacterPlacement(memberId: m.id, center: Offset.zero, bubbleAnchor: Offset.zero)
                 : layout.placements(OfficeScene(members: [m], queue: const [])).single),
     ];
+  }
+
+  /// **걷는 중**인 멤버의 스프라이트 프레임·방향(T33). 멈춰 있는 멤버는 목록에 없다.
+  ///
+  /// 프레임은 시간이 아니라 **지금까지 걸어온 거리**로 고른다([walkFrameFor]) — 짧게 옮기면 한두 프레임만
+  /// 지나가고 길게 걸으면 발이 여러 번 구르는, 거리에 맞는 걸음이 된다. 방향은 출발→도착의 dx 부호이고
+  /// 세로로만 움직이면(dx ≈ 0) 오른쪽을 본다.
+  Map<String, SpriteWalk> walkAt(Duration now) {
+    Map<String, SpriteWalk>? out;
+    for (final m in _scene.members) {
+      final mv = _movements[m.id];
+      if (mv == null || mv.isInstant || mv.isDone(now)) continue;
+      final travelled = (mv.at(now).center - mv.from.center).distance;
+      final dx = mv.to.center.dx - mv.from.center.dx;
+      (out ??= {})[m.id] = SpriteWalk(frame: walkFrameFor(travelled), facingLeft: dx < -0.5);
+    }
+    return out ?? const {};
   }
 
   /// 작업 중이고 서 있는 멤버의 흔들림(px). 없으면 빈 맵.

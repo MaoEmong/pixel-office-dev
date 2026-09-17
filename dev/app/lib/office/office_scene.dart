@@ -8,18 +8,39 @@
 // 요약 규칙(01-설계문서 §3 "캐릭터 상태 3중 표현" 중 모니터·말풍선):
 //   status exited → "(퇴근)", error → "⚠ 오류" (이벤트보다 우선)
 //   `ask_parent` 로 상사 답을 기다리는 중 → "❓ 상사에게 질문"(사용자 줄에는 서지 않는다 — T37)
-//   event reading → "📖 <basename>", editing → "✎ <basename>", running → "▶ <cmd 40자>", thinking → "…",
+//   event reading → "◫ <basename>", editing → "✎ <basename>", running → "▶ <cmd 40자>", thinking → "…",
 //         idle → "(대기)", waiting_approval → "❗ 허가 대기", asking → "❓ 질문", error → "⚠ 오류",
-//         text → "💬 <text>", delegating → "→ 위임", reporting → "📋 보고"
-//   **running 이어도 `detail.waiting` 이 있으면**(셸 락 대기) cmd 가 아니라 summary 를 "⏳" 를 붙여 보여 준다
+//         text → "❝ <text>", delegating → "→ 위임", reporting → "▤ 보고"
+//   **running 이어도 `detail.waiting` 이 있으면**(셸 락 대기) cmd 가 아니라 summary 를 "◷" 를 붙여 보여 준다
 //     (T29 결함 ③ — "셸 대기 중 (락: 작가)" 가 명령에 가려 안 보였다).
 //   이벤트 없음 → status 로: starting "(출근 중)", idle "(대기)", working "…", waiting_* 는 위와 동일.
-//   파생 status 가 waiting_reports 면 "📨 보고 대기"(상사가 위임하고 부하 보고를 기다리는 중).
+//   파생 status 가 waiting_reports 면 "✉ 보고 대기"(상사가 위임하고 부하 보고를 기다리는 중).
 //   파생 status 가 free 면(턴 끝 + 맡은 일 없음, T28) "(대기)" 자리에 "(한가함)".
 //   파생 status 가 waiting_answer/waiting_approval 이면 이벤트보다 "❓ 질문"/"❗ 허가 대기" 가 앞선다
 //   (`ask_user` 는 질문이 열린 채 raw status 가 idle 로 돌아간다 — PROTOCOL `member.status.derived`, T19 함정 1).
 
 import '../model/models.dart';
+
+// **기호는 번들 서체 3종 안에 있는 것만 쓴다**(T33 · T40 편차 ⑤).
+//
+// 앱은 Galmuri11(캔버스) · Pretendard(패널) · D2Coding(고정폭) 셋만 동봉하고, 한 서체에 없는 글자는
+// `fontFamilyFallback` 으로 나머지 둘이 대신한다. **시스템 서체 폴백은 믿을 수 없다** — T40 실기에서
+// `📨`(U+1F4E8) `⏳`(U+23F3) `♛`(U+265B) 이 전부 두부(□)로 나왔다(`❗` `⚠` 는 나왔다).
+// 그래서 세 서체 어디에도 없는 이모지는 같은 뜻의 기호로 바꿨다:
+//
+// | 옛 글자 | 바꾼 글자 | 어느 서체에 있나 |
+// |---|---|---|
+// | `📨` 보고 대기 | `✉` U+2709 | Galmuri11 · D2Coding |
+// | `⏳` 대기 | `◷` U+25F7 | Galmuri11 · D2Coding |
+// | `📖` 읽는 중 | `◫` U+25EB | Galmuri11 · D2Coding |
+// | `📋` `📄` 보고 | `▤` U+25A4 | Galmuri11 · D2Coding |
+// | `💬` 한마디 | `❝` U+275D | D2Coding |
+//
+// 그대로 둔 것: `❗` `❓`(Galmuri11) · `⚠` `★` `▶` `…` `→` `↻`(세 서체 모두) · `✎` `♛`(D2Coding).
+// 새 기호를 넣기 전에 `test/office/office_fonts_test.dart` 의 허용 목록을 먼저 본다.
+//
+// 사무실 **캔버스**는 이 글자들 대신 아틀라스에 그린 아이콘을 쓴다(`office_sprites.dart`) — 여기 글자는
+// 오른쪽 패널처럼 캔버스 밖에서 같은 상태를 보여 주는 곳의 몫이다.
 
 /// 말풍선 최대 글자 수.
 const int bubbleMaxChars = 28;
@@ -86,9 +107,9 @@ String rankBadgeAt(MemberRank rank, double scale) {
 enum LegendSlot {
   working('작업', 0xFF6C8EFF, ''),
   idle('한가', 0xFF7ED3A1, ''),
-  waitingReports('보고 대기', 0xFF7ED3A1, '📨', dashedRing: true),
+  waitingReports('보고 대기', 0xFF7ED3A1, '✉', dashedRing: true),
   myTurn('내 차례', 0xFFFF9F43, '❗'),
-  waiting('대기', 0xFFFFC857, '⏳'),
+  waiting('대기', 0xFFFFC857, '◷'),
   error('오류', 0xFFFF6B6B, '⚠'),
   exited('퇴근', 0xFF474D5E, '');
 
@@ -147,7 +168,7 @@ LegendSlot legendSlotOf(SceneMember m) => legendSlotFor(
     );
 
 /// 파생 상태 `waiting_reports`(상사가 위임하고 부하 보고를 기다리는 중 — 01 §3) 의 모니터·말풍선 문구.
-const String waitingReportsSummary = '📨 보고 대기';
+const String waitingReportsSummary = '✉ 보고 대기';
 
 /// 파생 상태 `free`(턴도 끝났고 맡은 일도 없다 — PROTOCOL `derived`, T28) 의 문구. 같은 "(대기)" 라도
 /// **일이 남아 있는** idle 과 구분해 보여 준다.
@@ -157,7 +178,7 @@ const String freeSummary = '(한가함)';
 const String askParentSummary = '❓ 상사에게 질문';
 
 /// 셸 락 대기(`running{waiting:'shell-lock'}`) 앞에 붙는 표시(T29 결함 ③).
-const String waitingPrefix = '⏳';
+const String waitingPrefix = '◷';
 
 /// 팀이 없는 멤버를 모으는 클러스터 제목(정상 트리에서는 비어 있다).
 const String unassignedClusterTitle = '미배정';
@@ -698,7 +719,7 @@ String summarize(MemberStatus status, OfficeEvent? event, {DerivedStatus? derive
   if (event == null) return _statusSummary(status);
   final d = event.detail;
   return switch (event.kind) {
-    OfficeEventKind.reading => '📖 ${d.path != null ? basename(d.path!) : d.oneLine}',
+    OfficeEventKind.reading => '◫ ${d.path != null ? basename(d.path!) : d.oneLine}',
     OfficeEventKind.editing => '✎ ${d.path != null ? basename(d.path!) : d.oneLine}',
     // 셸 락 대기는 아직 실행 전이다 — cmd 대신 summary(T29 결함 ③).
     OfficeEventKind.running => d.waiting != null
@@ -709,9 +730,9 @@ String summarize(MemberStatus status, OfficeEvent? event, {DerivedStatus? derive
     OfficeEventKind.waitingApproval => '❗ 허가 대기',
     OfficeEventKind.asking => '❓ 질문',
     OfficeEventKind.error => '⚠ 오류',
-    OfficeEventKind.text => d.oneLine.isEmpty ? '💬' : '💬 ${d.oneLine}',
+    OfficeEventKind.text => d.oneLine.isEmpty ? '❝' : '❝ ${d.oneLine}',
     OfficeEventKind.delegating => '→ 위임',
-    OfficeEventKind.reporting => '📋 보고',
+    OfficeEventKind.reporting => '▤ 보고',
   };
 }
 

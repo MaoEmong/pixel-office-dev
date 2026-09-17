@@ -100,7 +100,7 @@ String eventDetailLine(OfficeEvent e, {int maxLength = 200}) {
 }
 
 /// 패널 공용 고정폭 글꼴(스파이크 실측: Cascadia Mono 로 한글·이모지 OK).
-const String panelMonoFamily = 'Cascadia Mono';
+const String panelMonoFamily = 'D2Coding';
 const List<String> panelMonoFallback = ['Consolas', 'D2Coding', 'Malgun Gothic', 'monospace'];
 
 // ---- 팔레트(레이아웃 v2 §4) --------------------------------------------------------

@@ -148,7 +148,7 @@ void main() {
       expect(motion.movements['m2']!.to.center, layout.seatCenter(1));
     });
 
-    test('reporting 이벤트 → 내 책상 방문(줄 뒤 자리, 📄 보고), idle/text 는 유지, 다른 이벤트·endVisit 은 복귀', () {
+    test('reporting 이벤트 → 내 책상 방문(줄 뒤 자리, ▤ 보고), idle/text 는 유지, 다른 이벤트·endVisit 은 복귀', () {
       final motion = OfficeMotion();
       motion.sync(sceneOf(idle2), layout, t0);
       final report = {'m1': event('m1', OfficeEventKind.reporting, seq: 5)};
