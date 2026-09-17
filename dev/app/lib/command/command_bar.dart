@@ -22,17 +22,39 @@ import '../rpc/rpc_client.dart';
 import '../state/office_state.dart';
 import '../topbar/selected_department.dart' show activeDepartmentIdProvider;
 
-/// 입력 힌트(대상 이름별). 테스트·문서에서 참조.
-String commandBarHint(String targetName) => '$targetName에게 지시 (Enter 전송, Shift+Enter 줄바꿈)';
+/// 입력 힌트(대상 이름별). T40-5(D11): 무슨 말을 해야 하는지 모르는 첫 5분을 위해 **예시 문장**을 쓴다.
+String commandBarHint(String targetName) => '$commandBarExample  (Enter 전송, Shift+Enter 줄바꿈)';
 
-/// 드롭다운 전체 툴팁 — 지시는 부장에게만 간다.
+/// 지시 바 placeholder 예시 문장(패스 2 빈 상태 · 패스 3 스토리보드 5단계).
+const String commandBarExample = '예: 이 저장소 구조를 파악해서 보고해';
+
+/// 정적 대상 칩 문구 — 드롭다운을 없앤 자리(D7). 부서 전환은 상단 탭이 한다.
+String commandBarTargetChip(String headName) => '♛ $headName에게';
+
+/// 살아 있는 부장이 없을 때의 칩(회색 + 입력 비활성).
+const String commandBarNoHeadChip = '부장 없음';
+
+/// 칩 툴팁 — 지시는 부장에게만 간다.
 const String commandBarHeadOnlyTooltip = '지시는 부장에게만 갑니다';
+
+/// 전송 스피너를 최소한 이만큼은 보여 준다(패스 2 상태표 "전송 중 스피너 200ms").
+const Duration commandBarSpinnerMinimum = Duration(milliseconds: 200);
 
 /// 살아 있는 부장이 없을 때의 힌트(부서가 없거나 부장이 퇴근·오류).
 const String commandBarNoHeadHint = '이 부서에 살아 있는 부장이 없습니다 — 부서를 만들거나 부장을 다시 고용하세요';
 
 /// 전송 후 "#n 전송됨" 배지를 보여 주는 시간.
 const Duration commandBarBadgeDuration = Duration(seconds: 3);
+
+/// `Ctrl+K` → 지시 바 포커스(패스 6 키보드). 같은 요청을 연달아 보내도 nonce 가 달라 매번 반응한다.
+class CommandBarFocusNotifier extends Notifier<int> {
+  @override
+  int build() => 0;
+
+  void request() => state = state + 1;
+}
+
+final commandBarFocusProvider = NotifierProvider<CommandBarFocusNotifier, int>(CommandBarFocusNotifier.new);
 
 class CommandBar extends ConsumerStatefulWidget {
   const CommandBar({super.key, required this.selectedMemberId});
@@ -56,9 +78,13 @@ class _CommandBarState extends ConsumerState<CommandBar> {
   String? _headOverride;
   Timer? _badgeTimer;
 
+  /// 스피너 최소 노출(200ms) 타이머 — 위젯이 사라지면 같이 죽는다.
+  Timer? _spinnerTimer;
+
   @override
   void dispose() {
     _badgeTimer?.cancel();
+    _spinnerTimer?.cancel();
     _text.dispose();
     _focus.dispose();
     super.dispose();
@@ -125,6 +151,7 @@ class _CommandBarState extends ConsumerState<CommandBar> {
       _busy = true;
       _error = null;
     });
+    final started = DateTime.now();
     try {
       final taskId = await ref.read(officeProvider.notifier).instruct(m!.id, text);
       _text.clear();
@@ -143,9 +170,19 @@ class _CommandBarState extends ConsumerState<CommandBar> {
         });
       }
     } finally {
-      if (mounted) {
+      // 스피너가 깜빡 하고 사라지지 않게 최소 200ms 는 보여 준다(패스 2 상태표).
+      final left = commandBarSpinnerMinimum - DateTime.now().difference(started);
+      void done() {
+        if (!mounted) return;
         setState(() => _busy = false);
         _focus.requestFocus();
+      }
+
+      _spinnerTimer?.cancel();
+      if (left > Duration.zero) {
+        _spinnerTimer = Timer(left, done);
+      } else {
+        done();
       }
     }
   }
@@ -170,6 +207,10 @@ class _CommandBarState extends ConsumerState<CommandBar> {
 
   @override
   Widget build(BuildContext context) {
+    // Ctrl+K — 어디에 있든 지시 바로 커서.
+    ref.listen<int>(commandBarFocusProvider, (prev, next) {
+      if (prev != next && mounted) _focus.requestFocus();
+    });
     final connected = ref.watch(connectionStateProvider) == RpcConnectionState.connected;
     final members = ref.watch(membersProvider);
     final heads = ref.watch(liveHeadsProvider);
@@ -189,38 +230,8 @@ class _CommandBarState extends ConsumerState<CommandBar> {
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.center,
         children: [
-          SizedBox(
-            width: 180,
-            // 대상이 고정된다는 것을 드롭다운 전체 툴팁으로도 말해 준다(01 §직무 체계 rev 3).
-            child: Tooltip(
-              message: targetMember != null ? commandBarHeadOnlyTooltip : '',
-              child: DropdownButtonFormField<String>(
-                key: const Key('commandBar.target'),
-                initialValue: targetMember?.id,
-                isDense: true,
-                isExpanded: true,
-                hint: Text(
-                  targetMember == null ? '부장 없음' : '대상',
-                  style: const TextStyle(fontSize: 13),
-                ),
-                decoration: const InputDecoration(
-                  isDense: true,
-                  border: OutlineInputBorder(),
-                  contentPadding: EdgeInsets.symmetric(horizontal: 8, vertical: 8),
-                ),
-                items: [
-                  if (targetMember != null)
-                    DropdownMenuItem<String>(
-                      value: targetMember.id,
-                      child: _TargetItem(member: targetMember),
-                    ),
-                ],
-                // 고를 것이 하나뿐이라 실제로 바뀌지는 않는다 — 비활성으로 두면 회색이라 "누구에게 가는지" 가
-                // 안 보여서(T24b 의 교훈) 값만 고정하고 활성 상태를 유지한다.
-                onChanged: targetMember == null ? null : (_) {},
-              ),
-            ),
-          ),
+          // 대상은 고정이다 — 드롭다운이 아니라 정적 칩(D7). 부서 전환은 상단 탭이 한다.
+          TargetChip(member: targetMember),
           const SizedBox(width: 8),
           Expanded(
             child: TextField(
@@ -257,9 +268,16 @@ class _CommandBarState extends ConsumerState<CommandBar> {
           const SizedBox(width: 4),
           IconButton(
             key: const Key('commandBar.send'),
-            tooltip: '전송 (Enter)',
+            tooltip: '전송 (Enter · Ctrl+K 로 여기 포커스)',
             onPressed: enabled ? _send : null,
-            icon: const Icon(Icons.send, size: 20),
+            icon: _busy
+                ? const SizedBox(
+                    key: Key('commandBar.spinner'),
+                    width: 16,
+                    height: 16,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : const Icon(Icons.send, size: 20),
           ),
           SizedBox(
             // 오류는 데몬 문구를 그대로 보여 준다(-32004 "부장에게만 지시할 수 있습니다 (head: …)" 도) — 조금 더 넓게.
@@ -289,17 +307,35 @@ class _CommandBarState extends ConsumerState<CommandBar> {
   }
 }
 
-/// 대상 드롭다운 한 줄 — 부장 하나. 퇴근/오류는 "· exited" 처럼 상태를 붙인다.
-class _TargetItem extends StatelessWidget {
-  const _TargetItem({required this.member});
+/// 정적 대상 칩 `♛ <부장이름>에게`(D7). 살아 있는 부장이 없으면 회색 "부장 없음".
+class TargetChip extends StatelessWidget {
+  const TargetChip({super.key, required this.member});
 
-  final Member member;
+  /// 살아 있는 부장(없으면 null).
+  final Member? member;
 
   @override
-  Widget build(BuildContext context) => Text(
-        '${member.name} [${member.engine.wire}]'
-        '${member.status.isGone ? ' · ${member.status.wire}' : ''} · ${member.rank.label}',
-        style: TextStyle(fontSize: 13, color: member.status.isGone ? Colors.white38 : null),
-        overflow: TextOverflow.ellipsis,
-      );
+  Widget build(BuildContext context) {
+    final m = member;
+    final gold = const Color(0xFFFFD166);
+    final color = m == null ? Colors.white38 : gold;
+    return Tooltip(
+      message: m == null ? commandBarNoHeadHint : '$commandBarHeadOnlyTooltip · ${m.engine.wire}',
+      child: Container(
+        key: const Key('commandBar.target'),
+        constraints: const BoxConstraints(maxWidth: 180),
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(4),
+          border: Border.all(color: color.withValues(alpha: 0.5)),
+        ),
+        child: Text(
+          m == null ? commandBarNoHeadChip : commandBarTargetChip(m.name),
+          style: TextStyle(fontSize: 13, color: color, fontWeight: m == null ? FontWeight.normal : FontWeight.bold),
+          overflow: TextOverflow.ellipsis,
+          maxLines: 1,
+        ),
+      ),
+    );
+  }
 }

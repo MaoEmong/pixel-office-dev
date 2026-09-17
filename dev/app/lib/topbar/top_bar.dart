@@ -15,12 +15,18 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../model/models.dart';
+import '../panel/inbox.dart' show inboxCountProvider;
+import '../panel/panel_tabs.dart' show RightPanelTab, panelTabRequestProvider;
+import '../panel/report_tab.dart' show reportUnreadProvider;
 import '../rpc/rpc_client.dart';
 import '../state/office_state.dart';
 // 부서를 만든 직후 부장을 고르려고 쓴다(T24 함정 4 — 상태는 상태 층에).
 import '../state/selection.dart';
+import 'daemon_pill.dart';
 import 'selected_department.dart';
 
+export 'daemon_pill.dart' show DaemonPill, ReportCountBadge, daemonPillLabel, daemonPillColor, daemonBlinkHalfPeriod;
+export 'disconnected_overlay.dart';
 export 'selected_department.dart';
 
 /// `department.create` 에 `headName` 을 안 보냈을 때 데몬이 붙이는 기본 부장 이름(daemon `DEFAULT_HEAD_NAME`).
@@ -39,21 +45,16 @@ class TopBar extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final connection = ref.watch(connectionStateProvider);
     final connected = connection == RpcConnectionState.connected;
-    final version = ref.watch(daemonVersionProvider);
-    final pid = ref.watch(daemonPidProvider);
     final departments = sortedDepartments(ref.watch(departmentsProvider));
     final members = ref.watch(membersProvider);
-    final pendingCount = ref.watch(openPendingProvider).length;
+    // "대기 N" 은 인박스(내 책상)와 같은 수를 센다 — 화면 두 곳이 다른 수를 말하지 않게(D6).
+    final pendingCount = ref.watch(inboxCountProvider);
     final activeDept = ref.watch(activeDepartmentIdProvider);
+    final head = ref.watch(liveHeadProvider(activeDept));
+    final reportCount = head == null ? 0 : ref.watch(reportUnreadProvider(head.id));
     final selected = selectedMemberId == null ? null : members[selectedMemberId];
     final style = Theme.of(context).textTheme.bodyMedium;
     final scheme = Theme.of(context).colorScheme;
-
-    final (chipLabel, chipColor) = switch (connection) {
-      RpcConnectionState.connected => ('데몬 v${version ?? '?'}${pid != null ? ' · pid $pid' : ''}', Colors.greenAccent),
-      RpcConnectionState.connecting => ('데몬 연결 중', Colors.amber),
-      RpcConnectionState.disconnected => ('데몬 연결 안 됨', Colors.redAccent),
-    };
 
     return Container(
       height: 44,
@@ -100,9 +101,20 @@ class TopBar extends ConsumerWidget {
             ),
             const SizedBox(width: 8),
           ],
-          _StatusChip(key: const Key('topbar.daemon'), label: chipLabel, color: chipColor),
+          const DaemonPill(),
           const SizedBox(width: 12),
           Text('멤버 ${members.length} · 대기 $pendingCount', key: const Key('topbar.counts'), style: style),
+          if (reportCount > 0) ...[
+            const SizedBox(width: 8),
+            // 보고는 답할 것이 없으므로 카드가 아니라 배지다(이슈 9). 누르면 부장 + 보고서 탭.
+            ReportCountBadge(
+              count: reportCount,
+              onTap: () {
+                ref.read(selectedMemberIdProvider.notifier).select(head!.id);
+                ref.read(panelTabRequestProvider.notifier).request(RightPanelTab.report);
+              },
+            ),
+          ],
           const SizedBox(width: 12),
           FilledButton.tonalIcon(
             key: const Key('topbar.createDepartment'),
@@ -138,13 +150,25 @@ class _DepartmentTab extends StatelessWidget {
           decoration: BoxDecoration(
             border: Border(bottom: BorderSide(color: active ? scheme.primary : Colors.transparent, width: 2)),
           ),
-          child: Text(
-            department.name,
-            style: TextStyle(
-              fontSize: 13,
-              fontWeight: active ? FontWeight.bold : FontWeight.normal,
-              color: active ? scheme.primary : Colors.white70,
-            ),
+          // 폴더 아이콘 + 이름(변형 C, 패스 7 등록부). 툴팁은 cwd.
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(
+                active ? Icons.folder : Icons.folder_outlined,
+                size: 14,
+                color: active ? scheme.primary : Colors.white54,
+              ),
+              const SizedBox(width: 5),
+              Text(
+                department.name,
+                style: TextStyle(
+                  fontSize: 13,
+                  fontWeight: active ? FontWeight.bold : FontWeight.normal,
+                  color: active ? scheme.primary : Colors.white70,
+                ),
+              ),
+            ],
           ),
         ),
       ),
@@ -183,29 +207,7 @@ class RankBadge extends StatelessWidget {
   }
 }
 
-class _StatusChip extends StatelessWidget {
-  const _StatusChip({super.key, required this.label, required this.color});
-
-  final String label;
-  final Color color;
-
-  @override
-  Widget build(BuildContext context) => Container(
-        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-        decoration: BoxDecoration(
-          borderRadius: BorderRadius.circular(12),
-          border: Border.all(color: color.withValues(alpha: 0.5)),
-        ),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(Icons.circle, size: 8, color: color),
-            const SizedBox(width: 6),
-            Text(label, style: const TextStyle(fontSize: 12)),
-          ],
-        ),
-      );
-}
+// 데몬 상태 칩은 T40-5 에서 3상태 pill(`daemon_pill.dart` 의 [DaemonPill])로 바뀌었다.
 
 // ---- 부서 메뉴(삭제) ----------------------------------------------------------------
 

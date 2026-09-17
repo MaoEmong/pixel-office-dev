@@ -59,7 +59,19 @@ export 'inbox.dart'
         inboxMoreLabel,
         inboxExpandedCards,
         inboxEmptyLabel;
-export 'labels.dart' show eventKindLabel, memberStatusLabel, derivedStatusLabel, LegendCategory, legendCategory;
+export 'labels.dart'
+    show
+        eventKindLabel,
+        memberStatusLabel,
+        derivedStatusLabel,
+        LegendCategory,
+        legendCategory,
+        panelFocusRing,
+        panelFocusRingWidth,
+        panelScrollbarThickness,
+        panelScrollbarThumb,
+        panelDangerTint,
+        panelDangerColor;
 export 'log_tab.dart' show LogTab, LogRow;
 export 'member_gone_banner.dart' show MemberGoneBanner, RecoveryHint, memberFailureEventsProvider, recoveryExpiredCountProvider;
 export 'member_log.dart' show memberLogProvider, memberBackfillProvider, latestTextEventProvider, MemberBackfill;

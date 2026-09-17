@@ -43,10 +43,21 @@ class FakeRpcClient extends RpcClient {
   Stream<int> get attemptStream => _attemptCtl.stream;
   @override
   int get lastSeq => _fakeSeq;
+  int _attempts = 0;
+  Object? fakeError;
+
   @override
-  int get reconnectAttempts => 0;
+  int get reconnectAttempts => _attempts;
   @override
-  Object? get lastError => null;
+  Object? get lastError => fakeError;
+
+  /// 재접속 실패 한 번(끊김 오버레이·pill 의 "재시도 N회" 와 "자세히" 예외 문자열).
+  void emitAttempt(int n, {Object? error}) {
+    _attempts = n;
+    if (error != null) fakeError = error;
+    setState(RpcConnectionState.disconnected);
+    _attemptCtl.add(n);
+  }
 
   @override
   void start({required UrlProvider urlProvider, required TokenProvider tokenProvider}) {}

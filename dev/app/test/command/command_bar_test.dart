@@ -142,16 +142,18 @@ void main() {
     expect(find.text(commandBarHint('부장')), findsOneWidget);
   });
 
-  testWidgets('T37: 드롭다운에는 부장 한 명만 들어간다 (팀장·팀원은 항목이 아니다)', (tester) async {
+  testWidgets('T40-5: 드롭다운 대신 정적 칩 "♛ <부장>에게"', (tester) async {
     await tester.pumpWidget(app(fake, selected: null));
     await connect(tester, fake);
 
-    await tester.tap(find.byKey(const Key('commandBar.target')));
-    await tester.pumpAndSettle();
-    final items = tester.widgetList<DropdownMenuItem<String>>(find.byType(DropdownMenuItem<String>)).toList();
-    expect(items.map((i) => i.value).toSet(), {'mH'});
-    expect(find.byTooltip(commandBarHeadOnlyTooltip), findsWidgets);
-    expect(find.text('부장 [claude] · 부장'), findsWidgets);
+    expect(find.byType(DropdownButtonFormField<String>), findsNothing);
+    expect(find.byType(TargetChip), findsOneWidget);
+    expect(find.text(commandBarTargetChip('부장')), findsOneWidget);
+    expect(find.text('♛ 부장에게'), findsOneWidget);
+    expect(find.byTooltip('$commandBarHeadOnlyTooltip · claude'), findsOneWidget);
+    // placeholder 는 예시 문장(D11)
+    expect(find.text(commandBarHint('부장')), findsOneWidget);
+    expect(find.textContaining(commandBarExample), findsOneWidget);
   });
 
   testWidgets('T37: 살아 있는 부장이 없으면 비활성 + 안내 힌트', (tester) async {
@@ -161,8 +163,9 @@ void main() {
     expect(tester.widget<TextField>(input).enabled, isFalse);
     expect(find.text(commandBarNoHeadHint), findsOneWidget);
     expect(tester.widget<IconButton>(sendBtn).onPressed, isNull);
-    final dropdown = tester.widget<DropdownButtonFormField<String>>(find.byKey(const Key('commandBar.target')));
-    expect(dropdown.onChanged, isNull);
+    // 칩은 회색 "부장 없음"
+    expect(find.text(commandBarNoHeadChip), findsOneWidget);
+    expect(tester.widget<TargetChip>(find.byType(TargetChip)).member, isNull);
 
     await tester.enterText(input, '아무거나');
     await tester.sendKeyEvent(LogicalKeyboardKey.enter);
@@ -189,8 +192,7 @@ void main() {
     expect(find.byKey(const Key('commandBar.error')), findsOneWidget);
     expect(find.text('부장에게만 지시할 수 있습니다 (head: 부장)'), findsOneWidget);
     // data.headId 로 대상을 되돌린다(입력은 지우지 않는다 — 그대로 다시 보낼 수 있게).
-    final dropdown = tester.widget<DropdownButtonFormField<String>>(find.byKey(const Key('commandBar.target')));
-    expect(dropdown.initialValue, 'mH');
+    expect(tester.widget<TargetChip>(find.byType(TargetChip)).member?.id, 'mH');
     expect(tester.widget<TextField>(input).controller!.text, '이거 해줘');
   });
 
