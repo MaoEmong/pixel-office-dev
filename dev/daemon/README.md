@@ -1,6 +1,10 @@
 # pixel-office daemon
 
-실제 `claude` / `codex` CLI를 가상 터미널(ConPTY)에 띄우고, hooks로 상태를 받고, 사무실 UI에 이벤트를 흘려주는 상주 프로세스. M0 완료(2026-09-15): 콘솔 클라이언트만으로 고용→지시→허가/질문→재접속→재시작 복구까지 동작. M3 완료(2026-09-16, T23): 같은 부서에 Claude 멤버와 Codex 멤버를 섞어도 각자 자기 이벤트·pending·터미널로 동작한다(엔진별 차이는 아래 "Codex 멤버" 절). **M4b(2026-09-16, T34~T38): 직무 체계 rev 3 — 부서 → 부장 → 팀장 → 팀원 3단 트리**(아래 절, D-32).
+실제 `claude` / `codex` CLI를 가상 터미널(ConPTY)에 띄우고, hooks로 상태를 받고, 사무실 UI에 이벤트를 흘려주는 상주 프로세스.
+
+현재: **M5 완료(2026-09-17, T30·T31) = v1b**. 지나온 단계 — M0(2026-09-15): 콘솔 클라이언트만으로 고용→지시→허가/질문→재접속→재시작 복구. M3(2026-09-16, T23): 같은 부서에 Claude 멤버와 Codex 멤버를 섞어도 각자 자기 이벤트·pending·터미널로 동작(아래 "Codex 멤버" 절). **M4b(2026-09-16, T34~T39): 직무 체계 rev 3 — 부서 → 부장 → 팀장 → 팀원 3단 트리**(아래 절, D-32). **M5(2026-09-17, T30·T31): 안정화** — 단일 데몬 가드(D-40) · hook 핸들러 예외가 CLI 를 세워 두지 않는 계약 · 보존 정리(D-39) · 재접속 백오프 · 오류 포즈/재고용 실기 · 이벤트 코얼레스는 넣지 않기로 확정(D-41). 계약은 `PROTOCOL.md` §"데몬 수명·안정화 (T30)".
+
+**데몬은 한 번에 하나만 뜬다**(D-40): `daemon.json` 의 pid 가 살아 있고 그 ws 포트가 듣고 있으면 기동을 거부하고 exit 3. 통합 테스트는 `PIXEL_FORCE_START=1` 이 아니라 **자기 `PIXEL_DATA_DIR`** 을 써야 한다.
 
 ## 실행
 
@@ -10,7 +14,7 @@ npm start                 # 데몬 1회 실행 (ws://127.0.0.1:7420, hook 7421, 
 npm run dev               # tsx watch
 npm run cli               # 콘솔 클라이언트 REPL (help 로 명령 목록)
 npm run cli -- --exec "dept create demo D:/proj claude 부장" --exec "say 부장 안녕" --wait-idle 부장   # 비대화형
-npm test                  # node:test 전체 (PIXEL_IT=1 이면 실제 CLI 통합 테스트 포함)
+npm test                  # node:test 전체 509건 (PIXEL_IT=1 이면 실제 CLI 통합 테스트 포함 — 그때는 자기 PIXEL_DATA_DIR 을 줄 것)
 npm run typecheck
 ```
 
@@ -38,6 +42,7 @@ npm run typecheck
 | `PIXEL_CLAUDE_EXE` | 데스크탑 앱 번들 `claude.exe` | claude 실행 파일 |
 | `PIXEL_CODEX_EXE` | **자동 탐지**(아래) | codex 실행 파일 |
 | `PIXEL_HOOK_TIMEOUT_SEC` | 86400 | 세션 hooks timeout(허가·질문 보류 상한, D-16) |
+| `PIXEL_FORCE_START` | (없음) | `1` 이면 단일 데몬 가드를 건너뛴다(D-40). **테스트는 이것 대신 `PIXEL_DATA_DIR` 을 따로 줄 것** |
 
 세 포트는 전부 `127.0.0.1` 전용이고 기동할 때마다 `daemon.json` 에 실제 값이 적힌다(클라이언트는 그 파일을 읽는다).
 
@@ -101,7 +106,7 @@ npm run typecheck
 (+ `member.instruct{force}`). `force` 가 없으면 -32004. 앱은 절대 보내지 않고 콘솔의 "디버그" 절과 테스트만 쓴다.
 `member.clockOut` 은 예외로 누구에게나 열려 있다 — 굳은 세션을 사용자가 치울 **비상구**(콘솔 `fire` 는 확인 `y` 를 받는다).
 
-**아직 안 본 것:** 트리 전체 실기(부서 → 부장 → 팀 → 팀원 → 보고 상향 → 부장 퇴근 시 부서 정리)는 **T39 시연** 몫이다.
+**실기로 본 것(T39·T31):** 부서 → 부장 → 팀 → 팀원 → 보고 상향 → `ask_parent` 3단 왕복 → 상위 퇴근 시 하위 트리 잎부터 정리 → `taskkill /F` 뒤 트리 순서 복구 → 셸 뮤텍스 → 부서 삭제. T31 에서는 **부서 1 · 팀 2 · 멤버 7명**을 한꺼번에 돌려(hire → delegate → 셸 쓰기 4건 경합 → 보고 상향) 셸 락이 도착 순 FIFO 로 풀리는 것과 이벤트 밀도(31.3건/분, 피크 1초 6건 — D-41)를 쟀다.
 rev 3 를 **Codex 엔진**으로 돌려 보는 것은 사용량 한도 때문에 **2026-09-21 이후**로 이월돼 있다(바로 아래 절 끝의 재확인 목록).
 
 ## Codex 멤버 (M3)

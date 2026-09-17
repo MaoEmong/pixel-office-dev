@@ -2,8 +2,11 @@
 
 데몬(`dev/daemon`)에 WebSocket 으로 붙어 사무실을 그리는 클라이언트. 와이어 계약은 `dev/daemon/PROTOCOL.md` 가 유일한 기준이다.
 
-현재(T37, 2026-09-16): **직무 체계 rev 3** — 상단 탭 = 부서, 사용자가 만드는 것은 부서(=부장 임명)뿐, 지시는 그 부서의 부장에게만,
+현재(M5 완료, 2026-09-17): **직무 체계 rev 3**(T37) — 상단 탭 = 부서, 사용자가 만드는 것은 부서(=부장 임명)뿐, 지시는 그 부서의 부장에게만,
 사무실은 부장 책상 + 팀 클러스터, 내 책상에는 사용자 몫(허가 전부 + 부장 질문)만. 아래 "직무 체계 rev 3" 절이 요약이다.
+여기에 **M5(T30·T31) 의 오류 표시**가 붙었다 — 세션이 죽으면 캐릭터가 **붉은 링 + `⚠ 오류` 말풍선**(퇴근은 여전히 회색·말풍선 없음)이 되고,
+그 캐릭터를 누르면 오른쪽 패널 머리에 `⚠ 오류로 종료됨 (code N)` + **`재고용`** 배너가 뜬다. 누르면 `member.rehire` → `--resume` 으로
+같은 문맥을 물고 되살아난다(T31 실기: 클릭 → `text: resumed` → 다음 지시 정상, `docs/worklog/T31-M5정리.md`).
 
 ## 실행
 
@@ -12,7 +15,7 @@ cd dev/app
 flutter pub get
 flutter run -d windows          # 개발 실행
 flutter build windows --release # build\windows\x64\runner\Release\pixel_office.exe
-flutter analyze && flutter test # 검증
+flutter analyze && flutter test # 검증 (위젯·상태 193건)
 ```
 
 데몬이 먼저 떠 있어야 한다(`cd dev/daemon && npm start`). 없으면 앱은 회색 오버레이 + "데몬 연결 안 됨" 을 보이며 1→2→4→5초 간격으로 계속 재접속을 시도한다("데몬 시작" 버튼은 T14).
@@ -67,6 +70,20 @@ Codex 팀원이 각자 책상·배지·터미널 탭(실제 Codex TUI)으로 보
   `summary` 를 "⏳" 를 붙여 보여 준다 — "⏳ 셸 대기 중 (락: 작가)".
 - **④ 보고 방문이 끊기던 것**: 보고 직후의 `running{tool:'mcp__team__*'}` 은 보고에 딸린 뒷정리이므로 6초 방문을
   취소하지 않는다(`OfficeMotion.cancelsVisit`). 보통 도구(Bash 등)는 예전대로 취소한다.
+
+③ 은 T39·T31 실기에서 화면으로 확인했다 — 셸 쓰기가 겹치면 대기 멤버 셋의 말풍선·모니터가 모두 `⏳ 셸 대기 중 (락: A장1)` 이 된다
+(`docs/worklog/img/T31-5-shell-mutex.png`).
+
+## 창 캡처 (worklog 증거용)
+
+```
+powershell -NoProfile -ExecutionPolicy Bypass -File tool\capture-window.ps1 -Out shot.png [-ProcessName pixel_office]
+```
+
+`PrintWindow(PW_RENDERFULLCONTENT)` 로 **그 창 하나만** 찍는다(전체 화면 캡처 금지 — 문서화 규칙 5). `-Out` 은 **현재 폴더 기준 상대 경로**로 줄 것
+(절대 경로를 주면 `Join-Path` 에서 깨진다). 시연에서 앱 버튼을 눌러야 하면 합성 메시지(`PostMessage WM_LBUTTONDOWN`)는 Flutter 에 먹지 않는다 —
+`SetForegroundWindow` → 위젯 안으로 몇 픽셀씩 **이동(hover)** → `mouse_event` 다운/업 순서여야 하고, 작은 위젯은 누르기 직전에 다시 캡처해
+좌표를 잡아야 한다(T19 함정 6 · T29 함정 8 · T31).
 
 ## 구조
 
