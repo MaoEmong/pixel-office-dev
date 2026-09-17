@@ -133,8 +133,10 @@ class _OfficeViewState extends ConsumerState<OfficeView> with SingleTickerProvid
   /// 보고 방문 만료 타이머(멤버 id → (그 방문의 seq, Timer)).
   final Map<String, (int, Timer)> _visitTimers = {};
 
-  /// 복구 표시(3초) — 멤버 id → (그 복구 이벤트 seq, Timer).
-  final Map<String, (int?, Timer)> _resumeTimers = {};
+  /// 복구 표시(3초) — 멤버 id → 이미 표시한 복구 이벤트 seq(타이머가 끝나도 남겨 둔다: 같은 이벤트로
+  /// 다시 점선을 켜면 영원히 깜빡인다). 진행 중인 것만 [_resumeTimers]·[_resumedIds] 에 있다.
+  final Map<String, int?> _resumeSeen = {};
+  final Map<String, Timer> _resumeTimers = {};
   final Set<String> _resumedIds = {};
 
   /// 마지막으로 sync 한 캔버스 크기. 바뀌면 전부 즉시 재배치(크기 변경은 걷지 않는다).
@@ -160,7 +162,7 @@ class _OfficeViewState extends ConsumerState<OfficeView> with SingleTickerProvid
       t.$2.cancel();
     }
     for (final t in _resumeTimers.values) {
-      t.$2.cancel();
+      t.cancel();
     }
     _visitTimers.clear();
     _resumeTimers.clear();
@@ -218,16 +220,17 @@ class _OfficeViewState extends ConsumerState<OfficeView> with SingleTickerProvid
   void _reconcileResumeMarks(OfficeScene scene) {
     for (final m in scene.members) {
       if (!m.isResumed) continue;
-      final known = _resumeTimers[m.id];
-      if (known != null && known.$1 == m.eventSeq) continue;
-      known?.$2.cancel();
+      if (_resumeSeen.containsKey(m.id) && _resumeSeen[m.id] == m.eventSeq) continue; // 이미 보여 준 복구
+      _resumeTimers.remove(m.id)?.cancel();
+      _resumeSeen[m.id] = m.eventSeq;
       _resumedIds.add(m.id);
-      _resumeTimers[m.id] = (m.eventSeq, Timer(resumedMarkDuration, () => _onResumeTimeout(m.id)));
+      _resumeTimers[m.id] = Timer(resumedMarkDuration, () => _onResumeTimeout(m.id));
     }
     final ids = {for (final m in scene.members) m.id};
+    _resumeSeen.removeWhere((id, _) => !ids.contains(id));
     for (final id in _resumeTimers.keys.toList(growable: false)) {
       if (!ids.contains(id)) {
-        _resumeTimers.remove(id)!.$2.cancel();
+        _resumeTimers.remove(id)!.cancel();
         _resumedIds.remove(id);
       }
     }
