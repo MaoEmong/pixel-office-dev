@@ -1,13 +1,18 @@
-// 사무실 CustomPainter(D-09 · 레이아웃 v2 T40-2). 외부 에셋 없이 평면 도형 + TextPainter 로 그린다.
+// 사무실 CustomPainter(D-09 · 레이아웃 v2 T40-2 · 스프라이트 T33). 평면 도형 + TextPainter + 픽셀 아틀라스.
 // 곡률은 전부 4px 하나, 그림자·글로우·그라데이션 없음(패스 4 리트머스 7).
 //
 // 그리는 것(스크롤 영역): 바닥 격자, **팀 카펫**(6색 토큰 순환 + 제목 태그), **부장 금색 카펫 + 왕관**,
-//   책상(이름·직급/엔진 배지·모니터 2줄·오류 테두리 빨강·복구 점선·퇴근 의자), 캐릭터(원 + 링), 말풍선.
+//   책상(이름·직급/엔진 배지·모니터 2줄·오류 테두리 빨강·복구 점선·퇴근 의자), 캐릭터(링 + 스프라이트), 말풍선.
 // 그리는 것(바닥 고정 바): 내 책상(헤더 "내 책상 · 대기 N" + 슬롯 4칸 + "+N" 배지), **범례 7칸**.
 // 문과 스크롤바는 뷰포트 좌표로 고정.
 //
 // 색·문구 토큰의 출처는 docs/design/레이아웃-v2.md §4(패스 4 구체성) — [OfficeColors] 가 코드 쪽 단일 소스다.
 // 상태 → 색·아이콘 매핑은 **office_scene.dart 의 [legendSlotOf] 하나**만 쓴다(링·범례·패널 공용, D-42 3).
+//
+// T33: 캐릭터·소품은 **스프라이트**다([sprites] = 32×32 아틀라스 8벌). 포즈는 office_sprites.dart 의
+//   [spritePoseOf](범례 칸 + 이벤트 + 방문 여부), 걷는 중이면 [walk] 의 프레임, 타이핑은 [typeFrame].
+//   **[sprites] 가 null 이면 예전 원**으로 그린다 — 에셋을 읽는 첫 프레임과 미리보기·테스트 경로.
+//   왕관·별·의자·범례 아이콘도 아틀라스에서 온다(범례 아이콘은 흰 실루엣을 범례 색으로 물들인다).
 //
 // T16: 캐릭터 위치는 [placements] 로 밖(OfficeMotion)에서 받을 수 있다(null 이면 레이아웃의 즉시 배치).
 //   [bob] 은 작업 중 흔들림(id → dy), [bubbleOverrides] 는 보고 방문 등 말풍선 덮어쓰기(항상 alert 스타일).
@@ -20,6 +25,7 @@ import 'package:flutter/semantics.dart';
 import '../model/models.dart';
 import 'office_layout.dart';
 import 'office_scene.dart';
+import 'office_sprites.dart';
 
 /// 직급 표시 색(부장 금색 · 팀장 은색 · 팀원 없음).
 Color rankMarkColor(MemberRank rank) => switch (rank) {
@@ -132,6 +138,10 @@ class OfficePainter extends CustomPainter {
     this.scrollOffset = 0,
     this.resumedIds = const {},
     this.showEmptyHint = true,
+    this.sprites,
+    this.walk = const {},
+    this.visitingIds = const {},
+    this.typeFrame = 0,
   });
 
   final OfficeScene scene;
@@ -162,6 +172,19 @@ class OfficePainter extends CustomPainter {
   /// 캔버스 글꼴(기본 [officeFontFamily] = Galmuri11). null 로 주면 시스템 기본으로 되돌린다.
   final String? fontFamily;
   final List<String>? fontFamilyFallback;
+
+  /// 스프라이트 아틀라스(T33). **null 이면 예전 원**으로 그린다 — 에셋을 읽는 첫 프레임과
+  /// 아틀라스를 안 넘긴 테스트·미리보기가 그 경로다.
+  final SpriteSheet? sprites;
+
+  /// 걷는 중인 멤버의 프레임·방향(`OfficeMotion.walkAt`). 없으면 포즈를 쓴다.
+  final Map<String, SpriteWalk> walk;
+
+  /// 지금 내 책상에 보고하러 와 있는 멤버(`OfficeMotion.visits`) — report 포즈.
+  final Set<String> visitingIds;
+
+  /// 타이핑 2프레임 중 지금 프레임(0·1). 0.5초마다 바뀐다(`typeFrameAt`).
+  final int typeFrame;
 
   /// 마지막 paint 의 레이아웃(히트 테스트·테스트에서 참조).
   OfficeLayout? lastLayout;
@@ -321,13 +344,22 @@ class OfficePainter extends CustomPainter {
   }
 
   /// 부장 앵커(패스 1 D5): 책상 사방 +20px 금색 카펫(알파 0.12) + 책상 위 16px 왕관.
-  /// 왕관은 T33 에서 스프라이트로 바뀐다 — 지금은 같은 자리에 도형으로 그린다.
+  /// 왕관은 T33 에서 **스프라이트**가 됐다 — 아틀라스가 없으면 예전 도형으로 그린다.
   void _paintHeadAnchor(Canvas canvas, OfficeLayout layout) {
     final desk = layout.deskRect(0);
     canvas.drawRRect(
       RRect.fromRectAndRadius(layout.headCarpetRect(0), const Radius.circular(officeRadius)),
       Paint()..color = OfficeColors.headMark.withValues(alpha: 0.12),
     );
+    if (sprites != null) {
+      final r = spritePropRect(
+        SpriteProp.crown,
+        Offset(desk.center.dx, desk.top - 16 * layout.scale - SpriteProp.crown.inCell.height * layout.spriteScale / 2),
+        layout.spriteScale,
+      );
+      _drawProp(canvas, SpriteProp.crown, r);
+      return;
+    }
     final w = 16.0 * layout.scale;
     final h = 11.0 * layout.scale;
     final cx = desk.center.dx;
@@ -374,12 +406,18 @@ class OfficePainter extends CustomPainter {
             ..strokeWidth = 1);
     }
 
-    // 퇴근한 책상은 **의자만** 남긴다(캐릭터 원은 안 그린다 — [_paintCharacter]).
+    // 퇴근한 책상은 **의자만** 남긴다(캐릭터는 안 그린다 — [_paintCharacter]).
+    // 의자도 T33 에서 스프라이트가 됐다. 자리는 캐릭터가 앉던 곳([OfficeLayout.seatCenter])이다.
     if (exited) {
-      final cw = 18 * s, ch = 12 * s;
-      final chair = Rect.fromCenter(center: Offset(d.center.dx, d.bottom + ch * 0.6), width: cw, height: ch);
-      canvas.drawRRect(
-          RRect.fromRectAndRadius(chair, const Radius.circular(officeRadius)), Paint()..color = OfficeColors.chair);
+      if (sprites != null) {
+        _drawProp(canvas, SpriteProp.chair,
+            spritePropRect(SpriteProp.chair, layout.seatCenter(m.deskIndex), layout.spriteScale));
+      } else {
+        final cw = 18 * s, ch = 12 * s;
+        final chair = Rect.fromCenter(center: Offset(d.center.dx, d.bottom + ch * 0.6), width: cw, height: ch);
+        canvas.drawRRect(
+            RRect.fromRectAndRadius(chair, const Radius.circular(officeRadius)), Paint()..color = OfficeColors.chair);
+      }
     }
 
     // 라벨 = **이름(굵게)** + 직급 배지 + 엔진 배지(패스 1 D7). 좁아지면 엔진 → 직급 글자 → 이름 순으로 줄인다.
@@ -403,20 +441,33 @@ class OfficePainter extends CustomPainter {
       labelRight = badgeRect.left;
     }
 
-    final rankLabel = rankBadgeAt(m.rank, layout.scale);
-    if (rankLabel.isNotEmpty) {
+    // 직급 배지. **직급은 왕관/별로만 구분한다**(D-43 5) — T33 부터 `♛`·`★` 글자 대신 아틀라스 소품을
+    // 그리고 글자는 "부장"/"팀장" 만 남긴다(좁아지면 소품만). 아틀라스가 없으면 예전 글자 배지 그대로.
+    final rankProp = sprites == null ? null : rankPropFor(m.rank);
+    final rankLabel = rankProp != null ? (showsRankLabel(layout.scale) ? m.rank.label : '') : rankBadgeAt(m.rank, layout.scale);
+    if (rankProp != null || rankLabel.isNotEmpty) {
       final rankColor = rankMarkColor(m.rank);
       final rankStyle = TextStyle(color: rankColor, fontSize: officeFontPx(9, fs), fontWeight: FontWeight.w600);
-      final rankText = _layoutText(rankLabel, rankStyle);
-      final rankRect =
-          Rect.fromLTWH(labelRight - 4 * s - rankText.width - 6, d.top + pad, rankText.width + 6, rankText.height + 2);
+      final rankText = rankLabel.isEmpty ? null : _layoutText(rankLabel, rankStyle);
+      final iconH = rankProp == null ? 0.0 : officeFontPx(9, fs);
+      final icon = rankProp == null ? Rect.zero : spritePropRectForHeight(rankProp, Offset.zero, iconH);
+      final gap = rankProp != null && rankText != null ? 3.0 : 0.0;
+      final innerW = icon.width + gap + (rankText?.width ?? 0);
+      final innerH = math.max(icon.height, rankText?.height ?? 0);
+      final rankRect = Rect.fromLTWH(labelRight - 4 * s - innerW - 6, d.top + pad, innerW + 6, innerH + 2);
       canvas.drawRRect(
           RRect.fromRectAndRadius(rankRect, const Radius.circular(officeRadius)),
           Paint()
             ..color = rankColor
             ..style = PaintingStyle.stroke
             ..strokeWidth = 1);
-      rankText.paint(canvas, Offset(rankRect.left + 3, rankRect.top + 1));
+      var ix = rankRect.left + 3;
+      if (rankProp != null) {
+        _drawProp(canvas, rankProp,
+            spritePropRectForHeight(rankProp, Offset(ix + icon.width / 2, rankRect.center.dy), iconH));
+        ix += icon.width + gap;
+      }
+      rankText?.paint(canvas, Offset(ix, rankRect.top + 1));
       labelRight = rankRect.left;
     }
 
@@ -496,6 +547,9 @@ class OfficePainter extends CustomPainter {
 
   // ---- 범례 7칸 -------------------------------------------------------------------
 
+  /// 범례 아이콘 높이(글자 높이에 맞춘 정수 px).
+  double legendIconHeight(double fontScale) => officeFontPx(10, fontScale);
+
   void _paintLegend(Canvas canvas, OfficeLayout layout) {
     final rect = layout.legendRect;
     final fs = layout.fontScale;
@@ -503,10 +557,16 @@ class OfficePainter extends CustomPainter {
     var x = rect.left;
     final cy = rect.center.dy;
     const dot = 8.0;
+    final iconH = legendIconHeight(fs);
     for (final slot in LegendSlot.values) {
-      final label = slot.icon.isEmpty ? slot.label : '${slot.icon} ${slot.label}';
+      // 아이콘은 **아틀라스에 그린 것**을 범례 색으로 물들여 쓴다(T33) — `✉`·`◷` 글자는 서체에 기대야 해서
+      // 캔버스에서는 쓰지 않는다(T40 편차 ⑤). 아틀라스가 없으면 예전처럼 글자로.
+      final prop = sprites == null ? null : legendPropFor(slot);
+      final label = prop != null || slot.icon.isEmpty ? slot.label : '${slot.icon} ${slot.label}';
       final tp = _layoutText(label, style);
-      final w = dot + 5 + tp.width + 14 * layout.scale;
+      final icon = prop == null ? Rect.zero : spritePropRectForHeight(prop, Offset.zero, iconH);
+      final iconW = prop == null ? 0.0 : icon.width + 4;
+      final w = dot + 5 + iconW + tp.width + 14 * layout.scale;
       if (x + w > rect.right) break;
       final center = Offset(x + dot / 2, cy);
       if (slot.dashedRing) {
@@ -514,7 +574,13 @@ class OfficePainter extends CustomPainter {
       } else {
         canvas.drawCircle(center, dot / 2, Paint()..color = legendColor(slot));
       }
-      tp.paint(canvas, Offset(x + dot + 5, cy - tp.height / 2));
+      var tx = x + dot + 5;
+      if (prop != null) {
+        _drawProp(canvas, prop, spritePropRectForHeight(prop, Offset(tx + icon.width / 2, cy), iconH),
+            tint: legendColor(slot));
+        tx += iconW;
+      }
+      tp.paint(canvas, Offset(tx, cy - tp.height / 2));
       x += w;
     }
   }
@@ -523,8 +589,34 @@ class OfficePainter extends CustomPainter {
 
   Color charColor(SceneMember m) => legendColor(m.legendSlot);
 
+  /// 이 멤버가 지금 취할 포즈. 걷는 중이면 포즈 대신 걷기 프레임을 쓴다([_characterSrc]).
+  SpritePose poseOf(SceneMember m) => spritePoseOf(m, visiting: visitingIds.contains(m.id));
+
+  /// 지금 그릴 아틀라스 칸 — 걷는 중이면 걷기 줄, 아니면 포즈 줄(타이핑은 2프레임).
+  Rect _characterSrc(SceneMember m) {
+    final w = walk[m.id];
+    if (w != null) return spriteWalkSrc(w.frame, facingLeft: w.facingLeft);
+    return spritePoseSrc(poseOf(m), frame: typeFrame);
+  }
+
+  /// 픽셀아트 전용 Paint — **보간 금지**(D-43 3). 확대해도 픽셀 경계가 살아 있어야 한다.
+  Paint _spritePaint({Color? tint}) {
+    final p = Paint()
+      ..filterQuality = FilterQuality.none
+      ..isAntiAlias = false;
+    if (tint != null) p.colorFilter = ColorFilter.mode(tint, BlendMode.srcIn);
+    return p;
+  }
+
+  /// 소품·아이콘 한 개. 아틀라스가 아직 없으면 아무것도 안 그린다(호출부가 도형으로 대신한다).
+  void _drawProp(Canvas canvas, SpriteProp prop, Rect dst, {Color? tint}) {
+    final sheet = sprites;
+    if (sheet == null) return;
+    canvas.drawImageRect(sheet.props, prop.src, dst, _spritePaint(tint: tint));
+  }
+
   void _paintCharacter(Canvas canvas, OfficeLayout layout, SceneMember m, CharacterPlacement p) {
-    // 퇴근한 책상에는 **의자만** 남는다(패스 2 매핑표 "퇴근").
+    // 퇴근한 책상에는 **의자만** 남는다(패스 2 매핑표 "퇴근") — 의자는 [_paintDesk] 가 그린다.
     if (m.status == MemberStatus.exited) return;
     final r = layout.charRadius;
     final c = p.center + Offset(0, bob[m.id] ?? 0);
@@ -559,21 +651,33 @@ class OfficePainter extends CustomPainter {
             ..style = PaintingStyle.stroke
             ..strokeWidth = 2.5);
     }
-    canvas.drawCircle(c, r, Paint()..color = charColor(m));
-    canvas.drawCircle(
-        c,
-        r,
-        Paint()
-          ..color = OfficeColors.charOutline
-          ..style = PaintingStyle.stroke
-          ..strokeWidth = 1.5);
-    _text(canvas, m.initial, c,
-        style: TextStyle(
-          color: m.isGone ? OfficeColors.charGoneText : OfficeColors.charText,
-          fontSize: r * 0.95,
-          fontWeight: FontWeight.bold,
-        ),
-        anchor: Alignment.center);
+    // 링 위에 **스프라이트**를 얹는다(T33). 아틀라스가 아직 안 올라온 첫 프레임과 아틀라스를 안 넘긴
+    // 테스트·미리보기에서는 예전 원 + 머리글자로 그린다 — 사무실이 잠깐이라도 비지 않게.
+    final sheet = sprites;
+    if (sheet == null) {
+      canvas.drawCircle(c, r, Paint()..color = charColor(m));
+      canvas.drawCircle(
+          c,
+          r,
+          Paint()
+            ..color = OfficeColors.charOutline
+            ..style = PaintingStyle.stroke
+            ..strokeWidth = 1.5);
+      _text(canvas, m.initial, c,
+          style: TextStyle(
+            color: m.isGone ? OfficeColors.charGoneText : OfficeColors.charText,
+            fontSize: r * 0.95,
+            fontWeight: FontWeight.bold,
+          ),
+          anchor: Alignment.center);
+      return;
+    }
+    canvas.drawImageRect(
+      sheet.imageFor(m.engine, m.name), // 셔츠 = 엔진색, 머리 = 이름 해시(D-43 5)
+      _characterSrc(m),
+      alignSpriteRect(layout.spriteCell(c)), // 32×32 × 정수 배율, 정수 자리
+      _spritePaint(),
+    );
   }
 
   /// 말풍선을 지금 보여 주는가(패스 4): alert(내 차례·대기·오류·보고 방문)는 항상, 작업 말풍선은 선택·호버일 때만.
@@ -747,7 +851,12 @@ class OfficePainter extends CustomPainter {
       shouldRebuildSemantics(oldDelegate) ||
       !_mapEq(oldDelegate.bob, bob) ||
       oldDelegate.hoveredMemberId != hoveredMemberId ||
-      !_setEq(oldDelegate.resumedIds, resumedIds);
+      !_setEq(oldDelegate.resumedIds, resumedIds) ||
+      // 스프라이트: 아틀라스가 도착한 프레임 · 걷기 프레임 · 타이핑 프레임 · 보고 방문(포즈)
+      !identical(oldDelegate.sprites, sprites) ||
+      oldDelegate.typeFrame != typeFrame ||
+      !_mapEq(oldDelegate.walk, walk) ||
+      !_setEq(oldDelegate.visitingIds, visitingIds);
 
   /// 흔들림(bob)·호버는 시맨틱에 영향 없음 — 장면·선택·위치·말풍선 덮어쓰기·스크롤만.
   @override

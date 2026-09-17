@@ -413,10 +413,17 @@ class OfficeLayout {
         myDeskRect.center.dy,
       );
 
-  Offset reportBubbleAnchor(int k) => Offset(reportSpot(k).dx, reportSpot(k).dy - charRadius - 4 * scale);
+  /// 바(내 책상 칸)에 선 캐릭터의 말풍선 꼬리 끝 높이 — **내 책상 상자 위**로 올린다.
+  ///
+  /// T40 편차 ⑥: 슬롯 대기자의 말풍선이 "내 책상 · 대기 N" 헤더 글자를 덮었다. 원 기준으로도 겹쳤고
+  /// 스프라이트(32×32 셀)는 원보다 커서 더 심하다. 바 안에서 위로 미는 대신 **상자 밖 위**로 빼면
+  /// 바 높이(120)를 재배분하지 않고도 헤더·슬롯·말풍선이 서로 안 가린다.
+  double get barBubbleY => myDeskRect.top - 2 * scale;
+
+  Offset reportBubbleAnchor(int k) => Offset(reportSpot(k).dx, barBubbleY);
 
   /// 줄 선 캐릭터의 말풍선 꼬리 끝.
-  Offset queueBubbleAnchor(int k) => Offset(queueSlot(k).dx, queueSlot(k).dy - charRadius - 4 * scale);
+  Offset queueBubbleAnchor(int k) => Offset(queueSlot(k).dx, barBubbleY);
 
   /// (레거시) 홀수 번째 말풍선을 올리던 높이 — 슬롯 4칸 고정이라 더는 쓰지 않는다.
   double get queueBubbleTier => 30 * scale;

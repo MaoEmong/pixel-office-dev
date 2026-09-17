@@ -30,6 +30,7 @@ import 'office_layout.dart';
 import 'office_motion.dart';
 import 'office_painter.dart';
 import 'office_scene.dart';
+import 'office_sprites.dart';
 
 export 'office_motion.dart' show MovementState, OfficeMotion, ReportVisit, reportVisitDuration, reportVisitBubble;
 export 'office_scene.dart'
@@ -44,6 +45,14 @@ export 'office_scene.dart'
         mySlotCount,
         noTeamPlaceholderHint,
         resumedBubble;
+
+/// 스프라이트 아틀라스(T33). 앱에서 **한 번만** 읽어 엔진 2 × 머리색 4 = 8벌을 캐시한다.
+/// 읽는 동안(그리고 위젯 테스트처럼 못 읽는 환경에서)은 value 가 null 이라 페인터가 원으로 그린다.
+final spriteSheetProvider = FutureProvider<SpriteSheet>((ref) async {
+  final sheet = await SpriteSheet.load();
+  ref.onDispose(sheet.dispose);
+  return sheet;
+});
 
 /// 멤버별 마지막 이벤트 맵. office_state 에는 멤버별 family(latestEventProvider)만 있어 여기서 맵 전체를 슬라이스한다.
 final officeLatestEventsProvider = Provider<Map<String, OfficeEvent>>(
@@ -287,6 +296,8 @@ class _OfficeViewState extends ConsumerState<OfficeView> with SingleTickerProvid
     final scene = ref.watch(officeSceneProvider(widget.departmentId));
     // 부서 0 개(= 아직 아무도 없는 사무실)일 때만 큰 "부서 만들기" 버튼을 얹는다(T40-6).
     final noDepartment = ref.watch(departmentsProvider).isEmpty && scene.isEmpty;
+    // 아직 못 읽었으면 null — 페인터가 원으로 그리다가 도착하면 스프라이트로 바뀐다(T33).
+    final sprites = ref.watch(spriteSheetProvider).value;
     final textDirection = Directionality.maybeOf(context) ?? TextDirection.ltr;
     return LayoutBuilder(
       builder: (context, constraints) {
@@ -311,6 +322,10 @@ class _OfficeViewState extends ConsumerState<OfficeView> with SingleTickerProvid
           scrollOffset: _scroll,
           resumedIds: _resumedIds,
           showEmptyHint: !noDepartment,
+          sprites: sprites,
+          walk: _motion.walkAt(now),
+          visitingIds: {for (final v in _motion.visits) v.memberId},
+          typeFrame: typeFrameAt(now),
         );
         return Listener(
           onPointerSignal: (e) {

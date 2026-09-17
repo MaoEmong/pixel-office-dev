@@ -275,6 +275,12 @@ List<int> _rgbaBytes(Color c) => [
 class SpriteSheet {
   SpriteSheet._(this._variants);
 
+  /// 이미지 한 장을 8벌 자리에 모두 꽂는다 — 테스트·미리보기에서 진짜 아틀라스를 안 읽고 쓸 때.
+  factory SpriteSheet.single(ui.Image image) => SpriteSheet._({
+        for (final e in Engine.values)
+          for (var h = 0; h < hairColors.length; h++) _key(e, h): image,
+      });
+
   /// 엔진·머리색 조합 → 이미지. 키는 [_key].
   final Map<int, ui.Image> _variants;
 
@@ -316,8 +322,10 @@ class SpriteSheet {
   }
 
   void dispose() {
+    // 같은 이미지를 여러 자리에 꽂은 경우([SpriteSheet.single])가 있어 **한 번씩만** 버린다.
+    final seen = <ui.Image>{};
     for (final img in _variants.values) {
-      img.dispose();
+      if (seen.add(img)) img.dispose();
     }
     _variants.clear();
   }

@@ -17,6 +17,7 @@ import 'dart:ui';
 import '../model/models.dart';
 import 'office_layout.dart';
 import 'office_scene.dart';
+import 'office_sprites.dart';
 
 /// 보고하러 온 멤버가 내 책상 앞에 머무는 시간.
 const Duration reportVisitDuration = Duration(seconds: 6);
@@ -292,6 +293,23 @@ class OfficeMotion {
                 ? CharacterPlacement(memberId: m.id, center: Offset.zero, bubbleAnchor: Offset.zero)
                 : layout.placements(OfficeScene(members: [m], queue: const [])).single),
     ];
+  }
+
+  /// **걷는 중**인 멤버의 스프라이트 프레임·방향(T33). 멈춰 있는 멤버는 목록에 없다.
+  ///
+  /// 프레임은 시간이 아니라 **지금까지 걸어온 거리**로 고른다([walkFrameFor]) — 짧게 옮기면 한두 프레임만
+  /// 지나가고 길게 걸으면 발이 여러 번 구르는, 거리에 맞는 걸음이 된다. 방향은 출발→도착의 dx 부호이고
+  /// 세로로만 움직이면(dx ≈ 0) 오른쪽을 본다.
+  Map<String, SpriteWalk> walkAt(Duration now) {
+    Map<String, SpriteWalk>? out;
+    for (final m in _scene.members) {
+      final mv = _movements[m.id];
+      if (mv == null || mv.isInstant || mv.isDone(now)) continue;
+      final travelled = (mv.at(now).center - mv.from.center).distance;
+      final dx = mv.to.center.dx - mv.from.center.dx;
+      (out ??= {})[m.id] = SpriteWalk(frame: walkFrameFor(travelled), facingLeft: dx < -0.5);
+    }
+    return out ?? const {};
   }
 
   /// 작업 중이고 서 있는 멤버의 흔들림(px). 없으면 빈 맵.
