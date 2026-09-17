@@ -592,6 +592,15 @@ class OfficePainter extends CustomPainter {
   /// 이 멤버가 지금 취할 포즈. 걷는 중이면 포즈 대신 걷기 프레임을 쓴다([_characterSrc]).
   SpritePose poseOf(SceneMember m) => spritePoseOf(m, visiting: visitingIds.contains(m.id));
 
+  /// 상태·직급·선택 링의 한가운데.
+  ///
+  /// 원을 그리던 때는 링과 원이 같은 중심이라 딱 맞았다. 스프라이트는 **세로로 길고 머리가 좁아**
+  /// 같은 자리에 두면 링이 머리 양옆으로 삐져나와 옷깃처럼 보인다(T33 실기 — 팀장 은색 링에서 발견).
+  /// 그래서 스프라이트일 때는 링을 **발치**로 내린다 — 바닥에 놓인 상태 표시로 읽히고, 이웃 슬롯
+  /// (간격 36px)과도 안 겹친다. 색·굵기·점선 여부는 그대로다.
+  Offset ringCenter(OfficeLayout layout, Offset characterCenter) =>
+      sprites == null ? characterCenter : characterCenter + Offset(0, spriteFeetDy(layout.spriteScale));
+
   /// 지금 그릴 아틀라스 칸 — 걷는 중이면 걷기 줄, 아니면 포즈 줄(타이핑은 2프레임).
   Rect _characterSrc(SceneMember m) {
     final w = walk[m.id];
@@ -620,10 +629,11 @@ class OfficePainter extends CustomPainter {
     if (m.status == MemberStatus.exited) return;
     final r = layout.charRadius;
     final c = p.center + Offset(0, bob[m.id] ?? 0);
+    final ring = ringCenter(layout, c);
     final slot = m.legendSlot;
     if (m.isError) {
       canvas.drawCircle(
-          c,
+          ring,
           r + 2,
           Paint()
             ..color = OfficeColors.charError
@@ -631,11 +641,11 @@ class OfficePainter extends CustomPainter {
             ..strokeWidth = 2.5);
     } else if (slot.dashedRing) {
       // 보고 대기: 초록 **점선** 링(색만으로 구분하지 않는다).
-      _dashedCircle(canvas, c, r + 2, legendColor(slot), 2);
+      _dashedCircle(canvas, ring, r + 2, legendColor(slot), 2);
     } else if (m.rank != MemberRank.member && !m.isGone) {
       // 직급 링(부장 금색 · 팀장 은색). 선택 링(흰색, r+4)보다 안쪽이라 둘 다 보인다.
       canvas.drawCircle(
-          c,
+          ring,
           r + 2,
           Paint()
             ..color = rankMarkColor(m.rank)
@@ -644,7 +654,7 @@ class OfficePainter extends CustomPainter {
     }
     if (m.id == selectedMemberId) {
       canvas.drawCircle(
-          c,
+          ring,
           r + 4,
           Paint()
             ..color = OfficeColors.selectedRing

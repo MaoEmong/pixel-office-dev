@@ -181,6 +181,10 @@ SpriteProp? rankPropFor(MemberRank rank) => switch (rank) {
 
 // ---- 자리 맞추기 --------------------------------------------------------------------
 
+/// 캐릭터 발치가 셀 가운데에서 얼마나 아래인가(배율 [scale] 적용). 아틀라스의 다리는 셀 y 27 쯤에서 끝나고
+/// 셀 가운데는 16 이라 12px 아래다. 상태 링을 여기 놓으면 "바닥에 놓인 표시" 로 읽힌다([ringCenter]).
+double spriteFeetDy(int scale) => 12.0 * scale;
+
 /// 픽셀아트는 **정수 위치**에 놓아야 뭉개지지 않는다 — 왼쪽 위를 정수 픽셀로 반올림한다.
 /// 크기는 이미 `셀 × 정수 배율` 이라 건드리지 않는다.
 Rect alignSpriteRect(Rect r) => Rect.fromLTWH(r.left.roundToDouble(), r.top.roundToDouble(), r.width, r.height);

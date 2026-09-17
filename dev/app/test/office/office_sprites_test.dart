@@ -463,6 +463,20 @@ void main() {
       // 부장 금색 직급 링.
       expect(_strokeCircles(p(teamScene()), OfficeColors.headMark), greaterThan(0));
     });
+
+    test('링은 캐릭터 가운데가 아니라 **발치**에 — 좁은 머리 옆으로 삐져나오지 않게', () {
+      final layout = OfficeLayout(size: canvasSize, plan: teamScene().plan);
+      final center = layout.seatCenter(0);
+      final withSprites = OfficePainter(scene: teamScene(), sprites: sheet);
+      final without = OfficePainter(scene: teamScene());
+      expect(without.ringCenter(layout, center), center, reason: '원으로 그릴 때는 예전 그대로');
+      final moved = withSprites.ringCenter(layout, center);
+      expect(moved.dx, center.dx);
+      expect(moved.dy, center.dy + spriteFeetDy(layout.spriteScale));
+      expect(moved.dy, greaterThan(center.dy));
+      // 발치는 스프라이트 셀 안에 있다(밖으로 새지 않는다).
+      expect(moved.dy, lessThan(layout.spriteCell(center).bottom));
+    });
   });
 
   // ---- 말풍선 자리(T40 편차 ⑥) ---------------------------------------------------------
