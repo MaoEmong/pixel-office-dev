@@ -4,9 +4,11 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:pixel_office/model/models.dart';
+import 'package:pixel_office/panel/approval_summary.dart' show fitApprovalHeadline;
 import 'package:pixel_office/panel/inbox.dart';
 import 'package:pixel_office/panel/labels.dart' show panelDangerTint;
 import 'package:pixel_office/panel/pending_card.dart';
+import 'package:pixel_office/panel/ui_prefs.dart' show panelWidthDefault, panelWidthMin;
 import 'package:pixel_office/state/office_state.dart';
 
 import 'panel_harness.dart';
@@ -248,6 +250,44 @@ void main() {
         expect(find.byKey(const Key('approval.dangerTag')), findsNothing);
         expect(tester.widget<Container>(find.byKey(const Key('approval.headline'))).color, isNull);
         expect(find.text('❗ Bash · 실행'), findsOneWidget);
+      });
+    });
+
+    // T40d ① — 480 에서 `… t40-a.txt 쓰 / 기` 처럼 낱말 중간에서 접히던 자리.
+    testWidgets('첫 줄은 폭 420·480 에서도 한 줄 — 낱말 중간에서 접히지 않는다', (tester) async {
+      final write = pendingJson('w1', payload: {
+        'tool_name': 'Write',
+        'tool_input': {'file_path': r'D:\proj\sandbox\t40-a.txt', 'content': 'x'},
+      });
+      await tester.runAsync(() async {
+        for (final width in [panelWidthMin, panelWidthDefault]) {
+          await pumpPanel(tester, daemon, ApprovalCard(pending: pendingOf(write)), size: Size(width, 400));
+          await tester.pump();
+          final text = tester.widget<Text>(find.text('❗ Write · t40-a.txt 쓰기'));
+          expect(text.maxLines, 1, reason: '폭 $width');
+          final para = tester.renderObject<RenderBox>(
+            find.descendant(of: find.byKey(const Key('approval.headline')), matching: find.byType(RichText)).first,
+          );
+          // 한 줄이면 13.5px 글자 두 줄(≈32px)보다 낮다.
+          expect(para.size.height < 32, isTrue, reason: '첫 줄이 접혔다(폭 $width, 높이 ${para.size.height})');
+          expect(find.byKey(const Key('approval.meta')), findsOneWidget); // 메타도 같은 줄에 그대로
+        }
+      });
+    });
+
+    testWidgets('대상이 길면 가운데 말줄임 — 동사는 살아 있다(420 최소 폭)', (tester) async {
+      final long = pendingJson('w2', payload: {
+        'tool_name': 'Write',
+        'tool_input': {'file_path': r'D:\proj\docs\design\레이아웃-v2-아주-긴-파일-이름.md'},
+      });
+      await tester.runAsync(() async {
+        await pumpPanel(tester, daemon, ApprovalCard(pending: pendingOf(long)), size: const Size(panelWidthMin, 400));
+        await tester.pump();
+        final shown = fitApprovalHeadline('Write', {'file_path': r'D:\proj\docs\design\레이아웃-v2-아주-긴-파일-이름.md'},
+            panelWidth: panelWidthMin);
+        expect(shown, contains('…'));
+        expect(shown, endsWith(' 쓰기'));
+        expect(find.text(shown), findsOneWidget);
       });
     });
 

@@ -67,6 +67,76 @@ void main() {
     });
   });
 
+  // T40d ① — 첫 줄은 한 줄. 모자라면 대상만 가운데 말줄임하고 동사는 살린다.
+  group('한 줄 맞춤(fitApprovalHeadline)', () {
+    test('글자 폭(displayColumns): 한글·이모지는 2칸', () {
+      expect(displayColumns('abc'), 3);
+      expect(displayColumns('쓰기'), 4);
+      expect(displayColumns('❗'), 2);
+      expect(displayColumns('❗ Write · a.txt 쓰기'), 2 + 1 + 5 + 3 + 5 + 1 + 4);
+    });
+
+    test('가운데 말줄임은 확장자를 남긴다 — `t40-abcdefgh.txt` → `t40-…txt`', () {
+      expect(middleEllipsis('t40-abcdefgh.txt', 8), 't40-…txt');
+      expect(middleEllipsis('짧다', 8), '짧다'); // 예산 안이면 그대로
+      expect(middleEllipsis('t40-a.txt', 1), '…');
+      // 전각 글자를 반으로 쪼개지 않는다(칸 수가 홀수여도).
+      final cut = middleEllipsis('가나다라마바사아자차.md', 9);
+      expect(displayColumns(cut) <= 9, isTrue);
+      expect(cut, contains('…'));
+    });
+
+    test('420·480·660 — 짧은 첫 줄은 그대로', () {
+      const input = {'command': 'Set-Content t40-a.txt -Value hi'};
+      for (final w in [420.0, 480.0, 660.0]) {
+        expect(fitApprovalHeadline('PowerShell', input, panelWidth: w), '❗ PowerShell · t40-a.txt 쓰기');
+      }
+    });
+
+    test('420·480·660 — 긴 대상만 가운데 말줄임, 도구·동사는 온전하다', () {
+      const input = {'file_path': r'D:\proj\docs\design\레이아웃-v2-아주-긴-파일-이름.md'};
+      final lines = [
+        for (final w in [420.0, 480.0, 660.0]) fitApprovalHeadline('Write', input, panelWidth: w),
+      ];
+      for (var i = 0; i < lines.length; i++) {
+        final line = lines[i];
+        expect(line, startsWith('❗ Write · '), reason: line);
+        expect(line, endsWith(' 쓰기'), reason: '동사는 온전히: $line'); // 낱말 중간에서 끊지 않는다
+        expect(displayColumns(line) <= approvalHeadlineColumns(approvalHeadlineTextWidth([420.0, 480.0, 660.0][i])), isTrue,
+            reason: '예산 초과: $line');
+      }
+      expect(lines[0], contains('…')); // 420 에서는 줄었고
+      expect(displayColumns(lines[0]) < displayColumns(lines[2]), isTrue); // 넓을수록 길다
+      // 660 은 전문이 다 들어간다.
+      expect(lines[2], '❗ Write · 레이아웃-v2-아주-긴-파일-이름.md 쓰기');
+    });
+
+    test('도구 이름이 첫 줄을 다 먹으면 도구도 줄인다 — 동사는 그래도 온전하다', () {
+      // 대상에 최소 [approvalTargetMinColumns] 칸을 남기고 나머지를 도구에 준다.
+      final line = fitApprovalHeadlineToColumns('mcp__very__long__tool__name__here', {'file_path': 'report.md'}, 20);
+      expect(line, endsWith(' 실행'));
+      expect(displayColumns(line) <= 20, isTrue, reason: line);
+      expect('…'.allMatches(line).length, 2); // 도구·대상 둘 다 줄었다
+      // 조금만 넓어도 대상은 온전해진다.
+      final wide = fitApprovalHeadlineToColumns('mcp__notion__search', {'file_path': 'report.md'}, 40);
+      expect(wide, '❗ mcp__notion__search · report.md 실행');
+    });
+
+    test('위험 태그가 붙으면 예산이 그만큼 준다', () {
+      const input = {'command': 'rm -rf docs/design/레이아웃-v2-아주-긴-파일-이름.md'};
+      final plain = fitApprovalHeadline('Bash', input, panelWidth: 480);
+      final danger = fitApprovalHeadline('Bash', input, panelWidth: 480, danger: true);
+      expect(displayColumns(danger) < displayColumns(plain), isTrue);
+      expect(danger, endsWith(' 삭제'));
+    });
+
+    test('예산 하한 — 아주 좁아도 동사는 남는다', () {
+      final line = fitApprovalHeadline('Write', {'file_path': 'a/very-long-name.txt'}, panelWidth: 200);
+      expect(line, endsWith(' 쓰기'));
+      expect(displayColumns(line) > 0, isTrue);
+    });
+  });
+
   group('위험 패턴(isDangerousCommand)', () {
     test('rm -rf · Remove-Item -Recurse · git push --force · del /s · format', () {
       expect(isDangerousCommand('rm -rf build'), isTrue);
