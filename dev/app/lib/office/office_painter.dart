@@ -56,6 +56,10 @@ abstract final class OfficeColors {
   static const charStarting = Color(0xFF8A93A8);
   static const charGone = Color(0xFF474D5E);
   static const charGoneText = Color(0xFF8A93A8);
+
+  /// 오류 포즈(T30): 비정상 종료한 멤버의 붉은 링 + 말풍선 테두리. 퇴근(exited)에는 붙지 않는다 —
+  /// "내가 내보낸 것"과 "죽은 것"을 한눈에 가르는 표시다.
+  static const charError = Color(0xFFFF6B6B);
   static const charText = Color(0xFFFFFFFF);
   static const charOutline = Color(0xFF10141D);
   static const selectedRing = Color(0xFFFFFFFF);
@@ -316,9 +320,18 @@ class OfficePainter extends CustomPainter {
   void _paintCharacter(Canvas canvas, OfficeLayout layout, SceneMember m, CharacterPlacement p) {
     final r = layout.charRadius;
     final c = p.center + Offset(0, bob[m.id] ?? 0);
-    // 직급 링(부장 금색 · 팀장 은색). 선택 링(흰색, r+4)보다 안쪽이라 둘 다 보인다.
-    // 히트 테스트 반경(charRadius+4)은 그대로.
-    if (m.rank != MemberRank.member && !m.isGone) {
+    // 오류 포즈(T30): 비정상 종료는 붉은 링. 직급 링 자리를 쓴다(죽은 세션의 직급보다 "죽었다" 가 먼저 보여야 한다).
+    if (m.isError) {
+      canvas.drawCircle(
+          c,
+          r + 2,
+          Paint()
+            ..color = OfficeColors.charError
+            ..style = PaintingStyle.stroke
+            ..strokeWidth = 2.5);
+    } else if (m.rank != MemberRank.member && !m.isGone) {
+      // 직급 링(부장 금색 · 팀장 은색). 선택 링(흰색, r+4)보다 안쪽이라 둘 다 보인다.
+      // 히트 테스트 반경(charRadius+4)은 그대로.
       canvas.drawCircle(
           c,
           r + 2,
@@ -354,10 +367,12 @@ class OfficePainter extends CustomPainter {
   }
 
   void _paintBubble(Canvas canvas, OfficeLayout layout, SceneMember m, CharacterPlacement p) {
-    if (m.isGone) return; // 퇴근·오류는 모니터·회색 원으로만
+    // 퇴근은 모니터·회색 원으로만. **오류는 말풍선을 띄운다**(T30) — "⚠ 오류" 가 사무실에서 바로 보여야
+    // 사용자가 그 캐릭터를 눌러 재고용 배너로 간다.
+    if (m.status == MemberStatus.exited) return;
     final fs = layout.fontScale;
     final override = bubbleOverrides[m.id];
-    final alert = override != null || m.isAlert;
+    final alert = override != null || m.isAlert || m.isError;
     final style = TextStyle(
       color: OfficeColors.bubbleText,
       fontSize: 11 * fs,
@@ -380,7 +395,11 @@ class OfficePainter extends CustomPainter {
       ..close();
     final fill = Paint()..color = OfficeColors.bubbleFill;
     final border = Paint()
-      ..color = alert ? OfficeColors.bubbleAlertBorder : OfficeColors.bubbleBorder
+      ..color = m.isError
+          ? OfficeColors.charError
+          : alert
+              ? OfficeColors.bubbleAlertBorder
+              : OfficeColors.bubbleBorder
       ..style = PaintingStyle.stroke
       ..strokeWidth = alert ? 2.5 : 1;
     canvas.drawRRect(rr, fill);

@@ -203,6 +203,7 @@ export class HookReceiver extends EventEmitter<HookReceiverEvents> {
     }
 
     let state: HoldState = 'open';
+    let handle: DecisionHandle | undefined;
     const request: HookRequest = {
       memberToken,
       event,
@@ -216,16 +217,20 @@ export class HookReceiver extends EventEmitter<HookReceiverEvents> {
       hold: () => {
         if (state !== 'open') throw new Error(`hook ${event}: already ${state}`);
         state = 'held';
-        return this.createHold(memberToken, event, res);
+        return (handle = this.createHold(memberToken, event, res));
       },
     };
 
     try {
       this.emit('hook', request);
     } catch (err) {
+      // 백스톱(T30): 리스너가 던졌으면 응답은 **무조건** 나가야 한다. hold() 뒤에 던졌다면 respond 는 이미 막혀 있으므로
+      // 그 보류를 직접 '{}' 로 닫는다 — 안 그러면 hook 프로세스가 영영 매달리고 CLI 가 TUI 프롬프트에서 멈춘다(D-38).
       if (state === 'open') {
         state = 'responded';
         this.reply(res, 200, '{}');
+      } else if (state === 'held' && handle && !handle.settled) {
+        handle.cancel();
       }
       this.emit('handler-error', err, { memberToken, event, payload });
       return;

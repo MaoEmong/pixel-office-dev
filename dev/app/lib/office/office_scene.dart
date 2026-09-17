@@ -112,6 +112,9 @@ class SceneMember {
   /// 회색 처리(exited / error).
   bool get isGone => status.isGone;
 
+  /// 오류 포즈(T30): 비정상 종료(크래시·강제 종료). 붉은 링 + "⚠ 오류" 말풍선 — 퇴근(exited)과 구분한다.
+  bool get isError => status == MemberStatus.error;
+
   /// 이름 첫 글자(빈 이름이면 '?').
   String get initial => name.isEmpty ? '?' : String.fromCharCode(name.runes.first);
 

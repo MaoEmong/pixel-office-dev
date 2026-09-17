@@ -83,6 +83,7 @@ export const HELP: HelpSection[] = [
     title: '연결',
     rows: [
       ['refresh', '재접속해 스냅샷을 다시 받는다 (부서·팀 삭제는 데몬이 snapshot 을 밀어 주므로 보통 필요 없다 — T38)'],
+      ['reconnect', '끊긴 뒤 자동 재접속이 포기했을 때 다시 붙는다 (백오프 1초→30초, 8회 실패하면 멈춘다 — T30)'],
       ['help', '이 도움말'],
       ['quit', '클라이언트 종료'],
       ['shutdown', '데몬 종료 (daemon.shutdown)'],

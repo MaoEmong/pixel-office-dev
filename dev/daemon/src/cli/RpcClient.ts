@@ -108,13 +108,47 @@ export interface RpcClientEvents {
   error: [Error];
 }
 
-export interface ConnectWithRetryOptions {
+/**
+ * 재접속 백오프(T30). T38·T39 에서 데몬이 죽자 콘솔이 **쉬지 않고** 다시 붙으려 해 TIME_WAIT 소켓이 16,000개까지
+ * 쌓이고 결국 데몬 재기동이 `EADDRINUSE` 로 실패했다. 이제 1초에서 시작해 두 배씩, 30초에서 멈춘다(±지터).
+ * **어떤 경우에도 1초보다 빨리 다시 시도하지 않는다.**
+ */
+export const RECONNECT_MIN_DELAY_MS = 1_000;
+export const RECONNECT_MAX_DELAY_MS = 30_000;
+/** 지터 비율(±20%). 여러 클라이언트가 같은 순간에 몰려 붙는 것을 흩는다. */
+export const RECONNECT_JITTER = 0.2;
+
+export interface BackoffOptions {
+  /** 첫 대기(ms). 1초 아래로는 내려가지 않는다. */
+  initialMs?: number;
+  /** 상한(ms). */
+  maxMs?: number;
+  /** ±비율 지터(0 이면 고정). */
+  jitter?: number;
+  /** 테스트용 난수원(0..1). */
+  random?: () => number;
+}
+
+/** `attempt` 번째 실패 뒤 기다릴 시간(ms). attempt 는 1부터. 항상 [1s, maxMs] 안. */
+export function backoffDelay(attempt: number, opts: BackoffOptions = {}): number {
+  const initial = Math.max(RECONNECT_MIN_DELAY_MS, opts.initialMs ?? RECONNECT_MIN_DELAY_MS);
+  const max = Math.max(initial, opts.maxMs ?? RECONNECT_MAX_DELAY_MS);
+  const jitter = opts.jitter ?? RECONNECT_JITTER;
+  const base = Math.min(max, initial * 2 ** Math.max(0, attempt - 1));
+  const r = (opts.random ?? Math.random)();
+  const delay = Math.round(base * (1 + jitter * (r * 2 - 1)));
+  return Math.max(RECONNECT_MIN_DELAY_MS, Math.min(max, delay));
+}
+
+export interface ConnectWithRetryOptions extends BackoffOptions {
   url?: string;
+  /** 첫 대기(ms). `initialMs` 의 옛 이름 — 둘 다 주면 `initialMs` 가 이긴다. */
   intervalMs?: number;
   maxAttempts?: number;
   /** 생략 시 마지막 hello 의 token/client 재사용(없으면 daemon.json). */
   hello?: HelloParams;
-  onAttemptFailed?: (attempt: number, err: Error) => void;
+  /** `nextDelayMs` 는 이 실패 뒤 실제로 기다릴 시간(마지막 시도면 undefined). */
+  onAttemptFailed?: (attempt: number, err: Error, nextDelayMs?: number) => void;
 }
 
 interface PendingCall {
@@ -225,9 +259,17 @@ export class RpcClient extends EventEmitter<RpcClientEvents> {
     });
   }
 
-  /** 접속 재시도 → hello. 이미 한 번 동기화됐으면 since=lastSeq 를 넣어 replay 를 받는다. */
+  /**
+   * 접속 재시도 → hello. 이미 한 번 동기화됐으면 since=lastSeq 를 넣어 replay 를 받는다.
+   * 재시도 간격은 지수 백오프(1s → 30s 상한, ±지터) — 절대 1초보다 촘촘하지 않다(T30).
+   */
   async connectWithRetry(opts: ConnectWithRetryOptions = {}): Promise<HelloResult> {
-    const intervalMs = opts.intervalMs ?? 1000;
+    const backoff: BackoffOptions = {
+      initialMs: opts.initialMs ?? opts.intervalMs,
+      maxMs: opts.maxMs,
+      jitter: opts.jitter,
+      random: opts.random,
+    };
     const maxAttempts = opts.maxAttempts ?? Number.POSITIVE_INFINITY;
     for (let attempt = 1; ; attempt++) {
       try {
@@ -235,9 +277,11 @@ export class RpcClient extends EventEmitter<RpcClientEvents> {
         break;
       } catch (err) {
         const e = err instanceof Error ? err : new Error(String(err));
-        opts.onAttemptFailed?.(attempt, e);
-        if (attempt >= maxAttempts) throw e;
-        await sleep(intervalMs);
+        const last = attempt >= maxAttempts;
+        const delay = last ? undefined : backoffDelay(attempt, backoff);
+        opts.onAttemptFailed?.(attempt, e, delay);
+        if (last) throw e;
+        await sleep(delay!);
       }
     }
     const hello: HelloParams = { ...(opts.hello ?? {}) };

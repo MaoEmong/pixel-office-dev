@@ -181,6 +181,36 @@ void main() {
     expect(painter.lastLayout!.deskCount, 3);
   });
 
+  // T30 ④: 비정상 종료 = "오류 포즈". 붉은 링은 그림이라 직접 검사할 수 없으니, 페인터가 그 분기를 타는 근거
+  // (`isError`)와 말풍선 문구·클릭 가능 여부를 본다. 퇴근(exited)과 달라야 한다.
+  testWidgets('오류 포즈: error 멤버는 "⚠ 오류" 말풍선을 띄우고 여전히 클릭된다 (퇴근은 말풍선 없음)', (tester) async {
+    final picks = <String?>[];
+    final notifier = FakeOfficeNotifier(twoMembers(m2Status: MemberStatus.error));
+    await pumpHarness(tester, notifier, onSelect: picks.add);
+    var painter = painterOf(tester);
+    var m2 = painter.scene.memberById('m2')!;
+    expect(m2.isError, isTrue);
+    expect(m2.isGone, isTrue);
+    expect(m2.summary, '⚠ 오류');
+    expect(m2.bubbleText, '⚠ 오류');
+
+    // 회색 캐릭터라도 히트 테스트에서 빠지지 않는다 — 눌러야 오른쪽 패널의 재고용 배너로 갈 수 있다.
+    final layout = painter.lastLayout!;
+    final origin = tester.getTopLeft(find.byType(OfficeView));
+    await tester.tapAt(origin + layout.seatCenter(1));
+    await tester.tapAt(origin + layout.deskRect(1).center);
+    expect(picks, ['m2', 'm2']);
+
+    // 퇴근은 오류가 아니다(말풍선을 그리지 않는 쪽).
+    notifier.set(twoMembers(m2Status: MemberStatus.exited));
+    await tester.pump();
+    painter = painterOf(tester);
+    m2 = painter.scene.memberById('m2')!;
+    expect(m2.isError, isFalse);
+    expect(m2.isGone, isTrue);
+    expect(m2.summary, '(퇴근)');
+  });
+
   test('shouldRepaint: 장면·선택이 같으면 false, 다르면 true', () {
     final s = twoMembers();
     OfficePainter p(OfficeState st, [String? sel]) => OfficePainter(

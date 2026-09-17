@@ -44,6 +44,8 @@ import { helpLines } from './help.js';
 
 const EVENT_BUFFER = 500;
 const SPAWN_TIMEOUT_MS = 60_000;
+/** 자동 재접속 포기 횟수(T30). 그 뒤로는 사용자가 `reconnect` 를 칠 때까지 조용히 있는다. */
+const AUTO_RECONNECT_ATTEMPTS = 8;
 
 
 interface MultiLine {
@@ -66,6 +68,8 @@ class Cli {
   readonly events: OfficeEvent[] = [];
   attached: string | null = null;
   quitting = false;
+  /** 재접속 루프가 돌고 있는가. 없으면 close 가 날 때마다 루프가 겹쳐 폭주한다(T30). */
+  private reconnecting = false;
   private rl: readline.Interface | null = null;
   private multi: MultiLine | null = null;
   private confirm: Confirm | null = null;
@@ -224,10 +228,10 @@ class Cli {
     }
     const res = await this.client.connectWithRetry({
       url: this.opts.url,
-      intervalMs: 1000,
       maxAttempts: 5,
       hello: { token: this.opts.token },
-      onAttemptFailed: (n, e) => this.print(`[client] 접속 실패 (${n}/5): ${e.message}`),
+      onAttemptFailed: (n, e, next) =>
+        this.print(`[client] 접속 실패 (${n}/5): ${e.message}${next ? ` — ${Math.round(next / 100) / 10}초 뒤 재시도` : ''}`),
     });
     this.applyHello(res);
     this.printSummary(res);
@@ -237,9 +241,23 @@ class Cli {
     this.applySnapshot(res.snapshot);
   }
 
-  private async reconnect(): Promise<void> {
+  /**
+   * 자동 재접속(T30). 백오프는 1초 → 30초 상한(±지터), `AUTO_RECONNECT_ATTEMPTS` 번 실패하면 **멈추고** 사용자에게
+   * `reconnect` 를 안내한다. 예전에는 2초 고정 × 30회였는데, 데몬이 죽은 채로 두면 TIME_WAIT 소켓이 수천 개 쌓여
+   * 정작 데몬을 다시 띄울 때 `EADDRINUSE` 가 났다(T38·T39 관찰).
+   */
+  private async reconnect(manual = false): Promise<void> {
+    if (this.reconnecting) {
+      if (manual) this.print('[client] 이미 재접속 중입니다');
+      return;
+    }
+    this.reconnecting = true;
     try {
-      const res = await this.client.connectWithRetry({ intervalMs: 2000, maxAttempts: 30 });
+      const res = await this.client.connectWithRetry({
+        maxAttempts: AUTO_RECONNECT_ATTEMPTS,
+        onAttemptFailed: (n, e, next) =>
+          this.print(`[client] 재접속 실패 (${n}/${AUTO_RECONNECT_ATTEMPTS}): ${e.message}${next ? ` — ${Math.round(next / 100) / 10}초 뒤 재시도` : ''}`),
+      });
       this.applyHello(res);
       this.print(`[client] 재접속됨 (seq=${res.snapshot.seq}, since 이후 replay 적용)`);
       if (this.attached) {
@@ -248,7 +266,10 @@ class Cli {
         await this.run(`attach ${id}`); // term 은 replay 되지 않으므로 화면을 다시 받는다
       }
     } catch (e) {
-      this.print(`[client] 재접속 실패: ${(e as Error).message}`);
+      this.print(`[client] 재접속 포기 (${AUTO_RECONNECT_ATTEMPTS}회 실패): ${(e as Error).message}`);
+      this.print('[client] 데몬을 띄운 뒤 `reconnect` 를 입력하세요.');
+    } finally {
+      this.reconnecting = false;
     }
   }
 
@@ -711,9 +732,18 @@ class Cli {
       // ---- 연결 ----
       case 'refresh': {
         this.client.close();
-        const res = await this.client.connectWithRetry({ intervalMs: 1000, maxAttempts: 5 });
+        const res = await this.client.connectWithRetry({ maxAttempts: 5 });
         this.applyHello(res);
         this.printSummary(res);
+        return;
+      }
+      // T30: 자동 재접속이 백오프 끝에 포기한 뒤 사용자가 직접 다시 붙는 길.
+      case 'reconnect': {
+        if (this.client.connected) {
+          this.print('[client] 이미 연결돼 있습니다 (스냅샷을 다시 받으려면 refresh)');
+          return;
+        }
+        await this.reconnect(true);
         return;
       }
       case 'quit':

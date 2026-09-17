@@ -360,3 +360,27 @@ Codex 멤버에게도 TeamTools MCP 가 붙지만(위 표), 모델이 `ask_user`
 2. `hello{since}` → 스냅샷(`snapshot.seq` 포함) → `seq > snapshot.seq`인 이벤트만 적용(replay 이중 적용 방지).
 3. `term`은 replay하지 않는다. 터미널 탭은 `member.attach`로 현재 화면을 다시 받는다.
 4. **밀려온 `snapshot` 알림(T38)도 `hello` 스냅샷과 같은 코드로 적용한다** — 부서·팀·멤버·pending·task 를 교체하고 `lastSeq = max(lastSeq, snapshot.seq)`. 그래야 다른 클라이언트가 지운 부서·팀이 사라진다.
+
+## 데몬 수명·안정화 (T30)
+
+1. **데몬은 하나만.** 기동 때 `daemon.json` 의 `pid` 가 살아 있고 **그 `wsPort` 가 실제로 듣고 있으면** 거부한다 —
+   stderr 에 pid·끄는 법을 찍고 **exit 3**(`DaemonAlreadyRunningError`). 둘 중 하나라도 아니면(죽은 pid = 크래시 뒤 재기동,
+   또는 pid 재사용) 예전처럼 `daemon.json` 을 덮어쓰고 뜬다. 탈출구는 `PIXEL_FORCE_START=1`.
+   **통합 테스트는 강제 기동이 아니라 자기 `PIXEL_DATA_DIR` 을 써야 한다** — 같은 DB 를 두 데몬이 열면 마이그레이션 중
+   읽기가 깨진다(T38 함정 ⑤). 앱의 "데몬 시작"·콘솔은 영향이 없다(이미 도는 데몬에는 그냥 붙는다).
+2. **hook 핸들러가 던져도 CLI 를 세워 두지 않는다.** 어댑터는 `hold()` **뒤에** 던지더라도 그 보류를 `{}`(pass-through, D-11)
+   로 닫고, 그 멤버에게 `error{summary:'hook handler failed: <메시지>', hookEvent:'<이벤트>'}` 를 남기고
+   `daemon.notice{level:'error'}` 를 민다. `HookReceiver` 에도 같은 백스톱이 있다(리스너가 던지면 열린 보류를 닫는다).
+   그래서 "카드도 안 뜨고 CLI 가 자기 TUI 프롬프트에서 영원히 선다" 는 모양(D-38 딸린 관찰)은 더 나오지 않는다.
+3. **hook 보류 상한은 세션 설정의 `timeout: 86400`(초) 그대로**(D-16, `config.hookTimeoutSec` · `PIXEL_HOOK_TIMEOUT_SEC`).
+   T10 에서 11분 방치 실측으로 확인했고 T30 에서도 바꾸지 않았다. 만료되면 CLI 가 hook 을 끊고 자기 TUI 프롬프트로
+   폴백하며(D-11), 데몬은 `error{summary:'hook connection closed before answer'}` 를 남긴다. 데몬 쪽 상한
+   (`HookReceiver.maxHoldMs`)은 24시간으로 그보다 조금 짧다.
+4. **보존 정리(D-39).** 기동 때 한 번 + **하루에 한 번**(`setInterval`, `unref`) 돌린다:
+   `events` 부서당 최신 50,000건, 닫힌 `pending`(answered/expired) 30일, 끝난 `tasks`(reported/aborted) 90일.
+   **열린 행은 아무리 오래돼도 지우지 않는다**(open pending, queued/assigned task — 이력이 아니라 상태다).
+   실패해도 기동을 막지 않고 `daemon.notice{warn}` 만 낸다.
+5. **재접속 백오프.** 클라이언트는 접속 실패 시 1초에서 시작해 두 배씩, **30초 상한**(±20% 지터)으로 기다린다.
+   **어떤 경우에도 1초보다 촘촘하게 재시도하지 않는다** — 콘솔이 데몬 사망 시 폭주해 TIME_WAIT 소켓이 수천 개 쌓이면
+   정작 데몬을 다시 띄울 때 `EADDRINUSE` 가 난다(T38·T39 관찰). 콘솔은 8회 실패하면 멈추고 `reconnect` 를 안내한다.
+   앱은 1초 → 5초 상한으로 계속 시도한다(상단 "데몬 시작" 버튼이 있으니 멈출 이유가 없다).

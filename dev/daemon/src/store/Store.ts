@@ -61,6 +61,35 @@ const nowIso = () => new Date().toISOString();
 const newId = (prefix: string) => `${prefix}_${randomUUID().replace(/-/g, '').slice(0, 12)}`;
 const newToken = () => randomBytes(24).toString('hex');
 const toNum = (v: number | bigint) => Number(v);
+const cutoffIso = (days: number, now: number = Date.now()) => new Date(now - days * 24 * 60 * 60 * 1000).toISOString();
+
+/**
+ * 보존 정책 기본값(T30/D-39). 사무실 로그는 "무엇이 일어났나" 를 보여 주는 이력이지 감사 기록이 아니다 —
+ * 무한히 쌓이면 개발 머신의 DB 가 커지고 스냅샷·조회가 느려진다.
+ */
+export const DEFAULT_RETENTION = {
+  /** 부서당 남길 이벤트 수. */
+  keepPerTeam: 50_000,
+  /** 닫힌 pending(answered/expired) 보존 일수. */
+  pendingDays: 30,
+  /** 끝난 task(reported/aborted) 보존 일수. */
+  taskDays: 90,
+} as const;
+
+export interface RetentionOptions {
+  keepPerTeam?: number;
+  pendingDays?: number;
+  taskDays?: number;
+  /** 기준 시각(테스트용). 기본 지금. */
+  now?: number;
+}
+
+/** `pruneRetention()` 이 지운 행 수. */
+export interface RetentionResult {
+  events: number;
+  pending: number;
+  tasks: number;
+}
 
 type Row = Record<string, unknown>;
 
@@ -647,8 +676,46 @@ export class Store {
     return r ? toNum(r.seq as number) : 0;
   }
 
+  /**
+   * 보존 정리 한 판(T30/D-39). 기동 때 한 번 + 하루에 한 번 Office 가 부른다.
+   *   events  부서당 최신 `keepPerTeam` 건만
+   *   pending 닫힌 행(answered/expired) 중 `pendingDays` 일보다 오래된 것
+   *   tasks   끝난 행(reported/aborted) 중 `taskDays` 일보다 오래된 것
+   * 열린 행(`open` pending, `queued`/`assigned` task)은 아무리 오래돼도 지우지 않는다 — 그건 이력이 아니라 상태다.
+   */
+  pruneRetention(opts: RetentionOptions = {}): RetentionResult {
+    const now = opts.now ?? Date.now();
+    return {
+      events: this.pruneEvents({ keepPerTeam: opts.keepPerTeam ?? DEFAULT_RETENTION.keepPerTeam }),
+      pending: this.prunePending(opts.pendingDays ?? DEFAULT_RETENTION.pendingDays, now),
+      tasks: this.pruneTasks(opts.taskDays ?? DEFAULT_RETENTION.taskDays, now),
+    };
+  }
+
+  /** 닫힌 pending(answered/expired) 중 `days` 일보다 오래된 행을 지운다. 삭제 건수 반환. */
+  prunePending(days: number = DEFAULT_RETENTION.pendingDays, now: number = Date.now()): number {
+    if (!(days > 0)) return 0;
+    const res = this.db
+      .prepare(
+        `DELETE FROM pending
+           WHERE status IN ('answered','expired')
+             AND COALESCE(answered_at, created_at) < ?`,
+      )
+      .run(cutoffIso(days, now));
+    return toNum(res.changes);
+  }
+
+  /** 끝난 task(reported/aborted) 중 `days` 일보다 오래된 행을 지운다. 삭제 건수 반환. */
+  pruneTasks(days: number = DEFAULT_RETENTION.taskDays, now: number = Date.now()): number {
+    if (!(days > 0)) return 0;
+    const res = this.db
+      .prepare("DELETE FROM tasks WHERE status IN ('reported','aborted') AND updated_at < ?")
+      .run(cutoffIso(days, now));
+    return toNum(res.changes);
+  }
+
   /** 부서당 최신 keepPerTeam 건만 남기고 삭제(T34 부터 파티션이 부서다). 삭제 건수 반환. */
-  pruneEvents(opts: { keepPerTeam: number } = { keepPerTeam: 50_000 }): number {
+  pruneEvents(opts: { keepPerTeam: number } = { keepPerTeam: DEFAULT_RETENTION.keepPerTeam }): number {
     const res = this.db
       .prepare(
         `DELETE FROM events WHERE seq IN (

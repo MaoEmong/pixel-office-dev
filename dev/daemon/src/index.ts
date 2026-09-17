@@ -2,10 +2,21 @@
 // node:sqlite ExperimentalWarning 은 Store 모듈이 로드 시 거른다.
 import { config } from './config.js';
 import { Office } from './office/Office.js';
+import { DaemonAlreadyRunningError } from './office/singleton.js';
 import { RpcServer } from './rpc/RpcServer.js';
 
 const office = new Office();
-const info = await office.start();
+let info;
+try {
+  info = await office.start();
+} catch (err) {
+  // "데몬은 하나만"(T30 / T38 함정 ⑤) — 이미 도는 데몬이 있으면 조용히 실패하지 않고 pid 를 보여 주고 exit 3.
+  if (err instanceof DaemonAlreadyRunningError) {
+    console.error(`[daemon] ${err.message}`);
+    process.exit(err.exitCode);
+  }
+  throw err;
+}
 const rpc = new RpcServer(office, { port: config.wsPort });
 const wsPort = await rpc.listen();
 if (wsPort !== info.wsPort) office.updateDaemonInfo({ wsPort });

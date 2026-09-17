@@ -20,7 +20,7 @@ import path from 'node:path';
 import { randomBytes } from 'node:crypto';
 import pkg from '../../package.json' with { type: 'json' };
 import { config as defaultConfig, type Config } from '../config.js';
-import { Store } from '../store/Store.js';
+import { Store, type RetentionResult } from '../store/Store.js';
 import { PtyManager } from '../pty/PtyManager.js';
 import { toForwardSlashes } from '../pty/hookSettings.js';
 import type { ExitInfo, PtySession } from '../pty/types.js';
@@ -54,6 +54,7 @@ import { settleMember, type SettleCtx, type SettleReason, type SettleSummary } f
 import { derivedStatus } from './derived.js';
 import { CODEX_FALLBACK, detectQuestion, isFallbackQuestion, type FallbackQuestionPayload } from './codexFallback.js';
 import { defaultOrphanOps, reapOrphan, type OrphanOps } from './orphans.js';
+import { assertSingleDaemon, defaultSingletonProbe, type SingletonProbe } from './singleton.js';
 import { ShellMutex, shellLockCommand, type ShellLockInfo } from './ShellMutex.js';
 import { RANK_LABEL, defaultInstructions, type TemplateScope } from './instructions/templates.js';
 import { buildSessionContext, type RosterEntry } from './instructions/context.js';
@@ -150,6 +151,8 @@ const IDLE_SCREEN_STATUSES: ReadonlySet<MemberStatus> = new Set(['working', 'wai
 export const SCREEN_IDLE_SUMMARY = 'screen-idle';
 /** 정중한 종료 대기(Claude `/exit`). */
 const KILL_TIMEOUT_MS = 8000;
+/** 보존 정리 주기(T30/D-39). 기동 때 한 번 + 하루에 한 번. */
+export const RETENTION_INTERVAL_MS = 24 * 60 * 60 * 1000;
 const COLS_RANGE = [20, 500] as const;
 const ROWS_RANGE = [5, 300] as const;
 
@@ -165,6 +168,10 @@ export interface OfficeOptions {
   /** hook.js 절대 경로. 기본 src/hooks/hook.js. */
   hookScriptPath?: string;
   version?: string;
+  /** "데몬은 하나만" 가드(T30)의 pid·포트 확인 연산. 테스트가 가짜로 바꿔 끼운다. */
+  singletonProbe?: SingletonProbe;
+  /** 보존 정리 주기(ms). 기본 RETENTION_INTERVAL_MS(24h). 0 이면 타이머를 걸지 않는다. */
+  retentionIntervalMs?: number;
   /** 재시작 복구 옵션(테스트용). */
   recovery?: {
     /** `--resume` 실패 판정 창(ms). 기본 RESUME_FALLBACK_WINDOW_MS. */
@@ -260,6 +267,10 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
   private readonly childExits: Array<Promise<void>> = [];
   private readonly fallbackWindowMs: number;
   private readonly orphanOps: OrphanOps;
+  private readonly singletonProbe: SingletonProbe;
+  private readonly retentionIntervalMs: number;
+  /** 보존 정리 일일 타이머(T30/D-39). unref 라 데몬 종료를 붙잡지 않는다. */
+  private retentionTimer?: NodeJS.Timeout;
   private info?: DaemonInfo;
   private started = false;
   private stopping = false;
@@ -271,6 +282,8 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
     this.cfg = { ...defaultConfig, ...opts.config };
     this.fallbackWindowMs = opts.recovery?.fallbackWindowMs ?? RESUME_FALLBACK_WINDOW_MS;
     this.orphanOps = opts.recovery?.orphanOps ?? defaultOrphanOps;
+    this.singletonProbe = opts.singletonProbe ?? defaultSingletonProbe;
+    this.retentionIntervalMs = opts.retentionIntervalMs ?? RETENTION_INTERVAL_MS;
     this.version = opts.version ?? (pkg as { version?: string }).version ?? '0.0.0';
     this.hookScriptPath = toForwardSlashes(opts.hookScriptPath ?? path.resolve(import.meta.dirname, '..', 'hooks', 'hook.js'));
     this.store = opts.store ?? new Store(path.join(this.cfg.dataDir, 'pixel-office.db'));
@@ -371,6 +384,8 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
   async start(): Promise<DaemonInfo> {
     if (this.info) return this.info;
     fs.mkdirSync(this.cfg.dataDir, { recursive: true });
+    // 데몬은 하나만(T30 / T38 함정 ⑤) — 포트를 열기 전에 확인한다. 거부는 DaemonAlreadyRunningError(exit 3).
+    await assertSingleDaemon({ daemonJsonPath: this.daemonJsonPath, probe: this.singletonProbe });
     const hookPort = await this.receiver.listen(this.cfg.hookPort);
     const mcpPort = await this.mcp.listen(this.cfg.mcpPort);
     this.info = {
@@ -385,12 +400,8 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
     this.writeDaemonInfo();
     this.started = true;
     console.log(`[office] mcp       : http://127.0.0.1:${mcpPort}/mcp/<memberToken> (TeamTools: ${ALL_TEAM_TOOLS.join(', ')})`);
-    try {
-      const pruned = this.store.pruneEvents();
-      if (pruned > 0) console.log(`[office] pruned ${pruned} old events`);
-    } catch (err) {
-      console.warn('[office] pruneEvents failed:', err);
-    }
+    this.runRetention();
+    this.startRetentionTimer();
     // 재시작 복구(T09): RPC 클라이언트가 붙기 전에 이전 기동의 멤버를 되살린다. 절대 throw 하지 않는다.
     this.recovery = this.recover();
     return this.info;
@@ -399,6 +410,34 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
   /** 이번 기동의 재시작 복구 결과(start() 전에는 undefined). */
   get recoveryResult(): RecoveryResult | undefined {
     return this.recovery;
+  }
+
+  /**
+   * 보존 정리 한 판(T30/D-39): events 부서당 상한 + 닫힌 pending 30일 + 끝난 task 90일.
+   * 절대 throw 하지 않는다 — 정리가 실패해도 데몬은 떠야 한다.
+   */
+  runRetention(): RetentionResult {
+    try {
+      const pruned = this.store.pruneRetention();
+      if (pruned.events || pruned.pending || pruned.tasks) {
+        console.log(`[office] retention: events ${pruned.events} · pending ${pruned.pending} · tasks ${pruned.tasks} 삭제`);
+      }
+      return pruned;
+    } catch (err) {
+      console.warn('[office] pruneRetention failed:', err);
+      this.notice('warn', `보존 정리 실패: ${errMsg(err)}`);
+      return { events: 0, pending: 0, tasks: 0 };
+    }
+  }
+
+  /**
+   * 하루 한 번 보존 정리(T30). 예전에는 기동 때 한 번뿐이라 **켜 둔 채로 며칠 쓰면 정리가 영영 안 됐다**.
+   * `unref()` 라 이 타이머가 데몬을 살려 두지 않는다.
+   */
+  private startRetentionTimer(): void {
+    if (this.retentionTimer || !(this.retentionIntervalMs > 0)) return;
+    this.retentionTimer = setInterval(() => this.runRetention(), this.retentionIntervalMs);
+    this.retentionTimer.unref();
   }
 
   /** 실제 바인딩된 WS 포트가 설정과 다를 때(임시 포트 0) daemon.json 을 다시 쓴다. */
@@ -445,6 +484,10 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
     for (const rt of this.runtimes.values()) rt.screen.dispose();
     this.runtimes.clear();
     this.shell.clear(); // T27: 남은 보류·타이머 정리
+    if (this.retentionTimer) {
+      clearInterval(this.retentionTimer);
+      this.retentionTimer = undefined;
+    }
     this.store.close();
     if (this.info) {
       try {

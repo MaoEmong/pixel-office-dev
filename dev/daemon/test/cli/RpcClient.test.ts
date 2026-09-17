@@ -8,7 +8,16 @@ import type { AddressInfo } from 'node:net';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { RpcClient, RpcError, RPC_CLIENT_CLOSED, RPC_CLIENT_TIMEOUT, readDaemonInfo } from '../../src/cli/RpcClient.js';
+import {
+  RpcClient,
+  RpcError,
+  RPC_CLIENT_CLOSED,
+  RPC_CLIENT_TIMEOUT,
+  readDaemonInfo,
+  backoffDelay,
+  RECONNECT_MIN_DELAY_MS,
+  RECONNECT_MAX_DELAY_MS,
+} from '../../src/cli/RpcClient.js';
 import type { OfficeEvent } from '../../src/store/types.js';
 
 const TOKEN = 'secret-token';
@@ -255,13 +264,54 @@ describe('RpcClient', () => {
     c.close();
   });
 
-  test('connectWithRetry: 접속 실패 시 재시도 후 포기', async () => {
+  test('connectWithRetry: 접속 실패 시 재시도 후 포기 (T30: 대기가 1초 아래로 내려가지 않는다)', async () => {
     const c = new RpcClient();
     const attempts: number[] = [];
+    const delays: Array<number | undefined> = [];
+    const t0 = Date.now();
     await assert.rejects(
-      c.connectWithRetry({ url: 'ws://127.0.0.1:1', intervalMs: 5, maxAttempts: 3, onAttemptFailed: (n) => attempts.push(n) }),
+      c.connectWithRetry({
+        url: 'ws://127.0.0.1:1',
+        intervalMs: 5, // 옛 호출부 호환 — 그래도 하한 1초가 이긴다
+        jitter: 0,
+        maxAttempts: 2,
+        onAttemptFailed: (n, _e, next) => {
+          attempts.push(n);
+          delays.push(next);
+        },
+      }),
     );
-    assert.deepEqual(attempts, [1, 2, 3]);
+    assert.deepEqual(attempts, [1, 2]);
+    assert.deepEqual(delays, [1000, undefined], '마지막 시도 뒤에는 기다리지 않는다');
+    assert.ok(Date.now() - t0 >= 900, `실제로 1초를 기다려야 한다 (${Date.now() - t0}ms)`);
+  });
+
+  // T30 ②: 콘솔이 데몬 사망 시 재접속을 폭주시켜 TIME_WAIT 16,000개 → 데몬 재기동 EADDRINUSE (T38·T39 관찰).
+  describe('재접속 백오프 (T30)', () => {
+    test('1초에서 시작해 두 배씩, 30초에서 멈춘다', () => {
+      const fixed = { jitter: 0 };
+      assert.deepEqual(
+        [1, 2, 3, 4, 5, 6, 7, 8, 20].map((n) => backoffDelay(n, fixed)),
+        [1000, 2000, 4000, 8000, 16000, 30000, 30000, 30000, 30000],
+      );
+      assert.equal(RECONNECT_MIN_DELAY_MS, 1000);
+      assert.equal(RECONNECT_MAX_DELAY_MS, 30000);
+    });
+
+    test('1초보다 빨리 재시도하지 않는다 — 지터가 최솟값이어도, intervalMs 를 작게 줘도', () => {
+      for (let n = 1; n <= 40; n++) {
+        assert.ok(backoffDelay(n, { random: () => 0 }) >= 1000, `attempt ${n}`);
+        assert.ok(backoffDelay(n, { initialMs: 1, random: () => 0 }) >= 1000, `attempt ${n} (initialMs 1)`);
+        assert.ok(backoffDelay(n, { initialMs: 0, jitter: 5, random: () => 0 }) >= 1000, `attempt ${n} (과한 지터)`);
+      }
+    });
+
+    test('지터는 ±20% 안이고 상한을 넘지 않는다', () => {
+      assert.equal(backoffDelay(2, { random: () => 0 }), 1600); // 2000 * 0.8
+      assert.equal(backoffDelay(2, { random: () => 1 }), 2400); // 2000 * 1.2
+      assert.equal(backoffDelay(2, { random: () => 0.5 }), 2000);
+      assert.equal(backoffDelay(9, { random: () => 1 }), 30000, '상한에서는 지터로도 넘지 않는다');
+    });
   });
 
   test('readDaemonInfo / hello 의 token 자동 읽기', async () => {

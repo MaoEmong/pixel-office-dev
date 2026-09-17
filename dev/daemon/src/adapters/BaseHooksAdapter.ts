@@ -111,36 +111,86 @@ export abstract class BaseHooksAdapter extends EventEmitter<HooksAdapterEvents> 
 
   /**
    * HookReceiver 'hook' 리스너에서 호출. emit 중 동기적으로 respond()/hold() 를 결정한다.
-   * 절대 throw 하지 않는다 — 예외는 'handler-error' 로 내고 아직 응답 전이면 '{}' 를 보낸다.
+   * 절대 throw 하지 않는다 — 예외는 'handler-error' 로 내고 **어떤 경우에도 응답을 내보낸다**(D-11 pass-through).
+   *
+   * **T30/D-38 딸린 관찰**: 예전에는 catch 가 `req.respond(PASS_THROUGH)` 만 불렀는데, 핸들러가 `req.hold()` **뒤에**
+   * 던지면(D-38 의 `createPending` 예외) receiver 계약상 `respond` 가 먹지 않아 hook 프로세스가 영영 매달렸다 =
+   * CLI 가 자기 TUI 프롬프트를 띄운 채 멈춘다. 그래서 이 진입점이 `hold()` 를 감싸 **마지막으로 만들어진 핸들**을
+   * 들고 있다가 catch 에서 직접 닫는다.
    */
   handleHook(req: HookRequest, member: Member): void {
+    let handle: DecisionHandle | undefined;
+    // hold() 를 감싼 대리 요청 — 핸들러가 어디서 던지든 그때까지 연 보류를 catch 가 닫을 수 있다.
+    const guarded: HookRequest = {
+      memberToken: req.memberToken,
+      event: req.event,
+      payload: req.payload,
+      respond: (json) => req.respond(json),
+      hold: () => (handle = req.hold()),
+    };
     try {
-      switch (req.event) {
+      switch (guarded.event) {
         case 'SessionStart':
-          return this.onSessionStart(req, member);
+          return this.onSessionStart(guarded, member);
         case 'UserPromptSubmit':
-          return this.onUserPromptSubmit(req, member);
+          return this.onUserPromptSubmit(guarded, member);
         case 'PreToolUse':
-          return this.onPreToolUse(req, member);
+          return this.onPreToolUse(guarded, member);
         case 'PermissionRequest':
-          return this.onPermissionRequest(req, member);
+          return this.onPermissionRequest(guarded, member);
         case 'PostToolUse':
-          return this.onPostToolUse(req, member, true);
+          return this.onPostToolUse(guarded, member, true);
         case 'PostToolUseFailure':
-          return this.onPostToolUse(req, member, false);
+          return this.onPostToolUse(guarded, member, false);
         case 'Stop':
-          return this.onStop(req, member);
+          return this.onStop(guarded, member);
         case 'SessionEnd':
-          return this.onSessionEnd(req, member);
+          return this.onSessionEnd(guarded, member);
         default:
           // Notification, SubagentStop, PreCompact, Interrupt(Codex), 그 외 모르는 이벤트.
-          return this.onEngineEvent(req, member);
+          return this.onEngineEvent(guarded, member);
       }
     } catch (err) {
-      req.respond(PASS_THROUGH);
-      console.error(`[${this.label}] ${req.event} handler failed for ${member.id}:`, err);
-      this.emit('handler-error', err, member.id, req.event);
+      this.onHandlerError(guarded, member, err, handle);
     }
+  }
+
+  /**
+   * 핸들러 예외 공통 처리(T30). ① 응답을 반드시 내보낸다(respond 가 먹지 않으면 열린 보류를 pass-through 로 닫는다),
+   * ② 멤버에게 `error{summary:'hook handler failed: …'}` 를 남겨 사무실에서 보이게 하고, ③ `handler-error` 로
+   * Office 의 `daemon.notice{error}` 를 띄운다.
+   */
+  private onHandlerError(req: HookRequest, member: Member, err: unknown, handle: DecisionHandle | undefined): void {
+    if (!req.respond(PASS_THROUGH) && handle) this.releaseHandle(handle);
+    const message = errMsg(err);
+    console.error(`[${this.label}] ${req.event} handler failed for ${member.id}:`, err);
+    try {
+      this.appendEvent(member, 'error', { summary: `hook handler failed: ${message}`, hookEvent: req.event });
+    } catch (logErr) {
+      // store 자체가 망가진 경우(D-38 이 바로 그랬다) — 이벤트를 못 남겨도 notice 는 나가야 한다.
+      console.error(`[${this.label}] handler-error 이벤트 기록 실패:`, logErr);
+    }
+    this.emit('handler-error', err, member.id, req.event);
+  }
+
+  /**
+   * 예외로 버려진 보류 하나를 pass-through 로 닫는다. 그 보류에 딸린 pending 행(이미 `held` 에 등록됐다면)은 expired 로,
+   * 셸 게이트 보류였다면 대기 줄에서 뺀다(T27 규칙 그대로).
+   */
+  private releaseHandle(handle: DecisionHandle): void {
+    for (const [id, entry] of [...this.held]) {
+      if (entry.handle !== handle) continue;
+      this.held.delete(id);
+      this.expireHeld(entry);
+    }
+    for (const [memberId, set] of [...this.gateHolds]) {
+      for (const g of [...set]) {
+        if (g.handle !== handle) continue;
+        this.untrackGateHold(memberId, g);
+        g.abort.abort();
+      }
+    }
+    if (!handle.settled) handle.resolve(PASS_THROUGH);
   }
 
   // ---- 사용자 응답 ----------------------------------------------------------
@@ -495,4 +545,8 @@ export function toolNameOf(payload: HookPayload): string {
 
 export function isRecord(v: unknown): v is Record<string, unknown> {
   return v !== null && typeof v === 'object' && !Array.isArray(v);
+}
+
+function errMsg(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
 }
