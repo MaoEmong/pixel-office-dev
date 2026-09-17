@@ -15,7 +15,7 @@ cd dev/app
 flutter pub get
 flutter run -d windows          # 개발 실행
 flutter build windows --release # build\windows\x64\runner\Release\pixel_office.exe
-flutter analyze && flutter test # 검증 (위젯·상태 343건)
+flutter analyze && flutter test # 검증 (위젯·상태 410건 ~1)
 ```
 
 데몬이 먼저 떠 있어야 한다(`cd dev/daemon && npm start`). 없으면 앱은 회색 오버레이 + "데몬 연결 안 됨" 을 보이며 1→2→4→5초 간격으로 계속 재접속을 시도한다("데몬 시작" 버튼은 T14).
@@ -77,14 +77,14 @@ Codex 팀원이 각자 책상·배지·터미널 탭(실제 Codex TUI)으로 보
 - **배율**은 폭만 본다(세로는 스크롤이 받는다): 하한 **0.6** · 폭 900 에서 1.0 · 1440 부터 커져 2080 에서 상한 **1.5**.
   폭 **1600 이상이면 5열**. 클러스터 상자 폭 = `min(인원, 열 수)` 열 + inset, **왼쪽 정렬**, 둘이 들어가면 한 줄에 나란히.
 - **팀 카펫 6색**(`OfficeColors.carpets`, 팀 **생성 순서**로 순환) + 제목 태그(같은 색 40% 밝게, 상자 왼쪽 위 -8px, 12px 굵게).
-  부장은 책상 크기는 그대로 두고 **금색 카펫(사방 +20px, 알파 0.12) + 왕관**으로 앵커한다(왕관 스프라이트는 T33).
+  부장은 책상 크기는 그대로 두고 **금색 카펫(사방 +20px, 알파 0.12) + 왕관 스프라이트**로 앵커한다(T33).
 - **책상 라벨은 이름만**(번호는 `deskTooltip`·시맨틱·로그). 좁아지면 **엔진 배지 → 직급 배지 글자(아이콘만) → 이름 말줄임** 순.
   모니터는 **2줄**(위: 명령/도구 `monitorTop`, 아래: 결과 요약 `monitorBottom`, 각 22자, scale < 0.7 이면 둘째 줄 숨김).
-- **상태 13종 → 범례 7칸**: `LegendSlot`(작업 `#6C8EFF` · 한가 `#7ED3A1` · 보고 대기 초록 **점선** 📨 ·
-  내 차례 `#FF9F43` ❗ · 대기 `#FFC857` ⏳ · 오류 `#FF6B6B` ⚠ · 퇴근 `#474D5E`) + `legendSlotOf(SceneMember)`.
-  캐릭터 원 색·하단 범례가 이 함수를 쓰고, 오른쪽 패널의 상태 점도 **같은 함수를 import 해서 쓴다**
+- **상태 13종 → 범례 7칸**: `LegendSlot`(작업 `#6C8EFF` · 한가 `#7ED3A1` · 보고 대기 초록 **점선** ✉ ·
+  내 차례 `#FF9F43` ❗ · 대기 `#FFC857` ◷ · 오류 `#FF6B6B` ⚠ · 퇴근 `#474D5E`) + `legendSlotOf(SceneMember)`.
+  캐릭터 링 색·하단 범례가 이 함수를 쓰고, 오른쪽 패널의 상태 점도 **같은 함수를 import 해서 쓴다**
   (`office_scene.dart` 의 `legendSlotFor`/`legendSlotOf` + `office_painter.dart` 의 `legendColor` — T40c 에 사본을 없앴다).
-  오류는 책상 테두리도 빨강, 퇴근은 **회색 책상 + 의자만**(캐릭터 원 없음).
+  오류는 책상 테두리도 빨강, 퇴근은 **회색 책상 + 의자 소품만**(캐릭터 안 그림).
 - **말풍선**: alert(내 차례·대기·오류·보고 방문·복구)는 항상, **작업 말풍선은 선택 멤버나 호버일 때만**(8명 화면이 말풍선 밭이 되지 않게).
   최대 28자 · 폭 180×scale · 2줄.
 - **내 책상 = 인박스 그림**: 슬롯 **4칸**(오래된 것부터 왼쪽, 빈 칸은 점선 실루엣), 5명째부터는 자기 책상에 남고
@@ -99,9 +99,55 @@ Codex 팀원이 각자 책상·배지·터미널 탭(실제 Codex TUI)으로 보
   복구(`text{summary:'resumed'}`·`[RESUMED]`) → 책상 점선 **3초** + `↻ 복구됨` / 퇴근 **10분** 뒤 클러스터 제목의
   **"퇴근 N"** 배지로 접힘(제목 줄 클릭 = 토글, `expandedExitedTeamsProvider` — 앱 로컬) /
   전원 퇴근 팀 → 제목만 남은 낮은 상자 "팀 X · 전원 퇴근 · 보고 N건"(보고 수 = `officeReportCountsProvider`).
-- **T33 스프라이트 훅**: `OfficeLayout.spriteScale`(scale ≥ 0.75 → 2, 아니면 1 — **정수 배율만**, D-43 3) +
-  `spriteCell(center)` / `spriteCellOf(deskIndex)`(32×32 셀, 지금은 원 중심과 같은 자리). 지금은 여전히 원을 그린다.
 - 그리기 규칙: **곡률 4px 하나(`officeRadius`), 그림자·글로우·그라데이션 0** — 페인터 테스트가 이걸 고정한다.
+
+### 스프라이트 (T33 — `lib/office/office_sprites.dart`, D-43)
+
+캐릭터·소품은 **픽셀 아틀라스**다. `assets/sprites/characters.png` **256×96 = 32×32 셀 8열 × 3줄**:
+
+| 줄 | 열 0..7 |
+|---|---|
+| 0 | 포즈 8종 — idle · type1 · type2 · think · alert · ask · report · error |
+| 1 | 걷기 — 왼쪽 4프레임 · 오른쪽 4프레임(왼쪽의 **좌우 반전**) |
+| 2 | 소품·아이콘 — 왕관 · 별 · 의자 + 봉투 · 모래시계 · 경고 · 느낌표 · 물음표 |
+
+- **만드는 법**: `dart run tool/gen_sprites.dart` (순수 Dart, 의존성 0 — PNG 인코더 포함).
+  `--preview=<path> --zoom=8 --bg=1B1F2A` 로 확대본, `--bounds` 로 소품의 실제 경계(= `SpriteProp.inCell`)를 찍는다.
+  **왜 직접 그렸나**(D-43 4 는 Kenney CC0 우선이었다)와 라이선스는 `assets/LICENSES.md`.
+- **포즈 매핑**: `spritePoseOf(SceneMember, visiting:)`. 입력이 **`LegendSlot`** 이라 링 색과 포즈가 같은 곳에서
+  갈라진다(퇴근 → 캐릭터 없음 + 의자, 오류 → error, 보고 방문/reporting → report, `ask_parent` → ask,
+  내 차례 → alert, 작업 → type(thinking 이면 think), 나머지 → idle).
+- **애니메이션**: 타이핑 2프레임 **0.5초**(`typeFrameAt`), 걷기는 시간이 아니라 **걸어온 거리**(14px/프레임,
+  `OfficeMotion.walkAt` → `walkFrameFor`), 방향은 출발→도착 dx 부호.
+- **배율은 정수만**(D-43 3): `OfficeLayout.spriteScale`(scale ≥ 0.75 → 2, 아니면 1) × 32px 셀,
+  `alignSpriteRect` 으로 왼쪽 위를 정수 픽셀에 맞추고 `FilterQuality.none` + `isAntiAlias: false`.
+  텍스트·선은 연속 레이아웃 scale 을 그대로 쓴다(둘은 분리다).
+- **외형**(D-43 5): 아틀라스에 셔츠 `#FF00FF` · 머리 `#00FFFF`(각각 그늘 키 하나씩)를 남겨 두고,
+  불러올 때 픽셀 한 판으로 바꿔 **엔진 2종 × 이름 해시 머리색 4종 = 8벌**을 캐시한다
+  (`SpriteSheet.load` ← `spriteSheetProvider`). 이름 해시는 FNV-1a(`String.hashCode` 는 실행마다 달라질 수 있다).
+  직급은 **왕관/별 소품**으로만 구분한다.
+- **링은 발치에**: 원이던 시절과 달리 스프라이트는 세로로 길고 머리가 좁아 같은 자리에 두면 링이 머리 옆으로
+  삐져나온다. `OfficePainter.ringCenter` 가 링을 `spriteFeetDy`(셀 가운데 + 12 × 배율)로 내린다.
+- **안전망**: `OfficePainter.sprites == null` 이면 **예전 원 + 머리글자**를 그린다 — 에셋을 읽는 첫 프레임과
+  아틀라스를 안 넘긴 테스트·미리보기가 그 경로다.
+
+### 서체 3종 (T33, 전부 OFL 1.1 — `assets/fonts/`)
+
+| 쓰는 곳 | 서체 | 어디서 |
+|---|---|---|
+| 사무실 캔버스(라벨·말풍선·모니터) | **Galmuri11** | `office_painter.dart` `officeFontFamily` (페인터 기본값) |
+| 오른쪽 패널·상단 바·지시 바 | **Pretendard** | `main.dart` `appFontFamily` → `ThemeData.fontFamily` |
+| 터미널·고정폭 | **D2Coding** | `panel/labels.dart` `panelMonoFallback` (주 서체는 아직 Cascadia Mono) |
+
+**폴백에 시스템 서체를 먼저 두지 않는다.** T40 편차 ⑤ 에서 `📨` `⏳` `♛` 가 전부 두부(□)로 나왔는데, 원인은
+"시스템 서체에 있겠지" 였다 — Flutter Windows 의 시스템 폴백이 그 글자를 못 냈다. 그래서 캔버스는
+`[D2Coding, Pretendard, Malgun Gothic]`, 패널은 `[D2Coding, Galmuri11, Malgun Gothic]` 순으로 **번들 서체끼리** 먼저
+메운다(`♛` 는 D2Coding 에만, `❗` `❓` 는 Galmuri11 에만 있다). 세 서체 어디에도 없는 이모지는 아예 쓰지 않는다 —
+`📨`→`✉` · `⏳`→`◷` · `📖`→`◫` · `📋`·`📄`→`▤` · `💬`→`❝`. 이 규칙은 `test/office/office_fonts_test.dart` 의
+**허용 목록**이 지킨다(새 기호를 넣으면 테스트가 막는다).
+
+캔버스 글자 크기는 `officeFontPx(base, fontScale)` 로 **정수 반올림**한다 — 픽셀 서체는 정수 크기에서만 또렷하다.
+범례 아이콘·직급 배지는 글자가 아니라 **아틀라스에 그린 아이콘**이다(흰 실루엣 + `ColorFilter.srcIn` 으로 범례 색).
 
 ## 레이아웃 v2 — 오른쪽 패널 · 상단 바 · 지시 바 (T40-4·T40-5, D-42)
 
@@ -239,7 +285,14 @@ lib/
     disconnected_overlay.dart  끊김 오버레이 — 진행 바 · "데몬 시작"/"다시 연결" · 예외 "자세히" 접힘(T40-5)
     selected_department.dart  상단 부서 탭 상태(T37, T24 의 selected_team.dart 를 대체)
     daemon_launcher.dart notices.dart   데몬 시작 버튼(T14) · daemon.notice 배너
-  office/                   사무실 캔버스(T12·T16·T37·T40a): office_scene/layout/painter/motion/view — 세로 스크롤 + 바닥 고정 바(내 책상·범례)
+  office/                   사무실 캔버스(T12·T16·T37·T40a·T33): office_scene/layout/painter/motion/view + office_sprites
+                            — 세로 스크롤 + 바닥 고정 바(내 책상·범례), 캐릭터·소품은 32×32 픽셀 아틀라스
+assets/
+  sprites/characters.png    스프라이트 아틀라스(생성기 tool/gen_sprites.dart) — 출처·라이선스는 assets/LICENSES.md
+  fonts/                    Galmuri11 · Pretendard(Regular/Bold) · D2Coding + OFL 전문 3개
+tool/
+  gen_sprites.dart          아틀라스 생성기(순수 Dart). `dart run tool/gen_sprites.dart`
+  capture-window.ps1        창 단위 캡처(worklog 증거용)
   panel/                    오른쪽 패널(T13·T15·T18·T26a·T37·T40-4):
     right_panel.dart          헤더(상태 점 = 범례 7칸) + 인박스 + 탭 4종(보고서 탭에 미확인 배지)
     inbox.dart                전역 인박스 "내 책상 · 대기 N"(2장 펼침 + "+N", Alt+Y/N, 스크롤 포커스)
