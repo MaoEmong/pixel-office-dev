@@ -12,13 +12,21 @@ import 'package:pixel_office/topbar/top_bar.dart';
 
 import 'fake_rpc_client.dart';
 
+/// 이 파일에서 "있는 폴더" 로 치는 경로(T41: 만들기는 폴더가 실제로 있을 때만 켜진다).
+const String existingFolder = r'D:\myproject\pixel-office';
+
 /// 기본 테스트 화면(800px)은 상단 바가 넘치므로 데스크탑 크기로.
+/// 폴더 존재 확인은 [existingFolder] 만 true 인 가짜로 바꾼다 — 위젯 테스트에서 진짜 `dart:io` 를 부르면
+/// fake-async 존에서 Future 가 끝나지 않는다(T41 함정).
 Future<void> pumpApp(WidgetTester tester, FakeRpcClient fake, {String? selectedMemberId}) async {
   tester.view.physicalSize = const Size(1400, 800);
   tester.view.devicePixelRatio = 1.0;
   addTearDown(tester.view.reset);
   await tester.pumpWidget(ProviderScope(
-    overrides: fake.overrides,
+    overrides: [
+      ...fake.overrides,
+      directoryExistsProvider.overrideWithValue((path) async => path == existingFolder),
+    ],
     child: MaterialApp(home: Scaffold(body: Column(children: [TopBar(selectedMemberId: selectedMemberId), const Spacer()]))),
   ));
 }
@@ -101,7 +109,7 @@ void main() {
     expect(c.read(activeDepartmentIdProvider), 'd1');
   });
 
-  testWidgets('부서 만들기: 이름·cwd 비면 오류, 채우면 department.create{name,cwd,headEngine,headName} → 부장 선택', (tester) async {
+  testWidgets('부서 만들기: 폴더가 없으면 만들기가 꺼져 있고, 채우면 department.create{name,cwd,headEngine,headName} → 부장 선택', (tester) async {
     fake.responder = (m, p) => switch (m) {
           'department.create' => {
               'department': fakeDepartment('dNew', name: p['name'] as String, headId: 'mH'),
@@ -119,14 +127,24 @@ void main() {
     expect(find.byType(CreateDepartmentDialog), findsOneWidget);
     expect(find.byKey(const Key('createDepartment.headHint')), findsOneWidget);
 
-    await tester.tap(find.byKey(const Key('createDepartment.submit')));
-    await tester.pump();
-    expect(find.text('부서 이름을 입력하세요'), findsOneWidget);
-    expect(find.text('작업 폴더 경로를 입력하세요'), findsOneWidget);
+    // 폴더를 아직 안 골랐으면 만들기는 꺼져 있다(눌러 보고 나서 오류를 보는 게 아니라 이유를 먼저 보여 준다).
+    expect(tester.widget<FilledButton>(find.byKey(const Key('createDepartment.submit'))).onPressed, isNull);
+    expect(find.text(createDepartmentPickFolderHint), findsOneWidget);
     expect(fake.calls, isEmpty);
 
+    // 손으로 친 경로도 폴백으로 받는다 — 없는 폴더면 오류 문구 + 여전히 꺼짐.
+    await tester.enterText(find.byKey(const Key('createDepartment.cwd')), r'D:\없는폴더');
+    await tester.pumpAndSettle();
+    expect(find.text(createDepartmentMissingFolder), findsOneWidget);
+    expect(tester.widget<FilledButton>(find.byKey(const Key('createDepartment.submit'))).onPressed, isNull);
+
+    await tester.enterText(find.byKey(const Key('createDepartment.cwd')), existingFolder);
+    await tester.pumpAndSettle();
+    expect(find.text(createDepartmentMissingFolder), findsNothing);
+    // 이름은 폴더 이름이 기본값으로 들어와 있다.
+    expect(tester.widget<TextField>(find.byKey(const Key('createDepartment.name'))).controller?.text, 'pixel-office');
+
     await tester.enterText(find.byKey(const Key('createDepartment.name')), 'alpha');
-    await tester.enterText(find.byKey(const Key('createDepartment.cwd')), r'D:\myproject\pixel-office');
     await tester.enterText(find.byKey(const Key('createDepartment.headName')), '반장');
     await tester.tap(find.descendant(of: find.byKey(const Key('createDepartment.headEngine')), matching: find.text('codex')));
     await tester.pump();
@@ -134,7 +152,7 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(fake.callList, [
-      ['department.create', {'name': 'alpha', 'cwd': r'D:\myproject\pixel-office', 'headEngine': 'codex', 'headName': '반장'}],
+      ['department.create', {'name': 'alpha', 'cwd': existingFolder, 'headEngine': 'codex', 'headName': '반장'}],
     ]);
     final c = containerOf(tester);
     expect(c.read(selectedDepartmentIdProvider), 'dNew');
@@ -160,13 +178,16 @@ void main() {
 
     await tester.tap(find.byKey(const Key('topbar.createDepartment')));
     await tester.pumpAndSettle();
+    await tester.enterText(find.byKey(const Key('createDepartment.cwd')), existingFolder);
+    await tester.pumpAndSettle();
     await tester.enterText(find.byKey(const Key('createDepartment.name')), 'alpha');
-    await tester.enterText(find.byKey(const Key('createDepartment.cwd')), r'D:\myproject\pixel-office');
+    // 기본값 "부장" 을 지우면 headName 을 안 보낸다(데몬이 같은 기본값을 붙인다).
+    await tester.enterText(find.byKey(const Key('createDepartment.headName')), '');
     await tester.tap(find.byKey(const Key('createDepartment.submit')));
     await tester.pumpAndSettle();
 
     expect(fake.callList, [
-      ['department.create', {'name': 'alpha', 'cwd': r'D:\myproject\pixel-office', 'headEngine': 'claude'}],
+      ['department.create', {'name': 'alpha', 'cwd': existingFolder, 'headEngine': 'claude'}],
     ]);
   });
 
@@ -177,8 +198,9 @@ void main() {
     await pump2(tester);
     await tester.tap(find.byKey(const Key('topbar.createDepartment')));
     await tester.pumpAndSettle();
+    await tester.enterText(find.byKey(const Key('createDepartment.cwd')), existingFolder);
+    await tester.pumpAndSettle();
     await tester.enterText(find.byKey(const Key('createDepartment.name')), 'alpha');
-    await tester.enterText(find.byKey(const Key('createDepartment.cwd')), r'D:\없는폴더');
     await tester.tap(find.byKey(const Key('createDepartment.submit')));
     await tester.pumpAndSettle();
     expect(find.byType(CreateDepartmentDialog), findsOneWidget);

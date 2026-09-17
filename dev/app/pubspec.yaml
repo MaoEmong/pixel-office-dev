@@ -37,6 +37,10 @@ dependencies:
   flutter_riverpod: ^3.3.2
   web_socket_channel: ^3.0.3
   xterm: ^4.0.0
+  # 부서 만들기의 "폴더 선택…"(T41). flutter.dev 공식 플러그인 — Windows 구현은 file_selector_windows 가
+  # `IFileDialog`(네이티브 폴더 선택 대화상자)를 연다. 테스트는 절대 네이티브 창을 열지 않는다:
+  # `CreateDepartmentDialog(pickDirectory: ...)` 로 가짜 선택기를 주입한다.
+  file_selector: ^1.1.0
 
 dev_dependencies:
   flutter_test:

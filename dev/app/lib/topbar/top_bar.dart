@@ -5,17 +5,26 @@
 //    main.dart 는 `activeDepartmentIdProvider` 를 읽으면 된다.
 //  - **부서 만들기 = 부장 임명**(D-32): 이름 · 작업 폴더(cwd) · 부장 엔진 · 부장 이름 → `department.create`
 //    → 결과의 head 를 바로 선택한다. 사용자가 만드는 유일한 것이고, 그 아래(팀·팀원)는 전부 멤버가 만든다.
+//  - **T41**: 작업 폴더는 **"폴더 선택…"**(file_selector) 으로 고른다 — 손으로 치던 경로 입력은 오타 하나로
+//    데몬이 -32602 를 뱉던 자리였다. 칸은 그대로 편집 가능(붙여넣기 폴백)이고, 폴더가 **실제로 있을 때만**
+//    만들기가 켜진다. 부서 이름은 폴더 이름, 부장 이름은 `부장`, 엔진은 `claude` 가 기본이라
+//    **폴더만 고르면 아무것도 안 치고 만들 수 있다**.
 //  - **출근 버튼은 없앴다**(T24 의 `member.clockIn` 경로). 데몬은 `force:true` 없이는 -32004 로 막고,
 //    그 길은 콘솔 전용 디버그다(D-34).
 //  - 퇴근은 **비상용**으로만 남긴다: 선택 멤버 옆 작은 버튼 → 확인 다이얼로그([clockOutEmergencyWarning])
 //    → `member.clockOut`. 부장·팀장을 내보내면 그 하위가 전부 정리된다.
 //  - 부서 삭제는 탭 오른쪽 메뉴(⋮) → 확인 → `department.delete`(하위 트리 잎부터 정리).
 
+import 'dart:async';
+import 'dart:io';
+
+import 'package:file_selector/file_selector.dart' show getDirectoryPath;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../model/models.dart';
 import '../panel/inbox.dart' show inboxCountProvider;
+import '../panel/ui_prefs.dart' show lastDepartmentDirProvider;
 import '../panel/panel_tabs.dart' show RightPanelTab, panelTabRequestProvider;
 import '../panel/report_tab.dart' show reportUnreadProvider;
 import '../rpc/rpc_client.dart';
@@ -307,12 +316,45 @@ Future<void> confirmClockOut(BuildContext context, WidgetRef ref, Member m) asyn
 
 // ---- 부서 만들기 --------------------------------------------------------------------
 
-Future<void> showCreateDepartmentDialog(BuildContext context) =>
-    showDialog<void>(context: context, builder: (_) => const CreateDepartmentDialog());
+Future<void> showCreateDepartmentDialog(BuildContext context, {DirectoryPicker pickDirectory = pickDepartmentFolder}) =>
+    showDialog<void>(context: context, builder: (_) => CreateDepartmentDialog(pickDirectory: pickDirectory));
 
-/// 부서 만들기 = 부장 임명(D-32). 이름·작업 폴더·부장 엔진·부장 이름.
+/// 폴더 선택기(T41). 테스트는 **절대** 네이티브 창을 열지 않으므로 가짜를 주입한다.
+/// 취소하면 null.
+typedef DirectoryPicker = Future<String?> Function({String? initialDirectory});
+
+/// 진짜 폴더 선택기 — file_selector(Windows 는 `IFileDialog`).
+Future<String?> pickDepartmentFolder({String? initialDirectory}) =>
+    getDirectoryPath(initialDirectory: initialDirectory, confirmButtonText: '이 폴더로');
+
+/// 고른 폴더에서 뽑는 기본 부서 이름 = 마지막 조각(`D:\myproject\pixel-office` → `pixel-office`).
+/// 드라이브 루트(`D:\`)면 `D`. 구분자는 `\`·`/` 둘 다, 꼬리 구분자는 무시한다.
+String departmentNameForPath(String path) {
+  final parts = path.trim().split(RegExp(r'[\\/]+')).where((s) => s.isNotEmpty).toList();
+  if (parts.isEmpty) return '';
+  final last = parts.last;
+  return last.endsWith(':') ? last.substring(0, last.length - 1) : last;
+}
+
+/// 폴더가 실제로 있는지 확인하는 함수. **provider 로 뺀 이유(T41 함정)**: 위젯 테스트의 fake-async 존에서는
+/// `dart:io` 의 Future 가 영영 안 끝난다(`tester.runAsync` 없이는 pumpAndSettle 이 타임아웃). 선택기는 위젯
+/// 파라미터로, 파일시스템 확인은 provider 로 갈아끼운다 — 테스트가 진짜 디스크를 건드릴 일이 없다.
+typedef DirectoryExists = Future<bool> Function(String path);
+
+final directoryExistsProvider = Provider<DirectoryExists>((_) => (path) => Directory(path).exists());
+
+/// 없는 폴더를 넣었을 때의 문구(선택기 대신 손으로 친 경우).
+const String createDepartmentMissingFolder = '그런 폴더가 없습니다 — "폴더 선택…" 으로 고르세요';
+
+/// 폴더를 아직 안 골랐을 때 만들기 버튼이 꺼져 있는 이유.
+const String createDepartmentPickFolderHint = '작업 폴더를 골라야 만들 수 있습니다';
+
+/// 부서 만들기 = 부장 임명(D-32). 폴더 선택 + 이름·부장 이름·부장 엔진 기본값(T41).
 class CreateDepartmentDialog extends ConsumerStatefulWidget {
-  const CreateDepartmentDialog({super.key});
+  const CreateDepartmentDialog({super.key, this.pickDirectory = pickDepartmentFolder});
+
+  /// "폴더 선택…" 이 부르는 것. 기본은 네이티브 대화상자([pickDepartmentFolder]).
+  final DirectoryPicker pickDirectory;
 
   @override
   ConsumerState<CreateDepartmentDialog> createState() => _CreateDepartmentDialogState();
@@ -321,30 +363,89 @@ class CreateDepartmentDialog extends ConsumerStatefulWidget {
 class _CreateDepartmentDialogState extends ConsumerState<CreateDepartmentDialog> {
   final _name = TextEditingController();
   final _cwd = TextEditingController();
-  final _headName = TextEditingController();
+  // 기본값(T41) — 폴더만 고르면 아무것도 안 치고 만들 수 있다.
+  final _headName = TextEditingController(text: kDefaultHeadName);
   Engine _headEngine = Engine.claude;
   bool _busy = false;
-  String? _nameError;
+  bool _picking = false;
+
+  /// 사용자가 이름을 직접 고쳤는가. true 면 폴더를 바꿔도 이름을 덮어쓰지 않는다.
+  bool _nameEdited = false;
+
+  /// 지금 칸에 있는 경로가 실제로 있는 폴더인가(만들기 버튼의 조건).
+  bool _cwdOk = false;
+
+  /// 비동기 존재 확인의 경합 방지 — 마지막 확인만 반영한다.
+  int _checkToken = 0;
   String? _cwdError;
   String? _error;
 
   @override
+  void initState() {
+    super.initState();
+    // 선택기로 고르든 손으로 치든 **같은 길**을 탄다: 이름 기본값 + 폴더 존재 확인.
+    _cwd.addListener(_onCwdChanged);
+  }
+
+  @override
   void dispose() {
+    _cwd.removeListener(_onCwdChanged);
     _name.dispose();
     _cwd.dispose();
     _headName.dispose();
     super.dispose();
   }
 
+  void _onCwdChanged() {
+    if (!_nameEdited) {
+      final suggested = departmentNameForPath(_cwd.text);
+      if (_name.text != suggested) _name.text = suggested;
+    }
+    unawaited(_checkCwd());
+  }
+
+  Future<void> _checkCwd() async {
+    final path = _cwd.text.trim();
+    final token = ++_checkToken;
+    if (path.isEmpty) {
+      if (mounted) {
+        setState(() {
+          _cwdOk = false;
+          _cwdError = null;
+        });
+      }
+      return;
+    }
+    final exists = await ref.read(directoryExistsProvider)(path);
+    if (!mounted || token != _checkToken) return;
+    setState(() {
+      _cwdOk = exists;
+      _cwdError = exists ? null : createDepartmentMissingFolder;
+    });
+  }
+
+  Future<void> _pick() async {
+    setState(() => _picking = true);
+    try {
+      final initial = await ref.read(lastDepartmentDirProvider.notifier).initialDir();
+      final picked = await widget.pickDirectory(initialDirectory: initial);
+      if (picked == null || picked.isEmpty) return; // 취소
+      _cwd.text = picked; // 리스너가 이름 기본값과 존재 확인을 맡는다
+      unawaited(ref.read(lastDepartmentDirProvider.notifier).remember(picked));
+    } catch (e) {
+      if (mounted) setState(() => _error = '폴더 선택 실패: $e');
+    } finally {
+      if (mounted) setState(() => _picking = false);
+    }
+  }
+
+  bool get _canSubmit => !_busy && !_picking && _cwdOk && _name.text.trim().isNotEmpty;
+
   Future<void> _submit() async {
     final name = _name.text.trim();
     final cwd = _cwd.text.trim();
     final headName = _headName.text.trim();
-    setState(() {
-      _nameError = name.isEmpty ? '부서 이름을 입력하세요' : null;
-      _cwdError = cwd.isEmpty ? '작업 폴더 경로를 입력하세요' : null;
-    });
-    if (_nameError != null || _cwdError != null) return;
+    if (!_canSubmit) return;
 
     setState(() => _busy = true);
     try {
@@ -384,23 +485,47 @@ class _CreateDepartmentDialogState extends ConsumerState<CreateDepartmentDialog>
                   style: TextStyle(fontSize: 12, color: Colors.white54),
                 ),
                 const SizedBox(height: 12),
+                // 폴더가 먼저다 — 고르면 아래 이름 칸이 폴더 이름으로 채워진다(T41).
+                Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Expanded(
+                      child: TextField(
+                        key: const Key('createDepartment.cwd'),
+                        controller: _cwd,
+                        enabled: !_busy,
+                        decoration: InputDecoration(
+                          labelText: '작업 폴더 (cwd)',
+                          hintText: r'D:\myproject\...',
+                          helperText: '이 부서의 모든 팀이 이 폴더에서 일합니다 · 경로를 직접 붙여넣어도 됩니다',
+                          errorText: _cwdError,
+                          isDense: true,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Padding(
+                      padding: const EdgeInsets.only(top: 2),
+                      child: OutlinedButton.icon(
+                        key: const Key('createDepartment.pickFolder'),
+                        onPressed: _busy || _picking ? null : _pick,
+                        icon: const Icon(Icons.folder_open, size: 16),
+                        label: const Text('폴더 선택…'),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 10),
                 TextField(
                   key: const Key('createDepartment.name'),
                   controller: _name,
                   autofocus: true,
                   enabled: !_busy,
-                  decoration: InputDecoration(labelText: '부서 이름', hintText: 'alpha', errorText: _nameError, isDense: true),
-                ),
-                const SizedBox(height: 10),
-                TextField(
-                  key: const Key('createDepartment.cwd'),
-                  controller: _cwd,
-                  enabled: !_busy,
-                  decoration: InputDecoration(
-                    labelText: '작업 폴더 (cwd)',
-                    hintText: r'D:\myproject\...',
-                    helperText: '이 부서의 모든 팀이 이 폴더에서 일합니다',
-                    errorText: _cwdError,
+                  onChanged: (v) => setState(() => _nameEdited = v.trim().isNotEmpty),
+                  decoration: const InputDecoration(
+                    labelText: '부서 이름',
+                    hintText: 'alpha',
+                    helperText: '기본값 = 고른 폴더 이름',
                     isDense: true,
                   ),
                 ),
@@ -433,10 +558,20 @@ class _CreateDepartmentDialogState extends ConsumerState<CreateDepartmentDialog>
           ),
         ),
         actions: [
+          // 버튼이 꺼져 있는 이유를 옆에 적어 둔다 — 눌러 보고 나서야 알게 하지 않는다.
+          if (!_busy && !_cwdOk)
+            const Padding(
+              padding: EdgeInsets.only(right: 4),
+              child: Text(
+                createDepartmentPickFolderHint,
+                key: Key('createDepartment.submitHint'),
+                style: TextStyle(fontSize: 11, color: Colors.white38),
+              ),
+            ),
           TextButton(onPressed: _busy ? null : () => Navigator.of(context).pop(), child: const Text('취소')),
           FilledButton(
             key: const Key('createDepartment.submit'),
-            onPressed: _busy ? null : _submit,
+            onPressed: _canSubmit ? _submit : null,
             child: _busy
                 ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
                 : const Text('만들기'),

@@ -4,6 +4,9 @@
 //           터미널 탭을 열면 660 으로 자동 확장(80열 × D2Coding 13px ≈ 624 + 패딩 24 + 스크롤바 12),
 //           다른 탭으로 가면 사용자가 정해 둔 폭으로 돌아온다.
 //  터미널 오버레이  `Ctrl+T` = 사무실을 덮는 전체 폭 터미널(Esc 로 닫힘). 저장하지 않는다(창을 닫으면 사라짐).
+//  부서 폴더      부서 만들기의 폴더 선택기가 처음 여는 폴더(T41) = 마지막으로 고른 폴더의 **부모**.
+//                 (프로젝트들은 보통 한 부모 아래 나란히 있다 — `D:\myproject\pixel-office` 를 골랐으면
+//                  다음엔 `D:\myproject` 에서 시작하는 게 형제 프로젝트를 고르기 쉽다.)
 //
 // 저장은 실패해도 삼킨다 — 폭 하나 때문에 앱이 죽으면 안 된다. 테스트는 [uiPrefsStoreProvider] 를 덮어쓴다.
 
@@ -171,3 +174,53 @@ class TerminalOverlayNotifier extends Notifier<bool> {
 
 /// `Ctrl+T` 로 켜고 `Esc` 로 끄는 전체 폭 터미널(사무실 위를 덮는다).
 final terminalOverlayProvider = NotifierProvider<TerminalOverlayNotifier, bool>(TerminalOverlayNotifier.new);
+
+// ---- 부서 폴더(폴더 선택기의 시작 위치, T41) ------------------------------------------
+
+/// 앱 로컬 prefs 의 키.
+const String lastDepartmentDirKey = 'lastDepartmentDir';
+
+/// [dir] 의 부모 경로. 루트(부모가 자기 자신)면 null — 저장할 값이 없다는 뜻.
+String? parentDirOf(String dir) {
+  final trimmed = dir.trim();
+  if (trimmed.isEmpty) return null;
+  final parent = Directory(trimmed).parent.path;
+  return parent == trimmed || parent.isEmpty ? null : parent;
+}
+
+/// 부서 만들기 폴더 선택기가 처음 열 폴더. 고른 폴더의 **부모**를 기억한다(형제 프로젝트를 고르기 쉽게).
+/// 값이 없으면 null — 그러면 선택기는 OS 기본 위치에서 연다.
+class LastDepartmentDirNotifier extends Notifier<String?> {
+  late final Future<void> _loaded;
+
+  @override
+  String? build() {
+    _loaded = _load();
+    return null;
+  }
+
+  /// 저장된 값을 **다 읽고 나서** 준다 — 선택기를 여는 순간엔 상태가 아직 안 찼을 수 있다.
+  Future<String?> initialDir() async {
+    await _loaded;
+    return state;
+  }
+
+  Future<void> _load() async {
+    final stored = await ref.read(uiPrefsStoreProvider).read();
+    final v = stored[lastDepartmentDirKey];
+    if (v is String && v.isNotEmpty) state = v;
+  }
+
+  /// 방금 고른 폴더를 기억한다(저장되는 값은 그 **부모**). 저장 실패는 삼킨다.
+  Future<void> remember(String pickedDir) async {
+    final parent = parentDirOf(pickedDir);
+    if (parent == null || parent == state) return;
+    state = parent;
+    final store = ref.read(uiPrefsStoreProvider);
+    final current = await store.read();
+    await store.write({...current, lastDepartmentDirKey: parent});
+  }
+}
+
+final lastDepartmentDirProvider =
+    NotifierProvider<LastDepartmentDirNotifier, String?>(LastDepartmentDirNotifier.new);
