@@ -15,7 +15,7 @@ cd dev/app
 flutter pub get
 flutter run -d windows          # 개발 실행
 flutter build windows --release # build\windows\x64\runner\Release\pixel_office.exe
-flutter analyze && flutter test # 검증 (위젯·상태 343건)
+flutter analyze && flutter test # 검증 (위젯·상태 365건 +1 skip)
 ```
 
 데몬이 먼저 떠 있어야 한다(`cd dev/daemon && npm start`). 없으면 앱은 회색 오버레이 + "데몬 연결 안 됨" 을 보이며 1→2→4→5초 간격으로 계속 재접속을 시도한다("데몬 시작" 버튼은 T14).
@@ -122,6 +122,10 @@ Codex 팀원이 각자 책상·배지·터미널 탭(실제 Codex TUI)으로 보
   (`main.dart` 의 `selectPendingFromOffice`).
 - `PendingCards(memberId)` 에 남는 것은 이제 **그 멤버 몫이 아닌 카드**뿐이다 = `ask_parent` 안내("대신 답하기").
   인박스 아래 · 탭 위에 선다.
+- **T40d ②**: 인박스 블록 하나가 `min(패널 높이 × 55%, 내용)` 높이를 가지고 **카드만 그 안에서 스크롤**한다
+  (`RecoveryHint` · `PendingCards` 는 `PendingInbox(belowCards:)` 로 같은 스크롤 영역에). 헤더와 `+N`·"접기" 줄은
+  스크롤 **밖**에 고정이라 접힘선 아래로 밀리지 않고, 탭은 언제나 그 아래에 보인다. 높이 상한이 없으면
+  (감싸는 쪽이 스크롤을 주는 호출) 예전처럼 그냥 쌓는다.
 
 ### 허가·질문 카드 (`pending_card.dart` + `approval_summary.dart`, D12)
 
@@ -137,7 +141,12 @@ Alt+Y 허가 · Alt+N 거부                               ← 인박스 맨 위
   Bash·PowerShell → `Set-Content`·`Add-Content`·`Out-File`·리다이렉션(`>`/`>>`) → 쓰기, `rm`·`Remove-Item`·`del` → 삭제,
   `git push` → 푸시, 그 밖에는 실행 / 그 밖의 도구는 명령 첫 토큰(없으면 실행).
 - **대상**(`approvalTarget`): `file_path|notebook_path|path` 의 마지막 조각, 없으면 명령의 마지막 "경로 같은" 토큰.
-  둘 다 없으면 생략한다(`❗ Bash · 삭제`).
+  둘 다 없으면 생략한다(`❗ Bash · 삭제`). **T40d ③**: 토큰은 따옴표를 아는 `shellTokens` 로 끊고
+  `stripTargetWrappers` 로 감싼 따옴표·괄호와 꼬리 구두점을 벗긴다 — `…ReadAllBytes("D:\x\t40-a.txt")` → `t40-a.txt`,
+  `cat "a b.txt"` → `a b.txt`.
+- **T40d ①**: 첫 줄은 **한 줄 고정**(`maxLines: 1`, 메타는 `Expanded` 뒤 — 전에는 `Spacer` 가 폭을 반 먹어
+  `쓰 / 기` 로 접혔다). 폭이 모자라면 `fitApprovalHeadline(panelWidth:)` 가 **대상만 가운데 말줄임**하고
+  (`t40-…txt`) 동사는 그대로 둔다. 글자 폭은 한글·이모지 2칸의 반각 칸(`displayColumns`)으로 센다.
 - **위험 패턴**(`isDangerousCommand`): `rm -rf`(`-fr` 포함) · `Remove-Item -Recurse` · `git push --force|-f` · `del /s` ·
   줄 첫머리 `format` → 첫 줄 배경 `#FF6B6B` 알파 0.15 + `위험` 태그. `dart format` 은 오탐이 아니다.
 - **만료**: `createdAt + 86400초`(hook 보류 상한). 메타는 `요청 N분 전 · <오늘 10:32 | 내일 10:32 | 9/19 10:32> 만료`,
@@ -147,7 +156,9 @@ Alt+Y 허가 · Alt+N 거부                               ← 인박스 맨 위
 ### 보고서 탭 — 문서 흐름 (`report_tab.dart`, 하드리젝션 ①)
 
 카드 스택이 아니다. 보고 하나 = 헤더 줄 `보고 · 부장 · 23:08 · task#12 · done`(11px 회색) +
-본문 **가변폭 14px / 행간 1.6**(코드·경로 줄만 고정폭 — `splitReportBody`), **6줄 클램프 + "펼치기"**,
+본문 **가변폭 14px / 행간 1.6**(코드·경로 줄만 고정폭 — `splitReportBody`), **6줄 클램프 + "펼치기"**
+(**T40d ④**: 원문 줄이 아니라 **표시 줄** 기준 — `clampReportBody` 가 `TextPainter` 로 재서 여섯째 표시 줄 끝에서
+자른다. `SelectableText` 는 커서 자리만큼 좁게 접으므로 `reportBodyCaretGutter` 를 빼고 잰다),
 보고 사이 1px 구분선, 날짜가 바뀌면 `2026-09-16` 구분선. `[TASK]` 지시는 왼쪽 세로선 대신 **배경 틴트 블록**.
 **미확인 배지**: 마지막으로 보고서 탭을 연 뒤 도착한 `reporting` 수(`reportUnreadProvider`, 앱 로컬 `reportReadProvider`)를
 탭 라벨 옆에 — 탭을 열면 지워진다. 상단 바 `보고 N` 은 그 부서 **부장**의 미확인 수다.
@@ -161,6 +172,10 @@ Alt+Y 허가 · Alt+N 거부                               ← 인박스 맨 위
 - **`Ctrl+T`** = 사무실을 덮는 전체 폭 터미널 오버레이(Esc·닫기 버튼). 오버레이가 열리면 패널의 터미널 탭 자리는
   안내 문구로 바뀐다 — **같은 멤버에 `member.attach` 를 두 번 걸면 나중 detach 가 먼저 것을 끊기 때문**. 터미널은 한 곳에만 붙는다.
   크기가 바뀌면 `member.resize{cols, rows}` 는 그대로 나간다(`terminal_cache.dart` 의 `onResize`).
+- **T40d ⑤**: `CachedTerminal` 이 **데몬이 아는 크기**(`sentCols/sentRows`)를 기억하고 `syncSize` 한 길로만
+  resize 를 보낸다. `attach` 응답이 오면 `markAttached` 가 알린 크기와 지금 뷰 크기를 맞춰 보고 어긋나면 그 자리에서
+  보낸다 — attach 응답을 기다리는 사이의 크기 변화는 `onResize` 가 "아직 attach 전"이라 버리고 xterm 은
+  **같은 크기로 다시 부르지 않기** 때문(`panel_width_test` 가 4판 중 1판 깜빡이던 원인).
 
 ### 상태 범례 7칸 (`office/office_scene.dart` `legendSlotFor`, D-42 3)
 

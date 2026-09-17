@@ -288,6 +288,14 @@ void main() {
         expect(shown, contains('…'));
         expect(shown, endsWith(' 쓰기'));
         expect(find.text(shown), findsOneWidget);
+
+        // 420 에서 위험 태그 + 설명 + 명령 박스 + 버튼 줄이 다 있는 카드도 넘치지 않는다
+        // (넘치면 RenderFlex overflow 로 이 테스트가 죽는다).
+        await pumpPanel(tester, daemon, ApprovalCard(pending: pendingOf(bashPending)), size: const Size(panelWidthMin, 400));
+        await tester.pump();
+        expect(find.byKey(const Key('approval.dangerTag')), findsOneWidget);
+        expect(find.byKey(const Key('approval.meta')), findsOneWidget);
+        expect(find.text('이번 세션 항상 허가'), findsOneWidget);
       });
     });
 
