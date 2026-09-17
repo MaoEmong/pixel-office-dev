@@ -15,7 +15,7 @@ cd dev/app
 flutter pub get
 flutter run -d windows          # 개발 실행
 flutter build windows --release # build\windows\x64\runner\Release\pixel_office.exe
-flutter analyze && flutter test # 검증 (위젯·상태 431건 +1 skip)
+flutter analyze && flutter test # 검증 (위젯·상태 446건 +1 skip)
 ```
 
 데몬이 먼저 떠 있어야 한다(`cd dev/daemon && npm start`). 없으면 앱은 회색 오버레이 + "데몬 연결 안 됨" 을 보이며 1→2→4→5초 간격으로 계속 재접속을 시도한다("데몬 시작" 버튼은 T14).
@@ -37,8 +37,9 @@ Codex 팀원이 각자 책상·배지·터미널 탭(실제 Codex TUI)으로 보
 `force:true` 뒤의 콘솔 전용 디버그 경로다, D-34).
 
 - **상단 탭 = 부서**(`lib/topbar/selected_department.dart`: `selectedDepartmentIdProvider` / `activeDepartmentIdProvider`).
-  "부서 만들기" 다이얼로그(이름 · 작업 폴더 cwd · 부장 엔진 · 부장 이름, 기본 `부장`) → `department.create` →
+  "부서 만들기" 다이얼로그(작업 폴더 · 이름 · 부장 이름 · 부장 엔진) → `department.create` →
   응답의 `head` 를 바로 선택한다. 탭 오른쪽 `⋮` → "부서 삭제" → 확인 → `department.delete`(하위 트리를 잎부터 정리).
+  **폴더 선택 + 기본값(T41)** 은 아래 절.
 - **퇴근은 비상용으로만** 남겼다: 선택 멤버 옆 작은 버튼 → 확인 다이얼로그(경고 "비상용: 부장/팀장 퇴근 시 하위 전원이 정리됩니다")
   → `member.clockOut`.
 - **지시 바**(`lib/command/command_bar.dart`): 대상이 **그 부서의 살아 있는 부장 하나로 고정**된다. 드롭다운에는 부장만 들어가고,
@@ -247,6 +248,19 @@ Alt+Y 허가 · Alt+N 거부                               ← 인박스 맨 위
 - **끊김 오버레이**(`topbar/disconnected_overlay.dart`): pill 과 **같은 문구** + 다음 재시도까지의 진행 바
   (RpcClient backoff 1→2→4→5초, `backoffForAttempt`) + 주 버튼 **데몬 시작** / 보조 **다시 연결**.
   예외 문자열은 `자세히` 를 눌러야 펼쳐진다 — 첫 화면이 스택 트레이스면 안 된다(T39-8).
+- **부서 만들기 다이얼로그**(T41, `topbar/top_bar.dart` `CreateDepartmentDialog`): 작업 폴더를 **치지 않고 고른다**.
+  - `폴더 선택…` 버튼 → `file_selector` 의 `getDirectoryPath()`(Windows 는 네이티브 `IFileDialog`). 칸 자체는
+    그대로 편집 가능 — 경로 붙여넣기 폴백이 살아 있다.
+  - **폴더가 실제로 있을 때만** `만들기` 가 켜진다(`Directory.exists`). 없으면 `그런 폴더가 없습니다 — "폴더 선택…"
+    으로 고르세요`, 아직 안 골랐으면 버튼 옆에 `작업 폴더를 골라야 만들 수 있습니다`.
+  - **기본값**: 부서 이름 = 고른 폴더 이름(`departmentNameForPath`), 부장 이름 = `부장`, 엔진 = `claude`.
+    이름은 사용자가 고치기 전까지만 폴더를 따라간다(칸을 비우면 다시 따라간다). → **폴더만 고르면 한 글자도
+    안 치고 만들 수 있다.**
+  - 마지막으로 고른 폴더의 **부모**가 `app-ui.json` 의 `lastDepartmentDir` 에 남아 다음 선택기가 거기서 열린다
+    (`panel/ui_prefs.dart` `lastDepartmentDirProvider`).
+  - 테스트는 **네이티브 창을 절대 안 연다**: 선택기는 위젯 파라미터(`CreateDepartmentDialog(pickDirectory:)`),
+    폴더 존재 확인은 `directoryExistsProvider` 로 갈아끼운다(위젯 테스트의 fake-async 존에서는 `dart:io` 의
+    Future 가 영영 안 끝난다).
 - **부서 탭**: 폴더 아이콘 + 이름(활성은 채운 폴더), 툴팁 cwd. 오른쪽에 `멤버 N · 대기 N`
   (대기 N = 인박스와 같은 수) 과 미확인 `보고 N` 배지(클릭 = 부장 선택 + 보고서 탭).
 - **지시 바**: 드롭다운을 없애고 정적 칩 **`♛ <부장이름>에게`**(부장 없으면 회색 `부장 없음` + 입력 비활성).
@@ -315,7 +329,7 @@ tool/
     pending_card.dart         허가/질문 카드, AskParentCard
     report_tab.dart           보고서 문서 흐름 + 미확인 배지 프로바이더
     panel_splitter.dart       사무실↔패널 드래그 분할 + Ctrl+T 터미널 오버레이
-    ui_prefs.dart             앱 로컬 UI 설정(패널 폭 저장, 터미널 오버레이 상태)
+    ui_prefs.dart             앱 로컬 UI 설정(패널 폭 저장, 터미널 오버레이 상태, 부서 폴더 선택기의 시작 폴더 T41)
   command/
     command_bar.dart          지시 바 — 대상은 그 부서의 살아 있는 부장 하나로 고정, 정적 칩(T37·T40-5)
     shortcuts.dart            앱 전역 단축키 Ctrl+K/L/T/I/R · Esc(T40-5)
@@ -323,13 +337,16 @@ test/
   fake_daemon.dart          dart:io HttpServer + WebSocketTransformer 로 만든 가짜 데몬(hello/replay/echo/fail/hang/push)
   rpc_client_test.dart      상관·에러 매핑·replay 중복 제거·재접속(since)·backoff
   model_test.dart           PROTOCOL/설계문서 예시 JSON 파싱
+  daemon_info_test.dart     daemon.json 경로 규칙(PIXEL_DATA_DIR / LOCALAPPDATA) + 못 찾았을 때의 진단 문구(T41)
   office_state_test.dart    스냅샷 → 맵, member.status, event → 링버퍼/pending 파생, 재접속, **밀려온 snapshot**(T38)
   app_shell_test.dart       T40c 접점 — OfficeShell 통째로: 슬롯 클릭 → 인박스 스크롤, 부서 0 버튼 → 부서 만들기 다이얼로그
-  command/ office/ panel/ state/   위젯·배치·카드 테스트(T12~T40 — office/ 는 layout·scene·painter·legend·mydesk·states·motion·movement·view)
+  command/ office/ panel/ state/   위젯·배치·카드 테스트(T12~T41 — office/ 는 layout·scene·painter·legend·mydesk·states·motion·movement·view,
+                            command/create_department_test.dart 는 폴더 선택기·기본값 T41)
 windows/runner/main.cpp     창 제목 "픽셀 오피스"
 ```
 
-의존성: `flutter_riverpod`(상태), `web_socket_channel`(WS), `xterm`(터미널 탭, T13).
+의존성: `flutter_riverpod`(상태), `web_socket_channel`(WS), `xterm`(터미널 탭, T13),
+`file_selector`(부서 작업 폴더 선택 — Windows 는 `file_selector_windows`, T41).
 
 ## daemon.json 은 어디서 읽나
 
@@ -338,6 +355,25 @@ windows/runner/main.cpp     창 제목 "픽셀 오피스"
 2. 아니면 `%LOCALAPPDATA%\pixel-office\daemon.json` (`Platform.environment['LOCALAPPDATA']`)
 
 데몬은 기동마다 token 을 새로 만들고 정상 종료 시 파일을 지우므로, `DaemonConnector.fromDaemonJson()` 은 **재접속 시도마다** 파일을 다시 읽는다. 파일이 없으면 그 시도는 "daemon.json 없음(데몬 미기동)" 으로 실패 처리되고 backoff 후 다시 본다.
+
+### 안 붙을 때 (T41)
+
+`%LOCALAPPDATA%` 는 **띄운 환경마다 다른 폴더**를 가리킨다. 실기 사고: 탐색기에서 띄운 앱이 `daemon.json 없음`
+만 보여 줬는데, 파일은 다른 환경(샌드박스)에서 띄운 데몬의 `%LOCALAPPDATA%` 에 멀쩡히 있었다. 그래서 지금은
+**어디를 봤는지**까지 말한다.
+
+- 오류 문구(`daemonJsonMissingMessage()`, `rpc/daemon_info.dart`):
+  `daemon.json 없음(데몬 미기동) — 찾은 곳: <경로> · PIXEL_DATA_DIR 없음 · LOCALAPPDATA 있음`.
+  `RpcClient(noDaemonInfoMessage:)` 로 주입한다(rpc 층은 파일 경로를 모른다).
+- 끊김 오버레이의 `자세히`: 오류가 없을 때도 열리고 안에 `daemon.json: <경로>` + 한 줄
+  "데몬을 아직 안 띄웠으면 '데몬 시작' — 다른 환경(샌드박스·다른 사용자)에서 띄운 데몬은 이 경로에 파일을
+  쓰지 않습니다". 접혀 있을 때는 예전처럼 아무것도 안 뿌린다.
+- `데몬 시작` 은 `cmd /c start` 분리 실행이라 **종료 코드를 못 본다** → 6초(`daemonStartTimeout`) 뒤
+  daemon.json 이 안 생겼으면 "데몬이 뜨지 않았습니다 — dev/daemon 콘솔 창의 오류를 확인하세요
+  (포트 7420~7422 를 다른 데몬이 쓰고 있을 수 있음)".
+- 확인 순서: ① 오버레이 `자세히` 의 경로에 파일이 있나 ② 없으면 `dev/daemon` 콘솔 창에 `이미 데몬이 돌고
+  있습니다`(exit 3, 포트 충돌 포함 — `dev/daemon/README.md`) 가 찍혔나 ③ 앱과 데몬을 **같은 환경**에서 띄웠나
+  (둘 다 탐색기 / 둘 다 같은 터미널). 정 안 되면 양쪽에 같은 `PIXEL_DATA_DIR` 을 주면 환경 차이가 사라진다.
 
 ## RPC 클라이언트 동작 (`lib/rpc/rpc_client.dart`)
 

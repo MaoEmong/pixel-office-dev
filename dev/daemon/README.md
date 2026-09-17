@@ -5,6 +5,7 @@
 현재: **M5 완료(2026-09-17, T30·T31) = v1b**. 지나온 단계 — M0(2026-09-15): 콘솔 클라이언트만으로 고용→지시→허가/질문→재접속→재시작 복구. M3(2026-09-16, T23): 같은 부서에 Claude 멤버와 Codex 멤버를 섞어도 각자 자기 이벤트·pending·터미널로 동작(아래 "Codex 멤버" 절). **M4b(2026-09-16, T34~T39): 직무 체계 rev 3 — 부서 → 부장 → 팀장 → 팀원 3단 트리**(아래 절, D-32). **M5(2026-09-17, T30·T31): 안정화** — 단일 데몬 가드(D-40) · hook 핸들러 예외가 CLI 를 세워 두지 않는 계약 · 보존 정리(D-39) · 재접속 백오프 · 오류 포즈/재고용 실기 · 이벤트 코얼레스는 넣지 않기로 확정(D-41). 계약은 `PROTOCOL.md` §"데몬 수명·안정화 (T30)".
 
 **데몬은 한 번에 하나만 뜬다**(D-40): `daemon.json` 의 pid 가 살아 있고 그 ws 포트가 듣고 있으면 기동을 거부하고 exit 3. 통합 테스트는 `PIXEL_FORCE_START=1` 이 아니라 **자기 `PIXEL_DATA_DIR`** 을 써야 한다.
+**daemon.json 이 안 보여도** hook·MCP·ws 포트가 EADDRINUSE 면 같은 문구·같은 exit 3 으로 거부한다(T41 — 다른 환경/다른 사용자로 띄운 데몬은 자기 `%LOCALAPPDATA%` 에 daemon.json 을 쓰므로 pid 검사를 그냥 통과한다). 문구에 포트 번호와 `netstat -ano | findstr :<포트>` → `taskkill /F /PID <pid>` 가 들어 있다.
 
 ## 실행
 
@@ -14,7 +15,7 @@ npm start                 # 데몬 1회 실행 (ws://127.0.0.1:7420, hook 7421, 
 npm run dev               # tsx watch
 npm run cli               # 콘솔 클라이언트 REPL (help 로 명령 목록)
 npm run cli -- --exec "dept create demo D:/proj claude 부장" --exec "say 부장 안녕" --wait-idle 부장   # 비대화형
-npm test                  # node:test 전체 509건 (PIXEL_IT=1 이면 실제 CLI 통합 테스트 포함 — 그때는 자기 PIXEL_DATA_DIR 을 줄 것)
+npm test                  # node:test 전체 518건 (PIXEL_IT=1 이면 실제 CLI 통합 테스트 포함 — 그때는 자기 PIXEL_DATA_DIR 을 줄 것)
 npm run typecheck
 ```
 
@@ -39,7 +40,7 @@ npm run typecheck
 | `PIXEL_HOOK_PORT` | 7421 | CLI hooks가 POST하는 HTTP 포트 (`/hook/<memberToken>/<event>`) |
 | `PIXEL_MCP_PORT` | 7422 | TeamTools MCP(Streamable HTTP) 포트 — CLI 세션이 `/mcp/<memberToken>` 으로 붙는다(T17) |
 | `PIXEL_DATA_DIR` | `%LOCALAPPDATA%\pixel-office` | `daemon.json`(토큰·세 포트)·DB·세션 설정·멤버 지시문 |
-| `PIXEL_CLAUDE_EXE` | 데스크탑 앱 번들 `claude.exe` | claude 실행 파일 |
+| `PIXEL_CLAUDE_EXE` | **자동 탐지**(아래) | claude 실행 파일 |
 | `PIXEL_CODEX_EXE` | **자동 탐지**(아래) | codex 실행 파일 |
 | `PIXEL_HOOK_TIMEOUT_SEC` | 86400 | 세션 hooks timeout(허가·질문 보류 상한, D-16) |
 | `PIXEL_FORCE_START` | (없음) | `1` 이면 단일 데몬 가드를 건너뛴다(D-40). **테스트는 이것 대신 `PIXEL_DATA_DIR` 을 따로 줄 것** |
@@ -54,7 +55,17 @@ npm run typecheck
 3. PATH 의 **진짜** `codex.exe`(셰임 제외),
 4. 그래도 없으면 `'codex'` — 스폰이 실패하면서 오류로 드러난다(조용히 다른 것을 띄우지 않는다).
 
-`claude` 는 npm 전역 설치를 권장한다(데스크탑 앱 번들 경로는 앱 업데이트마다 버전 폴더가 바뀐다).
+**`PIXEL_CLAUDE_EXE` 자동 탐지 (`src/config.ts resolveClaudeExe`, T41).** 예전에는 데스크탑 앱 번들의 **버전 폴더를
+문자열로 박아** 뒀다(`%APPDATA%\Claude\claude-code\2.1.270\claude.exe`) — 앱이 업데이트되면 그 폴더가 사라져
+`dept create` 가 `-32000 File not found: ...\claude.exe` 로 죽었다(실기). 지금 순서:
+1. `PIXEL_CLAUDE_EXE` 가 있으면 그대로(존재 검사 안 함),
+2. PATH 의 **진짜** `claude.exe`(`.cmd`/`.ps1` 셰임은 node-pty 가 못 띄우므로 세지 않는다),
+3. `%APPDATA%\Claude\claude-code\<버전>\claude.exe` 중 **가장 높은 버전**(숫자 비교 — 그 버전에 exe 가 없으면
+   다음 버전으로 내려간다),
+4. 그래도 없으면 `'claude'`. 기동 로그에 `[daemon] claude : <경로>` 가 찍히고, 못 찾았으면 **찾아본 곳**과
+   `PIXEL_CLAUDE_EXE` 안내가 같이 나온다.
+
+`claude` 는 npm 전역 설치를 권장한다(그러면 2번에서 잡힌다).
 
 ## 직무 체계 rev 3 — 부서 · 부장 · 팀장 · 팀원 (M4b, D-32)
 
