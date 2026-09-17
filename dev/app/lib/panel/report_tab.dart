@@ -156,9 +156,54 @@ String reportHeaderLine({required String name, required String ts, int? taskId, 
 /// task 없이 남은 보고(터미널에서 직접 나눈 턴 등).
 const String reportNoTaskLabel = '작업 없음';
 
-/// 본문 클램프 줄 수 + 펼치기 문구.
+/// 본문 클램프 줄 수 + 펼치기 문구. **표시 줄**(원문 줄이 아니라 접혀 그려진 줄) 기준이다(T40d ④).
 const int reportBodyClampLines = 6;
 const String reportExpandLabel = '펼치기';
+
+/// 본문 가변폭 글자(패스 4 ①: 14px / 행간 1.6). 클램프 계산도 이 크기로 잰다.
+const TextStyle reportBodyTextStyle = TextStyle(fontSize: 14, height: 1.6, color: Colors.white70);
+
+/// 본문 고정폭(코드·경로) 글자.
+const TextStyle reportMonoTextStyle = TextStyle(
+  fontSize: 12.5,
+  height: 1.5,
+  color: Colors.white70,
+  fontFamily: panelMonoFamily,
+  fontFamilyFallback: panelMonoFallback,
+);
+
+/// `SelectableText`(= `EditableText`)는 커서 자리를 남기느라 준 폭보다 **좁게** 접는다.
+/// 그만큼 미리 빼고 재야 잰 줄 수와 그려진 줄 수가 같다(실측: 456 폭에서 8px 넘게 좁다).
+const double reportBodyCaretGutter = 24;
+
+/// 본문을 **표시 줄** [maxLines] 까지로 자른다 — 폭 [width] 에서 실제로 그려지는 줄을 센다.
+///
+/// 원문 줄 수로 자르면 긴 문단 하나가 화면을 다 채운다(T40 남은 것 ④ — 실기 캡처에서 11줄).
+/// 자른 자리는 원문의 글자 위치라 `splitReportBody` 가 그대로 이어서 쓴다(고정폭 덩어리 판정 유지).
+/// 재는 글자는 가변폭 하나로 통일한다 — 고정폭 줄(12.5/1.5)은 더 낮으므로 결과는 6줄 이하로 안전하다.
+({String text, bool clamped}) clampReportBody(
+  String body, {
+  required double width,
+  int maxLines = reportBodyClampLines,
+  TextStyle style = reportBodyTextStyle,
+}) {
+  if (body.isEmpty || width <= 0 || !width.isFinite) return (text: body, clamped: false);
+  final measure = (width - reportBodyCaretGutter).clamp(1.0, width);
+  final painter = TextPainter(
+    text: TextSpan(text: body, style: style),
+    textDirection: TextDirection.ltr,
+    maxLines: maxLines,
+  )..layout(maxWidth: measure);
+  if (!painter.didExceedMaxLines) {
+    painter.dispose();
+    return (text: body, clamped: false);
+  }
+  // 마지막으로 그려진 줄의 오른쪽 끝 = 잘라야 할 글자 위치.
+  final end = painter.getPositionForOffset(Offset(measure, painter.height - 1)).offset;
+  painter.dispose();
+  final cut = body.substring(0, end.clamp(0, body.length)).trimRight();
+  return (text: cut.isEmpty ? body.substring(0, 1) : cut, clamped: true);
+}
 
 /// 본문 조각 — 가변폭 문단이거나 고정폭(코드·경로) 덩어리다.
 typedef ReportSpan = ({String text, bool mono});
@@ -280,9 +325,6 @@ class _ReportCardState extends State<ReportCard> {
     final r = widget.report;
     final instruction = r.instruction;
     final body = r.text.isEmpty ? '(본문 없음)' : r.text;
-    final lines = body.split('\n');
-    final clampable = lines.length > reportBodyClampLines;
-    final shown = clampable && !_expanded ? lines.take(reportBodyClampLines).join('\n') : body;
     return Container(
       padding: const EdgeInsets.fromLTRB(12, 6, 12, 10),
       decoration: const BoxDecoration(border: Border(bottom: BorderSide(color: Colors.white12))),
@@ -310,29 +352,37 @@ class _ReportCardState extends State<ReportCard> {
             ),
           ],
           const SizedBox(height: 6),
-          for (final span in splitReportBody(shown))
-            SelectableText(
-              span.text,
-              style: span.mono
-                  ? const TextStyle(fontSize: 12.5, height: 1.5, color: Colors.white70, fontFamily: panelMonoFamily, fontFamilyFallback: panelMonoFallback)
-                  : const TextStyle(fontSize: 14, height: 1.6, color: Colors.white70),
-            ),
-          if (clampable)
-            Align(
-              alignment: Alignment.centerLeft,
-              child: TextButton(
-                key: ValueKey('report-expand-${r.seq}'),
-                style: TextButton.styleFrom(
-                  visualDensity: VisualDensity.compact,
-                  tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                  padding: EdgeInsets.zero,
-                  foregroundColor: Colors.white54,
-                  textStyle: const TextStyle(fontSize: 12),
-                ),
-                onPressed: () => setState(() => _expanded = !_expanded),
-                child: Text(_expanded ? '접기' : reportExpandLabel),
-              ),
-            ),
+          // 클램프는 **표시 줄** 기준이라 본문이 그려질 폭을 알아야 한다(T40d ④).
+          LayoutBuilder(
+            builder: (context, box) {
+              final clamp = clampReportBody(body, width: box.maxWidth);
+              final shown = _expanded ? body : clamp.text;
+              return Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  for (final span in splitReportBody(shown))
+                    SelectableText(span.text, style: span.mono ? reportMonoTextStyle : reportBodyTextStyle),
+                  if (clamp.clamped)
+                    Align(
+                      alignment: Alignment.centerLeft,
+                      child: TextButton(
+                        key: ValueKey('report-expand-${r.seq}'),
+                        style: TextButton.styleFrom(
+                          visualDensity: VisualDensity.compact,
+                          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                          padding: EdgeInsets.zero,
+                          foregroundColor: Colors.white54,
+                          textStyle: const TextStyle(fontSize: 12),
+                        ),
+                        onPressed: () => setState(() => _expanded = !_expanded),
+                        child: Text(_expanded ? '접기' : reportExpandLabel),
+                      ),
+                    ),
+                ],
+              );
+            },
+          ),
         ],
       ),
     );

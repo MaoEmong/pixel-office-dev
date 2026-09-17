@@ -197,6 +197,79 @@ void main() {
     });
   });
 
+  // T40d ② — 1280×720 실기에서 "+N" 줄과 `ask_parent` 안내 카드가 접힘선 아래로 밀렸다.
+  group('인박스 블록은 패널 높이의 55% 안에서 스크롤한다', () {
+    void fiveAndAskParent() {
+      daemon.snapshotBody['members'] = [
+        memberJson('mH', name: '부장', rank: 'head'),
+        memberJson('m1', name: '하루', parentId: 'mH'),
+      ];
+      daemon.snapshotBody['pending'] = [
+        for (var i = 0; i < 5; i++)
+          approvalJson('a$i', memberId: 'm1', command: 'echo $i', createdAt: '2026-09-17T0$i:00:00.000Z'),
+        pendingJson('ap1', memberId: 'm1', type: 'question', createdAt: '2026-09-17T09:00:00.000Z', payload: {
+          'source': 'ask_parent',
+          'question': '지워도 됩니까?',
+          'from': 'm1',
+          'to': 'mH',
+        }),
+      ];
+    }
+
+    for (final height in [720.0, 640.0]) {
+      testWidgets('패널 높이 $height: 탭·"+N"·ask_parent 카드가 다 닿는다', (tester) async {
+        fiveAndAskParent();
+        await tester.runAsync(() async {
+          final c = await pumpPanel(tester, daemon, const RightPanel(memberId: 'm1'), size: Size(480, height));
+          await pumpUntilConnected(tester, c);
+          await pumpUntil(tester, () => find.byType(ApprovalCard).evaluate().length == inboxExpandedCards, reason: 'cards');
+          await tester.pump();
+
+          final panel = tester.getRect(find.byType(RightPanel));
+          final block = tester.getRect(find.byKey(const Key('inbox')));
+          // ① 블록은 패널 높이의 55% 를 넘지 않는다.
+          expect(block.height <= height * inboxMaxHeightFraction + 0.5, isTrue, reason: '블록 ${block.height}');
+          // ② 탭 줄은 언제나 패널 안에 보인다.
+          final tabs = tester.getRect(find.byType(TabBar));
+          expect(tabs.bottom <= panel.bottom + 0.5, isTrue, reason: '탭이 패널 밖: $tabs vs $panel');
+          expect(tabs.top >= block.bottom - 0.5, isTrue, reason: '탭이 인박스에 덮였다');
+          // ③ "+N" 접힌 줄은 스크롤 없이 보인다(블록 안 · 화면 안).
+          final more = tester.getRect(find.byKey(const Key('inbox.more')));
+          expect(more.bottom <= block.bottom + 0.5, isTrue, reason: '"+N" 이 블록 밖: $more');
+          expect(more.bottom <= panel.bottom + 0.5, isTrue);
+          // ④ ask_parent 안내 카드는 스크롤 영역 안에서 닿는다.
+          expect(find.byType(AskParentCard), findsOneWidget);
+          await tester.ensureVisible(find.byType(AskParentCard));
+          await tester.pump();
+          final ask = tester.getRect(find.byType(AskParentCard));
+          expect(ask.top >= block.top - 0.5 && ask.bottom <= block.bottom + 0.5, isTrue, reason: '안내 카드 $ask / 블록 $block');
+          // ⑤ 카드 영역은 실제로 스크롤되고, 스크롤해도 "+N" 줄은 제자리다(= 스크롤 밖에 고정).
+          final scroll = tester.widget<SingleChildScrollView>(find.byKey(const Key('inbox.scroll')));
+          final position = scroll.controller!.position;
+          expect(position.maxScrollExtent > 0, isTrue, reason: '스크롤할 것이 없다');
+          position.jumpTo(position.maxScrollExtent);
+          await tester.pump();
+          expect(tester.getRect(find.byKey(const Key('inbox.more'))), more, reason: '"+N" 이 스크롤을 따라 움직였다');
+        });
+      });
+    }
+
+    testWidgets('내용이 적으면 블록은 내용만큼만 — min(55%, 내용)', (tester) async {
+      daemon.snapshotBody['pending'] = [
+        approvalJson('a1', memberId: 'm1', command: 'pwd', createdAt: '2026-09-17T01:00:00.000Z'),
+      ];
+      await tester.runAsync(() async {
+        final c = await pumpPanel(tester, daemon, const RightPanel(memberId: 'm1'), size: const Size(480, 720));
+        await pumpUntilConnected(tester, c);
+        await pumpUntil(tester, () => find.byType(ApprovalCard).evaluate().length == 1, reason: 'card');
+        await tester.pump();
+        final block = tester.getRect(find.byKey(const Key('inbox')));
+        expect(block.height < 720 * inboxMaxHeightFraction, isTrue, reason: '내용보다 크게 잡았다: ${block.height}');
+        expect(find.byKey(const Key('inbox.more')), findsNothing);
+      });
+    });
+  });
+
   testWidgets('답하면 인박스에서 사라지고 대기 수가 줄어든다', (tester) async {
     daemon.snapshotBody['pending'] = [approvalJson('a1', memberId: 'm1', command: 'pwd', createdAt: '2026-09-17T01:00:00.000Z')];
     await tester.runAsync(() async {

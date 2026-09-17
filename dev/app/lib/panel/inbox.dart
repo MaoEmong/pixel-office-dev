@@ -129,10 +129,14 @@ final inboxFocusProvider = NotifierProvider<InboxFocusNotifier, InboxFocusReques
 // ---- 위젯 --------------------------------------------------------------------------
 
 class PendingInbox extends ConsumerStatefulWidget {
-  const PendingInbox({super.key, this.backfillMemberId});
+  const PendingInbox({super.key, this.backfillMemberId, this.belowCards});
 
   /// 이 멤버의 백필(`events.query`)에 있는 만료 흔적까지 인박스에 넣는다(보통 선택 멤버).
   final String? backfillMemberId;
+
+  /// 카드 **뒤**, 스크롤 영역 안에 같이 들어가는 것(선택 멤버의 복구 안내 · `ask_parent` 안내 카드).
+  /// 인박스 블록 하나가 높이 상한을 가지므로 이것들도 같은 스크롤 영역에 있어야 탭을 밀어내지 않는다(T40d ②).
+  final Widget? belowCards;
 
   @override
   ConsumerState<PendingInbox> createState() => _PendingInboxState();
@@ -140,6 +144,7 @@ class PendingInbox extends ConsumerStatefulWidget {
 
 class _PendingInboxState extends ConsumerState<PendingInbox> {
   final Map<String, GlobalKey> _itemKeys = {};
+  final ScrollController _scroll = ScrollController();
 
   /// "+N" 을 눌러 전부 펼쳤는가.
   bool _showAll = false;
@@ -153,6 +158,7 @@ class _PendingInboxState extends ConsumerState<PendingInbox> {
   @override
   void dispose() {
     HardwareKeyboard.instance.removeHandler(_onKey);
+    _scroll.dispose();
     super.dispose();
   }
 
@@ -202,11 +208,26 @@ class _PendingInboxState extends ConsumerState<PendingInbox> {
     ref.listen<InboxFocusRequest?>(inboxFocusProvider, (prev, next) {
       if (next != null && next.nonce != prev?.nonce) _handleFocusRequest(next);
     });
+    // 높이 상한이 있는지(= RightPanel 이 패널 높이의 55% 로 묶었는지)는 **Column 바깥**에서만 알 수 있다
+    // — Column 은 자식에게 세로 무한 제약을 준다.
+    return LayoutBuilder(builder: (context, box) => _block(context, bounded: box.hasBoundedHeight));
+  }
+
+  Widget _block(BuildContext context, {required bool bounded}) {
     final items = ref.watch(inboxItemsProvider(widget.backfillMemberId));
     final members = ref.watch(membersProvider);
     final shown = _showAll ? items.length : items.length.clamp(0, inboxExpandedCards);
     final hidden = items.length - shown;
 
+    // 카드(+ 선택 멤버의 안내)는 스크롤 영역 안, 헤더와 "+N" 줄은 그 바깥에 **고정**된다(T40d ②).
+    final cards = <Widget>[
+      for (var i = 0; i < shown; i++)
+        KeyedSubtree(
+          key: _keyOf(items[i].id),
+          child: _InboxRow(item: items[i], members: members, top: i == 0),
+        ),
+      ?widget.belowCards,
+    ];
     return Container(
       key: const Key('inbox'),
       width: double.infinity,
@@ -243,58 +264,66 @@ class _PendingInboxState extends ConsumerState<PendingInbox> {
               ],
             ),
           ),
-          // 스크롤 영역은 감싸는 쪽(RightPanel)이 준다 — 인박스 자신은 높이를 재지 않는다(스크롤 두 겹 방지).
-          if (items.isNotEmpty)
-            Column(
-                    mainAxisSize: MainAxisSize.min,
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      for (var i = 0; i < shown; i++)
-                        KeyedSubtree(
-                          key: _keyOf(items[i].id),
-                          child: _InboxRow(item: items[i], members: members, top: i == 0),
-                        ),
-                      if (hidden > 0)
-                        InkWell(
-                          key: const Key('inbox.more'),
-                          onTap: () => setState(() => _showAll = true),
-                          child: Padding(
-                            padding: const EdgeInsets.fromLTRB(12, 8, 12, 10),
-                            child: Row(
-                              children: [
-                                Text(
-                                  inboxMoreLabel(hidden),
-                                  style: const TextStyle(fontSize: 12.5, fontWeight: FontWeight.bold, color: Colors.white70),
-                                ),
-                                const SizedBox(width: 8),
-                                Expanded(
-                                  child: Text(
-                                    _collapsedSummary(items.sublist(shown), members),
-                                    style: const TextStyle(fontSize: 11.5, color: Colors.white38),
-                                    overflow: TextOverflow.ellipsis,
-                                  ),
-                                ),
-                                const Icon(Icons.expand_more, size: 16, color: Colors.white38),
-                              ],
-                            ),
-                          ),
-                        ),
-                      if (_showAll && items.length > inboxExpandedCards)
-                        Align(
-                          alignment: Alignment.centerLeft,
-                          child: TextButton(
-                            key: const Key('inbox.collapse'),
-                            onPressed: () => setState(() => _showAll = false),
-                            style: TextButton.styleFrom(
-                              visualDensity: VisualDensity.compact,
-                              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-                            ),
-                            child: const Text('접기', style: TextStyle(fontSize: 11.5, color: Colors.white54)),
-                          ),
-                        ),
-                    ],
+          // 높이가 정해져 있으면(RightPanel 의 55% 상한) 카드만 **그 안에서** 스크롤하고,
+          // 정해져 있지 않으면(감싸는 쪽이 스크롤을 준다) 그냥 쌓는다 — 스크롤 두 겹 방지.
+          // `Flexible`(loose) 이라 블록 높이는 `min(상한, 내용)` 이 된다.
+          if (cards.isNotEmpty)
+            if (bounded)
+              Flexible(
+                child: Scrollbar(
+                  controller: _scroll,
+                  thumbVisibility: true,
+                  thickness: panelScrollbarThickness,
+                  child: SingleChildScrollView(
+                    key: const Key('inbox.scroll'),
+                    controller: _scroll,
+                    primary: false,
+                    child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.stretch, children: cards),
                   ),
+                ),
+              )
+            else
+              Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.stretch, children: cards),
+          // "+N" 접힌 줄과 "접기" 는 스크롤 **밖**에 고정 — 접힘선 아래로 밀리지 않게(T40d ②).
+          if (hidden > 0)
+            InkWell(
+              key: const Key('inbox.more'),
+              onTap: () => setState(() => _showAll = true),
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(12, 8, 12, 10),
+                child: Row(
+                  children: [
+                    Text(
+                      inboxMoreLabel(hidden),
+                      style: const TextStyle(fontSize: 12.5, fontWeight: FontWeight.bold, color: Colors.white70),
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        _collapsedSummary(items.sublist(shown), members),
+                        style: const TextStyle(fontSize: 11.5, color: Colors.white38),
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                    const Icon(Icons.expand_more, size: 16, color: Colors.white38),
+                  ],
+                ),
+              ),
+            ),
+          if (_showAll && items.length > inboxExpandedCards)
+            Align(
+              alignment: Alignment.centerLeft,
+              child: TextButton(
+                key: const Key('inbox.collapse'),
+                onPressed: () => setState(() => _showAll = false),
+                style: TextButton.styleFrom(
+                  visualDensity: VisualDensity.compact,
+                  tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+                ),
+                child: const Text('접기', style: TextStyle(fontSize: 11.5, color: Colors.white54)),
+              ),
+            ),
         ],
       ),
     );

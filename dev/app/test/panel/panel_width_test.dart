@@ -1,5 +1,7 @@
 // 패널 폭(420~720, 기본 480, 앱 로컬 저장) · 터미널 탭 660 자동 확장 · Ctrl+T 전체 폭 오버레이
 // (T40-4, 레이아웃 v2 §3 패스 6).
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -125,6 +127,51 @@ void main() {
     });
   });
 
+  // T40d ⑤ — 전체 suite 4판 중 1판꼴로 깜빡이던 자리의 **진짜 원인**을 못으로 박는다.
+  //
+  // `daemon.countOf('member.attach') == 1` 은 **요청이 도착한** 순간 참이 된다. 그 뒤 응답이 돌아와야
+  // `CachedTerminal.attached` 가 켜지는데, 그 사이에 폭이 바뀌면 `onResize` 가 "아직 attach 전"이라
+  // 흘려보내진다. xterm 은 **같은 크기로는 onResize 를 다시 부르지 않으므로** 그 한 번을 놓치면
+  // 데몬은 옛 크기를 영영 믿고, 테스트는 20초를 기다리다 죽었다(단독 실행은 응답이 빨라 거의 안 걸린다).
+  // 이제 attach 응답이 오면 알린 크기와 지금 뷰 크기를 맞춰 보고 어긋나면 그 자리에서 resize 를 보낸다.
+  testWidgets('attach 응답 전에 폭이 바뀌어도 member.resize 가 나간다(경합 회귀)', (tester) async {
+    final gate = Completer<void>();
+    daemon.handlers['member.attach'] = (p) async {
+      await gate.future;
+      return {'screen': 'SCREEN', 'cols': p['cols'], 'rows': p['rows']};
+    };
+    await tester.runAsync(() async {
+      final c = await pumpPanel(
+        tester,
+        daemon,
+        const RightPanel(memberId: 'm1', initialTab: RightPanelTab.terminal),
+        size: const Size(480, 600),
+      );
+      await pumpUntilConnected(tester, c);
+      await pumpUntil(tester, () => daemon.countOf('member.attach') == 1, reason: 'attach 요청 도착');
+      expect(c.read(terminalCacheProvider).of('m1').attached, isFalse); // 응답은 아직
+
+      // 응답을 붙잡아 둔 채로 폭이 660 으로 벌어진다 — 이때의 onResize 는 attach 전이라 버려진다.
+      await pumpPanel(
+        tester,
+        daemon,
+        const RightPanel(memberId: 'm1', initialTab: RightPanelTab.terminal),
+        size: const Size(panelWidthTerminal, 600),
+      );
+      await tester.pump();
+      expect(daemon.countOf('member.resize'), 0);
+
+      gate.complete(); // 이제 attach 응답이 돌아온다
+      await pumpUntil(tester, () => daemon.countOf('member.resize') == 1, reason: 'attach 뒤 크기 맞추기');
+      final p = daemon.paramsOf('member.resize').single;
+      expect(p['memberId'], 'm1');
+      expect((p['cols']! as int) > (daemon.paramsOf('member.attach').single['cols']! as int), isTrue);
+      // 크기가 그대로면 더 보내지 않는다.
+      await tester.pump();
+      expect(daemon.countOf('member.resize'), 1);
+    });
+  });
+
   testWidgets('터미널 크기가 바뀌면 member.resize 가 새 cols/rows 로 나간다', (tester) async {
     await tester.runAsync(() async {
       final c = await pumpPanel(
@@ -134,7 +181,8 @@ void main() {
         size: const Size(480, 600),
       );
       await pumpUntilConnected(tester, c);
-      await pumpUntil(tester, () => daemon.countOf('member.attach') == 1, reason: 'attached');
+      // 요청이 아니라 **응답까지** 기다린다 — 요청만 보고 넘어가면 그 아래 재배치가 경합에 걸린다.
+      await pumpUntil(tester, () => c.read(terminalCacheProvider).of('m1').attached, reason: 'attached');
       final before = daemon.countOf('member.resize');
 
       // 폭이 660 으로 벌어지는 상황을 그대로 — 더 넓은 상자로 다시 띄운다.

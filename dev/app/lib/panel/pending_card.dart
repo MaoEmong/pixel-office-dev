@@ -125,12 +125,17 @@ class _CardFrame extends StatelessWidget {
     this.meta,
     this.metaColor,
     this.footer,
+    this.fitTitle,
   });
 
   final Color accent;
   final String title;
   final bool focused;
   final List<Widget> children;
+
+  /// 카드에 주어진 폭(≈ 패널 폭)에 맞춘 첫 줄. null 이면 [title] 을 그대로 쓴다.
+  /// 허가 카드만 쓴다 — 대상을 가운데 말줄임해 **동사를 살린다**(T40d ①, `fitApprovalHeadlineToWidth`).
+  final String Function(double panelWidth)? fitTitle;
 
   /// 위험 패턴 — 첫 줄 배경 빨강 틴트 + `위험` 태그(D12 1).
   final bool danger;
@@ -143,13 +148,24 @@ class _CardFrame extends StatelessWidget {
   final String? footer;
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context) => LayoutBuilder(builder: (context, box) => _frame(context, box.maxWidth));
+
+  Widget _frame(BuildContext context, double panelWidth) {
     final metaText = meta;
+    final fit = fitTitle;
+    // 첫 줄은 한 줄 고정 — 남은 폭은 `Expanded` 가 전부 가진다(전에는 `Spacer` 가 절반을 먹어
+    // `쓰 / 기` 처럼 낱말 중간에서 접혔다, T40d ①).
     final headline = Row(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Flexible(
-          child: Text(title, style: TextStyle(fontSize: 13.5, fontWeight: FontWeight.bold, color: accent)),
+        Expanded(
+          child: Text(
+            fit == null || !panelWidth.isFinite ? title : fit(panelWidth),
+            maxLines: 1,
+            softWrap: false,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(fontSize: 13.5, fontWeight: FontWeight.bold, color: accent),
+          ),
         ),
         if (danger) ...[
           const SizedBox(width: 6),
@@ -166,7 +182,6 @@ class _CardFrame extends StatelessWidget {
             ),
           ),
         ],
-        const Spacer(),
         if (metaText != null)
           Padding(
             padding: const EdgeInsets.only(left: 8, top: 1),
@@ -441,6 +456,15 @@ class _ApprovalCardState extends ConsumerState<ApprovalCard> {
           builder: (context, _) => _CardFrame(
             accent: expired ? _expiredColor : _approvalColor,
             title: expired ? '$approvalExpiredLabel · ${approvalHeadline(_toolName, input)}' : approvalHeadline(_toolName, input),
+            // 한 줄에 맞춘 첫 줄 — 폭이 모자라면 대상만 가운데 말줄임한다(T40d ①).
+            fitTitle: (panelWidth) {
+              final head = fitApprovalHeadlineToWidth(
+                _toolName,
+                input,
+                approvalHeadlineTextWidth(panelWidth, danger: danger && !expired),
+              );
+              return expired ? '$approvalExpiredLabel · $head' : head;
+            },
             danger: danger && !expired,
             meta: expired ? '$approvalExpiredLabel 필요' : approvalMetaLine(widget.pending.createdAt),
             metaColor: expired

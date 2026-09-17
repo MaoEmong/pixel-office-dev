@@ -48,19 +48,21 @@ class _TerminalTabState extends ConsumerState<TerminalTab> {
 
   /// dispose 에서 detach 를 보내야 하므로 initState 에서 잡아 둔다(unmount 뒤에는 ref 를 쓸 수 없다).
   late final RpcClient _client;
+  late final TerminalCache _cache;
 
   @override
   void initState() {
     super.initState();
     _client = ref.read(rpcClientProvider);
-    _entry = ref.read(terminalCacheProvider).of(widget.memberId);
-    _entry.attached = false;
+    _cache = ref.read(terminalCacheProvider);
+    _entry = _cache.of(widget.memberId);
+    _cache.markDetached(_entry);
     _termSub = _client.notifications.listen(_onNotification);
     _connSub = ref.listenManual<RpcConnectionState>(connectionStateProvider, (prev, next) {
       if (next == RpcConnectionState.connected) {
         if (prev != RpcConnectionState.connected) _attach();
       } else {
-        _entry.attached = false;
+        _cache.markDetached(_entry);
         if (mounted) setState(() => _notice = '데몬 연결 끊김 — 재접속되면 화면을 다시 받습니다');
       }
     });
@@ -72,12 +74,12 @@ class _TerminalTabState extends ConsumerState<TerminalTab> {
   void didUpdateWidget(covariant TerminalTab old) {
     super.didUpdateWidget(old);
     if (old.memberId != widget.memberId) {
-      _entry.attached = false;
+      _cache.markDetached(_entry);
       _detach(old.memberId);
       _generation++;
       _attaching = false;
       _notice = null;
-      _entry = ref.read(terminalCacheProvider).of(widget.memberId);
+      _entry = _cache.of(widget.memberId);
       WidgetsBinding.instance.addPostFrameCallback((_) => _attach());
     }
   }
@@ -87,7 +89,7 @@ class _TerminalTabState extends ConsumerState<TerminalTab> {
     _generation++;
     _termSub?.cancel();
     _connSub?.close();
-    _entry.attached = false;
+    _cache.markDetached(_entry);
     _detach(widget.memberId);
     super.dispose();
   }
@@ -113,11 +115,9 @@ class _TerminalTabState extends ConsumerState<TerminalTab> {
     setState(() => _notice = null);
     try {
       // 레이아웃 전이면 xterm 기본값(80x24). PROTOCOL 허용 범위(cols 20~500, rows 5~300) 안으로.
-      final r = await _client.call('member.attach', {
-        'memberId': memberId,
-        'cols': terminal.viewWidth.clamp(20, 500),
-        'rows': terminal.viewHeight.clamp(5, 300),
-      });
+      final cols = terminalCols(terminal);
+      final rows = terminalRows(terminal);
+      final r = await _client.call('member.attach', {'memberId': memberId, 'cols': cols, 'rows': rows});
       if (!mounted || gen != _generation) {
         // 그 사이 멤버가 바뀌었거나 탭이 닫혔다 — 데몬 쪽 attach 를 되돌린다.
         _detach(memberId);
@@ -126,11 +126,13 @@ class _TerminalTabState extends ConsumerState<TerminalTab> {
       // 재attach 면 이전 화면이 남아 있으므로 뷰포트를 비우고(스크롤백은 유지) 현재 화면을 쓴다.
       terminal.write('\x1b[H\x1b[2J');
       terminal.write((r['screen'] as String?) ?? '');
-      entry.attached = true;
+      // 응답을 기다리는 사이에 뷰가 넓어졌으면(패널 폭 480 → 660) 여기서 곧바로 resize 가 나간다 —
+      // `onResize` 는 그 사이 "아직 attach 전"이라 흘려보냈고 같은 크기로는 다시 오지 않는다(T40d ⑤).
+      _cache.markAttached(entry, cols: cols, rows: rows);
       setState(() => _notice = null);
     } on RpcException catch (e) {
       if (!mounted || gen != _generation) return;
-      entry.attached = false;
+      _cache.markDetached(entry);
       setState(() => _notice = describeAttachError(e));
     } finally {
       if (gen == _generation) _attaching = false;
