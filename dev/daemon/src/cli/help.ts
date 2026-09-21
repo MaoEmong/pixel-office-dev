@@ -51,6 +51,8 @@ export const HELP: HelpSection[] = [
       ['tasks', 'task 목록 — `task#n <상태> <발행자>→<대상>: 지시  ↩ <보고상태> 보고` + 열린 ask_parent 건수'],
       ['events [n]', '최근 수신 이벤트 n건 (기본 20)'],
       ['query <부서|-> [beforeSeq] [limit]', '과거 이벤트 조회 (events.query). `-` 면 전체'],
+      ['usage', '엔진별 남은 한도·연결 상태 + 캐릭터별 컨텍스트·토큰·비용 (스냅샷 usage, T43)'],
+      ['', '  Claude 한도는 **그 엔진 멤버가 한 턴 돌아야** 들어온다 — 그전에는 "한도 미확인"'],
     ],
   },
   {

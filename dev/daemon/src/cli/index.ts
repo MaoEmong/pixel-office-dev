@@ -9,7 +9,8 @@
 // 지우지 않고 `force:true` 뒤의 디버그 명령(`team create`/`hire`)으로 남겼다(D-34).
 import readline from 'node:readline';
 import type { Department, Member, OfficeEvent, Snapshot, Task, Team } from '../store/types.js';
-import { RpcClient, RpcError, readDaemonInfo, daemonInfoPath, type HelloResult } from './RpcClient.js';
+import { RpcClient, RpcError, readDaemonInfo, daemonInfoPath, type ClientSnapshot, type HelloResult } from './RpcClient.js';
+import type { EngineUsage, MemberUsage, UsageSnapshot } from '../usage/types.js';
 import {
   CliError,
   parseAnswerArgs,
@@ -37,6 +38,7 @@ import {
   questionsOf,
   stripAnsi,
   treeLines,
+  usageLines,
   type LocalPending,
   type TreeNode,
 } from './format.js';
@@ -65,6 +67,8 @@ class Cli {
   readonly members = new Map<string, Member>();
   readonly pending = new Map<string, LocalPending>();
   tasks: Task[] = [];
+  /** T43: 스냅샷의 사용량 + `usage.*` 알림으로 갱신되는 로컬 상태. */
+  usage: UsageSnapshot = { engines: [], members: [] };
   readonly events: OfficeEvent[] = [];
   attached: string | null = null;
   quitting = false;
@@ -127,6 +131,9 @@ class Cli {
       const text = stripAnsi(t.data);
       for (const line of text.split(/\r?\n/)) if (line.trim()) this.print(`[term] ${line}`);
     });
+    // T43: 사용량은 바뀔 때만 온다 — 로컬 상태만 갈아 끼우고 화면은 조용하다(`usage` 로 본다).
+    c.on('usage.engine', (u) => this.applyEngineUsage(u));
+    c.on('usage.member', (u) => this.applyMemberUsage(u));
     c.on('daemon.notice', (n) => this.print(`[daemon:${n.level}] ${n.message}`));
     c.on('error', (e) => this.print(`[client] ${e.message}`));
     c.on('close', (code) => {
@@ -208,7 +215,7 @@ class Cli {
     known.updatedAt = ev.ts;
   }
 
-  applySnapshot(s: Snapshot): void {
+  applySnapshot(s: ClientSnapshot): void {
     this.departments.clear();
     for (const d of s.departments ?? []) this.departments.set(d.id, d);
     this.teams.clear();
@@ -218,6 +225,21 @@ class Cli {
     this.pending.clear();
     for (const p of s.pending ?? []) this.pending.set(p.id, fromSnapshotPending(p));
     this.tasks = s.tasks ?? [];
+    this.usage = s.usage ?? { engines: [], members: [] };
+  }
+
+  /** `usage.engine` 알림 — 같은 엔진 행을 갈아 끼운다(없으면 추가). */
+  applyEngineUsage(u: EngineUsage): void {
+    const i = this.usage.engines.findIndex((e) => e.engine === u.engine);
+    if (i >= 0) this.usage.engines[i] = u;
+    else this.usage.engines.push(u);
+  }
+
+  /** `usage.member` 알림 — 같은 멤버 행을 갈아 끼운다(없으면 추가). */
+  applyMemberUsage(u: MemberUsage): void {
+    const i = this.usage.members.findIndex((m) => m.memberId === u.memberId);
+    if (i >= 0) this.usage.members[i] = u;
+    else this.usage.members.push(u);
   }
 
   // ---- 접속 ------------------------------------------------------------------------
@@ -682,6 +704,10 @@ class Cli {
         const res = (await c.call('events.query', params)) as { events: OfficeEvent[] };
         if (!res.events?.length) this.print('(이벤트 없음)');
         for (const ev of res.events ?? []) this.print(formatEvent(ev, this.nameOf));
+        return;
+      }
+      case 'usage': {
+        for (const line of usageLines(this.usage, this.nameOf)) this.print(line);
         return;
       }
       case 'tasks': {

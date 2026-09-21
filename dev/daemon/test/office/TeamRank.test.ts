@@ -88,12 +88,15 @@ describe('부서·직급 트리 (T24 → T34)', () => {
     assert.equal(createDept({ name: 'b', headName: '   ' }).head.name, DEFAULT_HEAD_NAME);
   });
 
-  test('department.create: 부장 엔진이 codex 여도 허용하되 daemon.notice{warn} 을 낸다 (v1 권장은 claude)', () => {
+  // T42/D-46: 예전에는 "v1 권장은 claude" 경고를 냈다. 실기에서 Codex 부장이 오케스트레이션 도구를 전부
+  // 통과해 근거가 사라졌다 — 경고를 지웠고, 여기서는 **경고가 나오지 않는 것**을 지킨다.
+  test('department.create: 부장 엔진이 codex 여도 경고하지 않는다 (D-46)', () => {
     const { head } = createDept({ headEngine: 'codex' });
     assert.equal(head.engine, 'codex');
-    assert.ok(
-      notices.some((n) => n.startsWith('warn:') && n.includes('codex')),
-      `codex 부장 경고: ${JSON.stringify(notices)}`,
+    assert.deepEqual(
+      notices.filter((n) => n.startsWith('warn:') && n.includes('codex')),
+      [],
+      `codex 부장에는 경고가 없어야 한다: ${JSON.stringify(notices)}`,
     );
   });
 

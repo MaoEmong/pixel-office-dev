@@ -584,9 +584,8 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
       this.store.deleteDepartment(department.id);
       throw e;
     }
-    if (params.headEngine === 'codex') {
-      this.notice('warn', `${department.name}: 부장 엔진이 codex 입니다 — v1 권장은 claude(오케스트레이션 도구 실측이 Claude 기준)`);
-    }
+    // (T42/D-46) 예전에는 여기서 "부장 엔진이 codex 입니다 — v1 권장은 claude" 경고를 냈다. **사실이 아니어서 지웠다**:
+    // T42 실기에서 Codex 부장이 create_team·delegate·report·ask_user·reply 를 전부 통과했다.
     const created = this.store.updateDepartment(department.id, { headId: head.id })!;
     this.emit('tree', 'department.create');
     return { department: created, head };
