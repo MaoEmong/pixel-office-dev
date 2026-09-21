@@ -176,6 +176,10 @@ Claude 종료 힌트(`exit-hint.txt`, 빈 프롬프트에서 Ctrl+C 한 번): �
 
 ## 남은 것
 
+> **2026-09-21 해소 — `T42-CodexLive.md`.** `capture-codex.ts` 를 다시 돌려 승인 프롬프트 실물을 받았다:
+> `approval-exec` → `verified:true`(제목·enter/esc 는 추정대로, 항목 문구·푸터는 달랐다), 도구 실행 중 화면
+> `working-1~4.txt` 도 확보. 미검증으로 남은 것은 Claude `login-success` 하나뿐이다.
+
 - **Codex 승인 프롬프트 실물 캡처** — 2026-09-21 한도 리셋 후 `npx tsx test/screen/tools/capture-codex.ts <신뢰된 cwd>` 재실행(시나리오 4단계 `echo x > ../x.txt`). 문구·항목 순서·esc 효과 확정 후 `approval-exec` 를 `verified:true` 로.
 - Codex 실제 도구 실행 중 화면(명령 출력 스트리밍) 픽스처 — 같은 재실행에서 `working-*.txt` 로 나온다.
 - Claude `login-success` 다이얼로그 — 여전히 미검증.

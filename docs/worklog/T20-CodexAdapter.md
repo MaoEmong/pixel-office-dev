@@ -121,6 +121,10 @@ codex alive after clockOut? false
 
 ## 남은 것
 
+> **2026-09-21 해소 — `T42-CodexLive.md`.** 통합 테스트 재실행(A, 수정 후 통과)·`Interrupt` 실물 페이로드(G)·
+> `config.codexExe` 자동 탐지 실기 확인까지 끝났다. 읽기 휴리스틱은 실사용 로그(apply_patch·Get-Content·Set-Content)로
+> 한 번 대조했고 오분류는 없었다.
+
 - **실기동 통합 테스트 재실행 — 2026-09-21 13:58 이후**(`PIXEL_IT=1 npx tsx --test test/office/codex.integration.test.ts`). 허가 왕복·파일 생성·`Stop` 이벤트까지 확인하고 이 문서 검증 절을 갱신할 것.
 - Codex `Interrupt` hook 의 **실물 페이로드** 미확인(스파이크에서도 발화 안 함). 어댑터는 payload 를 읽지 않으므로 동작에는 영향 없음.
 - Codex TeamTools MCP 주입(`-c mcp_servers.team.url=…`) — M3 별도 태스크. 그전까지 Codex 멤버는 `ask_user`/`report` 를 못 쓴다.

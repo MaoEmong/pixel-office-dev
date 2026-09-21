@@ -44,6 +44,7 @@ npm run typecheck
 | `PIXEL_CODEX_EXE` | **자동 탐지**(아래) | codex 실행 파일 |
 | `PIXEL_HOOK_TIMEOUT_SEC` | 86400 | 세션 hooks timeout(허가·질문 보류 상한, D-16) |
 | `PIXEL_FORCE_START` | (없음) | `1` 이면 단일 데몬 가드를 건너뛴다(D-40). **테스트는 이것 대신 `PIXEL_DATA_DIR` 을 따로 줄 것** |
+| `PIXEL_HOOK_LOG` | (없음) | 진단용. 파일 경로를 주면 `hook.js` 가 **CLI 가 보낸 페이로드와 우리가 돌려준 결정**을 JSONL 로 덧붙인다(T42) |
 
 세 포트는 전부 `127.0.0.1` 전용이고 기동할 때마다 `daemon.json` 에 실제 값이 적힌다(클라이언트는 그 파일을 읽는다).
 
@@ -132,6 +133,8 @@ rev 3 를 **Codex 엔진**으로 돌려 보는 것은 사용량 한도 때문에
 - **MCP 주입:** `-c mcp_servers.team.url="http://127.0.0.1:<mcpPort>/mcp/<memberToken>"` — 그 실행에만 적용되고
   `~/.codex/config.toml` 은 건드리지 않는다. Claude 는 같은 URL 을 `--mcp-config <세션 mcp.json>` 으로 받는다. 서버 이름은 둘 다 `team`.
   실기에서 `/mcp verbose` 가 `team: connected (1 tool) · Tools: ask_user` 로 보인다(T22 — 그때는 도구가 하나였다. T35 부터는 직급별 목록이라 팀원이면 `report, ask_parent` 가 보인다).
+  **도구 이름은 Claude 와 같은 `mcp__team__<tool>` 이고, Codex 는 MCP 도구에 `PermissionRequest` 를 띄우지 않는다**
+  (`PreToolUse` → `PostToolUse` 로 바로 간다) — 즉 D-22(자동 allow)는 Codex 에서 실제로는 발화하지 않는다(T42 실측).
 - **이벤트 매핑:** Codex 의 도구는 사실상 `Bash` 하나뿐이라 **명령 문자열 휴리스틱**으로 가른다 —
   `cat`/`rg`/`ls`/`sed -n`/`git diff|log|status` 등은 `reading`, `apply_patch` 는 `editing`, 나머지(쓰기 리다이렉트 포함)는 `running`.
   모르면 `running`(과장된 reading 보다 안전). Claude 는 도구 이름표(`Read`/`Write`/`Bash`)로 그대로 가른다.
@@ -141,16 +144,29 @@ rev 3 를 **Codex 엔진**으로 돌려 보는 것은 사용량 한도 때문에
   한도 안내의 모델 전환 제안(`model-switch-offer`) → **Esc**(현재 모델 유지, 사용자 설정을 바꾸지 않는다 — T21).
   ScreenModel 이 감지하고 InputQueue 가 키를 보내며 `daemon.notice{info}` 를 남긴다. 사용자가 터미널 탭에서 직접 치는 중이면 얹지 않는다.
   CLI 자체 **허가 프롬프트**(`approval-prompt`)는 감지만 하고 **키를 절대 자동으로 보내지 않는다**(두 엔진 공통, T21).
+- **중단:** `Interrupt` hook 은 Ctrl+C 전용이 아니다 — **Esc 로 턴을 끊어도 같은 hook 이 온다**(T42 실측). 퇴근 Ctrl+C 도
+  `Interrupt` → `SessionEnd` 순으로 낸다. 페이로드는 `session_id turn_id transcript_path cwd hook_event_name model permission_mode`
+  일곱 개뿐이라 어댑터가 읽을 것이 없다(`test/fixtures/hooklog-codex-t42.json`).
 - **퇴근:** `Ctrl+C` **한 번**(idle 프롬프트면 그것으로 exit 0). 2초 안에 안 죽으면 한 번 더, 그래도 안 죽으면 강제 종료.
   무조건 두 번 보내면 이미 죽은 뒤의 키가 새어 나간다(T20 함정 3). Claude 는 `/exit` + Enter.
+- **재시작 복구(`codex resume <id>`):** 복원 중에는 화면이 prompt ready 인데도 **Enter 가 버려진다.** 그래서 InputQueue 가
+  Enter 뒤 프롬프트가 실제로 들어갔는지(= `isIdle()` 이 풀리는지) 2.5초 창으로 확인하고 최대 4회까지 다시 보낸다(T42).
+  실기에서 Codex 멤버는 매번 1회 재시도가 필요했고 Claude 멤버는 0회였다. 안 그러면 `[RESUMED]` 지시가 입력 상자에 남아
+  그 멤버의 큐가 영구히 막힌다.
+  **턴을 한 번도 안 돈 Codex 멤버는 `session_id` 가 없어**(위 "첫 idle") 재시작에서 `error{restart: no session id to resume}`
+  가 된다 — `rehire` 로 새 세션을 띄우면 된다(잃을 맥락도 없다).
 - **폴백(Codex 전용, `src/office/codexFallback.ts`):** 모델이 도구를 안 부르고 말로만 턴을 끝낼 때를 위해 턴 종료 메시지를 승격한다 —
   질문처럼 보이면 `ask_user` 와 같은 모양의 question pending(`payload.fallback:'codex-stop'`, 답은 `[ANSWER q#…]` 봉투 **없이** 주입),
   아니면 진행 중이던 task 의 보고(`reported` + `report_text`). 질문이 보고보다 먼저다.
 - **유령 정리:** 재시작 복구는 `child_pid` 의 프로세스 이름이 `codex` 를 포함할 때만 종료한다(pid 재사용 보호).
 
-**2026-09-21 이후 재확인 목록** — ChatGPT 계정이 사용량 한도(리셋 2026-09-21 13:58, D-23)라 **모델 턴이 필요한 항목**은 전부 이월돼 있다.
-한 번에 돌릴 수 있게 `docs/worklog/T23-MixedTeam.md` §"9/21 이후 확인 목록" 에 모아 두었다(통합 테스트는
-`PIXEL_IT=1 npx tsx --test test/office/codex.integration.test.ts`).
+**실기 점검 결과(2026-09-21, T42)** — 한도가 풀린 뒤 `docs/worklog/T23-MixedTeam.md` §"9/21 이후 확인 목록 A~J" 를 한 번에 돌렸다.
+결과·증거·고친 결함은 `docs/worklog/T42-CodexLive.md`. 통합 테스트는 `PIXEL_IT=1 npx tsx --test test/office/codex.integration.test.ts`
+(부서 생성 → Codex 부장 → 지시 → 허가 → 파일 → 보고 → 퇴근, 약 24초).
+
+**hook 원문 보기(진단):** `PIXEL_HOOK_LOG=<파일 경로>` 를 주고 데몬을 띄우면 `hook.js` 가 **보낸 페이로드와 받은 결정**을
+JSONL 로 그 파일에 덧붙인다(옵트인, 안 주면 아무 일도 안 한다). CLI 가 실제로 무엇을 보내는지 볼 유일한 길이다 —
+Codex 의 MCP 도구 이름·`Interrupt` 페이로드를 이걸로 확정했다(T42).
 
 ## 구조
 

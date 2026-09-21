@@ -207,6 +207,10 @@ $ npx tsx test/office/tools/t22-live.ts
 
 ## 남은 것 / 9/21 이후 확인 목록
 
+> **2026-09-21 해소 — `T42-CodexLive.md`.** 1~5 전부 실기로 확인했다. 특히 2번의 답: Codex 도 MCP 도구를
+> **`mcp__team__*`** 로 보내고 **MCP 도구에는 `PermissionRequest` 를 아예 띄우지 않는다** → D-22 는 Codex 에서 무동작이고,
+> `TEAM_TOOL_NAMES` 휴리스틱은 지웠다. 3번(질문 폴백)은 `QUESTION_PATTERNS` 조정 없이 그대로 통과했다.
+
 ChatGPT 계정 사용량 한도(**2026-09-21 13:58** 리셋, D-23)라 **모델 턴이 필요한 것**은 전부 이월한다. 리셋 후 아래를 순서대로:
 
 1. **Codex 가 `ask_user` 를 실제로 부르는지** — `PIXEL_IT=1` 로 `test/office/codex.integration.test.ts` 를 돌린 뒤, 같은 방식으로

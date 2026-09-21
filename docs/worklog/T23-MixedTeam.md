@@ -277,37 +277,53 @@ $ Get-Process -Id 27132                   → node                   # 데몬은
 
 ### 9/21 이후로 이월한 것 (전부 **모델 턴이 필요**해서다 — D-23)
 
+> **2026-09-21 해소.** 아래 목록 A~J 는 `worklog/T42-CodexLive.md` 에서 실기로 전부 돌렸다(I 만 조건 미발생으로 보류).
+> Codex 캐릭터가 실제로 도구를 쓰는 구간도 그때 확인됐으므로 **M3 의 이월 칸은 비었다.**
+
 아래 "9/21 이후 확인 목록" 이 유일한 이월 목록이다. Codex 캐릭터가 **실제로 도구를 쓰는** 구간
 (`PreToolUse` → `PermissionRequest` → allow → 파일 생성 → `Stop` → 보고/질문 폴백)은 아직 실기로 못 봤고,
 해당 구간은 스파이크 실측 페이로드(`run-codex6.log`, `hooklog-codex.json`)로 만든 단위 테스트로 대체돼 있다.
 
 ## 9/21 이후 확인 목록 (T20 + T21 + T22 + T23 통합, 한 번에 돌릴 것)
 
+> **전부 끝났다 — 2026-09-21, `worklog/T42-CodexLive.md`.** 결과·증거·고친 결함은 거기 A~J 표에 있다.
+> 이 절은 무엇을 물었는지의 기록으로 남긴다.
+
 **전제:** ChatGPT 사용량 한도 리셋 **2026-09-21 13:58** 이후. 팀 `demo`, cwd `dev/spike-0/sandbox`.
 순서대로 하면 한 번의 Codex 세션으로 대부분 끝난다.
 
-- [ ] **A. 통합 테스트 그린** — `cd dev/daemon && PIXEL_IT=1 npx tsx --test test/office/codex.integration.test.ts`
+- [x] **A. 통합 테스트 그린** — `cd dev/daemon && PIXEL_IT=1 npx tsx --test test/office/codex.integration.test.ts`
       (출근 → idle → `echo t20 > ../t20.txt` 지시 → `waiting_approval` → allow → idle → 파일 확인·삭제 → 퇴근 → 프로세스 종료).
       지금은 `timeout waiting for ...` 로 실패한다. → T20 검증 절 갱신. *(T20)*
-- [ ] **B. Codex 도구 구간 이벤트 실물 대조** — A 가 남긴 이벤트로 `PreToolUse`→`running`/`reading`,
+      → **T42: 수정 후 통과.** 한도와 무관하게 rev 3 이전 RPC(`team.create`/`clockIn` force, `departmentId`, `snapshot`)로 죽고 있었다.
+- [x] **B. Codex 도구 구간 이벤트 실물 대조** — A 가 남긴 이벤트로 `PreToolUse`→`running`/`reading`,
       `PostToolUse`, `Stop` 이 설계 §2 표와 맞는지 확인(단위 테스트가 쓰는 페이로드와 실물 키가 같은지도). *(T20/T23)*
-- [ ] **C. `ask_user` 실제 호출** — "team MCP 의 ask_user 로 나에게 물어봐" 지시 → `asking{tool:'ask_user'}` →
+      → **T42: 통과.** `apply_patch`→editing, `Get-Content …`→reading, `Set-Content …`→running.
+- [x] **C. `ask_user` 실제 호출** — "team MCP 의 ask_user 로 나에게 물어봐" 지시 → `asking{tool:'ask_user'}` →
       `question.respond` → `[ANSWER q#…]` 왕복. T17 의 Claude 통합 테스트와 같은 시나리오의 Codex 판을 추가할 것. *(T22)*
-- [ ] **D. MCP 도구의 `tool_name` 실물** — C 에서 `PermissionRequest` 가 뜨는지, 뜬다면 이름이 `team.ask_user` 인지 다른 모양인지.
+      → **T42: 통과**(실기 이벤트 #1012~#1016).
+- [x] **D. MCP 도구의 `tool_name` 실물** — C 에서 `PermissionRequest` 가 뜨는지, 뜬다면 이름이 `team.ask_user` 인지 다른 모양인지.
       확인 후 `src/adapters/CodexHooksAdapter.ts` 의 `TEAM_TOOL_NAMES` 휴리스틱을 정확한 이름으로 좁히고 `TODO(2026-09-21 이후)` 제거.
       (Codex 가 MCP 도구에 승인 프롬프트를 안 띄우면 D-22 는 Codex 에서 무의미해진다 — 그 결론도 기록.) *(T22)*
-- [ ] **E. 질문 폴백 실전** — 모델이 질문으로 턴을 끝내게 유도 → `asking{fallback:'codex-stop'}` → 답(봉투 없는 보통 프롬프트) →
+      → **T42: 확정.** 이름은 Claude 와 같은 `mcp__team__*`, **MCP 도구에는 PermissionRequest 가 안 뜬다** → D-22 는
+      Codex 에서 무동작. 휴리스틱·TODO 삭제.
+- [x] **E. 질문 폴백 실전** — 모델이 질문으로 턴을 끝내게 유도 → `asking{fallback:'codex-stop'}` → 답(봉투 없는 보통 프롬프트) →
       모델이 이어서 답하는지. `codexFallback.ts` 의 `QUESTION_PATTERNS` 오탐·누락 조정(특히 `which`/`should I`). *(T22)*
-- [ ] **F. 보고 폴백 실전** — 지시 → 작업 → `Stop` → task `reported`(report_text) 확인. *(T22)*
-- [ ] **G. `Interrupt` hook 실물 페이로드** — 턴이 도는 중 `member.interrupt`(Ctrl+C) → `Interrupt` hook 발화 페이로드 기록
+      → **T42: 통과.** 패턴 조정 불필요.
+- [x] **F. 보고 폴백 실전** — 지시 → 작업 → `Stop` → task `reported`(report_text) 확인. *(T22)* → **T42: 통과.**
+- [x] **G. `Interrupt` hook 실물 페이로드** — 턴이 도는 중 `member.interrupt`(Ctrl+C) → `Interrupt` hook 발화 페이로드 기록
       (어댑터는 payload 를 안 읽으므로 동작 영향은 없지만 02 §④ 의 마지막 미확인 항목이다). *(T20/02)*
-- [ ] **H. Codex 승인 프롬프트 화면 픽스처** — `npx tsx test/screen/tools/capture-codex.ts <신뢰된 cwd>` 재실행
+      → **T42: 확정**(키 7개, `test/fixtures/hooklog-codex-t42.json`). Esc 중단도 같은 hook 을 낸다.
+- [x] **H. Codex 승인 프롬프트 화면 픽스처** — `npx tsx test/screen/tools/capture-codex.ts <신뢰된 cwd>` 재실행
       (시나리오 4단계 `echo x > ../x.txt`). 문구·항목 순서·`esc` 효과 확정 후 `codex-0.154.json` 의 `approval-exec` 를
       `verified:true` 로. 같은 실행에서 **작업 중 화면(명령 출력 스트리밍) 픽스처** `working-*.txt` 도 나온다. *(T21)*
-- [ ] **I. 턴 종료 없이 끝나는 화면의 idle 판정** — 아래 "발견한 함정" 1. 한도 화면이 아니라 정상 턴에서도
+      → **T42: 통과.** `verified:true`. 항목 문구는 추정과 달랐고 키(enter/esc)는 맞았다.
+- [~] **I. 턴 종료 없이 끝나는 화면의 idle 판정** — 아래 "발견한 함정" 1. 한도 화면이 아니라 정상 턴에서도
       `Stop` 이 안 오는 경우가 있는지 보고, 필요하면 화면 기반 idle 폴백을 M5 에 올린다. *(T23)*
-- [ ] **J. 혼합 팀 실기 마무리** — A~F 를 통과한 뒤 이 문서의 "실기" 절을 **Codex 가 실제로 파일을 만드는** 판으로 한 번 더 찍고
+      → **T42: 보류(조건 미발생).** 폴백은 T23b 에서 이미 들어갔고(D-25), 한도 화면 말고는 재현이 안 된다.
+- [x] **J. 혼합 팀 실기 마무리** — A~F 를 통과한 뒤 이 문서의 "실기" 절을 **Codex 가 실제로 파일을 만드는** 판으로 한 번 더 찍고
       (`img/T23-*.png` 갱신), "M3 완료 판정" 의 이월 칸을 비운다. *(T23)*
+      → **T42: 통과.** 새 캡처는 `img/T42-*.png` 로 따로 뒀다(이 문서의 T23 캡처는 그때의 기록으로 남긴다).
 
 관련 없는 이월(모델 턴과 무관, 여기 목록 밖): `SessionStart(source=compact)` 재주입 확인 → M5.
 Claude `login-success` 다이얼로그 미검증 → 상시.
@@ -346,9 +362,10 @@ Claude `login-success` 다이얼로그 미검증 → 상시.
 
 ## 남은 것
 
-- 위 **"9/21 이후 확인 목록" A~J** — 이월분 전부. 리셋 후 한 번에.
-- 함정 1(턴 없이 끝난 Codex 가 `working` 에 갇힘) — M5(T30) 후보. 위 목록 I.
-- 함정 2(`approval-prompt` 에서 `dialogPassed` 대신 `blocked`) — src/input 담당 태스크.
+- ~~위 **"9/21 이후 확인 목록" A~J**~~ → **T42 에서 전부 소화**(`worklog/T42-CodexLive.md`). I 만 보류(조건 미발생).
+- ~~함정 1(턴 없이 끝난 Codex 가 `working` 에 갇힘)~~ → T23b 에서 화면 기반 idle 폴백(D-25)으로 고쳐졌다.
+  T42 실기에서는 발화 조건이 안 생겼다.
+- ~~함정 2(`approval-prompt` 에서 `dialogPassed` 대신 `blocked`)~~ → T23b 에서 `dialogBlocked`(D-26)로 고쳐졌다.
 - 함정 6(Codex 책상 모니터 텍스트) — tui-map `skipLines`, 급하지 않음.
-- M4 로: 팀장·직급, 나머지 TeamTools(`hire`/`dismiss`/`delegate`/`report`), Codex 팀장 허용 여부
-  (설계상 "v1 팀장 엔진은 Claude 고정, Codex MCP 주입 검증 후 해제" — 주입은 T22 에서 검증됐으니 M4 에서 판단).
+- ~~M4 로: … Codex 팀장 허용 여부~~ → T42 에서 **부장·팀장 모두 codex 로 실기 통과**(create_team/delegate/report/
+  ask_user/ask_parent/reply/hire/dismiss 8종). 하드 게이트는 원래 없었고 `daemon.notice{warn}` 한 줄뿐이다.
