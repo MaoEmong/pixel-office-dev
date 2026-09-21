@@ -1,16 +1,44 @@
 // 통합 테스트(opt-in, PIXEL_IT=1) 공통 도우미: 실제 데몬 프로세스 띄우기, WS JSON-RPC 클라이언트, 임시 포트, 이 테스트가 띄운
-// claude.exe 만 골라 죽이기. restart.integration.test.ts(T09) 의 인라인 도우미와 같은 모양 — 새 IT 는 이 파일을 쓴다.
+// claude.exe 만 골라 죽이기. **모든 IT 가 이 파일을 쓴다**(T44 에서 restart IT 의 인라인 사본도 여기로 합쳤다).
+//
+// 격리 규칙(D-40 · README "실행"): IT 는 자기 `PIXEL_DATA_DIR`(임시 폴더)과 **빈 포트 3개**(`freePort()`)로 데몬을 띄운다 —
+// 기본 포트 7420-7422 에 진짜 데몬이 떠 있어도 부딪히지 않는다. `PIXEL_FORCE_START` 는 쓰지 않는다.
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
+import fs from 'node:fs';
 import net from 'node:net';
+import os from 'node:os';
 import path from 'node:path';
 import WebSocket from 'ws';
-import type { OfficeEvent } from '../../src/store/types.js';
+import type { OfficeEvent, Snapshot } from '../../src/store/types.js';
 
 export const IT = process.env.PIXEL_IT === '1';
 export const DAEMON_DIR = path.resolve(import.meta.dirname, '..', '..');
-export const SANDBOX = path.resolve(DAEMON_DIR, '..', 'spike-0', 'sandbox');
+/**
+ * 멤버의 cwd. 기본은 저장소의 `dev/spike-0/sandbox`(두 CLI 에서 신뢰된 폴더).
+ * `PIXEL_IT_SANDBOX` 로 갈아끼울 수 있다 — worktree 처럼 sandbox 가 없는 체크아웃(gitignore 대상)에서 쓴다.
+ */
+export const SANDBOX = process.env.PIXEL_IT_SANDBOX ? path.resolve(process.env.PIXEL_IT_SANDBOX) : path.resolve(DAEMON_DIR, '..', 'spike-0', 'sandbox');
 
 export const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * IT 용 데몬 환경변수 한 벌: 임시 dataDir + 빈 포트 3개(+ 추가분).
+ * **포트를 하드코딩하지 않는다** — 기본 7420-7422 에 실사용 데몬이 떠 있어도 이 데몬은 그 옆에 뜬다.
+ */
+export async function itEnv(prefix: string, extra: Record<string, string> = {}): Promise<{ dataDir: string; env: Record<string, string> }> {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), `pixel-office-${prefix}-it-`));
+  const [wsPort, hookPort, mcpPort] = await Promise.all([freePort(), freePort(), freePort()]);
+  return {
+    dataDir,
+    env: {
+      PIXEL_WS_PORT: String(wsPort),
+      PIXEL_HOOK_PORT: String(hookPort),
+      PIXEL_MCP_PORT: String(mcpPort),
+      PIXEL_DATA_DIR: dataDir,
+      ...extra,
+    },
+  };
+}
 
 export function freePort(): Promise<number> {
   return new Promise((resolve, reject) => {
@@ -189,6 +217,17 @@ export class Client {
   close(): void {
     this.ws.close();
   }
+}
+
+/**
+ * 지금 스냅샷을 한 번 떠 온다. **스냅샷 전용 RPC 는 없다** — `hello` 응답에만 실려 오므로 별도 연결로 한 번 붙었다 끊는다
+ * (구 IT 들이 쓰던 `snapshot` 메서드는 존재한 적이 없다: -32601).
+ */
+export async function snapshotOnce(port: number, token: string, tag: string): Promise<Snapshot> {
+  const peek = await Client.connect(port, tag);
+  const s = (await peek.call<{ snapshot: Snapshot }>('hello', { token, client: { name: tag, version: '0' } })).snapshot;
+  peek.close();
+  return s;
 }
 
 export interface Daemon {

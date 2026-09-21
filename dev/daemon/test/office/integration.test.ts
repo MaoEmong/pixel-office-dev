@@ -1,6 +1,7 @@
 // 통합 테스트(opt-in): 실제 데몬(src/index.ts)을 자식 프로세스로 띄우고 WS JSON-RPC 로 Claude 멤버를 출근 → 지시 → 허가 → idle → 퇴근.
-// 실행: PIXEL_IT=1 npx tsx --test test/office/*.test.ts   (bash)
-// 전제: dev/spike-0/sandbox 가 신뢰된 폴더이고 claude 로그인이 끝나 있다(첫 실행 다이얼로그는 InputQueue 가 자동 통과한다).
+// 실행: PIXEL_IT=1 npx tsx --test test/office/integration.test.ts   (bash)
+// 전제: dev/spike-0/sandbox(또는 `PIXEL_IT_SANDBOX`)가 신뢰된 폴더이고 claude 로그인이 끝나 있다(첫 실행 다이얼로그는 InputQueue 가 자동 통과한다).
+// T44: 여기도 rev 3 경로로 — `team.create`+`member.clockIn`(디버그 전용, -32004) 대신 `department.create` 하나.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, type ChildProcess } from 'node:child_process';
@@ -10,13 +11,15 @@ import os from 'node:os';
 import path from 'node:path';
 import WebSocket from 'ws';
 import type { DaemonInfo } from '../../src/office/types.js';
-import type { Member, OfficeEvent, Snapshot, Team } from '../../src/store/types.js';
+import type { Department, Member, OfficeEvent, Snapshot } from '../../src/store/types.js';
+import { SANDBOX } from './it-helpers.js';
 
 const IT = process.env.PIXEL_IT === '1';
 const DAEMON_DIR = path.resolve(import.meta.dirname, '..', '..');
-const SANDBOX = path.resolve(DAEMON_DIR, '..', 'spike-0', 'sandbox');
 const TARGET = path.join(SANDBOX, 't07.txt');
-const INSTRUCTION = '셸 명령 "echo t07 > t07.txt"를 실행해줘. 다른 건 하지 마.';
+// "네가 직접" 을 못 박는다 — rev 3 의 부장은 create_team·delegate 를 들고 있어서, 그냥 시키면 팀을 만들어 팀장에게
+// 넘긴다(T44 실측: 허가 요청이 팀장 쪽에서 떠서 이 테스트가 부장의 waiting_approval 을 영영 기다렸다).
+const INSTRUCTION = '팀을 만들거나 위임하지 말고 네가 직접 셸 명령 "echo t07 > t07.txt" 를 실행해라. 그 외에는 아무것도 하지 마라.';
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -151,7 +154,7 @@ function killTree(pid: number): void {
   }
 }
 
-test('real daemon: team.create → clockIn(claude) → instruct → waiting_approval → allow → idle → file exists → clockOut → shutdown', { skip: IT ? false : 'set PIXEL_IT=1 to run', timeout: 300_000 }, async () => {
+test('real daemon: department.create(claude head) → instruct → waiting_approval → allow → idle → file exists → clockOut → shutdown', { skip: IT ? false : 'set PIXEL_IT=1 to run', timeout: 300_000 }, async () => {
   assert.ok(fs.existsSync(SANDBOX), `sandbox missing: ${SANDBOX}`);
   fs.rmSync(TARGET, { force: true });
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pixel-office-t07-it-'));
@@ -199,11 +202,15 @@ test('real daemon: team.create → clockIn(claude) → instruct → waiting_appr
     assert.equal(hello.daemon.pid, child.pid);
     console.log(`[IT] hello ok: snapshot.seq=${hello.snapshot.seq} teams=${hello.snapshot.teams.length}`);
 
-    const { team } = await client.call<{ team: Team }>('team.create', { name: 'it', cwd: SANDBOX, leaderEngine: 'claude' });
     const t0 = Date.now();
-    const { member } = await client.call<{ member: Member }>('member.clockIn', { teamId: team.id, engine: 'claude', name: 'tester' });
+    const { department, head: member } = await client.call<{ department: Department; head: Member }>('department.create', {
+      name: 'it07',
+      cwd: SANDBOX,
+      headEngine: 'claude',
+      headName: 'tester',
+    });
     claudePid = member.childPid;
-    console.log(`[IT] clockIn member=${member.id} pid=${member.childPid} status=${member.status}`);
+    console.log(`[IT] department=${department.id} head=${member.id} rank=${member.rank} pid=${member.childPid} status=${member.status}`);
     await client.waitStatus(member.id, 'idle', 90_000);
     console.log(`[IT] idle (SessionStart) after ${Date.now() - t0}ms`);
 
