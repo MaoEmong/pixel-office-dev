@@ -200,6 +200,20 @@ describe('부서·직급 트리 (T24 → T34)', () => {
     );
   });
 
+  // T46-1 "남은 것" → T46-3: `suspended` 는 GONE(exited/error)이 아니라 이 게이트를 그냥 통과했다.
+  // 잠시 닫힌 상사에게는 프로세스가 없어 `[TEAM] 팀원 변경` 도 못 받고 일도 못 시킨다 — 곧 돌아오므로 기다리게 한다.
+  test('hireChild: 잠시 닫힌(suspended) 상사 밑에는 고용할 수 없다 — 다시 출근하면 된다', () => {
+    const { lead } = tree();
+    office.store.updateMember(lead.id, { status: 'suspended' });
+    assert.throws(
+      () => office.hireChild({ parentId: lead.id, name: 'q', rank: 'member', engine: 'claude' }),
+      (e: unknown) => code(e) === RPC_ERROR.RANK_RULE && /잠시 닫힘/.test((e as Error).message),
+    );
+    // 되살아나면(= starting/idle) 다시 열린다.
+    office.store.updateMember(lead.id, { status: 'idle' });
+    assert.equal(office.hireChild({ parentId: lead.id, name: 'q', rank: 'member', engine: 'claude' }).rank, 'member');
+  });
+
   test('hireByLeader(T25 용): hireChild 의 얇은 래퍼 — hiredBy leader / rank member', () => {
     const { team, lead } = tree();
     const hired = office.hireByLeader({ leaderId: lead.id, engine: 'claude', name: '이음', instructions: '# 역할\n테스터' });

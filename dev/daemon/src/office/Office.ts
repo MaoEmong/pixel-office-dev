@@ -1016,6 +1016,11 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
     if (GONE.has(parent.status)) {
       throw new OfficeError(RPC_ERROR.RANK_RULE, `${parent.name} 은(는) ${parent.status} 입니다 — 고용할 수 없습니다`);
     }
+    // 잠시 닫힌 상사 밑에는 붙이지 않는다(T46-1 "남은 것" → T46-3). `suspended` 는 GONE 이 아니라서 여기를 통과했는데,
+    // 그 상사에게는 프로세스가 없어 `[TEAM] 팀원 변경` 을 받을 수도 일을 시킬 수도 없다. 곧 돌아오므로 **기다리게** 한다.
+    if (parent.status === 'suspended') {
+      throw new OfficeError(RPC_ERROR.RANK_RULE, `${parent.name} 은(는) 잠시 닫힘(suspended) 입니다 — 다시 출근한 뒤에 고용하세요`);
+    }
     const expected = CHILD_RANK[parent.rank];
     if (expected !== rank) {
       throw new OfficeError(
