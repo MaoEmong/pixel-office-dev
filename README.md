@@ -36,7 +36,7 @@ pixel-office/
     01-설계문서.md        설계(rev 2) + 직무 체계 rev 3 + 실측 반영 + 설계 변경 이력
     02-실측-체크리스트.md  CLI·hooks·pty 실측 결과와 근거
     03-작업계획.md        태스크 분해 T00~T44 와 진행 상태 — **진행 상태의 단일 기준**
-    04-결정기록.md        D-01~D-46 (append-only, 맨 위에 목차 표)
+    04-결정기록.md        D-01~D-47 (append-only, 맨 위에 목차 표)
     worklog/            태스크별 기록 T##-*.md + 창 캡처 img/
     design/             와이어프레임
   dev/
