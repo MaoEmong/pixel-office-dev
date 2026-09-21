@@ -14,6 +14,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { Store } from '../../src/store/Store.js';
+import { SCHEMA_VERSION } from '../../src/store/schema.js';
 
 /** T34 이전(v1)의 스키마 그대로. 여기 문장을 고치면 안 된다 — 과거의 모양이다. */
 const V1_SQL = `
@@ -172,7 +173,7 @@ describe('스키마 v1 → v2 마이그레이션 (T34, D-32)', () => {
     store.close();
   });
 
-  test('다시 열어도 그대로 — schema_version 2, *_v1 임시 테이블 없음(멱등)', () => {
+  test('다시 열어도 그대로 — schema_version 최신, *_v1 임시 테이블 없음(멱등)', () => {
     const s1 = new Store(dbPath);
     const deptId = s1.listDepartments()[0]!.id;
     s1.close();
@@ -186,7 +187,7 @@ describe('스키마 v1 → v2 마이그레이션 (T34, D-32)', () => {
 
     const raw = new DatabaseSync(dbPath);
     const version = (raw.prepare('SELECT version FROM schema_version').get() as { version: number }).version;
-    assert.equal(version, 2);
+    assert.equal(version, SCHEMA_VERSION);
     const leftovers = (raw.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE '%_v1'").all() as Array<{ name: string }>);
     assert.deepEqual(leftovers, [], '임시 테이블은 남지 않는다');
     // v2 제약이 실제로 걸려 있다(부서 cascade).
@@ -200,13 +201,13 @@ describe('스키마 v1 → v2 마이그레이션 (T34, D-32)', () => {
     s3.close();
   });
 
-  test('새 DB 는 바로 v2 (마이그레이션 경로를 타지 않는다)', () => {
+  test('새 DB 는 바로 최신 버전 (마이그레이션 경로를 타지 않는다)', () => {
     const fresh = path.join(dir, 'fresh.db');
     const store = new Store(fresh);
     assert.equal(store.listDepartments().length, 0);
     store.close();
     const raw = new DatabaseSync(fresh);
-    assert.equal((raw.prepare('SELECT version FROM schema_version').get() as { version: number }).version, 2);
+    assert.equal((raw.prepare('SELECT version FROM schema_version').get() as { version: number }).version, SCHEMA_VERSION);
     raw.close();
   });
 

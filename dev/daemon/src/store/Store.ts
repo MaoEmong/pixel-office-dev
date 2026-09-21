@@ -860,6 +860,52 @@ export class Store {
     });
   }
 
+  // ---- 사용량 (v3, T43) --------------------------------------------------------
+
+  /**
+   * 엔진 사용량 한 줄을 쓴다(upsert). `value` 는 와이어 객체 그대로(`usage/types.ts` EngineUsage).
+   * **행은 멤버가 다 나가도 지우지 않는다** — Claude 한도는 첫 턴 뒤에나 오므로 마지막으로 본 값을 보여 줘야 한다(D-45).
+   */
+  putEngineUsage(engine: Engine, value: unknown, updatedAt: string = nowIso()): void {
+    this.db
+      .prepare(
+        `INSERT INTO engine_usage(engine, json, updated_at) VALUES (?, ?, ?)
+         ON CONFLICT(engine) DO UPDATE SET json = excluded.json, updated_at = excluded.updated_at`,
+      )
+      .run(engine, JSON.stringify(value ?? null), updatedAt);
+  }
+
+  /** 저장된 엔진 사용량 전부(engine 순). json 이 깨져 있으면 그 행은 건너뛴다. */
+  listEngineUsage(): Array<{ engine: Engine; value: unknown; updatedAt: string }> {
+    return (this.db.prepare('SELECT * FROM engine_usage ORDER BY engine').all() as Row[]).flatMap((r) => {
+      const value = parseJson<unknown>(r.json, undefined);
+      return value === undefined ? [] : [{ engine: r.engine as Engine, value, updatedAt: r.updated_at as string }];
+    });
+  }
+
+  /** 멤버 사용량 한 줄(upsert). 멤버 행이 없으면 FK 로 거부되므로 호출자가 멤버를 먼저 확인한다. */
+  putMemberUsage(memberId: string, value: unknown, updatedAt: string = nowIso()): void {
+    this.db
+      .prepare(
+        `INSERT INTO member_usage(member_id, json, updated_at) VALUES (?, ?, ?)
+         ON CONFLICT(member_id) DO UPDATE SET json = excluded.json, updated_at = excluded.updated_at`,
+      )
+      .run(memberId, JSON.stringify(value ?? null), updatedAt);
+  }
+
+  /** 저장된 멤버 사용량 전부(행 순). */
+  listMemberUsage(): Array<{ memberId: string; value: unknown; updatedAt: string }> {
+    return (this.db.prepare('SELECT * FROM member_usage ORDER BY rowid').all() as Row[]).flatMap((r) => {
+      const value = parseJson<unknown>(r.json, undefined);
+      return value === undefined ? [] : [{ memberId: r.member_id as string, value, updatedAt: r.updated_at as string }];
+    });
+  }
+
+  /** 멤버 사용량 한 줄 삭제(멤버 행이 지워질 때는 FK cascade 가 알아서 한다). */
+  deleteMemberUsage(memberId: string): boolean {
+    return toNum(this.db.prepare('DELETE FROM member_usage WHERE member_id = ?').run(memberId).changes) > 0;
+  }
+
   // ---- snapshot -------------------------------------------------------------
 
   /** `hello` 응답용 스냅샷. seq 는 lastSeq — 클라이언트는 그보다 큰 event 만 적용한다. */
