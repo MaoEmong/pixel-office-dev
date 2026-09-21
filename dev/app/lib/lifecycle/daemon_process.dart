@@ -27,6 +27,15 @@ import '../rpc/daemon_info.dart';
 /// 데몬 로그 파일 이름(`<데이터 폴더>/daemon.log`).
 const String daemonLogName = 'daemon.log';
 
+/// 데몬에게 "로그는 네가 직접 이 파일에 써라" 고 알려 주는 환경변수(T46-3 실기 결함 ③).
+///
+/// 앱이 죽으면 이 파이프의 **읽는 쪽이 사라지고**, 그 뒤 데몬이 한 줄만 찍어도 그 write 가 영영
+/// 끝나지 않아 **데몬의 이벤트 루프가 그 자리에서 멈춘다**(윈도우 실측 — `dev/daemon/src/log.ts` 머리말).
+/// 그러면 설계 §3(부모가 사라지면 스스로 정리)이 통째로 죽고 `claude.exe` 가 영원히 남는다.
+/// 그래서 **데몬이 파일에 직접 쓰게** 하고, 앱이 읽는 파이프에는 아무것도 흐르지 않게 한다.
+/// (그래도 파이프는 계속 읽는다 — node·tsx 의 네이티브 크래시는 console 을 거치지 않고 fd 로 나온다.)
+const String daemonLogEnv = 'PIXEL_DAEMON_LOG';
+
 /// 로그 보관 상한(수명주기 §1 "최근 1MB 만 유지"). 기동 때 이 크기로 잘라 내고 이어 쓴다.
 const int daemonLogMaxBytes = 1024 * 1024;
 
@@ -161,13 +170,19 @@ Future<DaemonProcess> spawnDaemon({
       sink = null; // 로그를 못 열어도 데몬은 띄운다.
     }
   }
+  final env = {
+    ...extraEnv,
+    // 데몬이 자기 로그를 직접 파일에 쓴다(위 [daemonLogEnv] 주석 — 앱이 죽어도 데몬이 안 멈추고,
+    // 앱이 죽은 **뒤의** 로그도 남는다). 로그 파일을 못 정했으면 안 넘긴다(데몬은 예전처럼 stdout).
+    daemonLogEnv: ?path,
+  };
   final Process proc;
   try {
     proc = await Process.start(
       cmd.executable,
       cmd.arguments,
       workingDirectory: daemonDir.path,
-      environment: extraEnv,
+      environment: env,
       // 기본 모드(파이프) — 콘솔 창이 뜨지 않는 유일한 모드이면서 로그를 받을 수 있다(파일 머리 표 참고).
     );
   } on ProcessException catch (e) {

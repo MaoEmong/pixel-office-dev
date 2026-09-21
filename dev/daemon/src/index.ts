@@ -1,9 +1,14 @@
 // pixel-office daemon 진입점 (T07). Office(오케스트레이터) + RpcServer(WS JSON-RPC) 를 띄우고 SIGINT/SIGTERM 에 정중히 내린다.
 // node:sqlite ExperimentalWarning 은 Store 모듈이 로드 시 거른다.
+import { installFileLog } from './log.js';
 import { config, resolveClaudeExeDetailed } from './config.js';
 import { Office } from './office/Office.js';
 import { bindOrRefuse, DaemonStartRefusedError } from './office/singleton.js';
 import { RpcServer } from './rpc/RpcServer.js';
+
+// 첫 줄을 찍기 전에 로그 목적지를 정한다. 앱이 띄운 데몬(`PIXEL_DAEMON_LOG` 있음)은 **stdout 을 쓰지 않는다** —
+// 읽는 쪽(앱)이 사라진 파이프에 한 줄만 써도 이벤트 루프가 그 자리에서 멈춘다(까닭과 실측은 `log.ts` 머리말).
+installFileLog();
 
 const office = new Office();
 

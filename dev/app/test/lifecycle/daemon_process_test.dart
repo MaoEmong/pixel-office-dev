@@ -137,6 +137,19 @@ void main() {
       expect(text, contains('앱이 데몬을 띄움'), reason: '언제 무엇을 띄웠는지 로그 머리에 남는다');
     }, skip: _hasNode ? false : 'node 없음');
 
+    // T46-3 실기 결함 ③: 앱이 죽으면 파이프의 읽는 쪽이 사라져 데몬이 **그 자리에서 멈춘다**(윈도우).
+    // 그래서 데몬이 로그를 직접 파일에 쓰도록 경로를 넘긴다 — 데몬은 stdout 을 안 쓰게 된다.
+    test('PIXEL_DAEMON_LOG 로 로그 파일 경로를 넘긴다 (데몬이 직접 쓴다)', () async {
+      File('${tmp.path}/package.json').writeAsStringSync('{"scripts":{"start":"node env.js"}}');
+      File('${tmp.path}/env.js').writeAsStringSync(
+        "console.log('로그경로=' + process.env.PIXEL_DAEMON_LOG);",
+      );
+      final log = '${tmp.path}/daemon.log';
+      final proc = await spawnDaemon(daemonDir: tmp, logPath: log);
+      expect(await proc.exitCode, 0);
+      expect(File(log).readAsStringSync(), contains('로그경로=$log'));
+    }, skip: _hasNode ? false : 'node 없음');
+
     test('killTree 가 자식 + 손자를 끝낸다', () async {
       File('${tmp.path}/package.json').writeAsStringSync('{"scripts":{"start":"node sleeper.js"}}');
       File('${tmp.path}/sleeper.js').writeAsStringSync(
