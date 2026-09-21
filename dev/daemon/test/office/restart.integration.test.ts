@@ -1,249 +1,41 @@
 // T09 통합 테스트(opt-in): 실제 데몬을 죽였다 켜서 Claude 멤버가 `--resume` 으로 이어지는지 본다.
-//   데몬#1: team.create(sandbox) → clockIn(claude) → instruct "한 줄로 인사해줘" → idle
+//   데몬#1(임시 dataDir·빈 포트 3개): department.create(sandbox, 부장 '기억이') → instruct "한 줄로 인사해줘" → idle
 //   process.kill(데몬#1) (하드 킬 — daemon.json 이 남고 멤버 status 는 idle 그대로)
 //   데몬#2(같은 dataDir): stdout 의 "[office] 복구: …" → hello{since} → 멤버 재스폰 확인 → [RESUMED] 턴 종료 대기
 //   → member.attach 화면에 이전 대화가 보이는지 → instruct "아까 뭐라고 인사했는지 한 줄로" → text 이벤트가 앞 인사를 언급하는지
 //   → clockOut → daemon.shutdown
 // 실행: PIXEL_IT=1 npx tsx --test test/office/restart.integration.test.ts   (bash)
-// 전제: dev/spike-0/sandbox 가 신뢰된 폴더이고 claude 로그인이 끝나 있다.
+// 전제: dev/spike-0/sandbox(또는 `PIXEL_IT_SANDBOX`)가 신뢰된 폴더이고 claude 로그인이 끝나 있다.
+//
+// T44(2026-09-21) 갱신 — rev 3(T34, D-32/D-34) 이후 낡아 있던 것을 codex IT(T42-1)와 같은 방식으로 고쳤다:
+//   ① `team.create`+`member.clockIn` 은 디버그 전용이 됐다(-32004) → 멤버 하나면 되므로 **정식 경로**
+//      `department.create` 로 부장 하나를 세운다(force 를 한 군데도 안 쓴다).
+//   ② 스냅샷은 `hello` 응답으로만 온다(`snapshotOnce`).
+//   ③ 인라인으로 복사돼 있던 도우미(Client/startDaemon/freePort/sweep…)를 `it-helpers.ts` 하나로 합쳤다 —
+//      IT 마다 임시 dataDir + 빈 포트 3개라는 격리 규칙이 한 곳에만 있게.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import fs from 'node:fs';
-import net from 'node:net';
-import os from 'node:os';
 import path from 'node:path';
-import WebSocket from 'ws';
 import type { DaemonInfo } from '../../src/office/types.js';
-import type { Member, OfficeEvent, Snapshot, Team } from '../../src/store/types.js';
+import type { Department, Member, OfficeEvent, Snapshot } from '../../src/store/types.js';
+import {
+  Client,
+  type Daemon,
+  IT,
+  SANDBOX,
+  itEnv,
+  killTree,
+  pidAlive,
+  sleep,
+  snapshotOnce,
+  startDaemon,
+  sweepClaudeByDataDir,
+  waitExit,
+} from './it-helpers.js';
 
-const IT = process.env.PIXEL_IT === '1';
-const DAEMON_DIR = path.resolve(import.meta.dirname, '..', '..');
-const SANDBOX = path.resolve(DAEMON_DIR, '..', 'spike-0', 'sandbox');
 const GREET = '한 줄로 인사해줘';
 const RECALL = '아까 뭐라고 인사했는지 한 줄로';
-
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-
-function freePort(): Promise<number> {
-  return new Promise((resolve, reject) => {
-    const srv = net.createServer();
-    srv.once('error', reject);
-    srv.listen(0, '127.0.0.1', () => {
-      const port = (srv.address() as net.AddressInfo).port;
-      srv.close(() => resolve(port));
-    });
-  });
-}
-
-interface Notification {
-  method: string;
-  params: Record<string, unknown>;
-}
-
-class Client {
-  private nextId = 1;
-  private readonly waiting = new Map<number, { resolve: (v: unknown) => void; reject: (e: unknown) => void }>();
-  readonly notifications: Notification[] = [];
-  private readonly waiters: Array<{ pred: (n: Notification) => boolean; resolve: (n: Notification) => void }> = [];
-  lastSeq = 0;
-
-  private constructor(
-    readonly ws: WebSocket,
-    readonly tag: string,
-  ) {
-    ws.on('message', (raw) => {
-      const msg = JSON.parse(raw.toString()) as Record<string, unknown>;
-      if (typeof msg.method === 'string') {
-        const n = { method: msg.method, params: (msg.params ?? {}) as Record<string, unknown> };
-        this.notifications.push(n);
-        if (n.method === 'event') {
-          const e = n.params as unknown as OfficeEvent;
-          this.lastSeq = Math.max(this.lastSeq, e.seq);
-          console.log(`[IT:${tag}] event #${e.seq} ${e.kind} ${JSON.stringify(e.detail).slice(0, 160)}`);
-        } else if (n.method === 'member.status') {
-          console.log(`[IT:${tag}] status ${String(n.params.status)} (${String(n.params.derived)})`);
-        } else if (n.method === 'daemon.notice') {
-          console.log(`[IT:${tag}] notice ${String(n.params.level)}: ${String(n.params.message)}`);
-        }
-        for (const w of [...this.waiters]) {
-          if (w.pred(n)) {
-            this.waiters.splice(this.waiters.indexOf(w), 1);
-            w.resolve(n);
-          }
-        }
-        return;
-      }
-      const w = this.waiting.get(msg.id as number);
-      if (!w) return;
-      this.waiting.delete(msg.id as number);
-      if (msg.error) w.reject(new Error(`rpc error ${JSON.stringify(msg.error)}`));
-      else w.resolve(msg.result);
-    });
-  }
-
-  static connect(port: number, tag: string): Promise<Client> {
-    return new Promise((resolve, reject) => {
-      const ws = new WebSocket(`ws://127.0.0.1:${port}`);
-      ws.once('open', () => resolve(new Client(ws, tag)));
-      ws.once('error', reject);
-    });
-  }
-
-  call<T>(method: string, params: unknown): Promise<T> {
-    const id = this.nextId++;
-    return new Promise<T>((resolve, reject) => {
-      this.waiting.set(id, { resolve: resolve as (v: unknown) => void, reject });
-      this.ws.send(JSON.stringify({ jsonrpc: '2.0', id, method, params }));
-    });
-  }
-
-  waitFor(what: string, pred: (n: Notification) => boolean, timeoutMs: number): Promise<Notification> {
-    const hit = this.notifications.find(pred);
-    if (hit) return Promise.resolve(hit);
-    return new Promise((resolve, reject) => {
-      const t = setTimeout(() => reject(new Error(`timeout waiting for ${what}`)), timeoutMs);
-      this.waiters.push({
-        pred,
-        resolve: (n) => {
-          clearTimeout(t);
-          resolve(n);
-        },
-      });
-    });
-  }
-
-  waitEvent(memberId: string, kind: OfficeEvent['kind'], afterSeq: number, timeoutMs: number, extra?: (e: OfficeEvent) => boolean): Promise<OfficeEvent> {
-    return this.waitFor(
-      `event ${kind} after #${afterSeq}`,
-      (n) => {
-        if (n.method !== 'event') return false;
-        const e = n.params as unknown as OfficeEvent;
-        return e.memberId === memberId && e.kind === kind && e.seq > afterSeq && (extra ? extra(e) : true);
-      },
-      timeoutMs,
-    ).then((n) => n.params as unknown as OfficeEvent);
-  }
-
-  waitStatus(memberId: string, status: string, timeoutMs: number): Promise<void> {
-    return this.waitFor(`status ${status}`, (n) => n.method === 'member.status' && n.params.memberId === memberId && n.params.status === status, timeoutMs).then(
-      () => undefined,
-    );
-  }
-
-  close(): void {
-    this.ws.close();
-  }
-}
-
-interface Daemon {
-  child: ChildProcess;
-  lines: string[];
-  waitLine(what: string, pred: (line: string) => boolean, timeoutMs: number): Promise<string>;
-}
-
-function startDaemon(tag: string, env: Record<string, string>): Daemon {
-  const child = spawn(process.execPath, ['--import', 'tsx', 'src/index.ts'], {
-    cwd: DAEMON_DIR,
-    env: { ...process.env, ...env, PIXEL_IT: '' },
-    stdio: ['ignore', 'pipe', 'pipe'],
-    windowsHide: true,
-  });
-  const lines: string[] = [];
-  const waiters: Array<{ pred: (l: string) => boolean; resolve: (l: string) => void }> = [];
-  const onLine = (prefix: string) => (buf: Buffer) => {
-    for (const line of buf.toString().split(/\r?\n/)) {
-      if (!line) continue;
-      console.log(`${prefix} ${line}`);
-      lines.push(line);
-      for (const w of [...waiters]) {
-        if (w.pred(line)) {
-          waiters.splice(waiters.indexOf(w), 1);
-          w.resolve(line);
-        }
-      }
-    }
-  };
-  child.stdout!.on('data', onLine(`[${tag}:out]`));
-  child.stderr!.on('data', onLine(`[${tag}:err]`));
-  return {
-    child,
-    lines,
-    waitLine(what, pred, timeoutMs) {
-      const hit = lines.find(pred);
-      if (hit) return Promise.resolve(hit);
-      return new Promise((resolve, reject) => {
-        const t = setTimeout(() => reject(new Error(`timeout waiting for ${what} (${tag})`)), timeoutMs);
-        const onExit = () => reject(new Error(`${tag} exited (code ${child.exitCode}) before ${what}`));
-        child.once('exit', onExit);
-        waiters.push({
-          pred,
-          resolve: (l) => {
-            clearTimeout(t);
-            child.off('exit', onExit);
-            resolve(l);
-          },
-        });
-      });
-    },
-  };
-}
-
-function waitExit(child: ChildProcess, ms: number): Promise<boolean> {
-  if (child.exitCode !== null) return Promise.resolve(true);
-  return new Promise((resolve) => {
-    const t = setTimeout(() => resolve(false), ms);
-    child.once('exit', () => {
-      clearTimeout(t);
-      resolve(true);
-    });
-  });
-}
-
-function pidAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-function killTree(pid: number): void {
-  try {
-    if (process.platform === 'win32') spawn('taskkill', ['/PID', String(pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true });
-    else process.kill(pid, 'SIGKILL');
-  } catch {
-    // 이미 죽음
-  }
-}
-
-/**
- * 이 테스트가 띄운 claude 만 골라 죽인다: 데몬이 `--settings <dataDir>/…` 로 스폰하므로 명령줄에 dataDir 이 들어 있다.
- * (이 머신의 다른 claude.exe 는 건드리지 않는다.) win32 전용, 그 외는 pid 목록만.
- */
-function sweepClaudeByDataDir(dataDir: string, known: number[]): number[] {
-  const killed: number[] = [];
-  if (process.platform === 'win32') {
-    const pattern = dataDir.replace(/'/g, "''");
-    const ps = `Get-CimInstance Win32_Process -Filter "Name='claude.exe'" | Where-Object { $_.CommandLine -like '*${pattern}*' } | Select-Object -ExpandProperty ProcessId`;
-    const out = spawnSync('powershell', ['-NoProfile', '-NonInteractive', '-Command', ps], { encoding: 'utf8', windowsHide: true, timeout: 20_000 });
-    for (const line of (out.stdout ?? '').split(/\r?\n/)) {
-      const pid = Number(line.trim());
-      if (Number.isInteger(pid) && pid > 0) {
-        killTree(pid);
-        killed.push(pid);
-      }
-    }
-  }
-  for (const pid of known) {
-    if (pidAlive(pid)) {
-      killTree(pid);
-      killed.push(pid);
-    }
-  }
-  return killed;
-}
 
 /** ANSI/제어 시퀀스를 걷어낸 화면 평문. */
 function stripAnsi(s: string): string {
@@ -266,12 +58,8 @@ function sharesToken(greeting: string, recall: string): { ok: boolean; tokens: s
 
 test('real daemon restart: greet → kill daemon → new daemon resumes member → screen shows prior chat → recalls greeting → clockOut → shutdown', { skip: IT ? false : 'set PIXEL_IT=1 to run', timeout: 480_000 }, async () => {
   assert.ok(fs.existsSync(SANDBOX), `sandbox missing: ${SANDBOX}`);
-  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pixel-office-t09-it-'));
-  const wsPort = await freePort();
-  const hookPort = await freePort();
-  // T17: TeamTools MCP 도 임시 포트로 — 기본 7422 에 진짜 데몬이 떠 있으면 start() 가 EADDRINUSE 로 죽는다.
-  const mcpPort = await freePort();
-  const env = { PIXEL_WS_PORT: String(wsPort), PIXEL_HOOK_PORT: String(hookPort), PIXEL_MCP_PORT: String(mcpPort), PIXEL_DATA_DIR: dataDir };
+  // 세 포트 다 빈 포트로 — 기본 7420-7422 에 진짜 데몬이 떠 있어도 부딪히지 않는다(D-40).
+  const { dataDir, env } = await itEnv('t09');
   const claudePids: number[] = [];
   const daemons: Daemon[] = [];
   let client1: Client | undefined;
@@ -291,10 +79,15 @@ test('real daemon restart: greet → kill daemon → new daemon resumes member �
     assert.equal(hello1.daemon.pid, d1.child.pid);
     console.log(`[IT] d1 hello ok (${el()}) snapshot.seq=${hello1.snapshot.seq}`);
 
-    const { team } = await client1.call<{ team: Team }>('team.create', { name: 'it', cwd: SANDBOX, leaderEngine: 'claude' });
-    const { member } = await client1.call<{ member: Member }>('member.clockIn', { teamId: team.id, engine: 'claude', name: 'tester' });
+    // rev 3(D-32): 사용자가 만드는 것은 부서뿐이고 부장이 자동 출근한다. 복구가 되살리는 것도 이 한 명이다.
+    const { department, head: member } = await client1.call<{ department: Department; head: Member }>('department.create', {
+      name: 'it09',
+      cwd: SANDBOX,
+      headEngine: 'claude',
+      headName: '기억이',
+    });
     if (member.childPid) claudePids.push(member.childPid);
-    console.log(`[IT] clockIn member=${member.id} pid=${member.childPid} (${el()})`);
+    console.log(`[IT] department=${department.id} head=${member.id} rank=${member.rank} pid=${member.childPid} (${el()})`);
     await client1.waitStatus(member.id, 'idle', 90_000);
     console.log(`[IT] idle (SessionStart) ${el()}`);
 
@@ -307,12 +100,11 @@ test('real daemon restart: greet → kill daemon → new daemon resumes member �
     assert.ok(greeting.trim().length > 0, 'greeting text');
 
     // 죽기 직전의 멤버 행(session_id·child_pid)
-    const peek = await Client.connect(info1.wsPort, 'peek');
-    const snap1 = (await peek.call<{ snapshot: Snapshot }>('hello', { token: info1.token, client: { name: 'peek', version: '0' } })).snapshot;
-    peek.close();
+    const snap1 = await snapshotOnce(info1.wsPort, info1.token, 'peek');
     const before = snap1.members.find((m) => m.id === member.id)!;
     console.log(`[IT] before kill: status=${before.status} session_id=${before.sessionId} child_pid=${before.childPid}`);
     assert.equal(before.status, 'idle');
+    // Claude 는 기동 SessionStart 로 session_id 가 벌써 있다 — `--resume` 이 이것을 쓴다(Codex 는 첫 턴 뒤에야 생긴다, D-24).
     assert.ok(before.sessionId, 'session_id recorded by SessionStart');
     const seqBeforeKill = client1.lastSeq;
 

@@ -7,6 +7,11 @@
 // 권장 키가 없는 다이얼로그(CLI 자체 허가 프롬프트 `approval-prompt`, D-23)는 통과 대상이 아니다 — 키를 보내지 않고
 // blocked('dialog') + dialogBlocked(kind) 로만 알린다(D-26, T23b).
 //
+// **붙여넣기 ↔ Enter 는 한 덩어리다(T44).** paste 를 보낸 순간부터 제출이 확정될 때까지가 임계 구간이고, 그 사이에
+// 들어온 사용자 키(typeRaw)는 pty 로 바로 보내지 않고 모아 뒀다가 구간이 끝나면 순서대로 재생한다 — 그 틈에 들어간
+// 키 하나가 지시를 깨뜨리기 때문이다(T42 함정 2: Esc 가 입력 상자를 비워 Enter 가 빈 상자에 떨어져 지시가 증발했다).
+// Ctrl+C(interrupt)만은 예외로 절대 모으지 않는다 — 즉시 나가고 예약된 Enter·제출 확인을 취소한다.
+//
 // 시간은 전부 주입된 now() 기준이고, 지연 동작(키 간격·paste→Enter·busy 창)은 내부 스케줄러에 "언제 실행"으로 적어 두고
 // tick() 에서 만기된 것을 실행한다. 그래서 테스트는 setInterval/setTimeout 없이 now() 를 밀고 tick() 만 불러 검증할 수 있다.
 // start() 하면 폴링 interval 과, 지연 동작 만기 시점의 setTimeout 이 tick() 을 실제로 깨운다.
@@ -95,6 +100,8 @@ export const SUBMIT_RETRY_MAX = 4;
 interface Scheduled {
   dueAt: number;
   run: (now: number) => void;
+  /** 취소할 수 있게 하는 이름. 'submit-enter' = paste 뒤에 나갈 Enter(중단이 들어오면 지운다, T44). */
+  tag?: 'submit-enter';
 }
 
 export class InputQueue extends EventEmitter<InputQueueEvents> {
@@ -118,6 +125,11 @@ export class InputQueue extends EventEmitter<InputQueueEvents> {
   private blockedDialogKind: string | undefined;
   /** Enter 를 보내고 "프롬프트가 실제로 들어갔는지" 를 확인하는 중인 항목(T42). 들어가면(= idle 이 풀리면) 지운다. */
   private awaitingSubmit: { item: TextItem; enterAt: number; attempt: number } | undefined;
+  /**
+   * 붙여넣기 ↔ Enter 임계 구간(T44). paste 부터 제출 확정(또는 포기·다이얼로그·중단)까지 열려 있고,
+   * 그 사이 사용자가 친 키를 순서대로 모아 둔다. 구간이 끝나면 모은 것을 그대로 pty 에 흘린다.
+   */
+  private critical: { buffer: string[] } | undefined;
 
   constructor(deps: QueueDeps) {
     super();
@@ -137,14 +149,36 @@ export class InputQueue extends EventEmitter<InputQueueEvents> {
     this.tick();
   }
 
-  /** 터미널 탭에서의 직접 타이핑. 게이트 없이 즉시 쓰고, grace 창의 기준 시각을 갱신한다. */
+  /**
+   * 터미널 탭에서의 직접 타이핑. 평소에는 게이트 없이 즉시 쓰고 grace 창의 기준 시각을 갱신한다.
+   *
+   * **임계 구간(paste ~ 제출 확정) 중에는 보내지 않고 모아 둔다(T44).** 그 틈에 키가 하나 들어가면
+   * 붙여넣은 지시가 깨지거나(문자 섞임) 통째로 사라진다(Esc → 입력 상자 비움 → Enter 가 빈 상자에, T42 함정 2).
+   * 모아 둔 키는 구간이 끝나는 즉시 순서 그대로 나가고, 그때 grace 기준 시각이 갱신된다 — 그래서
+   * "사용자가 치는 중에는 자동 타이핑을 시작하지 않는다" 규칙도 재생 시점부터 다시 걸린다.
+   * 모아 두는 동안 grace 기준을 갱신하지 **않는** 것이 중요하다 — 아직 pty 에 닿지도 않은 키 때문에
+   * 제출 확인(checkSubmit)을 접으면 T42 가 고친 "Enter 가 씹혀 큐가 막히는" 상태로 돌아간다.
+   */
   typeRaw(data: string): void {
+    if (this.critical) {
+      this.critical.buffer.push(data);
+      return;
+    }
     this.lastUserTypingAt = this.now();
     this.deps.session.write(data);
   }
 
-  /** Ctrl+C. 큐는 지우지 않는다(중단 후 다음 지시가 그대로 이어지도록). 비우려면 clear(). */
+  /**
+   * Ctrl+C. 큐는 지우지 않는다(중단 후 다음 지시가 그대로 이어지도록). 비우려면 clear().
+   *
+   * **중단은 임계 구간에서도 모으지 않는다(T44)** — 모아 두면 "멈춰" 가 몇 초 늦게 도착한다. 대신
+   * ① 모아 둔 사용자 키를 먼저 흘리고(사용자가 친 순서: …키… → Ctrl+C), ② 아직 안 나간 Enter 와 제출 확인을
+   * 취소하고, ③ ctrl-c 를 보낸다. 취소된 항목은 flushed 를 내지 않는다 — CLI 가 입력 상자를 비우므로 실제로
+   * 제출되지 않았고, 그 task 는 Office 의 중단 후처리가 aborted 로 닫는다(afterCare `interrupt` 행).
+   */
   interrupt(): void {
+    this.cancelSubmit();
+    this.endCritical(this.now());
     this.deps.session.sendKeys('ctrl-c');
   }
 
@@ -179,11 +213,19 @@ export class InputQueue extends EventEmitter<InputQueueEvents> {
     this.interval = undefined;
     for (const t of this.timers) clearTimeout(t);
     this.timers.clear();
+    // 임계 구간에 모아 둔 사용자 키는 버린다 — stop() 은 퇴근·정리 경로라 곧 pty 가 죽고(write 가 던진다)
+    // 되돌려 줄 입력 상자도 없다. 살아 있는 세션에서 구간을 끝내는 길은 checkSubmit 과 interrupt 둘뿐이다.
+    this.critical = undefined;
   }
 
   /** 예약된 지연 동작 중 아직 실행되지 않은 수(테스트·진단용). */
   pendingActions(): number {
     return this.scheduled.length;
+  }
+
+  /** 임계 구간에 붙잡아 둔 사용자 키 조각 수(테스트·진단용, T44). 구간이 아니면 0. */
+  heldUserInput(): number {
+    return this.critical?.buffer.length ?? 0;
   }
 
   /**
@@ -247,19 +289,45 @@ export class InputQueue extends EventEmitter<InputQueueEvents> {
     this.emit('blocked', reason);
   }
 
-  /** paste(text) → enterDelayMs 후 Enter → busyAfterFlushMs 동안 다음 항목 보류. 단일 행도 paste 로 통일. */
+  /**
+   * paste(text) → enterDelayMs 후 Enter → busyAfterFlushMs 동안 다음 항목 보류. 단일 행도 paste 로 통일.
+   * paste 와 함께 임계 구간이 열린다(T44) — 여기부터 제출이 확정될 때까지 사용자 키는 pty 에 닿지 않는다.
+   */
   private flushHead(now: number): void {
     const item = this.queue.shift();
     if (!item) return;
+    this.critical = { buffer: [] };
     this.deps.session.paste(item.text);
     this.busyUntil = now + TIMING.enterDelayMs; // Enter 가 나가기 전엔 다음 항목을 절대 붙이지 않는다
-    this.schedule(TIMING.enterDelayMs, (at) => {
-      this.deps.session.sendKeys('enter');
-      this.busyUntil = at + TIMING.busyAfterFlushMs;
-      this.lastBlockedAt.clear(); // 다음 항목이 막히면 새로 알린다
-      this.awaitingSubmit = { item, enterAt: at, attempt: 0 };
-      this.emit('flushed', item);
-    });
+    this.schedule(
+      TIMING.enterDelayMs,
+      (at) => {
+        this.deps.session.sendKeys('enter');
+        this.busyUntil = at + TIMING.busyAfterFlushMs;
+        this.lastBlockedAt.clear(); // 다음 항목이 막히면 새로 알린다
+        this.awaitingSubmit = { item, enterAt: at, attempt: 0 };
+        this.emit('flushed', item);
+      },
+      'submit-enter',
+    );
+  }
+
+  /** 임계 구간을 닫고 모아 둔 사용자 키를 순서 그대로 흘린다(T44). 열려 있지 않으면 아무 일도 안 한다. */
+  private endCritical(now: number): void {
+    const c = this.critical;
+    this.critical = undefined;
+    if (!c || c.buffer.length === 0) return;
+    for (const data of c.buffer) this.deps.session.write(data);
+    // 재생한 것도 사용자 타이핑이다 — 다음 자동 타이핑은 grace 가 지난 뒤에.
+    this.lastUserTypingAt = now;
+  }
+
+  /** 아직 안 나간 Enter 예약과 제출 확인을 취소한다(중단 전용, T44). 이미 나간 Enter 는 되돌릴 수 없다. */
+  private cancelSubmit(): void {
+    for (let i = this.scheduled.length - 1; i >= 0; i--) {
+      if (this.scheduled[i].tag === 'submit-enter') this.scheduled.splice(i, 1);
+    }
+    this.awaitingSubmit = undefined;
   }
 
   /**
@@ -278,16 +346,20 @@ export class InputQueue extends EventEmitter<InputQueueEvents> {
     const a = this.awaitingSubmit;
     if (!a) return;
     if (!this.deps.isIdle()) {
-      this.awaitingSubmit = undefined; // 프롬프트가 들어갔다
+      // 프롬프트가 들어갔다 — **여기서 재시도가 끝난다**(이미 들어간 Enter 를 또 보내 두 번 제출하지 않는다).
+      this.awaitingSubmit = undefined;
+      this.endCritical(now);
       return;
     }
     if (dialogUp || this.userTyping(now)) {
       this.awaitingSubmit = undefined;
+      this.endCritical(now); // 화면을 다이얼로그·사용자가 쥐었다 — 모아 둔 키를 돌려준다
       return;
     }
     if (now - a.enterAt < TIMING.submitCheckMs) return;
     if (a.attempt >= SUBMIT_RETRY_MAX) {
       this.awaitingSubmit = undefined;
+      this.endCritical(now);
       this.emit('submitLost', a.item);
       return;
     }
@@ -306,8 +378,8 @@ export class InputQueue extends EventEmitter<InputQueueEvents> {
     });
   }
 
-  private schedule(delayMs: number, run: (now: number) => void): void {
-    this.scheduled.push({ dueAt: this.now() + delayMs, run });
+  private schedule(delayMs: number, run: (now: number) => void, tag?: Scheduled['tag']): void {
+    this.scheduled.push({ dueAt: this.now() + delayMs, run, tag });
     if (this.running) this.armTimer(delayMs);
   }
 
