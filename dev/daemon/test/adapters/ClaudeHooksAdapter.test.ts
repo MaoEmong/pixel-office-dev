@@ -544,6 +544,28 @@ describe('ClaudeHooksAdapter', () => {
     assert.equal(h.member$().status, 'exited');
   });
 
+  // T46-3 실기 결함: 데몬이 정상 종료하며 멤버를 `suspended` 로 접은 **뒤에** `/exit` 가 만드는 마지막 hook 이
+  // 도착해 status 를 `exited` 로 되돌려 놓았다 → 다음 기동의 "말없이 다시 출근"(D-47 §5)이 통째로 죽고
+  // 앱을 닫았다 켜면 조직 전체가 "퇴근" 으로 남았다. hook 은 `suspended` 를 덮으면 안 된다.
+  test('suspended 멤버는 hook 이 status 를 덮지 못한다 (SessionEnd·Stop 둘 다)', () => {
+    h.send('SessionStart', P.sessionStart);
+    h.store.updateMember(h.member.id, { status: 'suspended' });
+
+    const e = h.send('SessionEnd', P.sessionEndExit);
+    assert.deepEqual(e.sent, [{}]); // 응답은 그대로 나간다(CLI 를 매달지 않는다)
+    assert.equal(h.member$().status, 'suspended');
+    assert.equal(h.statuses.at(-1), 'idle'); // SessionStart 의 idle 이 마지막 — exited 는 안 나갔다
+
+    const s = h.send('Stop', P.stop);
+    assert.deepEqual(s.sent, [{}]);
+    assert.equal(h.member$().status, 'suspended');
+
+    // 되살릴 때 Office 가 먼저 starting 으로 바꿔 놓으므로 가드에 걸리지 않는다.
+    h.store.updateMember(h.member.id, { status: 'starting' });
+    h.send('SessionStart', P.sessionStartResume);
+    assert.equal(h.member$().status, 'idle');
+  });
+
   test('onSessionExit: code 0 after SessionEnd → no duplicate; code 1 → status error + error event; open pending expired', () => {
     h.send('SessionStart', P.sessionStart);
     h.send('SessionEnd', P.sessionEndExit);

@@ -171,6 +171,46 @@ describe('정상 종료 → suspended, 다시 켜면 말없이 출근 (T46-1 §5
     office = undefined;
   });
 
+  // T46-3 실기 결함 ①. 가짜 pty 만 쓰던 T46-1 테스트에는 이 순간이 없었다 — 진짜 Claude 는 `/exit` 를 받고
+  // 죽기 직전에 `SessionEnd{reason:'prompt_input_exit'}` hook 을 **한 번 더** 보내고, 그것이 방금 적은
+  // `suspended` 를 `exited` 로 되돌려 놓았다. 그러면 다음 기동이 아무도 되살리지 않는다(앱을 닫았다 켜면 전원 "퇴근").
+  test('/exit 가 마지막으로 보내는 SessionEnd hook 이 suspended 를 되돌리지 않는다', async () => {
+    const s = seed(store, dataDir);
+    office = newOffice();
+    await office.start();
+    await office.recoveryDone;
+    pty.beforeExit = (memberId) => {
+      const m = store.getMember(memberId);
+      if (!m) return;
+      receiver.emit(
+        'hook',
+        fakeReq(m.memberToken, 'SessionEnd', {
+          session_id: m.sessionId!,
+          hook_event_name: 'SessionEnd',
+          cwd: m.cwd,
+          reason: 'prompt_input_exit',
+        }).req,
+      );
+    };
+
+    await office.shutdown();
+    office = undefined;
+    const after = new Store(path.join(dataDir, 'pixel-office.db'));
+    assert.equal(after.getMember(s.head.id)!.status, 'suspended', 'SessionEnd 가 덮으면 안 된다');
+    assert.equal(after.getMember(s.worker.id)!.status, 'suspended');
+    after.close();
+
+    // 그래서 다음 기동이 둘 다 말없이 되살린다.
+    const store2 = new Store(path.join(dataDir, 'pixel-office.db'));
+    const pty2 = new FakePty();
+    const office2 = newOffice({ store: store2, pty: pty2 });
+    office = office2;
+    await office2.start();
+    await office2.recoveryDone;
+    assert.deepEqual(pty2.spawns.map((o) => o.memberId), [s.head.id, s.worker.id]);
+    assert.deepEqual(office2.recoveryResult!.silent.sort(), [s.head.id, s.worker.id].sort());
+  });
+
   test('사용자 퇴근은 그대로 exited — suspended 와 구별된다', async () => {
     const s = seed(store, dataDir);
     office = newOffice();

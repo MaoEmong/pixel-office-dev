@@ -49,6 +49,11 @@ export class FakePty extends EventEmitter<PtyEvents> implements PtyManagerLike {
   readonly failSpawnFor = new Set<string>();
   /** 첫 종료 입력으로 안 죽는 멤버(정중한 종료의 두 번째 Ctrl+C 를 보게 한다). */
   readonly stubborn = new Set<string>();
+  /**
+   * 세션이 실제로 끝나기 **직전**에 부른다. 진짜 CLI 는 `/exit` 를 받고 죽기 전에 마지막 hook
+   * (`SessionEnd`)을 한 번 더 보내므로, 그 순간을 흉내 내야 하는 테스트가 여기에 끼어든다(T46-3).
+   */
+  beforeExit?: (memberId: string) => void;
   private nextPid = 1000;
   spawn(opts: SpawnOptions): PtySession {
     const existing = this.sessions.get(opts.memberId);
@@ -81,6 +86,7 @@ export class FakePty extends EventEmitter<PtyEvents> implements PtyManagerLike {
   exit(memberId: string, exitCode: number): void {
     const s = this.sessions.get(memberId);
     if (!s) return;
+    this.beforeExit?.(memberId);
     s.alive = false;
     this.sessions.delete(memberId);
     this.emit('exit', memberId, { exitCode });

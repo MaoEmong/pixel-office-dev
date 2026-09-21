@@ -12,6 +12,7 @@
 //   PostToolUse(Failure)→ toolDone 내부 이벤트, status working (오피스 이벤트 없음)
 //   Stop                → text{text: last_assistant_message[:4000]} + idle, status idle
 //   SessionEnd          → clear/resume: 없음(새 SessionStart 가 따라옴); 그 외: idle{summary:'session ended: <reason>'}, status exited
+//                          (단 `suspended` 멤버는 status 를 바꾸지 않는다 — setStatus 의 가드, T46-3)
 //   그 외(Notification, SubagentStop, PreCompact …) → onEngineEvent(기본 pass-through)
 //   (pty exit)          → onSessionExit: error 이벤트, status exited(code 0) / error(그 외), pending 전부 expired
 //
@@ -538,10 +539,20 @@ export abstract class BaseHooksAdapter extends EventEmitter<HooksAdapterEvents> 
     this.emit('event', ev);
   }
 
-  /** store 의 현재 status 와 다를 때만 갱신·emit. */
+  /**
+   * store 의 현재 status 와 다를 때만 갱신·emit.
+   *
+   * **`suspended` 는 hook 이 절대 덮지 않는다**(T46-3 실기에서 잡은 결함 · D-47 §5). 데몬이 정상 종료하며
+   * `suspendLiveMembers()` 로 접어 둔 멤버에게 `/exit` 를 타이핑하면 CLI 가 **마지막으로 `SessionEnd` hook 을
+   * 보낸다** — 그것이 `exited` 로 status 를 되돌려 놓아 "다음 기동에 말없이 다시 출근" 이 통째로 죽었다
+   * (앱을 닫았다 켜면 전원 "퇴근", T41 의 옛 고통 그대로). 같은 이유로 늦게 도착한 `Stop`(→ idle) 도 막는다.
+   * 접힌 멤버에게 오는 hook 은 언제나 **닫히는 중인 그 세션**의 것이고, 되살릴 때는 Office 가 `spawnMember` 에서
+   * 먼저 `starting` 으로 바꾸므로 이 가드에 걸리지 않는다.
+   */
   protected setStatus(memberId: string, status: MemberStatus): void {
     const current = this.store.getMember(memberId);
     if (!current || current.status === status) return;
+    if (current.status === 'suspended') return;
     this.store.updateMember(memberId, { status });
     this.emit('status', memberId, status);
   }
