@@ -208,6 +208,7 @@ class SceneMember {
     this.askParentVisitorIndex,
     this.isShellWaiting = false,
     this.isResumed = false,
+    this.contextPercent,
   });
 
   final String id;
@@ -257,6 +258,10 @@ class SceneMember {
 
   /// 방금 복구된(`[RESUMED]`) 멤버인가 — 책상 점선 3초 + "↻ 복구됨" 말풍선(패스 2 D10).
   final bool isResumed;
+
+  /// 컨텍스트 사용 비율(0~100, 모르면 null — T43). **70% 이상일 때만** 모니터 아랫변에 경고 막대가 뜬다.
+  /// 평소엔 아무것도 그리지 않는다(빼기 원칙 — 설계 §앱 3).
+  final double? contextPercent;
 
   bool get isQueued => queueIndex != null;
 
@@ -327,11 +332,13 @@ class SceneMember {
       other.monitorSecond == monitorSecond &&
       other.askParentVisitorIndex == askParentVisitorIndex &&
       other.isShellWaiting == isShellWaiting &&
-      other.isResumed == isResumed;
+      other.isResumed == isResumed &&
+      other.contextPercent == contextPercent;
 
   @override
   int get hashCode => Object.hash(id, name, engine, status, rank, teamId, deskIndex, summary, isAlert, queueIndex, eventKind,
-      eventSeq, eventTool, askParentDeskIndex, derived, monitorSecond, askParentVisitorIndex, isShellWaiting, isResumed);
+      eventSeq, eventTool, askParentDeskIndex, derived, monitorSecond, askParentVisitorIndex, isShellWaiting, isResumed,
+      contextPercent);
 
   @override
   String toString() => 'SceneMember($id $name ${rank.wire} desk=$deskIndex queue=$queueIndex "$summary")';
@@ -496,6 +503,7 @@ class OfficeScene {
     DateTime? now,
     Set<String> expandedTeamIds = const {},
     Map<String, int> reportCounts = const {},
+    Map<String, MemberUsage> usage = const {},
   }) {
     if (departmentId != null) {
       members = {for (final e in members.entries) if (e.value.departmentId == departmentId) e.key: e.value};
@@ -649,6 +657,8 @@ class OfficeScene {
           ),
           isShellWaiting: latestEvents[ordered[i].id]?.detail.waiting != null,
           isResumed: isResumeEvent(latestEvents[ordered[i].id]),
+          // 퇴근·오류로 나간 캐릭터의 마지막 컨텍스트는 캔버스에 띄우지 않는다(경고할 일이 없다).
+          contextPercent: ordered[i].status.isGone ? null : usage[ordered[i].id]?.contextPercent,
         ),
     ];
 

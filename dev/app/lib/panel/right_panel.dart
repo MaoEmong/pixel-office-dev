@@ -24,6 +24,7 @@ import '../model/models.dart';
 import '../office/office_painter.dart' show legendColor;
 import '../office/office_scene.dart' show LegendSlot, legendSlotFor;
 import '../state/office_state.dart';
+import '../usage/usage_line.dart';
 import 'inbox.dart';
 import 'instructions_tab.dart';
 import 'labels.dart';
@@ -92,6 +93,7 @@ export 'report_tab.dart'
         reportHeaderLine,
         reportReadProvider,
         reportUnreadProvider;
+export '../usage/usage_line.dart' show MemberUsageLine, usageLineHeight, usageLineLabel;
 export 'terminal_cache.dart' show terminalCacheProvider, TerminalCache, CachedTerminal;
 export 'terminal_tab.dart' show TerminalTab, describeAttachError;
 export 'ui_prefs.dart';
@@ -387,6 +389,9 @@ class PanelHeader extends ConsumerWidget {
             style: const TextStyle(fontSize: 11, color: Colors.white54, fontFamily: panelMonoFamily, fontFamilyFallback: panelMonoFallback),
             overflow: TextOverflow.ellipsis,
           ),
+          const SizedBox(height: 2),
+          // 사용량 한 줄(T43-2 · 설계 §앱 2) — cwd 줄 아래, 늘 한 줄 높이.
+          MemberUsageLine(memberId: member.id),
           if (!member.rank.talksToUser) ...[
             const SizedBox(height: 4),
             Text(

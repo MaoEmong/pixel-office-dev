@@ -31,12 +31,15 @@ import '../rpc/rpc_client.dart';
 import '../state/office_state.dart';
 // 부서를 만든 직후 부장을 고르려고 쓴다(T24 함정 4 — 상태는 상태 층에).
 import '../state/selection.dart';
+import '../usage/usage_chips.dart';
 import 'daemon_pill.dart';
 import 'selected_department.dart';
 
 export 'daemon_pill.dart' show DaemonPill, ReportCountBadge, daemonPillLabel, daemonPillColor, daemonBlinkHalfPeriod;
 export 'disconnected_overlay.dart';
 export 'selected_department.dart';
+export '../usage/usage_chips.dart' show EngineUsageChip, EngineUsageChips, usageChipsCompact, usageChipsCompactWidth;
+export '../usage/usage_popover.dart' show UsagePopover, showUsagePopover, usagePopoverTitle, usagePopoverWidth;
 
 /// `department.create` 에 `headName` 을 안 보냈을 때 데몬이 붙이는 기본 부장 이름(daemon `DEFAULT_HEAD_NAME`).
 const kDefaultHeadName = '부장';
@@ -69,7 +72,9 @@ class TopBar extends ConsumerWidget {
       height: 44,
       padding: const EdgeInsets.symmetric(horizontal: 12),
       color: scheme.surfaceContainerHigh,
-      child: Row(
+      // 창이 좁으면(패스 6 최소 1100) 엔진 칩이 **넘치기 전에** 짧은 꼴로 줄어든다.
+      child: LayoutBuilder(
+        builder: (context, box) => Row(
         children: [
           Text('픽셀 오피스', style: style?.copyWith(fontWeight: FontWeight.bold)),
           const SizedBox(width: 16),
@@ -98,7 +103,16 @@ class TopBar extends ConsumerWidget {
               RankBadge(key: const Key('topbar.rankBadge'), rank: selected.rank),
               const SizedBox(width: 6),
             ],
-            Text('${selected.name} [${selected.engine.wire}]', style: style?.copyWith(color: Colors.white70)),
+            // 이름은 길이를 모른다 — 좁아지면 말줄임으로 양보한다(상단 바가 넘치지 않게, T43-2).
+            Flexible(
+              child: Text(
+                '${selected.name} [${selected.engine.wire}]',
+                style: style?.copyWith(color: Colors.white70),
+                maxLines: 1,
+                softWrap: false,
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
             const SizedBox(width: 2),
             IconButton(
               key: const Key('topbar.clockOut'),
@@ -110,6 +124,9 @@ class TopBar extends ConsumerWidget {
             ),
             const SizedBox(width: 8),
           ],
+          // 엔진 칩(사용량) → 데몬 pill 순서(설계 §앱 1: "데몬 pill 왼쪽").
+          EngineUsageChips(compact: usageChipsCompact(box.maxWidth)),
+          const SizedBox(width: 6),
           const DaemonPill(),
           const SizedBox(width: 12),
           Text('멤버 ${members.length} · 대기 $pendingCount', key: const Key('topbar.counts'), style: style),
@@ -134,6 +151,7 @@ class TopBar extends ConsumerWidget {
           ),
           _DepartmentMenu(departmentId: activeDept, enabled: connected),
         ],
+        ),
       ),
     );
   }

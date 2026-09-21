@@ -23,6 +23,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter/semantics.dart';
 
 import '../model/models.dart';
+// 컨텍스트 경고 막대의 색 판정은 사용량 쪽 단일 규칙을 그대로 쓴다(패널 막대와 같은 경계·같은 색).
+import '../usage/usage_format.dart' show contextWarningColor;
 import 'office_layout.dart';
 import 'office_scene.dart';
 import 'office_sprites.dart';
@@ -507,6 +509,11 @@ class OfficePainter extends CustomPainter {
       _text(canvas, second, Offset(mon.left + 4, mon.top + mon.height * 0.72),
           style: monStyle.copyWith(color: OfficeColors.monitorTextDim), anchor: Alignment.centerLeft, maxWidth: mon.width - 8);
     }
+
+    // 컨텍스트 경고(T43 · 설계 §앱 3): **70% 이상일 때만** 모니터 아랫변에 3px 띠(주황 70~89 · 빨강 ≥90).
+    // 평소엔 아무것도 그리지 않는다 — 사용량은 위험할 때만 색이 드는 참고 정보다(패스 1 시선 서열).
+    final warn = contextWarningColor(m.contextPercent);
+    if (warn != null) canvas.drawRect(layout.contextWarningRect(m.deskIndex), Paint()..color = warn);
   }
 
   // ---- 내 책상(바닥 고정 바) ----------------------------------------------------------

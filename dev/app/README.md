@@ -15,7 +15,7 @@ cd dev/app
 flutter pub get
 flutter run -d windows          # 개발 실행
 flutter build windows --release # build\windows\x64\runner\Release\pixel_office.exe
-flutter analyze && flutter test # 검증 (위젯·상태 446건 +1 skip)
+flutter analyze && flutter test # 검증 (위젯·상태 529건 +1 skip)
 ```
 
 데몬이 먼저 떠 있어야 한다(`cd dev/daemon && npm start`). 없으면 앱은 회색 오버레이 + "데몬 연결 안 됨" 을 보이며 1→2→4→5초 간격으로 계속 재접속을 시도한다("데몬 시작" 버튼은 T14).
@@ -283,6 +283,51 @@ Alt+Y 허가 · Alt+N 거부                               ← 인박스 맨 위
 ③ 은 T39·T31 실기에서 화면으로 확인했다 — 셸 쓰기가 겹치면 대기 멤버 셋의 말풍선·모니터가 모두 `⏳ 셸 대기 중 (락: A장1)` 이 된다
 (`docs/worklog/img/T31-5-shell-mutex.png`).
 
+## 사용량 (T43-2, D-45 · `docs/design/사용량-표시.md`)
+
+엔진별 남은 한도와 캐릭터별 컨텍스트·누적 토큰을 앱에서 본다. **앱은 계산하지 않는다** — 데몬이 주는
+`usedPercent`(쓴 비율)를 받아 전부 **"남음 N%"** 로 뒤집어 보여 줄 뿐이고(D-45 3), 계정 이메일은 어디에도 없다(D-45 2).
+
+**와이어**(데몬 T43-1 과 1:1, 없는 키·null·타입 불일치는 그 값만 "모름"으로 떨어진다):
+
+```jsonc
+// snapshot 에 추가 — 옛 데몬처럼 키가 없어도 된다
+"usage": {
+  "engines": [ { "engine": "claude", "connected": true, "reason": null, "plan": "max",
+                 "weekly":  { "usedPercent": 55, "resetsAt": "2026-09-24T09:00:00Z" },
+                 "session": { "usedPercent": 12, "resetsAt": "…" },   // 5시간 한도, 없으면 null
+                 "updatedAt": "2026-09-21T10:12:03Z" } ],
+  "members": [ { "memberId": "m_…", "engine": "claude",
+                 "context": { "used": 74210, "window": 200000, "percent": 37 },
+                 "tokens":  { "input": 1200, "output": 5400, "cacheRead": 310000, "cacheCreate": 42000, "total": 358600 },
+                 "costUsd": 1.84,            // Codex 는 null
+                 "updatedAt": "…" } ]
+}
+// 알림(비영속 · seq 없음 · 바뀔 때만) — lastSeq 를 건드리지 않는다
+{ "method": "usage.engine", "params": { …engines[] 한 원소… } }
+{ "method": "usage.member", "params": { …members[] 한 원소… } }
+```
+
+- 모르는 엔진(`gemini` …) 행은 버린다. `connected:false` 의 `reason` 은 `not-installed` / `logged-out` / 그 밖은 `unknown`.
+- `tokens.total` 이 없으면 네 항목의 합, `context.percent` 가 없으면 `used/window` 로 계산한다.
+- **엔진 행은 남고 멤버 행은 따라간다**: 재접속 스냅샷에 없는 엔진은 마지막 값을 그대로 두고(설계 스키마 v3),
+  멤버 행이 사라지면 그 사용량은 지운다. 행이 없는 멤버의 `usage.member` 알림은 무시한다.
+
+**화면 네 곳** (사용량은 참고 정보다 — 패스 1 시선 서열에서 허가 카드보다 아래, 평소엔 조용하고 위험할 때만 색이 든다):
+
+| 자리 | 보이는 것 |
+|---|---|
+| 상단 바 칩 2개(데몬 pill 왼쪽) | `Claude 남음 45% · 3일 뒤` / `Codex 연결 안 됨` / `Claude · 첫 작업 후 표시`. 값이 10분 넘게 낡으면 꼬리에 `· 12분 전`. 색: 남음 >50 기본 · 20~50 주황 · <20 빨강 · 연결 안 됨 회색(빈 원) |
+| 사용량 팝오버(칩 클릭) | 엔진마다 주간·5시간 막대(없으면 줄 없음) + 요금제 + 리셋 `9월 24일 18:00 (3일 뒤)` + 마지막 확인, 아래 **이 부서 캐릭터 표**(이름·직급·엔진·컨텍스트 막대+%·토큰·비용) 컨텍스트 큰 순. 행 클릭 = 그 캐릭터 선택 + 닫힘. Esc·바깥 클릭·닫기 버튼 |
+| 오른쪽 패널 헤더(cwd 줄 아래) | `컨텍스트 [막대] 37% (74k / 200k) · 토큰 358k · $1.84`. 막대 <70 기본 · 70~89 주황 · ≥90 빨강. Codex 는 비용 없음. 값 없으면 `사용량 — 첫 턴 뒤 표시` |
+| 사무실 캔버스 | 컨텍스트 **≥70% 일 때만** 그 책상 모니터 아랫변에 3px 막대(주황/빨강). 그 아래는 아무것도 안 그린다 |
+
+- 단위는 `lib/usage/usage_format.dart` 한 곳에서 만든다: 토큰 `999` / `358k` / `1.2M`(**버림** — 358,600 은 358k),
+  리셋 `3일 뒤` / `5시간 뒤` / `12분 뒤` / `곧`, 오래됨은 10분을 넘겼을 때만, 비용 `$1.84`.
+- 막대는 **도형**이다. `▓░` 같은 글자는 번들 서체 3종에 없어 두부가 된다(T40 편차 ⑤).
+- 좁은 창(< 1500)에서는 칩이 `C 45%` / `X 연결 안 됨` 으로 줄어든다(패스 1 D7 글자 빼기). 상단 바가 이미 빽빽해서
+  긴 꼴 칩 두 개는 1400 창에서 실제로 넘쳤다 — 긴 꼴은 1920 창부터다. 짧은 꼴에서도 툴팁에 원문이 그대로 있다.
+
 ## 창 캡처 (worklog 증거용)
 
 ```
@@ -304,6 +349,7 @@ lib/
     rpc_client.dart         JSON-RPC 2.0 over WebSocket: connect / hello / call / 알림 스트림 / lastSeq / 자동 재접속
   model/
     department.dart team.dart member.dart office_event.dart pending.dart task.dart snapshot.dart   (store/types.ts 와 1:1, fromJson)
+    usage.dart              엔진·멤버 사용량(T43, D-45) — 방어적 파싱
     models.dart             배럴
   state/
     office_state.dart       Riverpod 프로바이더 (아래 표)
@@ -316,6 +362,8 @@ lib/
     daemon_launcher.dart notices.dart   데몬 시작 버튼(T14) · daemon.notice 배너
   office/                   사무실 캔버스(T12·T16·T37·T40a·T33): office_scene/layout/painter/motion/view + office_sprites
                             — 세로 스크롤 + 바닥 고정 바(내 책상·범례), 캐릭터·소품은 32×32 픽셀 아틀라스
+  usage/                    사용량 표시(T43-2, 아래 절): usage_format(순수 포매터·색) · usage_bar ·
+                            usage_chips(상단 바 엔진 칩) · usage_popover · usage_line(패널 한 줄)
 assets/
   sprites/characters.png    스프라이트 아틀라스(생성기 tool/gen_sprites.dart) — 출처·라이선스는 assets/LICENSES.md
   fonts/                    Galmuri11 · Pretendard(Regular/Bold) · D2Coding + OFL 전문 3개
@@ -342,6 +390,8 @@ test/
   app_shell_test.dart       T40c 접점 — OfficeShell 통째로: 슬롯 클릭 → 인박스 스크롤, 부서 0 버튼 → 부서 만들기 다이얼로그
   command/ office/ panel/ state/   위젯·배치·카드 테스트(T12~T41 — office/ 는 layout·scene·painter·legend·mydesk·states·motion·movement·view,
                             command/create_department_test.dart 는 폴더 선택기·기본값 T41)
+  usage/                    사용량(T43-2): usage_model(방어적 파싱) · usage_state(스냅샷·알림·프로바이더) ·
+                            usage_format(단위·문구·색) · usage_chips(칩 5종·축약·팝오버) · usage_panel · usage_canvas
 windows/runner/main.cpp     창 제목 "픽셀 오피스"
 ```
 
@@ -410,6 +460,10 @@ windows/runner/main.cpp     창 제목 "픽셀 오피스"
 | `memberEventsProvider(id)` | `List<OfficeEvent>` | 멤버별 링버퍼 2000 |
 | `latestEventProvider(id)` | `OfficeEvent?` | 말풍선 |
 | `noticesProvider` | `List<DaemonNotice>` | `daemon.notice` 최근 50건 |
+| `engineUsageProvider(engine)` | `EngineUsage` | 스냅샷 `usage.engines` + `usage.engine` 알림. **없으면 null 이 아니라** `EngineUsage.unknown`(= "첫 작업 후 표시") |
+| `engineUsagesProvider` | `Map<Engine, EngineUsage>` | 팝오버가 두 엔진을 한 번에 |
+| `memberUsageProvider(id)` | `MemberUsage?` | 스냅샷 `usage.members` + `usage.member` 알림 |
+| `departmentUsageRowsProvider(deptId)` | `List<DepartmentUsageRow>` | 팝오버 표 — 컨텍스트 큰 순, 값 없는 사람 뒤 |
 
 재접속 시 스냅샷은 departments/teams/members/pending/tasks 를 **교체**하고, 이벤트 링버퍼·말풍선은 유지한다.
 데몬이 미는 `snapshot` 알림(T38 — 부서·팀 생성/삭제 때)도 **같은 경로**를 탄다: `_onNotification` → `_applySnapshot` →

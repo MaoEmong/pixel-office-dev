@@ -5,6 +5,7 @@ import 'member.dart';
 import 'pending.dart';
 import 'task.dart';
 import 'team.dart';
+import 'usage.dart';
 
 class Snapshot {
   const Snapshot({
@@ -14,6 +15,7 @@ class Snapshot {
     required this.members,
     required this.pending,
     required this.tasks,
+    this.usage = UsageSnapshot.empty,
   });
 
   /// 스냅샷 시점의 lastSeq. 클라이언트는 seq > 이 값만 적용한다(재접속 규칙 2).
@@ -31,6 +33,9 @@ class Snapshot {
   /// status in ('queued','assigned') 만.
   final List<Task> tasks;
 
+  /// 엔진·멤버 사용량(T43, D-45). **옛 데몬에는 없는 키**라 없으면 빈 것으로 떨어진다.
+  final UsageSnapshot usage;
+
   factory Snapshot.fromJson(Map<String, dynamic> j) => Snapshot(
         seq: (j['seq'] as num).toInt(),
         departments: _list(j['departments'], Department.fromJson),
@@ -38,6 +43,7 @@ class Snapshot {
         members: _list(j['members'], Member.fromJson),
         pending: _list(j['pending'], Pending.fromJson),
         tasks: _list(j['tasks'], Task.fromJson),
+        usage: UsageSnapshot.fromJson(j['usage']),
       );
 
   static List<T> _list<T>(Object? v, T Function(Map<String, dynamic>) f) =>
