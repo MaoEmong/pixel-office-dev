@@ -175,6 +175,11 @@ export const config = {
   codexExe: resolveCodexExe(),
   /** 세션 hooks 의 timeout(초). 허가·질문 보류 상한 — D-16: 600이면 10분 뒤 CLI가 hook을 끊고 TUI 프롬프트로 폴백한다. */
   hookTimeoutSec: Number(process.env.PIXEL_HOOK_TIMEOUT_SEC || 86400),
+  /**
+   * 엔진 연결 확인(`claude auth status` · `codex login status`) 주기(초, T43/D-45). 0 이면 기동 시 한 번만 하고
+   * 타이머를 걸지 않는다. 명령이 0.3초 이하라 60초는 부담이 없다.
+   */
+  usagePollSec: Number(process.env.PIXEL_USAGE_POLL_SEC || 60),
   /** 기본 터미널 크기. */
   cols: 120,
   rows: 40,

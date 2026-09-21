@@ -11,16 +11,26 @@ export const DROP_ENV_RE = /^(CLAUDE_?CODE|CLAUDECODE|CLAUDE_CONFIG_DIR)/i;
 export const CHILD_TERM = 'xterm-256color';
 
 /**
- * base(보통 process.env)를 복사하되 DROP_ENV_RE 에 걸리는 키는 버리고,
- * PIXEL_MEMBER / TERM 을 세팅한 새 객체를 돌려준다. base 는 건드리지 않는다.
+ * base(보통 process.env)를 복사하되 DROP_ENV_RE 에 걸리는 키만 버린다. base 는 건드리지 않는다.
+ * pty 스폰(sanitizeEnv)과 **사용량 연결 폴링**(`claude auth status` · `codex login status`, T43)이 같이 쓴다 —
+ * 후자도 부모 세션의 `CLAUDE_CONFIG_DIR` 이 새면 엉뚱한 설정 폴더의 로그인 상태를 읽게 된다.
  */
-export function sanitizeEnv(base: NodeJS.ProcessEnv, memberToken: string): Record<string, string> {
+export function stripDaemonEnv(base: NodeJS.ProcessEnv): Record<string, string> {
   const out: Record<string, string> = {};
   for (const [key, value] of Object.entries(base)) {
     if (value === undefined) continue;
     if (DROP_ENV_RE.test(key)) continue;
     out[key] = value;
   }
+  return out;
+}
+
+/**
+ * base(보통 process.env)를 복사하되 DROP_ENV_RE 에 걸리는 키는 버리고,
+ * PIXEL_MEMBER / TERM 을 세팅한 새 객체를 돌려준다. base 는 건드리지 않는다.
+ */
+export function sanitizeEnv(base: NodeJS.ProcessEnv, memberToken: string): Record<string, string> {
+  const out = stripDaemonEnv(base);
   out.PIXEL_MEMBER = memberToken;
   out.TERM = CHILD_TERM;
   return out;
