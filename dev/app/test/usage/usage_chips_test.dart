@@ -160,8 +160,8 @@ void main() {
       fake.emitHello(
         departments: [
           fakeDepartment('d1', name: '픽셀오피스', headId: 'mH'),
-          fakeDepartment('d2', name: '하루기록'),
-          fakeDepartment('d3', name: '모시모시'),
+          fakeDepartment('d2', name: '결제 서버'),
+          fakeDepartment('d3', name: '관리자 화면'),
         ],
         members: [fakeMember('mH', rank: 'head', name: '아주아주긴이름의부장님')],
         usage: {
