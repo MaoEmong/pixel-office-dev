@@ -4,6 +4,8 @@ import type { EventEmitter } from 'node:events';
 import type { ExitInfo, PtySession, SpawnOptions } from '../pty/types.js';
 import type { HookReceiverEvents } from '../hooks/HookReceiver.js';
 import type { ApprovalDecisionInput } from '../adapters/types.js';
+import type { EngineUsage, MemberUsage, UsageSnapshot } from '../usage/types.js';
+import type { StatusLineRequest } from '../hooks/HookReceiver.js';
 import type {
   Department,
   Engine,
@@ -214,9 +216,11 @@ export interface SnapshotMember extends Member {
   derived: DerivedStatus;
 }
 
-/** `hello` 가 돌려주는 스냅샷. store 의 Snapshot 과 같고 멤버 행에 `derived` 가 더 있다. */
+/** `hello` 가 돌려주는 스냅샷. store 의 Snapshot 과 같고 멤버 행에 `derived`, 끝에 `usage` 가 더 있다. */
 export interface OfficeSnapshot extends Omit<Snapshot, 'members'> {
   members: SnapshotMember[];
+  /** 엔진·멤버 사용량(T43, D-45). 엔진은 항상 둘 다 실린다. */
+  usage: UsageSnapshot;
 }
 
 /** 콘솔 `tree` · 앱(T37)이 쓰는 부서 트리 한 그루. */
@@ -248,6 +252,13 @@ export type OfficeEvents = {
    * `reason` 은 로그·테스트용 꼬리표다.
    */
   tree: [reason: 'department.create' | 'department.delete' | 'team.create' | 'team.delete'];
+  /**
+   * 엔진 사용량이 **바뀌었다** → `usage.engine` 알림(비영속·seq 없음, T43). 값이 그대로면 오지 않는다.
+   * 연결 여부·요금제·주간/5시간 한도·마지막 확인 시각이 한 덩어리로 온다.
+   */
+  'usage.engine': [usage: EngineUsage];
+  /** 멤버 사용량이 바뀌었다 → `usage.member` 알림(비영속·seq 없음, T43). */
+  'usage.member': [usage: MemberUsage];
   /** shutdown() 완료. */
   shutdown: [];
 };
@@ -334,6 +345,8 @@ export interface HookReceiverLike {
   close(): Promise<void>;
   readonly port: number;
   on(event: 'hook', listener: (...args: HookReceiverEvents['hook']) => void): this;
+  /** `POST /status/<memberToken>`(T43). 가짜 수신기도 이 자리를 갖춰야 Office 가 배선할 수 있다. */
+  on(event: 'status-line', listener: (req: StatusLineRequest) => void): this;
   on(event: 'hold-timeout' | 'hold-closed', listener: (...args: HookReceiverEvents['hold-timeout']) => void): this;
   on(event: 'bad-payload', listener: (...args: HookReceiverEvents['bad-payload']) => void): this;
   on(event: 'handler-error', listener: (...args: HookReceiverEvents['handler-error']) => void): this;

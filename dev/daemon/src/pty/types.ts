@@ -21,6 +21,11 @@ export interface SpawnOptions {
   hookScriptPath: string;
   /** HookReceiver 포트. hook 명령 인자로 전달. */
   hookPort: number;
+  /**
+   * statusline.js 절대 경로(T43, Claude 전용). 주면 세션 설정에 `statusLine{type:'command'}` 가 같이 들어가
+   * 사용량(주간 한도·컨텍스트)이 데몬으로 흘러 들어온다. Codex 에는 statusLine 이 없어 무시된다.
+   */
+  statusLineScriptPath?: string;
   /** 엔진 인자 뒤에 그대로 붙일 추가 인자. */
   extraArgs?: string[];
   /** TeamTools MCP 설정 파일(T17). Claude 는 `--mcp-config <path>` 로 그 세션에만 주입한다. Codex 는 mcpUrl 을 쓴다. */

@@ -212,6 +212,8 @@ export function makeTree(
     name?: string;
     cwd: string;
     engine?: Engine;
+    /** 팀장 엔진만 따로(혼합 트리 테스트용). 생략하면 부장과 같다. */
+    leadEngine?: Engine;
     headName?: string;
     leadName?: string;
     teamName?: string;
@@ -229,7 +231,7 @@ export function makeTree(
   const { team, lead } = office.createTeam({
     departmentId: department.id,
     name: input.teamName ?? input.name ?? 'alpha',
-    leadEngine: engine,
+    leadEngine: input.leadEngine ?? engine,
     leadName: input.leadName,
     maxMembers: input.maxMembers,
     allowedEngines: input.allowedEngines,

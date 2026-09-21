@@ -434,6 +434,14 @@ export abstract class BaseHooksAdapter extends EventEmitter<HooksAdapterEvents> 
     }
     this.appendEvent(member, 'idle', {});
     this.setStatus(member.id, 'idle');
+    // T43: 턴이 끝났으니 기록 파일 꼬리를 다시 읽으라는 신호(누적 토큰·비용·Codex 한도).
+    this.emitTurnEnd(req, member);
+  }
+
+  /** `turnEnd` 를 낸다(T43). 페이로드의 `transcript_path` 를 그대로 싣는다 — 경로를 조립하지 않는다. */
+  protected emitTurnEnd(req: HookRequest, member: Member): void {
+    const p = req.payload.transcript_path;
+    this.emit('turnEnd', member.id, typeof p === 'string' && p ? p : null);
   }
 
   private onSessionEnd(req: HookRequest, member: Member): void {

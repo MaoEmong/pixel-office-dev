@@ -1,7 +1,9 @@
 // HookReceiver — CLI hooks(hook.js)가 POST 하는 HTTP 수신기.
 //   POST /hook/<memberToken>/<event>  body=JSON 페이로드  →  응답 body=결정 JSON (없으면 '{}')
+//   POST /status/<memberToken>        body=statusLine 페이로드 → 응답 body=**상태 줄 한 줄**(text/plain, T43)
 // 핸들러는 hold() 로 응답을 열어 둔 채 사용자 답을 기다릴 수 있다(어떤 이벤트를 붙들지는 어댑터가 결정).
-// 설계: 01 §HookReceiver, §대기 정책. 실측: 02 §②③④.
+// statusLine 쪽은 **절대 보류하지 않는다** — 그 스크립트는 화면을 다시 그릴 때마다 돌고 붙들면 TUI 가 멈춘다.
+// 설계: 01 §HookReceiver, §대기 정책, `docs/design/사용량-표시.md`. 실측: 02 §②③④, T43-0 Q2.
 import { EventEmitter } from 'node:events';
 import http from 'node:http';
 import type { AddressInfo } from 'node:net';
@@ -49,7 +51,20 @@ export interface UnknownMemberInfo {
 export interface BadRequestInfo {
   method: string;
   url: string;
-  reason: 'not-found' | 'body-too-large';
+  /** `unknown-member` 는 `/status` 전용 — 모르는 토큰에는 404 를 준다(hook 쪽은 '{}' pass-through 가 규약이다). */
+  reason: 'not-found' | 'body-too-large' | 'unknown-member';
+}
+
+/**
+ * `POST /status/<memberToken>` 한 건(T43). hook 과 달리 결정 JSON 이 아니라 **사람이 읽는 한 줄**을 돌려준다.
+ * 리스너가 emit 중 동기적으로 `respond()` 를 부르지 않으면 빈 줄로 닫힌다(보류 없음).
+ */
+export interface StatusLineRequest {
+  memberToken: string;
+  /** statusLine 스크립트가 stdin 으로 받은 JSON(파싱 실패 시 원문이 `raw` 에 들어간다). */
+  payload: HookPayload;
+  /** 상태 줄 텍스트로 응답한다. 이미 응답했으면 false. */
+  respond(text: string): boolean;
 }
 
 export interface BadPayloadInfo {
@@ -72,6 +87,8 @@ export interface HookReceiverOptions {
 export interface HookReceiverEvents {
   /** 알려진 멤버의 hook. 핸들러는 emit 중 동기적으로 respond()/hold() 를 부른다. */
   hook: [req: HookRequest];
+  /** 알려진 멤버의 statusLine 페이로드(T43). 핸들러는 emit 중 동기적으로 respond(text) 를 부른다. */
+  'status-line': [req: StatusLineRequest];
   /** isKnownMember 가 false 를 돌려준 요청('{}' 로 응답함). */
   'unknown-member': [info: UnknownMemberInfo];
   /** 보류가 maxHoldMs 를 넘겨 '{}' 로 닫힘. */
@@ -152,14 +169,16 @@ export class HookReceiver extends EventEmitter<HookReceiverEvents> {
     const url = req.url ?? '';
     const method = req.method ?? '';
     const m = /^\/hook\/([^/]+)\/([^/]+)\/?$/.exec(url);
-    if (method !== 'POST' || !m) {
+    const s = m ? null : /^\/status\/([^/]+)\/?$/.exec(url);
+    if (method !== 'POST' || (!m && !s)) {
       this.reply(res, 404, '{}');
       this.emit('bad-request', { method, url, reason: 'not-found' });
       req.resume();
       return;
     }
-    const memberToken = safeDecode(m[1]!);
-    const event = safeDecode(m[2]!) as HookEvent;
+    const memberToken = safeDecode((m ? m[1] : s![1])!);
+    const event = m ? (safeDecode(m[2]!) as HookEvent) : ('StatusLine' as HookEvent);
+    const isStatus = !m;
 
     const chunks: Buffer[] = [];
     let size = 0;
@@ -187,12 +206,47 @@ export class HookReceiver extends EventEmitter<HookReceiverEvents> {
         const parsed: unknown = text.trim() === '' ? {} : JSON.parse(text);
         payload = parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? (parsed as HookPayload) : { raw: parsed };
       } catch (err) {
-        this.reply(res, 200, '{}');
+        // statusLine 은 결정 JSON 이 아니라 한 줄을 기대한다 — 빈 줄로 닫는다.
+        this.reply(res, 200, isStatus ? '' : '{}', isStatus);
         this.emit('bad-payload', { memberToken, event, bodyHead: text.slice(0, 200), error: String(err) });
         return;
       }
-      this.dispatch(memberToken, event, payload, res);
+      if (isStatus) this.dispatchStatusLine(memberToken, payload, res);
+      else this.dispatch(memberToken, event, payload, res);
     });
+  }
+
+  /**
+   * `POST /status/<memberToken>` (T43). 보류가 없고, **모르는 토큰은 404** 다 — hook 과 달리 이 응답은 CLI 의
+   * 동작을 바꾸지 않으므로 pass-through 로 감싸 줄 이유가 없고, 상태 줄에 엉뚱한 글자가 찍히면 안 된다.
+   * 리스너가 던지면 빈 줄로 닫는다(상태 줄 하나 때문에 TUI 가 멈추면 안 된다).
+   */
+  private dispatchStatusLine(memberToken: string, payload: HookPayload, res: http.ServerResponse): void {
+    if (!this.isKnownMember(memberToken)) {
+      this.reply(res, 404, '', true);
+      this.emit('bad-request', { method: 'POST', url: `/status/${memberToken}`, reason: 'unknown-member' });
+      return;
+    }
+    let done = false;
+    const request: StatusLineRequest = {
+      memberToken,
+      payload,
+      respond: (text) => {
+        if (done) return false;
+        done = true;
+        this.reply(res, 200, typeof text === 'string' ? text : '', true);
+        return true;
+      },
+    };
+    try {
+      this.emit('status-line', request);
+    } catch (err) {
+      this.emit('handler-error', err, { memberToken, event: 'StatusLine' as HookEvent, payload });
+    }
+    if (!done) {
+      done = true;
+      this.reply(res, 200, '', true);
+    }
   }
 
   private dispatch(memberToken: string, event: HookEvent, payload: HookPayload, res: http.ServerResponse): void {
@@ -286,11 +340,12 @@ export class HookReceiver extends EventEmitter<HookReceiverEvents> {
     return true;
   }
 
-  private reply(res: http.ServerResponse, status: number, body: string): void {
+  /** `plain` 이면 text/plain(상태 줄), 아니면 결정 JSON. */
+  private reply(res: http.ServerResponse, status: number, body: string, plain = false): void {
     if (res.writableEnded || res.destroyed) return;
     if (!res.headersSent) {
       res.writeHead(status, {
-        'content-type': 'application/json',
+        'content-type': plain ? 'text/plain; charset=utf-8' : 'application/json',
         'content-length': Buffer.byteLength(body),
         connection: 'close',
       });

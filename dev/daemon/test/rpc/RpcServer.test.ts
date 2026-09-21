@@ -21,6 +21,7 @@ import type {
   OfficeSnapshot,
 } from '../../src/office/types.js';
 import type { Department, EventsQueryInput, Member, OfficeEvent, Team } from '../../src/store/types.js';
+import type { UsageSnapshot } from '../../src/usage/types.js';
 
 // ---- 가짜 Office ---------------------------------------------------------------------
 
@@ -53,6 +54,14 @@ function member(id: string, status: Member['status'] = 'idle'): Member {
 
 const TEAM: Team = { id: 't1', departmentId: 'd1', name: 'team', cwd: 'D:\\x', leaderId: null, maxMembers: 4, allowedEngines: ['claude', 'codex'], createdAt: 'c' };
 const DEPT: Department = { id: 'd1', name: 'dept', cwd: 'D:\\x', headId: null, createdAt: 'c' };
+/** T43: 스냅샷의 `usage` 칸(엔진은 항상 둘 다). */
+const USAGE: UsageSnapshot = {
+  engines: [
+    { engine: 'claude', connected: true, plan: 'max', weekly: { usedPercent: 54, resetsAt: '2026-09-23T03:00:00.000Z' }, session: null, updatedAt: '2026-09-21T10:00:00.000Z', reason: null },
+    { engine: 'codex', connected: false, plan: null, weekly: null, session: null, updatedAt: null, reason: 'not-installed' },
+  ],
+  members: [],
+};
 
 class FakeOffice extends EventEmitter<OfficeEvents> implements OfficeApi {
   readonly token = TOKEN;
@@ -79,7 +88,8 @@ class FakeOffice extends EventEmitter<OfficeEvents> implements OfficeApi {
   snapshot(): OfficeSnapshot {
     // T28: 스냅샷 멤버 행에는 파생 상태가 실린다(여기서는 raw 를 그대로 — RpcServer 는 통과만 시킨다).
     const members = [...this.members.values()].map((m) => ({ ...m, derived: m.status }));
-    return { seq: 5, departments: [DEPT], teams: [TEAM], members, pending: [], tasks: [] };
+    // T43: 사용량도 같이 실린다(여기서는 빈 상태 — RpcServer 는 통과만 시킨다).
+    return { seq: 5, departments: [DEPT], teams: [TEAM], members, pending: [], tasks: [], usage: USAGE };
   }
   getMember(memberId: string): Member | undefined {
     return this.members.get(memberId);

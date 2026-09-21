@@ -66,5 +66,7 @@ export class CodexHooksAdapter extends BaseHooksAdapter {
     this.expireAllForMember(member.id);
     this.appendEvent(member, 'idle', { summary: INTERRUPT_SUMMARY });
     this.setStatus(member.id, 'idle');
+    // T43: 중단도 턴의 끝이다 — rollout 에 token_count 가 적혔으면 반영한다(없으면 값이 그대로라 조용하다).
+    this.emitTurnEnd(req, member);
   }
 }

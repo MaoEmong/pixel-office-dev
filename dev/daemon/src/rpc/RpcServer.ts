@@ -330,6 +330,9 @@ export class RpcServer {
       for (const c of this.clients.values()) if (c.authed && c.attached.has(memberId)) this.notify(c, 'term', { memberId, data });
     });
     on('notice', (level, message) => this.broadcast('daemon.notice', { level, message }));
+    // T43: 사용량은 **바뀔 때만** 온다. 비영속·seq 없음 — 스냅샷의 `usage` 와 같은 모양의 원소 하나다.
+    on('usage.engine', (usage) => this.broadcast('usage.engine', usage));
+    on('usage.member', (usage) => this.broadcast('usage.member', usage));
     // 트리 모양이 바뀌면(부서·팀 생성/삭제) 스냅샷을 한 번 민다(T38). 멤버 행은 `member.status` 가 알리지만
     // **부서·팀 행의 생멸을 알리는 알림은 없어서** 다른 클라이언트는 재접속할 때까지 지운 부서를 그리고 있었다
     // (T37 함정 ①). 요청한 클라이언트가 응답을 먼저 받도록 다음 매크로태스크로 미룬다.
