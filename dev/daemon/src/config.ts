@@ -190,6 +190,20 @@ export const config = {
    * 할당량이 들지 않는다. 0 이하면 기동 뒤 **한 번만** 읽는다.
    */
   usageProbeSec: Number(process.env.PIXEL_USAGE_PROBE_SEC || 300),
+  /**
+   * 부모 앱의 pid(T46-1, D-47 · 수명주기.md §3). 앱이 데몬을 자식으로 띄울 때 `PIXEL_PARENT_PID=<앱 pid>` 를 준다.
+   * 값이 있으면 데몬이 2초마다 그 프로세스를 지켜보다 사라지면 스스로 `daemon.shutdown` 과 같은 정리를 한다 —
+   * 앱이 강제 종료되면 §2 의 코드가 돌지 못하기 때문이다. 없으면(콘솔에서 띄운 데몬) 감시하지 않는다.
+   */
+  parentPid: (() => {
+    const n = Number(process.env.PIXEL_PARENT_PID);
+    return Number.isInteger(n) && n > 0 ? n : undefined;
+  })(),
+  /**
+   * `1` 이면 **부모 감시를 끈다**(T46-1). 앱을 닫아도 데몬과 세션을 남기는 개발용 탈출구이자, 앱 설정
+   * "앱을 닫아도 계속 일하기"(D-02 의 옛 동작)가 켜졌을 때 앱이 넘기는 값이다.
+   */
+  keepDaemon: process.env.PIXEL_KEEP_DAEMON === '1',
   /** 기본 터미널 크기. */
   cols: 120,
   rows: 40,

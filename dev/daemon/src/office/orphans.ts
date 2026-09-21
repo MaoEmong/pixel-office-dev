@@ -19,13 +19,41 @@ export interface OrphanOps {
 
 export type OrphanVerdict = { action: 'killed' } | { action: 'not-alive' } | { action: 'skipped'; reason: string };
 
-/** 그 pid 가 우리 엔진 프로세스로 보이면 죽인다. 자기 자신·이름 불일치는 건너뛴다. */
-export function reapOrphan(ops: OrphanOps, pid: number, engine: Engine): OrphanVerdict {
+/**
+ * 그 pid 를 죽여도 되는 이미지 이름인가.
+ *
+ * 기본은 D-17 그대로 — 이름에 엔진 이름(`claude`/`codex`)이 들어 있을 때만이다. **`node.exe` 는 기본으로 받지 않는다**:
+ * 데몬·앱·npm 이 전부 node 라서, 재사용된 pid 하나로 엉뚱한 프로그램을 트리째 죽일 수 있다(T20/T09 가 이 경우를
+ * 일부러 막아 놨다).
+ *
+ * T46-1 이 더한 것은 **실제로 띄운 실행 파일 이름**(`exeName`)을 같이 받는 길뿐이다. `PIXEL_CLAUDE_EXE` 가
+ * 자바스크립트 진입점을 가리키면 자식이 `node.exe` 로 뜨는데, 그때는 데몬이 **자기가 그렇게 띄웠다는 것을 알고 있다** —
+ * 그래서 "아무 node 나" 가 아니라 "내가 띄운 그 실행 파일" 이 조건이 된다.
+ */
+export function looksLikeEngine(name: string, engine: Engine, exeName?: string): boolean {
+  const n = name.toLowerCase();
+  if (n.includes(engine)) return true;
+  const expected = exeName?.toLowerCase().replace(/\.(exe|cmd|bat)$/, '');
+  return expected !== undefined && expected !== '' && n.replace(/\.(exe|cmd|bat)$/, '') === expected;
+}
+
+/** 실행 파일 경로에서 이미지 이름만(`D:\x\node.exe` → `node.exe`). 빈 값이면 undefined. */
+export function exeImageName(exePath: string | undefined): string | undefined {
+  if (!exePath) return undefined;
+  const base = exePath.replace(/[/\\]+$/, '').split(/[/\\]/).pop();
+  return base && base !== '' ? base : undefined;
+}
+
+/**
+ * 그 pid 가 우리 엔진 프로세스로 보이면 죽인다. 자기 자신·이름 불일치는 건너뛴다.
+ * `opts.exeName` 은 데몬이 실제로 띄운 실행 파일 이름(위 `looksLikeEngine` 주석 — node 래퍼용).
+ */
+export function reapOrphan(ops: OrphanOps, pid: number, engine: Engine, opts: { exeName?: string } = {}): OrphanVerdict {
   if (pid === process.pid) return { action: 'skipped', reason: 'pid is the daemon itself' };
   if (!ops.alive(pid)) return { action: 'not-alive' };
   const name = ops.name(pid);
   if (!name) return { action: 'skipped', reason: 'process name unknown' };
-  if (!name.includes(engine)) return { action: 'skipped', reason: `process name ${name} does not look like ${engine}` };
+  if (!looksLikeEngine(name, engine, opts.exeName)) return { action: 'skipped', reason: `process name ${name} does not look like ${engine}` };
   ops.kill(pid);
   return { action: 'killed' };
 }
