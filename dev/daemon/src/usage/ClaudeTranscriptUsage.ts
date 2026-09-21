@@ -163,6 +163,37 @@ export function advanceClaudeTranscript(
   };
 }
 
+/**
+ * 와이어 값 둘을 더한다. 한쪽이 `null` 이면 다른 쪽 그대로, 둘 다 `null` 이면 `null`.
+ *
+ * 칸이 `null`(= 그 출처가 모르는 값)이면 **0 으로 치고 더한다.** 둘 다 `null` 인 칸만 `null` 로 남는다 —
+ * 아는 쪽을 버리는 것보다 낫고, 이 함수를 쓰는 Claude 누적기는 언제나 숫자를 채운다.
+ */
+export function addUsageTokens(a: UsageTokens | null, b: UsageTokens | null): UsageTokens | null {
+  if (!a) return b;
+  if (!b) return a;
+  const add = (x: number | null, y: number | null): number | null => (x === null && y === null ? null : (x ?? 0) + (y ?? 0));
+  return {
+    input: add(a.input, b.input),
+    output: add(a.output, b.output),
+    cacheRead: add(a.cacheRead, b.cacheRead),
+    cacheCreate: add(a.cacheCreate, b.cacheCreate),
+    total: add(a.total, b.total),
+  };
+}
+
+/**
+ * 여러 transcript(본 파일 + 서브에이전트 파일들, T45)의 합. 전부 빈손이면 `null`.
+ *
+ * 파일마다 상태가 따로이므로 **id 중복 제거도 파일 안에서만** 한다 — 서로 다른 파일의 `message.id` 는
+ * 서로 다른 API 호출이라 겹치지 않는다(실측: 본 파일과 서브에이전트 파일의 id 집합이 서로 소).
+ */
+export function claudeTotalsOf(states: Iterable<ClaudeTranscriptState>): UsageTokens | null {
+  let acc: UsageTokens | null = null;
+  for (const s of states) acc = addUsageTokens(acc, claudeTranscriptTotals(s));
+  return acc;
+}
+
 /** 모델별 누적을 합친 와이어 값. 한 줄도 못 셌으면 `null`(= 아직 모른다, 이전 값을 지우지 않는다). */
 export function claudeTranscriptTotals(state: ClaudeTranscriptState): UsageTokens | null {
   const rows = Object.values(state.byModel);

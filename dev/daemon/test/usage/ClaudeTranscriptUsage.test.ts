@@ -10,13 +10,20 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
+  addUsageTokens,
   advanceClaudeTranscript,
+  claudeTotalsOf,
   claudeTranscriptTotals,
   emptyClaudeTranscriptState,
   MAX_SEEN_IDS,
   type ClaudeTranscriptState,
 } from '../../src/usage/ClaudeTranscriptUsage.js';
-import { readClaudeTranscriptUsage } from '../../src/usage/claudeTranscriptReader.js';
+import {
+  claudeSubagentsDir,
+  listClaudeSubagentFiles,
+  MAX_SUBAGENT_FILES,
+  readClaudeTranscriptUsage,
+} from '../../src/usage/claudeTranscriptReader.js';
 import { parseClaudeCostState } from '../../src/usage/parse/claudeCostState.js';
 import { isRecord, type UsageTokens } from '../../src/usage/types.js';
 
@@ -317,5 +324,162 @@ describe('readClaudeTranscriptUsage — 증분 · 회전 · 상한', () => {
     const state = (await readClaudeTranscriptUsage(write('empty.jsonl', '')))!;
     assert.equal(state.offset, 0);
     assert.equal(claudeTranscriptTotals(state), null);
+  });
+});
+
+// ---- T45: 서브에이전트 transcript ------------------------------------------------------------
+//
+// CLI 2.1.275 는 서브에이전트(Task 도구) 줄을 본 transcript 에 섞지 않고
+// `<sessionId>/subagents/agent-*.jsonl` 로 따로 쓴다(T43-5 §남은 것).
+//
+// 아래 픽스처 5개는 **이번 태스크에서 직접 돌린 실기 세션 2개**를 그대로 옮긴 것이다(`attachment` 줄만 뺐다 —
+// usage 를 들고 있지 않다). 세션은 sandbox 에서 `claude.exe` 2.1.275 를 pty 로 띄워 Task 도구를 쓰게 한 뒤
+// `/exit` 로 끝냈다. `-p`(print) 모드는 **cost-state 를 안 남긴다** — 그래서 대화형으로 돌렸다.
+//
+//   claude-transcript-agents-main.jsonl   f56e74cf-… (서브에이전트 1개)
+//   claude-transcript-agents2-main.jsonl  a2281b58-… (서브에이전트 2개)
+
+/** 그 픽스처들의 세션 묶음. main 은 끝난 세션이라 cost-state 를 들고 있다. */
+const SESSIONS = [
+  { main: 'claude-transcript-agents-main.jsonl', subs: ['claude-transcript-agents-sub1.jsonl'] },
+  { main: 'claude-transcript-agents2-main.jsonl', subs: ['claude-transcript-agents2-sub1.jsonl', 'claude-transcript-agents2-sub2.jsonl'] },
+] as const;
+
+describe('ClaudeTranscriptUsage — 서브에이전트 몫은 cost-state 에 **들어 있다**(T45)', () => {
+  // 이것이 T45 의 판정 근거다. cost-state 가 서브에이전트를 포함하지 **않는다면** 본 파일만으로 맞아떨어져야
+  // 하는데, 실측은 정반대다: 본 파일만으로는 `cacheCreate` 가 절반 가까이 모자라고, 서브에이전트 파일을 더하면
+  // 0.2% 안으로 들어온다. → 살아 있는 동안에도 더해야 세션이 끝날 때 값이 튀지 않고 수렴한다.
+  for (const { main, subs } of SESSIONS) {
+    test(`${main}: 본 파일만 < cost-state, 본+서브 ≈ cost-state`, () => {
+      const { visible } = splitCostState(fixture(main));
+      const mainOnly = claudeTranscriptTotals(scan(main))!;
+      const withSubs = claudeTotalsOf([scan(main), ...subs.map((s) => scan(s))])!;
+
+      // `cacheCreate` 로 가른다 — 세션 끝의 숨은 호출(T43-5)은 캐시를 **읽기만** 하므로 이 칸을 흐리지 않는다.
+      const off = (got: number, want: number): number => Math.abs(got - want) / want;
+      assert.ok(off(mainOnly.cacheCreate!, visible.cacheCreate!) > 0.4, `본 파일만: ${mainOnly.cacheCreate} vs ${visible.cacheCreate}`);
+      assert.ok(off(withSubs.cacheCreate!, visible.cacheCreate!) < 0.002, `본+서브: ${withSubs.cacheCreate} vs ${visible.cacheCreate}`);
+      // 출력 토큰도 같은 방향으로 움직인다(숨은 호출 몫 몇십 개만 남는다).
+      assert.ok(withSubs.output! > mainOnly.output!);
+      assert.ok(off(withSubs.output!, visible.output!) < 0.03, `output ${withSubs.output} vs ${visible.output}`);
+      // 총합은 여전히 모자란다 — 남은 차이는 T43-5 가 밝힌 숨은 호출의 `cacheRead` 다(못 세는 게 맞다).
+      assert.ok(withSubs.total! < visible.total!);
+      assert.ok(withSubs.cacheRead! < visible.cacheRead!);
+    });
+  }
+
+  test('실측 숫자 그대로(픽스처가 바뀌면 여기서 깨진다)', () => {
+    assert.deepEqual(claudeTranscriptTotals(scan('claude-transcript-agents-main.jsonl')), {
+      input: 4, output: 445, cacheRead: 75311, cacheCreate: 14769, total: 90529,
+    });
+    assert.deepEqual(claudeTranscriptTotals(scan('claude-transcript-agents-sub1.jsonl')), {
+      input: 4, output: 132, cacheRead: 54222, cacheCreate: 13720, total: 68078,
+    });
+    assert.deepEqual(claudeTotalsOf([scan('claude-transcript-agents-main.jsonl'), scan('claude-transcript-agents-sub1.jsonl')]), {
+      input: 8, output: 577, cacheRead: 129533, cacheCreate: 28489, total: 158607,
+    });
+    assert.deepEqual(claudeTotalsOf(SESSIONS[1].subs.map((s) => scan(s))), {
+      input: 10, output: 1234, cacheRead: 147500, cacheCreate: 27582, total: 176326,
+    });
+  });
+
+  test('본 파일과 서브에이전트 파일의 message.id 는 겹치지 않는다(더해도 이중 계산이 아니다)', () => {
+    for (const { main, subs } of SESSIONS) {
+      const mainIds = new Set(scan(main).seenIds);
+      for (const s of subs) {
+        for (const id of scan(s).seenIds) assert.ok(!mainIds.has(id), `${s} 의 ${id} 가 본 파일에도 있다`);
+      }
+    }
+  });
+
+  test('claudeTotalsOf: 빈 목록·셀 것 없는 상태는 null(0 이 아니다)', () => {
+    assert.equal(claudeTotalsOf([]), null);
+    assert.equal(claudeTotalsOf([emptyClaudeTranscriptState('a'), emptyClaudeTranscriptState('b')]), null);
+    assert.deepEqual(claudeTotalsOf([emptyClaudeTranscriptState('a'), scan('claude-transcript-agents-sub1.jsonl')]), {
+      input: 4, output: 132, cacheRead: 54222, cacheCreate: 13720, total: 68078,
+    });
+  });
+
+  test('addUsageTokens: null 은 건너뛰고, 모르는 칸(null)만 null 로 남는다', () => {
+    const a = { input: 1, output: 2, cacheRead: 3, cacheCreate: 4, total: 10 };
+    assert.equal(addUsageTokens(null, null), null);
+    assert.deepEqual(addUsageTokens(a, null), a);
+    assert.deepEqual(addUsageTokens(null, a), a);
+    assert.deepEqual(addUsageTokens(a, a), { input: 2, output: 4, cacheRead: 6, cacheCreate: 8, total: 20 });
+    // Codex 파서는 모르는 칸을 null 로 준다 — 아는 쪽을 버리지 않는다.
+    const partial = { input: null, output: 5, cacheRead: null, cacheCreate: null, total: 5 };
+    assert.deepEqual(addUsageTokens(partial, partial), { input: null, output: 10, cacheRead: null, cacheCreate: null, total: 10 });
+    assert.deepEqual(addUsageTokens(a, partial), { input: 1, output: 7, cacheRead: 3, cacheCreate: 4, total: 15 });
+  });
+});
+
+describe('listClaudeSubagentFiles — 폴더 규칙 · 새것부터 · 상한', () => {
+  /** 실측 배치: `<dir>/<sessionId>.jsonl` 옆에 `<dir>/<sessionId>/subagents/agent-*.jsonl`. */
+  const layout = (session: string, agents: { name: string; text?: string; mtime?: number }[]): string => {
+    const main = path.join(tmp, `${session}.jsonl`);
+    fs.writeFileSync(main, '');
+    const dir = path.join(tmp, session, 'subagents');
+    fs.mkdirSync(dir, { recursive: true });
+    for (const a of agents) {
+      const p = path.join(dir, a.name);
+      fs.writeFileSync(p, a.text ?? '');
+      if (a.mtime !== undefined) fs.utimesSync(p, a.mtime / 1000, a.mtime / 1000);
+    }
+    return main;
+  };
+
+  test('경로 규칙: `<sessionId>.jsonl` → `<sessionId>/subagents`', () => {
+    const p = path.join('C:', 'p', 'D--x', 'abc.jsonl');
+    assert.equal(claudeSubagentsDir(p), path.join('C:', 'p', 'D--x', 'abc', 'subagents'));
+    assert.equal(claudeSubagentsDir('rollout.jsonl'), path.join('rollout', 'subagents'));
+    assert.equal(claudeSubagentsDir('t.log'), null, '.jsonl 이 아니면 서브에이전트 폴더를 짐작하지 않는다');
+    assert.equal(claudeSubagentsDir(''), null);
+  });
+
+  test('`agent-*.jsonl` 만 센다(`.meta.json` 은 usage 를 안 들고 있다)', async () => {
+    const main = layout('s1', [
+      { name: 'agent-a1.jsonl' },
+      { name: 'agent-a1.meta.json' },
+      { name: 'agent-a2.jsonl' },
+      { name: 'notes.txt' },
+      { name: 'agent-.jsonl' }, // id 가 비었다 — agent-<id> 모양이 아니다
+    ]);
+    const got = await listClaudeSubagentFiles(main);
+    assert.deepEqual(got.map((p) => path.basename(p)).sort(), ['agent-a1.jsonl', 'agent-a2.jsonl']);
+  });
+
+  test('새것부터 `cap` 개까지', async () => {
+    const base = Date.parse('2026-09-21T00:00:00.000Z');
+    const main = layout('s2', [
+      { name: 'agent-old.jsonl', mtime: base },
+      { name: 'agent-mid.jsonl', mtime: base + 10_000 },
+      { name: 'agent-new.jsonl', mtime: base + 20_000 },
+    ]);
+    assert.deepEqual((await listClaudeSubagentFiles(main)).map((p) => path.basename(p)), ['agent-new.jsonl', 'agent-mid.jsonl', 'agent-old.jsonl']);
+    assert.deepEqual((await listClaudeSubagentFiles(main, 2)).map((p) => path.basename(p)), ['agent-new.jsonl', 'agent-mid.jsonl']);
+    assert.deepEqual(await listClaudeSubagentFiles(main, 0), [], '상한 0 이면 아무것도 안 따라간다');
+  });
+
+  test('폴더가 없으면 빈 배열(Task 를 한 번도 안 쓴 세션 — 정상)', async () => {
+    const main = path.join(tmp, 'lonely.jsonl');
+    fs.writeFileSync(main, '');
+    assert.deepEqual(await listClaudeSubagentFiles(main), []);
+    assert.deepEqual(await listClaudeSubagentFiles(path.join(tmp, 'nope.jsonl')), []);
+    assert.deepEqual(await listClaudeSubagentFiles(''), []);
+  });
+
+  test('기본 상한은 50', () => {
+    assert.equal(MAX_SUBAGENT_FILES, 50);
+  });
+
+  test('실측 파일을 그대로 읽어도 같은 합이 나온다(증분 읽기 경로)', async () => {
+    const main = layout('s3', [
+      { name: 'agent-a6a406eca7a21eed3.jsonl', text: fixture('claude-transcript-agents-sub1.jsonl') },
+    ]);
+    const [file] = await listClaudeSubagentFiles(main);
+    const state = (await readClaudeTranscriptUsage(file!))!;
+    assert.deepEqual(claudeTranscriptTotals(state), {
+      input: 4, output: 132, cacheRead: 54222, cacheCreate: 13720, total: 68078,
+    });
   });
 });

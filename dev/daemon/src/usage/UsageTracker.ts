@@ -18,8 +18,11 @@
 import { EventEmitter } from 'node:events';
 import type { Store } from '../store/Store.js';
 import type { Engine } from '../store/types.js';
-import { claudeTranscriptTotals, type ClaudeTranscriptState } from './ClaudeTranscriptUsage.js';
-import { readClaudeTranscriptUsage as defaultReadClaudeTranscript } from './claudeTranscriptReader.js';
+import { addUsageTokens, claudeTotalsOf, type ClaudeTranscriptState } from './ClaudeTranscriptUsage.js';
+import {
+  listClaudeSubagentFiles as defaultListClaudeSubagents,
+  readClaudeTranscriptUsage as defaultReadClaudeTranscript,
+} from './claudeTranscriptReader.js';
 import { probeClaudeConnection, probeCodexConnection } from './connection.js';
 import { parseClaudeCostState } from './parse/claudeCostState.js';
 import { parseClaudeStatusLine } from './parse/claudeStatusLine.js';
@@ -65,6 +68,8 @@ export interface UsageTrackerOptions {
   readTail?: (file: string) => Promise<string>;
   /** Claude transcript 증분 읽기(테스트 대체용, T43-5). */
   readClaudeTranscript?: (file: string, prev?: ClaudeTranscriptState) => Promise<ClaudeTranscriptState | null>;
+  /** 그 세션의 서브에이전트 transcript 목록(새것부터, 테스트 대체용, T45). */
+  listClaudeSubagents?: (transcriptPath: string) => Promise<string[]>;
 }
 
 /** `applyStatusLine` · 턴 종료가 받는 멤버 최소 정보. */
@@ -96,6 +101,25 @@ interface MemberPatch {
   context?: UsageContext | null;
   tokens?: UsageTokens | null;
   costUsd?: number | null;
+}
+
+/**
+ * 한 멤버의 서브에이전트 transcript 상태(T45).
+ *
+ * 파일 수에 상한이 있으므로(`MAX_SUBAGENT_FILES`) 상한을 넘으면 **오래된 파일을 놓아 준다.** 그냥 버리면
+ * 멤버의 누적 토큰이 **줄어드는** 이상한 화면이 되므로, 놓아 줄 때 그 파일의 합계를 `retired` 에 접어 넣고
+ * 경로를 `retiredPaths` 에 남긴다(다시 잡으면 0 부터 다시 읽어 이중 계산이 된다 — 끝난 서브에이전트 파일은
+ * 더 자라지 않으므로 다시 잡을 이유도 없다).
+ */
+interface MemberSubagentState {
+  /** 본 transcript 경로. 이게 바뀌면 이 상태 전체를 버린다. */
+  transcriptPath: string;
+  /** 아직 따라가는 파일 → 누적 상태. */
+  tracked: Map<string, ClaudeTranscriptState>;
+  /** 놓아 준 파일들의 합계만. */
+  retired: UsageTokens | null;
+  /** 놓아 준 파일 경로 — 다시 잡지 않는다. */
+  retiredPaths: Set<string>;
 }
 
 function emptyEngine(engine: Engine): EngineUsage {
@@ -137,6 +161,7 @@ export class UsageTracker extends EventEmitter<UsageTrackerEvents> {
   private readonly probeCodex: () => Promise<EngineConnection>;
   private readonly readTail: (file: string) => Promise<string>;
   private readonly readClaudeTranscript: (file: string, prev?: ClaudeTranscriptState) => Promise<ClaudeTranscriptState | null>;
+  private readonly listClaudeSubagents: (transcriptPath: string) => Promise<string[]>;
   private readonly engines = new Map<Engine, EngineUsage>();
   private readonly stamps = new Map<Engine, LimitStamps>();
   private readonly members = new Map<string, MemberUsage>();
@@ -146,6 +171,11 @@ export class UsageTracker extends EventEmitter<UsageTrackerEvents> {
    * 화면이 비지 않는다).
    */
   private readonly transcripts = new Map<string, ClaudeTranscriptState>();
+  /**
+   * 멤버별 **서브에이전트** transcript 누적 상태(T45). 본 transcript 와 같은 기계를 파일마다 하나씩 돌린다.
+   * 본 파일 경로가 바뀌면(= resume 이 새 세션을 팠다) 통째로 버린다 — 회계 단위는 세션 하나다.
+   */
+  private readonly subagents = new Map<string, MemberSubagentState>();
   private timer?: NodeJS.Timeout;
   private polling?: Promise<void>;
 
@@ -159,6 +189,7 @@ export class UsageTracker extends EventEmitter<UsageTrackerEvents> {
     this.probeCodex = opts.probeCodex ?? (() => probeCodexConnection());
     this.readTail = opts.readTail ?? ((file) => defaultReadTail(file));
     this.readClaudeTranscript = opts.readClaudeTranscript ?? ((file, prev) => defaultReadClaudeTranscript(file, prev));
+    this.listClaudeSubagents = opts.listClaudeSubagents ?? ((file) => defaultListClaudeSubagents(file));
     this.load();
   }
 
@@ -227,7 +258,10 @@ export class UsageTracker extends EventEmitter<UsageTrackerEvents> {
    * 두 출처를 쓴다(T43-5):
    *   - **살아 있는 동안** — transcript 의 `type:"assistant"` 줄을 **증분으로 더한다**. `cost-state` 줄은
    *     **CLI 가 끝날 때만** 적히므로(실측: 살아 있는 세션에 0개) 이게 유일한 토큰 출처다. 예전에는 이게 없어
-   *     Claude 캐릭터의 토큰 칸이 계속 "—" 였다.
+   *     Claude 캐릭터의 토큰 칸이 계속 "—" 였다. **서브에이전트 transcript**
+   *     (`<sessionId>/subagents/agent-*.jsonl`)도 같이 더한다(T45) — `cost-state` 가 서브에이전트 몫을
+   *     **포함**하므로(실측 3세션: cacheCreate 가 본 파일만으로는 65% 모자라고 서브에이전트를 더하면 0.1% 안에
+   *     들어온다) 더해야 세션이 끝날 때 값이 튀지 않고 수렴한다.
    *   - **세션이 끝난 뒤** — `cost-state` 가 나타나면 **그쪽이 이긴다.** CLI 자신의 계산이고, 우리 합에는
    *     transcript 에 줄로 남지 않는 배경 호출(제목 생성 haiku 등)이 빠져 있다.
    *
@@ -237,16 +271,27 @@ export class UsageTracker extends EventEmitter<UsageTrackerEvents> {
   async applyClaudeTurnEnd(member: UsageMemberRef, transcriptPath: string): Promise<void> {
     // ① 증분 누적 — 실패하면(파일 없음·잠김) 이전 상태를 그대로 둔다.
     const prev = this.transcripts.get(member.id);
-    let scanned: UsageTokens | null = prev ? claudeTranscriptTotals(prev) : null;
+    let main = prev;
     try {
       const next = await this.readClaudeTranscript(transcriptPath, prev);
       if (next) {
         this.transcripts.set(member.id, next);
-        scanned = claudeTranscriptTotals(next);
+        main = next;
       }
     } catch (err) {
       console.warn(`[usage] transcript 증분 읽기 실패(${transcriptPath}):`, err);
     }
+
+    // ①-b 서브에이전트 transcript(T45) — 같은 기계를 파일마다 돌려 **더한다**.
+    try {
+      await this.advanceSubagents(member.id, transcriptPath);
+    } catch (err) {
+      console.warn(`[usage] 서브에이전트 transcript 읽기 실패(${transcriptPath}):`, err);
+    }
+    const scanned = addUsageTokens(
+      main ? claudeTotalsOf([main]) : null,
+      this.subagentTotals(member.id),
+    );
 
     // ② cost-state(세션 종료 뒤에만 있다) — 있으면 최종값.
     const tail = await this.readTailSafe(transcriptPath);
@@ -256,6 +301,54 @@ export class UsageTracker extends EventEmitter<UsageTrackerEvents> {
     const costUsd = cs?.costUsd ?? null;
     if (!tokens && costUsd === null) return;
     this.recordMemberUsage(member, { tokens, costUsd });
+  }
+
+  /**
+   * 서브에이전트 transcript 를 한 판 훑어 상태를 갱신한다(T45).
+   *
+   * - 목록은 **새것부터 `MAX_SUBAGENT_FILES` 개**(`listClaudeSubagentFiles`). 상한을 넘겨 목록에서 빠진 파일은
+   *   합계만 `retired` 로 접고 다시 잡지 않는다 — 그래야 누적 토큰이 **줄어들지 않는다.**
+   * - 본 transcript 경로가 바뀌면(resume 이 새 파일을 팠다) 상태를 통째로 버린다. 본 파일과 같은 규칙이다.
+   * - 파일 하나를 못 읽어도 나머지는 계속 센다(이전 상태 유지).
+   */
+  private async advanceSubagents(memberId: string, transcriptPath: string): Promise<void> {
+    let state = this.subagents.get(memberId);
+    if (state && state.transcriptPath !== transcriptPath) state = undefined;
+    const files = await this.listClaudeSubagents(transcriptPath);
+    // 폴더가 없고 이전 상태도 없다 = Task 도구를 한 번도 안 쓴 세션. 빈 상태를 만들 이유가 없다.
+    if (files.length === 0 && !state) return;
+
+    const next: MemberSubagentState = state
+      ? { ...state, tracked: new Map(state.tracked) }
+      : { transcriptPath, tracked: new Map(), retired: null, retiredPaths: new Set() };
+    next.transcriptPath = transcriptPath;
+
+    const keep = new Set(files);
+    for (const file of files) {
+      if (next.retiredPaths.has(file)) continue; // 이미 놓아 준 파일 — 다시 읽으면 이중 계산
+      const before = next.tracked.get(file);
+      try {
+        const read = await this.readClaudeTranscript(file, before);
+        if (read) next.tracked.set(file, read);
+      } catch (err) {
+        console.warn(`[usage] 서브에이전트 transcript 읽기 실패(${file}):`, err);
+      }
+    }
+    // 목록에서 빠진(= 상한 밖으로 밀린) 파일을 놓아 준다. 합계는 남긴다.
+    for (const [file, st] of [...next.tracked]) {
+      if (keep.has(file)) continue;
+      next.retired = addUsageTokens(next.retired, claudeTotalsOf([st]));
+      next.retiredPaths.add(file);
+      next.tracked.delete(file);
+    }
+    this.subagents.set(memberId, next);
+  }
+
+  /** 그 멤버의 서브에이전트 합(추적 중 + 놓아 준 것). 하나도 없으면 `null`. */
+  private subagentTotals(memberId: string): UsageTokens | null {
+    const state = this.subagents.get(memberId);
+    if (!state) return null;
+    return addUsageTokens(claudeTotalsOf(state.tracked.values()), state.retired);
   }
 
   /** Codex: rollout 꼬리의 마지막 `token_count` → 엔진 한도 + 멤버 컨텍스트·누적 토큰(비용은 없다). */
@@ -343,6 +436,7 @@ export class UsageTracker extends EventEmitter<UsageTrackerEvents> {
   removeMember(memberId: string): void {
     this.members.delete(memberId);
     this.transcripts.delete(memberId);
+    this.subagents.delete(memberId);
     try {
       this.store.deleteMemberUsage(memberId);
     } catch (err) {
@@ -356,6 +450,7 @@ export class UsageTracker extends EventEmitter<UsageTrackerEvents> {
       if (!this.store.getMember(memberId)) {
         this.members.delete(memberId);
         this.transcripts.delete(memberId);
+        this.subagents.delete(memberId);
       }
     }
   }

@@ -37,7 +37,7 @@ interface Harness {
   now(): number;
 }
 
-function harness(opts: Partial<{ store: Store; probeClaude: () => Promise<EngineConnection>; probeCodex: () => Promise<EngineConnection>; readTail: (f: string) => Promise<string>; readClaudeTranscript: (f: string, prev?: ClaudeTranscriptState) => Promise<ClaudeTranscriptState | null>; refreshMs: number }> = {}): Harness {
+function harness(opts: Partial<{ store: Store; probeClaude: () => Promise<EngineConnection>; probeCodex: () => Promise<EngineConnection>; readTail: (f: string) => Promise<string>; readClaudeTranscript: (f: string, prev?: ClaudeTranscriptState) => Promise<ClaudeTranscriptState | null>; listClaudeSubagents: (f: string) => Promise<string[]>; refreshMs: number }> = {}): Harness {
   let clock = Date.parse('2026-09-21T10:00:00.000Z');
   const store = opts.store ?? memStore();
   const engines: EngineUsage[] = [];
@@ -51,6 +51,7 @@ function harness(opts: Partial<{ store: Store; probeClaude: () => Promise<Engine
     probeCodex: opts.probeCodex ?? (async () => ({ connected: true, plan: null, reason: null })),
     ...(opts.readTail ? { readTail: opts.readTail } : {}),
     ...(opts.readClaudeTranscript ? { readClaudeTranscript: opts.readClaudeTranscript } : {}),
+    ...(opts.listClaudeSubagents ? { listClaudeSubagents: opts.listClaudeSubagents } : {}),
   });
   tracker.on('engine', (u) => engines.push(u));
   tracker.on('member', (u) => members.push(u));
@@ -615,5 +616,215 @@ describe('UsageTracker — Claude 누적 토큰(T43-5)', () => {
     await h.tracker.applyTurnEnd(CODEX, 'C:/x/rollout.jsonl');
     assert.equal(called, 0);
     assert.equal(h.tracker.memberUsage(CODEX.id)!.tokens!.total, 43726);
+  });
+});
+
+// ---- T45: 서브에이전트 토큰도 더한다 ---------------------------------------------------------
+//
+// 근거(실측 3세션, `docs/worklog/T45-UsageAndNotice.md`): 끝난 세션의 `cost-state.modelUsage` 는
+// **서브에이전트 몫을 포함한다.** 본 transcript 만 세면 `cacheCreate` 가 절반 가까이 모자라고, 서브에이전트
+// 파일을 더하면 0.1% 안으로 들어온다. 그래서 살아 있는 동안에도 더해야 세션이 끝나 cost-state 가 이길 때
+// 숫자가 **튀지 않고 수렴**한다.
+//
+// 여기서도 **진짜 파일**을 실측 배치 그대로(`<sessionId>/subagents/agent-*.jsonl`) 깔고 진짜 reader 를 태운다.
+
+describe('UsageTracker — 서브에이전트 누적 토큰(T45)', () => {
+  let dir: string;
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pixel-usage-sub-'));
+  });
+  afterEach(() => {
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  const noCostState = (name: string): string =>
+    read(name)
+      .split('\n')
+      .filter((l) => l !== '' && !l.includes('"cost-state"'))
+      .join('\n') + '\n';
+
+  /** `<dir>/<session>.jsonl` + `<dir>/<session>/subagents/<name>` 를 깐다. 본 transcript 경로를 준다. */
+  const session = (name: string, mainText: string, subs: Record<string, string> = {}): string => {
+    const main = path.join(dir, `${name}.jsonl`);
+    fs.writeFileSync(main, mainText);
+    const sdir = path.join(dir, name, 'subagents');
+    fs.mkdirSync(sdir, { recursive: true });
+    for (const [file, text] of Object.entries(subs)) fs.writeFileSync(path.join(sdir, file), text);
+    return main;
+  };
+
+  const subFile = (main: string, file: string): string =>
+    path.join(path.dirname(main), path.basename(main).slice(0, -'.jsonl'.length), 'subagents', file);
+
+  test('살아 있는 동안 서브에이전트 몫이 더해진다(실측 세션 그대로)', async () => {
+    h = harness();
+    const p = session('s', noCostState('claude-transcript-agents-main.jsonl'), {
+      'agent-a6a406eca7a21eed3.jsonl': read('claude-transcript-agents-sub1.jsonl'),
+    });
+    await h.tracker.applyTurnEnd(CLAUDE, p);
+    // 본 파일만이면 90,529 였다. 실측 서브에이전트 68,078 이 더해져야 한다.
+    assert.deepEqual(h.tracker.memberUsage(CLAUDE.id)!.tokens, {
+      input: 8, output: 577, cacheRead: 129533, cacheCreate: 28489, total: 158607,
+    });
+  });
+
+  test('서브에이전트가 둘이면 둘 다 더한다', async () => {
+    h = harness();
+    const p = session('s2', noCostState('claude-transcript-agents2-main.jsonl'), {
+      'agent-a149a5109a042ff6d.jsonl': read('claude-transcript-agents2-sub1.jsonl'),
+      'agent-aea6225c1b7e8c839.jsonl': read('claude-transcript-agents2-sub2.jsonl'),
+    });
+    await h.tracker.applyTurnEnd(CLAUDE, p);
+    assert.deepEqual(h.tracker.memberUsage(CLAUDE.id)!.tokens, {
+      input: 16, output: 1655, cacheRead: 270281, cacheCreate: 43285, total: 315237,
+    });
+  });
+
+  test('서브에이전트 폴더가 없으면 예전 그대로다(Task 를 안 쓰는 세션은 값이 안 변한다)', async () => {
+    h = harness();
+    const main = path.join(dir, 'plain.jsonl');
+    fs.writeFileSync(main, noCostState('claude-transcript-agents-main.jsonl'));
+    await h.tracker.applyTurnEnd(CLAUDE, main);
+    assert.deepEqual(h.tracker.memberUsage(CLAUDE.id)!.tokens, {
+      input: 4, output: 445, cacheRead: 75311, cacheCreate: 14769, total: 90529,
+    });
+  });
+
+  test('서브에이전트 파일도 **증분**으로 읽는다(자라면 늘고, 안 자라면 그대로)', async () => {
+    h = harness();
+    const subText = read('claude-transcript-agents2-sub1.jsonl');
+    const cut = subText.lastIndexOf('\n', Math.floor(subText.length / 2)) + 1;
+    const p = session('s3', noCostState('claude-transcript-agents2-main.jsonl'), {
+      'agent-a149a5109a042ff6d.jsonl': subText.slice(0, cut),
+    });
+    await h.tracker.applyTurnEnd(CLAUDE, p);
+    const first = h.tracker.memberUsage(CLAUDE.id)!.tokens!.total!;
+
+    fs.appendFileSync(subFile(p, 'agent-a149a5109a042ff6d.jsonl'), subText.slice(cut));
+    h.tick(60_000);
+    await h.tracker.applyTurnEnd(CLAUDE, p);
+    const second = h.tracker.memberUsage(CLAUDE.id)!.tokens!;
+    assert.ok(second.total! > first, `${second.total} > ${first}`);
+    // 본 파일(138,911) + 서브1(143,459). 한 번에 읽은 것과 같다 = 이중 계산도, 빠뜨림도 없다.
+    assert.deepEqual(second, { input: 14, output: 1643, cacheRead: 248974, cacheCreate: 31739, total: 282370 });
+  });
+
+  test('새 서브에이전트가 생기면 다음 턴 종료에 잡힌다', async () => {
+    h = harness();
+    const p = session('s4', noCostState('claude-transcript-agents2-main.jsonl'), {
+      'agent-a149a5109a042ff6d.jsonl': read('claude-transcript-agents2-sub1.jsonl'),
+    });
+    await h.tracker.applyTurnEnd(CLAUDE, p);
+    assert.equal(h.tracker.memberUsage(CLAUDE.id)!.tokens!.total, 282370);
+
+    fs.writeFileSync(subFile(p, 'agent-aea6225c1b7e8c839.jsonl'), read('claude-transcript-agents2-sub2.jsonl'));
+    h.tick(60_000);
+    await h.tracker.applyTurnEnd(CLAUDE, p);
+    assert.equal(h.tracker.memberUsage(CLAUDE.id)!.tokens!.total, 315237);
+  });
+
+  test('상한을 넘으면 오래된 파일을 놓아 주되 **합계는 줄지 않는다**', async () => {
+    // 상한 2 로 좁혀 재현한다(실제 기본값은 50). 셋째 파일이 생기면 첫째가 목록에서 밀린다.
+    const files: string[] = [];
+    h = harness({ listClaudeSubagents: async () => files.slice(-2).reverse() });
+    const line = (id: string, out: number): string =>
+      `${JSON.stringify({ type: 'assistant', message: { id, model: 'claude-opus-5', usage: { output_tokens: out } } })}\n`;
+    const main = path.join(dir, 'cap.jsonl');
+    fs.writeFileSync(main, line('msg_main', 100));
+    const sdir = path.join(dir, 'cap', 'subagents');
+    fs.mkdirSync(sdir, { recursive: true });
+    const add = (n: number, out: number): void => {
+      const p = path.join(sdir, `agent-${n}.jsonl`);
+      fs.writeFileSync(p, line(`msg_a${n}`, out));
+      files.push(p);
+    };
+
+    add(1, 10);
+    add(2, 20);
+    await h.tracker.applyTurnEnd(CLAUDE, main);
+    assert.equal(h.tracker.memberUsage(CLAUDE.id)!.tokens!.output, 130);
+
+    add(3, 30); // agent-1 이 상한 밖으로 밀린다 — 그 몫(10)은 접어 둔 채로 남아야 한다
+    h.tick(60_000);
+    await h.tracker.applyTurnEnd(CLAUDE, main);
+    assert.equal(h.tracker.memberUsage(CLAUDE.id)!.tokens!.output, 160, '놓아 준 파일의 10 이 사라지지 않았다');
+
+    // 밀려났던 파일이 목록에 다시 나타나도 **다시 세지 않는다**(0 부터 읽으면 이중 계산이다).
+    h.tick(60_000);
+    const shrunk = files.slice();
+    h.tracker.stop();
+    h = harness({ listClaudeSubagents: async () => [shrunk[0]!, shrunk[2]!] });
+    await h.tracker.applyTurnEnd(CLAUDE, main);
+    // 새 tracker 라 상태가 비어 있다 → 두 파일을 처음부터 센다(10+30) + 본 파일 100.
+    assert.equal(h.tracker.memberUsage(CLAUDE.id)!.tokens!.output, 140);
+  });
+
+  test('본 transcript 경로가 바뀌면(resume) 서브에이전트 상태도 같이 버린다', async () => {
+    h = harness();
+    const a = session('a', noCostState('claude-transcript-agents-main.jsonl'), {
+      'agent-x.jsonl': read('claude-transcript-agents-sub1.jsonl'),
+    });
+    await h.tracker.applyTurnEnd(CLAUDE, a);
+    assert.equal(h.tracker.memberUsage(CLAUDE.id)!.tokens!.total, 158607);
+
+    // resume 이 판 새 세션 파일 + 그쪽의 서브에이전트 하나.
+    const b = session('b', `${JSON.stringify({ type: 'assistant', message: { id: 'msg_b', model: 'm', usage: { output_tokens: 7 } } })}\n`, {
+      'agent-y.jsonl': `${JSON.stringify({ type: 'assistant', message: { id: 'msg_y', model: 'm', usage: { output_tokens: 5 } } })}\n`,
+    });
+    h.tick(60_000);
+    await h.tracker.applyTurnEnd(CLAUDE, b);
+    assert.deepEqual(h.tracker.memberUsage(CLAUDE.id)!.tokens, { input: 0, output: 12, cacheRead: 0, cacheCreate: 0, total: 12 }, '이전 세션 몫을 이어받지 않는다');
+  });
+
+  test('cost-state 가 나타나면 여전히 그쪽이 이긴다(서브에이전트 합을 덮어쓴다)', async () => {
+    h = harness();
+    // 픽스처 그대로 = 끝난 세션(cost-state 두 줄 포함).
+    const p = session('done', read('claude-transcript-agents-main.jsonl'), {
+      'agent-x.jsonl': read('claude-transcript-agents-sub1.jsonl'),
+    });
+    await h.tracker.applyTurnEnd(CLAUDE, p);
+    const m = h.tracker.memberUsage(CLAUDE.id)!;
+    // cost-state 의 두 모델 합(haiku 940/17 + opus 512/588/176548/28519).
+    assert.equal(m.tokens!.total, 207124);
+    assert.equal(m.costUsd, 0.340299);
+    // 우리 합(158,607)보다 크다 — 서브에이전트를 더해도 숨은 호출 몫은 여전히 cost-state 만 안다.
+    assert.ok(m.tokens!.total! > 158607);
+  });
+
+  test('멤버가 사라지면 서브에이전트 상태도 같이 버린다', async () => {
+    h = harness();
+    const p = session('gone', noCostState('claude-transcript-agents-main.jsonl'), {
+      'agent-x.jsonl': read('claude-transcript-agents-sub1.jsonl'),
+    });
+    await h.tracker.applyTurnEnd(CLAUDE, p);
+    assert.equal(h.tracker.memberUsage(CLAUDE.id)!.tokens!.total, 158607);
+    h.tracker.removeMember(CLAUDE.id);
+    await h.tracker.applyTurnEnd(CLAUDE, p);
+    assert.equal(h.tracker.memberUsage(CLAUDE.id)!.tokens!.total, 158607, '0 부터 다시 세도 같은 값(이중 계산 없음)');
+  });
+
+  test('목록 읽기가 던져도 삼킨다 — 본 transcript 값은 그대로 들어온다', async () => {
+    h = harness({
+      listClaudeSubagents: async () => {
+        throw new Error('EPERM');
+      },
+    });
+    const main = path.join(dir, 'boom.jsonl');
+    fs.writeFileSync(main, noCostState('claude-transcript-agents-main.jsonl'));
+    await assert.doesNotReject(() => h.tracker.applyTurnEnd(CLAUDE, main));
+    assert.equal(h.tracker.memberUsage(CLAUDE.id)!.tokens!.total, 90529);
+  });
+
+  test('Codex 는 서브에이전트 목록을 아예 안 본다', async () => {
+    let called = 0;
+    h = harness({
+      readTail: async () => read('codex-rollout-tail.jsonl'),
+      listClaudeSubagents: async () => {
+        called++;
+        return [];
+      },
+    });
+    await h.tracker.applyTurnEnd(CODEX, 'C:/x/rollout.jsonl');
+    assert.equal(called, 0);
   });
 });
