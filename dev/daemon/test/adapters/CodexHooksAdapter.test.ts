@@ -11,6 +11,8 @@ import type { Member, MemberStatus, OfficeEvent, Pending } from '../../src/store
 import type { DecisionHandle, HookRequest } from '../../src/hooks/HookReceiver.js';
 import type { HookEvent, HookPayload } from '../../src/hooks/types.js';
 import { allow, deny, sessionStartContext } from '../../src/hooks/decisions.js';
+import fs from 'node:fs';
+import path from 'node:path';
 
 // ---- 가짜 HookRequest ----------------------------------------------------------
 
@@ -321,10 +323,10 @@ describe('CodexHooksAdapter', () => {
       assert.deepEqual(kinds(h), []);
     });
 
-    test('T22: Codex 가 MCP 도구 이름을 어떻게 보내든 team + ask_user 가 들어가면 즉시 allow', () => {
-      // Codex 0.154 가 MCP 도구의 tool_name 을 어떤 모양으로 보내는지 아직 실측 못 함(모델 턴 필요 — 사용량 한도).
-      // 후보를 전부 받아 준다. TODO(2026-09-21 이후): 실제 이름을 캡처해 좁힌다.
-      for (const toolName of ['team.ask_user', 'team/ask_user', 'team__ask_user', 'mcp__team__ask_user', 'MCP team ask_user']) {
+    // T42 실기(2026-09-21): Codex 가 보내는 MCP 도구 이름을 hook 원문으로 확정했다 — Claude 와 **같은** `mcp__team__*` 이다
+    // (test/fixtures/hooklog-codex-t42.json). 그래서 T22 의 넓은 휴리스틱("team 과 도구 이름이 둘 다 들어 있으면")은 지웠다.
+    test('T42: Codex 의 MCP 도구 이름은 Claude 와 같은 mcp__team__* 이다 — 그 다섯 개가 즉시 allow', () => {
+      for (const toolName of ['mcp__team__create_team', 'mcp__team__delegate', 'mcp__team__report', 'mcp__team__ask_user', 'mcp__team__ask_parent']) {
         const h = harness();
         const f = h.send('PermissionRequest', { ...COMMON, hook_event_name: 'PermissionRequest', tool_name: toolName, tool_input: { question: '색?' } });
         assert.deepEqual(f.sent, [allow()], `${toolName} 은 자동 allow`);
@@ -332,8 +334,8 @@ describe('CodexHooksAdapter', () => {
       }
     });
 
-    test('T22: 남의 MCP 서버 도구는 자동 allow 하지 않는다(team 과 도구 이름이 둘 다 있어야)', () => {
-      for (const toolName of ['other.ask_user', 'team.delete_repo', 'ask_user', 'teamcity.build']) {
+    test('T42: 접두사가 아닌 이름은 자동 allow 하지 않는다(T22 의 넓은 휴리스틱 제거)', () => {
+      for (const toolName of ['team.ask_user', 'team/ask_user', 'team__ask_user', 'myteam__ask_user', 'other.ask_user', 'team.delete_repo', 'ask_user', 'teamcity.build']) {
         const h = harness();
         const f = h.send('PermissionRequest', { ...COMMON, hook_event_name: 'PermissionRequest', tool_name: toolName, tool_input: {} });
         assert.deepEqual(f.sent, [], `${toolName} 은 사용자 결정을 기다려야 한다(보류)`);
@@ -452,5 +454,85 @@ describe('CodexHooksAdapter', () => {
     h.send('SessionEnd', P.sessionEnd);
     assert.deepEqual(kinds(h), ['thinking', 'running', 'waiting_approval', 'text', 'idle', 'idle']);
     assert.deepEqual(h.statuses, ['idle', 'working', 'waiting_approval', 'working', 'idle', 'exited']);
+  });
+});
+
+// ---- T42 실기 페이로드 재생 (test/fixtures/hooklog-codex-t42.json) ------------------------------
+//
+// 2026-09-21 사용량 한도가 풀린 뒤 **진짜 Codex 세션**에서 hook.js 가 받은 원문(PIXEL_HOOK_LOG)을 그대로 저장한 것이다.
+// 여기서 처음 실물로 본 것: ① MCP 도구의 tool_name(= Claude 와 같은 `mcp__team__*`), ② `Interrupt` 페이로드,
+// ③ `PermissionRequest` 의 한국어 description, ④ apply_patch / PowerShell 명령의 실제 모양.
+describe('T42 실기 페이로드 (hooklog-codex-t42.json)', () => {
+  const rows = JSON.parse(fs.readFileSync(path.resolve(import.meta.dirname, '../fixtures/hooklog-codex-t42.json'), 'utf8')) as Array<{
+    ev: HookEvent;
+    member: string;
+    payload: HookPayload;
+  }>;
+  const of = (ev: HookEvent, toolName?: string) =>
+    rows.find((r) => r.ev === ev && (toolName === undefined || r.payload.tool_name === toolName))?.payload;
+
+  test('Interrupt 실물 페이로드의 키 (02 §④ 마지막 미확인 항목)', () => {
+    const p = of('Interrupt')!;
+    assert.ok(p, 'Interrupt 페이로드가 픽스처에 있다');
+    assert.deepEqual(Object.keys(p).sort(), ['cwd', 'hook_event_name', 'model', 'permission_mode', 'session_id', 'transcript_path', 'turn_id']);
+    // 어댑터는 payload 를 읽지 않는다 — 보류 정리 + idle{interrupted} 만 한다.
+    const h = harness();
+    const f = h.send('Interrupt', p);
+    assert.deepEqual(f.sent, [{}]);
+    assert.deepEqual(kinds(h), ['idle']);
+    assert.equal(last(h).detail.summary, 'interrupted');
+    assert.equal(h.member$().status, 'idle');
+  });
+
+  test('MCP 도구는 Claude 와 같은 mcp__team__* 이름으로 온다 — 다섯 종류 모두 픽스처에 있다', () => {
+    const names = [...new Set(rows.filter((r) => r.ev === 'PreToolUse').map((r) => String(r.payload.tool_name)))];
+    for (const t of ['mcp__team__create_team', 'mcp__team__delegate', 'mcp__team__report', 'mcp__team__ask_user', 'mcp__team__ask_parent']) {
+      assert.ok(names.includes(t), `${t} 가 실측에 있다 (실측 이름: ${names.join(', ')})`);
+    }
+  });
+
+  test('MCP 도구 PreToolUse → running{tool} (Codex 는 여기에 PermissionRequest 를 안 띄운다)', () => {
+    const h = harness();
+    h.send('PreToolUse', of('PreToolUse', 'mcp__team__delegate')!);
+    assert.deepEqual(kinds(h), ['running']);
+    assert.deepEqual(last(h).detail, { tool: 'mcp__team__delegate' });
+    // 실측에서 MCP 도구에 대한 PermissionRequest 는 한 건도 없었다 — 전부 Bash 다.
+    const permTools = [...new Set(rows.filter((r) => r.ev === 'PermissionRequest').map((r) => String(r.payload.tool_name)))];
+    assert.deepEqual(permTools, ['Bash']);
+  });
+
+  test('apply_patch 는 editing + 패치 본문의 경로, PowerShell 읽기 명령은 reading', () => {
+    const h = harness();
+    h.send('PreToolUse', of('PreToolUse', 'apply_patch')!);
+    assert.equal(last(h).kind, 'editing');
+    assert.match(String(last(h).detail.path), /t42-lead\.txt$/);
+
+    const bash = rows.filter((r) => r.ev === 'PreToolUse' && r.payload.tool_name === 'Bash');
+    const read = bash.find((r) => /^Get-Content /.test(String((r.payload.tool_input as { command?: string }).command)));
+    assert.ok(read, 'Get-Content 명령이 실측에 있다');
+    const h2 = harness();
+    h2.send('PreToolUse', read!.payload);
+    assert.equal(last(h2).kind, 'reading');
+  });
+
+  test('PermissionRequest 는 한국어 description 을 detail.summary 로 싣고 보류된다', () => {
+    const h = harness();
+    const p = of('PermissionRequest')!;
+    const f = h.send('PermissionRequest', p);
+    assert.deepEqual(f.sent, []); // 사용자 결정을 기다린다
+    assert.equal(last(h).kind, 'waiting_approval');
+    assert.match(String(last(h).detail.cmd), /t42-approve\.txt/);
+    assert.match(String(last(h).detail.summary), /허용하시겠습니까\?$/);
+    assert.equal(h.created[0]!.type, 'approval');
+    assert.equal(h.adapter.resolveApproval(h.created[0]!.id, { behavior: 'allow' }), true);
+    assert.deepEqual(f.sent, [allow()]);
+  });
+
+  test('첫 턴의 SessionStart(source=startup)에 지시문이 실린다 — Codex 는 기동이 아니라 첫 프롬프트 때 온다(D-24)', () => {
+    const h = harness();
+    h.instructions = '# 역할: 부장';
+    const f = h.send('SessionStart', of('SessionStart')!);
+    assert.deepEqual(f.sent, [sessionStartContext('# 역할: 부장')]);
+    assert.equal(h.member$().sessionId, String(of('SessionStart')!.session_id));
   });
 });

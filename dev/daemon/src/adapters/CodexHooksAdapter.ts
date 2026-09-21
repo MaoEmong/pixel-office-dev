@@ -9,7 +9,8 @@
 //                   `description`(승인 문구)이 따라와 detail.summary 로 싣는다. tool_use_id 는 없다.
 //   질문           AskUserQuestion 도구가 없다 → isQuestionTool 은 항상 false. 질문은 TeamTools ask_user(T22 주입) 또는
 //                  턴 종료 메시지 승격(Office 의 Codex 질문 폴백, T22)으로만 온다.
-//   MCP 도구       Claude 의 `mcp__team__*` 이름 규칙이 아니라서 isTeamTool 을 넓게 잡는다(아래).
+//   MCP 도구       Claude 와 **같은** `mcp__team__*` 이름으로 온다(T42 실기 확정). 단 Codex 는 MCP 도구에 PermissionRequest 를
+//                  띄우지 않는다 — PreToolUse → PostToolUse 로 바로 간다.
 //   Interrupt      Codex 에만 있는 hook(Ctrl+C, timeout 3초 클램프). 보류 정리 후 idle{summary:'interrupted'}.
 //                  (Claude 는 이 hook 이 없어 ScreenModel 로 판정한다 — Office.watchInterrupted)
 //   SessionEnd     실측 reason 은 'other'. clear/resume 이 오면 Claude 처럼 비종료로 본다(공통 처리).
@@ -25,12 +26,6 @@ export type { AdapterDeps, ApprovalDecisionInput, HoldLostReason, HooksAdapterEv
 
 /** Codex 가 Ctrl+C 때 보내는 hook 이름. */
 export const INTERRUPT_EVENT = 'Interrupt';
-/**
- * TeamTools 가 노출하는 도구 이름(지금은 ask_user 하나). Codex 가 MCP 도구의 `tool_name` 을 어떤 모양으로 보내는지
- * 아직 모른다(모델 턴이 돌아야 확인 가능 — 사용량 한도 2026-09-21 13:58). 그래서 "team 이 들어가고 이 목록 중 하나가
- * 들어가면" 우리 도구로 보고 자동 allow 한다(D-22). TODO(2026-09-21 이후): 실제 tool_name 을 캡처해 이 휴리스틱을 좁힌다.
- */
-export const TEAM_TOOL_NAMES: readonly string[] = ['ask_user', 'askuser'];
 /** Interrupt 로 남기는 idle 이벤트의 summary. Office.watchInterrupted(화면 판정)와 같은 문구. */
 export const INTERRUPT_SUMMARY = 'interrupted';
 
@@ -44,16 +39,14 @@ export class CodexHooksAdapter extends BaseHooksAdapter {
     return mapCodexTool(toolName, toolInput);
   }
 
-  /**
-   * D-22 를 Codex 이름 규칙에 맞춰 넓힌다. Claude 는 `mcp__team__ask_user` 로 고정이지만 Codex 가 MCP 도구를 어떤
-   * `tool_name` 으로 보내는지는 미확인(`team.ask_user`? `team/ask_user`? `ask_user`?) — 서버 이름(`team`)과 도구 이름이
-   * 둘 다 들어 있으면 우리 도구로 본다. 남의 MCP 서버 도구를 잘못 자동 허가하지 않도록 **둘 다** 요구한다.
-   */
-  protected override isTeamTool(toolName: string): boolean {
-    if (super.isTeamTool(toolName)) return true;
-    const name = toolName.toLowerCase();
-    return name.includes('team') && TEAM_TOOL_NAMES.some((t) => name.includes(t));
-  }
+  // isTeamTool 은 BaseHooksAdapter 의 `mcp__team__` 접두사 판정을 그대로 쓴다.
+  //
+  // T22 는 Codex 의 MCP 도구 `tool_name` 모양을 몰라서(`team.ask_user`? `team/ask_user`?) "이름에 team 과 도구 이름이
+  // 둘 다 들어 있으면" 이라는 넓은 휴리스틱을 뒀었다. **T42 실기로 확정:** Codex 도 Claude 와 똑같이
+  // `mcp__team__create_team` / `mcp__team__delegate` / `mcp__team__report` / `mcp__team__ask_user` / `mcp__team__ask_parent`
+  // 로 보낸다(test/fixtures/hooklog-codex-t42.json). 게다가 **Codex 는 MCP 도구에 PermissionRequest 를 아예 띄우지 않는다**
+  // (PreToolUse → PostToolUse 로 바로 간다) — 즉 Codex 에서 D-22 자동 allow 는 실제로는 발화하지 않는다.
+  // 그래서 넓은 휴리스틱은 지웠다: 남의 MCP 서버 도구(`myteam__ask_user` 같은)를 잘못 자동 허가할 위험만 남기 때문이다.
 
   /** waiting_approval 카드도 PreToolUse 와 같은 detail(cmd + description → summary)을 쓴다. */
   protected override approvalDetail(toolName: string, toolInput: unknown): ToolMapping['detail'] {
