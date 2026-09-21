@@ -6,11 +6,13 @@ import 'dart:ui' show AppExitResponse;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:pixel_office/lifecycle/daemon_supervisor.dart';
 import 'package:pixel_office/lifecycle/exit_flow.dart';
 import 'package:pixel_office/lifecycle/lifecycle_gate.dart';
 import 'package:pixel_office/lifecycle/lifecycle_providers.dart';
 import 'package:pixel_office/model/models.dart';
 import 'package:pixel_office/panel/ui_prefs.dart';
+import 'package:pixel_office/rpc/rpc_client.dart';
 import 'package:pixel_office/state/office_state.dart';
 
 import '../office/office_fixtures.dart';
@@ -281,5 +283,59 @@ void main() {
       expect(gate.lastOutcome!.keptDaemon, isTrue);
       expect(w.killed, isFalse);
     });
+
+    // T46-3 실기 결함 ②: 앱이 데몬을 띄워 `daemon.json` 이 나와도(+3.8초) 아무도 RpcClient 를 깨우지 않아
+    // 재접속 backoff 를 다 기다린 뒤에야 붙었다(+8.0초). 감시자가 `running` 이 되는 순간이 그 신호다.
+    testWidgets('감시자가 running 이 되면 재접속 backoff 를 즉시 깨운다', (tester) async {
+      final spy = _SpyRpcClient();
+      final status = _FakeStatusNotifier(const SupervisorStatus(state: SupervisorState.starting));
+      await tester.pumpWidget(ProviderScope(
+        overrides: [
+          officeProvider.overrideWith(() => FakeOfficeNotifier(const OfficeState())),
+          uiPrefsStoreProvider.overrideWithValue(MemoryUiPrefsStore({keepDaemonKey: false})),
+          keepDaemonEnvProvider.overrideWithValue(false),
+          rpcClientProvider.overrideWithValue(spy),
+          supervisorStatusProvider.overrideWith(() => status),
+        ],
+        child: const MaterialApp(home: LifecycleGate(child: Scaffold(body: Text('사무실')))),
+      ));
+      await tester.pumpAndSettle();
+      expect(spy.retries, 0, reason: '아직 안 떴으면 깨우지 않는다');
+
+      status.set(const SupervisorStatus(state: SupervisorState.running, spawned: true, pid: 1));
+      await tester.pumpAndSettle();
+      expect(spy.retries, 1);
+
+      // running → running(진행 상태만 바뀜)은 다시 깨우지 않는다.
+      status.set(const SupervisorStatus(state: SupervisorState.running, spawned: true, pid: 2));
+      await tester.pumpAndSettle();
+      expect(spy.retries, 1);
+
+      // §4 재시작도 같은 길로 깨운다.
+      status.set(const SupervisorStatus(state: SupervisorState.restarting, restartAttempt: 1));
+      await tester.pumpAndSettle();
+      status.set(const SupervisorStatus(state: SupervisorState.running, spawned: true, pid: 3));
+      await tester.pumpAndSettle();
+      expect(spy.retries, 2);
+    });
   });
+}
+
+/// `retryNow()` 만 세는 RpcClient(소켓을 열지 않는다).
+class _SpyRpcClient extends RpcClient {
+  int retries = 0;
+
+  @override
+  void retryNow() => retries++;
+}
+
+/// 감시자 없이 상태만 흘려 주는 [SupervisorStatusNotifier].
+class _FakeStatusNotifier extends SupervisorStatusNotifier {
+  _FakeStatusNotifier(this.initial);
+  final SupervisorStatus? initial;
+
+  @override
+  SupervisorStatus? build() => initial;
+
+  void set(SupervisorStatus s) => state = s;
 }

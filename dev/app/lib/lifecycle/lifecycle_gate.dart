@@ -16,6 +16,7 @@ import '../rpc/rpc_client.dart';
 import '../state/office_state.dart';
 import '../topbar/selected_department.dart' show activeDepartmentIdProvider;
 import 'daemon_process.dart';
+import 'daemon_supervisor.dart';
 import 'exit_flow.dart';
 import 'lifecycle_providers.dart';
 
@@ -124,6 +125,14 @@ class LifecycleGateState extends ConsumerState<LifecycleGate> {
     // 지금 보고 있는 부서를 클라이언트에 적어 둔다 — **다음 hello** 가 복구 순서 힌트로 싣는다(§5).
     // 되살리는 도중에 탭을 바꿔도 전용 RPC 는 없다(PROTOCOL 미정): 다음 재접속에 반영된다.
     ref.read(rpcClientProvider).activeDepartmentId = ref.watch(activeDepartmentIdProvider);
+    // 감시자가 데몬을 띄우자마자 **재접속 backoff 를 깨운다**(T46-3 실기: 이것이 없으면 `daemon.json` 이 나온
+    // 뒤에도 앱이 자기 backoff(최대 5초)를 다 기다린 다음에야 붙었다 — 실측 3.8초 → 8.0초, 4.2초가 순전히 대기였다).
+    // 첫 기동과 §4 재시작 둘 다 이 길을 지난다.
+    ref.listen<SupervisorStatus?>(supervisorStatusProvider, (prev, next) {
+      if (next == null || next.state != SupervisorState.running) return;
+      if (prev != null && prev.state == SupervisorState.running) return;
+      ref.read(rpcClientProvider).retryNow();
+    });
     // 끊김 → 감시자에게 알린다. 감시자는 daemon.json 의 pid 가 살아 있으면 무시한다(일시적 끊김).
     ref.listen<RpcConnectionState>(connectionStateProvider, (prev, next) {
       if (next != RpcConnectionState.disconnected) return;
