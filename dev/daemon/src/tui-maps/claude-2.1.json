@@ -8,13 +8,14 @@
     "'fullscreen-renderer' 다이얼로그는 Enter 가 '1. Yes, try it'(alt buffer, flicker-free). 실측 run8 에서 그렇게 통과했음. Esc 면 'Not now'.",
     "busy: 작업 중에는 상태줄이 '? for shortcuts' 대신 'esc to interrupt' 가 되고, 그 위에 '✢ Newspapering… (6s · ↓ 250 tokens)' 같은 스피너 줄이 있다(run8/run9). '✻ Cogitated for 9s · done' 은 완료 표시라 busy 가 아니다.",
     "허가 프롬프트(approval-prompt, T21 실측): hook 이 없거나 만료되면(D-16) 입력 상자 자리에 ' Bash command' 블록 + 'Do you want to proceed?' + '❯ 1. Yes / 2. Yes, and always allow access to <dir> from this project / 3. Yes, and switch to auto mode · … / 4. No' + 'Esc to cancel · Tab to amend'. 첫 항목 강조 → Enter = 허가. ↓×3 → '❯ 4. No' → Enter = 거부 → 이력에 '⎿  Interrupted · What should Claude do instead?' 가 남고 READY(Ctrl+C 와 같은 화면). 항목 수는 도구 종류에 따라 다를 수 있으니(파일 편집 프롬프트 등) denyKeys 는 Bash 4항목 기준 — 'Esc to cancel' 이 범용 대안(효과 미검증).",
-    "종료: 빈 프롬프트에서 Ctrl+C → 상태줄이 'Press Ctrl-C again to exit' 로 바뀐다(promptReady 는 이 순간 false). T21 캡처에서 1.2초 뒤 두 번째 Ctrl+C 는 종료시키지 못하고 같은 안내가 다시 떴다 — 두 번째 Ctrl+C 는 더 빨리(≤1초) 보내거나 kill 폴백."
+    "종료: 빈 프롬프트에서 Ctrl+C → 상태줄이 'Press Ctrl-C again to exit' 로 바뀐다(promptReady 는 이 순간 false). T21 캡처에서 1.2초 뒤 두 번째 Ctrl+C 는 종료시키지 못하고 같은 안내가 다시 떴다 — 두 번째 Ctrl+C 는 더 빨리(≤1초) 보내거나 kill 폴백.",
+    "**statusLine 을 주입하면 '? for shortcuts' 가 사라진다**(T43-3 실기 2026-09-21, 2.1.275). 우리 상태 줄이 그 자리를 쓰기 때문에 힌트 줄이 '⏸ manual mode on · ← for agents' 로 짧아진다 — T43-1 이 모든 Claude 멤버 세션에 statusLine 을 넣은 뒤로 promptReady 가 영영 false 였고 **지시 큐가 통째로 막혔다**(멤버는 idle 인데 task 가 queued 로 남는다). 그래서 힌트 줄의 꼬리 '← for agents' 를 준비 신호에 더했다(모드 표시는 '⏸ manual mode on'/'⏵⏵ accept edits on' 처럼 바뀌므로 쓰지 않는다). 우리 상태 줄이 한 줄 늘어나므로 scanLines 도 4 → 5."
   ],
   "promptReady": {
     "verified": true,
-    "source": "fixtures/claude-ready.txt(run8/run9), fixtures/claude/ready.txt — '⏸ manual mode on · ? for shortcuts · ← for agents'",
-    "scanLines": 4,
-    "anyOf": ["\\? for shortcuts", "shift\\+tab to cycle"]
+    "source": "fixtures/claude-ready.txt(run8/run9), fixtures/claude/ready.txt — '⏸ manual mode on · ? for shortcuts · ← for agents' / fixtures/claude/ready-statusline.txt (T43-3 실기 2026-09-21, statusLine 주입된 멤버 세션 — '? for shortcuts' 가 없다)",
+    "scanLines": 5,
+    "anyOf": ["\\? for shortcuts", "shift\\+tab to cycle", "←\\s*for agents\\s*$"]
   },
   "busy": {
     "verified": true,

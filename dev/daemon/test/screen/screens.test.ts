@@ -363,6 +363,23 @@ test('claude(T21): READY screen with placeholder text in the input box → promp
   sm.dispose();
 });
 
+/**
+ * T43-3 실기에서 잡은 회귀: **statusLine 을 주입하면 `? for shortcuts` 가 사라진다.**
+ * T43-1 이 모든 Claude 멤버 세션에 statusLine 을 넣은 뒤로 이 화면이 `promptReady:false` 가 되어
+ * 멤버는 `idle` 인데 지시가 `queued` 로 영영 남았다(실기에서 6분 넘게 안 나갔다).
+ */
+test('claude(T43-3): statusLine 이 주입된 멤버 화면(? for shortcuts 없음)도 준비 상태다', async () => {
+  const sm = await screenFrom('claude', 'claude/ready-statusline.txt');
+  const bottom = sm.trimmedLines().slice(-2);
+  assert.equal(bottom[0], '  주간 38% 남음', '우리 상태 줄이 한 줄 차지한다');
+  assert.equal(bottom[1], '  ⏸ manual mode on · ← for agents');
+  assert.ok(!sm.text().includes('? for shortcuts'), '이 화면에는 그 힌트가 없다 — 옛 패턴만으로는 못 잡는다');
+  assert.equal(sm.promptReady(), true);
+  assert.equal(sm.busyIndicator(), false);
+  assert.deepEqual(sm.detectDialog(), { kind: 'none', suggestedKeys: [], highlightDriven: false });
+  sm.dispose();
+});
+
 test('claude(T21): working screen right after submit → busy, not ready', async () => {
   const sm = await screenFrom('claude', 'claude/working.txt');
   assert.equal(sm.busyIndicator(), true);
