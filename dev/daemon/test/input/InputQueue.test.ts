@@ -328,9 +328,11 @@ describe('ordering and busy window', () => {
       h.flushed.map((i) => (i as { id?: string }).id),
       ['1', '2', '3'],
     );
-    // 각 항목은 paste → enter 순서로 붙어 있다
+    // 각 항목은 paste → enter 순서로 붙어 있다.
+    // (뒤에 붙는 여분 'key:enter' 는 제출 확인 재시도다 — 이 가짜 세션은 Enter 를 받아도 idle 을 안 풀기 때문.
+    //  실제 CLI 는 UserPromptSubmit 으로 idle 이 풀려 재시도가 멈춘다. 아래 'submit 확인' 절 참고.)
     assert.deepEqual(
-      h.calls,
+      h.calls.slice(0, 6),
       ['paste:A', 'key:enter', 'paste:B', 'key:enter', 'paste:C', 'key:enter'],
     );
     assert.equal(h.q.size(), 0);
@@ -446,5 +448,103 @@ describe('poll loop (real timers)', () => {
     h.q.enqueue(instruct('r3'));
     await new Promise((r) => setTimeout(r, 100));
     assert.equal(h.calls.length, 4);
+  });
+});
+
+// T42 실기: Codex `resume` 직후 화면은 prompt ready 인데 Enter 가 먹지 않아 `[RESUMED]` 지시가 입력 상자에 남고
+// 그 멤버의 큐가 영구히 막혔다(여러 줄 텍스트가 상자를 채워 promptReady 까지 false 가 된다). 판정은 화면이 아니라
+// "프롬프트가 들어갔을 때만 생기는 사실" = isIdle 이 풀리는 것으로 한다.
+describe('submit 확인 — Enter 가 안 먹으면 다시 보낸다 (T42)', () => {
+  const retryHarness = () => {
+    const h = harness();
+    const retried: number[] = [];
+    const lost: string[] = [];
+    h.q.on('submitRetried', (_i, n) => retried.push(n));
+    h.q.on('submitLost', (i) => lost.push((i as { text: string }).text));
+    return { h, retried, lost };
+  };
+
+  test('정상: Enter 뒤 isIdle 이 풀리면(UserPromptSubmit) 재시도하지 않는다', () => {
+    const { h, retried } = retryHarness();
+    h.q.enqueue(instruct('hello'));
+    h.advance(TIMING.enterDelayMs + 1);
+    h.q.tick();
+    assert.deepEqual(h.calls, ['paste:hello', 'key:enter']);
+
+    h.state.idle = false; // CLI 가 프롬프트를 받았다
+    for (let i = 0; i < 10; i++) {
+      h.advance(1000);
+      h.q.tick();
+    }
+    assert.deepEqual(h.calls, ['paste:hello', 'key:enter']);
+    assert.deepEqual(retried, []);
+  });
+
+  test('Enter 가 안 먹으면 submitCheckMs 마다 다시 보내고, 들어가면 멈춘다', () => {
+    const { h, retried } = retryHarness();
+    h.q.enqueue(instruct('[RESUMED] …'));
+    h.advance(TIMING.enterDelayMs + 1);
+    h.q.tick();
+    assert.equal(h.calls.filter((c) => c === 'key:enter').length, 1);
+
+    // 계속 idle = 안 들어갔다
+    h.advance(TIMING.submitCheckMs);
+    h.q.tick();
+    assert.deepEqual(retried, [1]);
+    assert.equal(h.calls.filter((c) => c === 'key:enter').length, 2);
+
+    // 확인 창이 지나기 전에는 또 보내지 않는다
+    h.advance(TIMING.submitCheckMs - 1);
+    h.q.tick();
+    assert.deepEqual(retried, [1]);
+
+    // 두 번째 재시도가 먹었다
+    h.advance(1);
+    h.q.tick();
+    assert.deepEqual(retried, [1, 2]);
+    h.state.idle = false;
+    h.advance(TIMING.submitCheckMs * 5);
+    h.q.tick();
+    assert.deepEqual(retried, [1, 2]);
+    assert.equal(h.calls.filter((c) => c === 'key:enter').length, 3);
+  });
+
+  test('재시도 상한을 넘으면 submitLost 를 내고 포기한다', () => {
+    const { h, retried, lost } = retryHarness();
+    h.q.enqueue(instruct('stuck'));
+    h.advance(TIMING.enterDelayMs + 1);
+    h.q.tick();
+    for (let i = 0; i < 10; i++) {
+      h.advance(TIMING.submitCheckMs);
+      h.q.tick();
+    }
+    assert.deepEqual(retried, [1, 2, 3, 4]);
+    assert.deepEqual(lost, ['stuck']);
+    // 포기한 뒤에는 더 안 보낸다
+    const enters = h.calls.filter((c) => c === 'key:enter').length;
+    h.advance(TIMING.submitCheckMs * 5);
+    h.q.tick();
+    assert.equal(h.calls.filter((c) => c === 'key:enter').length, enters);
+  });
+
+  test('다이얼로그가 떴거나 사용자가 터미널을 쓰는 중이면 재시도하지 않는다', () => {
+    const { h, retried } = retryHarness();
+    h.q.enqueue(instruct('a'));
+    h.advance(TIMING.enterDelayMs + 1);
+    h.q.tick();
+    h.state.dialog = { kind: 'trust-folder-codex', suggestedKeys: ['enter'] };
+    h.advance(TIMING.submitCheckMs);
+    h.q.tick();
+    assert.deepEqual(retried, []);
+
+    // 사용자 타이핑
+    const b = retryHarness();
+    b.h.q.enqueue(instruct('b'));
+    b.h.advance(TIMING.enterDelayMs + 1);
+    b.h.q.tick();
+    b.h.q.typeRaw('x');
+    b.h.advance(TIMING.submitCheckMs);
+    b.h.q.tick();
+    assert.deepEqual(b.retried, []);
   });
 });

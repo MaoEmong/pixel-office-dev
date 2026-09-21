@@ -1676,6 +1676,10 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
     queue.on('dialogPassed', (kind) => this.notice('info', `${member.name}: passed first-run dialog (${kind})`));
     // 통과할 수 없는 다이얼로그(CLI 자체 허가 프롬프트 등, D-26). InputQueue 가 kind 당 한 번만 내므로 알림도 한 번이다.
     queue.on('dialogBlocked', (kind) => this.noticeDialogBlocked(member.id, kind));
+    // Enter 가 안 먹어 다시 보냈다(T42 — Codex resume 직후). 정보성: 큐는 스스로 회복한다.
+    queue.on('submitRetried', (_item, attempt) => this.notice('info', `${member.name}: 프롬프트가 안 들어가 Enter 를 다시 보냄 (${attempt})`));
+    // 재시도를 다 썼는데도 안 들어갔다 — 텍스트가 입력 상자에 남아 있다. 사용자가 터미널 탭에서 Enter 를 치면 된다.
+    queue.on('submitLost', () => this.notice('warn', `${member.name}: 지시가 입력 상자에 남아 제출되지 않았습니다 — 터미널 탭에서 Enter 를 쳐 주세요`));
     queue.start();
 
     this.store.updateMember(member.id, { childPid: session.pid, status: 'starting' });

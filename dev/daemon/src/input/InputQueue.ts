@@ -49,6 +49,13 @@ export interface QueueDeps {
 export type InputQueueEvents = {
   /** 항목이 pty 에 완전히 들어감(paste + Enter 까지). */
   flushed: [item: InputItem];
+  /**
+   * Enter 를 보냈는데 CLI 가 프롬프트를 받지 않아(= submitCheckMs 동안 계속 idle) 한 번 더 보냈다(T42 실기).
+   * Codex `resume` 직후가 대표적이다 — 화면은 prompt ready 인데 세션 복원이 끝나기 전이라 Enter 가 먹지 않는다.
+   */
+  submitRetried: [item: TextItem, attempt: number];
+  /** 재시도를 다 쓰고도 프롬프트가 안 들어갔다. 텍스트는 입력 상자에 남아 있다(사용자가 터미널 탭에서 Enter 를 치면 된다). */
+  submitLost: [item: TextItem];
   /** 큐 머리를 flush 하지 못한 이유(첫 번째로 걸린 조건). 같은 이유는 blockedEmitIntervalMs 에 한 번만. */
   blocked: [reason: BlockReason];
   /** 다이얼로그를 감지해 권장 키를 보냈다. */
@@ -68,11 +75,22 @@ export const TIMING = {
   enterDelayMs: 300,
   /** Enter 후 다음 항목까지 최소 대기. UserPromptSubmit 이 와서 isIdle 이 false 가 되기 전 공백을 메운다. */
   busyAfterFlushMs: 1500,
+  /**
+   * Enter 를 보낸 뒤 이 시간이 지나도 계속 idle 이면 "Enter 가 안 먹었다" 로 보고 한 번 더 보낸다(T42).
+   * busyAfterFlushMs 보다 넉넉히 커야 한다 — 정상 흐름에서는 그 전에 UserPromptSubmit 이 와서 idle 이 풀린다.
+   */
+  submitCheckMs: 2500,
   /** 같은 kind 의 다이얼로그에 키를 다시 보내기까지 최소 간격(화면이 아직 안 바뀌었을 때 중복 전송 방지). */
   dialogRepeatGuardMs: 2000,
   /** 같은 이유의 blocked 이벤트 최소 간격. */
   blockedEmitIntervalMs: 5000,
 } as const;
+
+/**
+ * Enter 재전송 횟수 상한(T42). 총 대기 = SUBMIT_RETRY_MAX × submitCheckMs.
+ * 재전송이 헛방이어도 **빈 입력 상자의 Enter 는 두 CLI 모두 무동작**이라 안전하다.
+ */
+export const SUBMIT_RETRY_MAX = 4;
 
 interface Scheduled {
   dueAt: number;
@@ -98,6 +116,8 @@ export class InputQueue extends EventEmitter<InputQueueEvents> {
   private readonly lastBlockedAt = new Map<BlockReason, number>();
   /** dialogBlocked 를 이미 낸 다이얼로그 kind. 그 다이얼로그가 사라지거나 다른 kind 로 바뀌면 지운다. */
   private blockedDialogKind: string | undefined;
+  /** Enter 를 보내고 "프롬프트가 실제로 들어갔는지" 를 확인하는 중인 항목(T42). 들어가면(= idle 이 풀리면) 지운다. */
+  private awaitingSubmit: { item: TextItem; enterAt: number; attempt: number } | undefined;
 
   constructor(deps: QueueDeps) {
     super();
@@ -175,6 +195,7 @@ export class InputQueue extends EventEmitter<InputQueueEvents> {
     const now = this.now();
 
     const dialog = this.deps.screen.detectDialog();
+    this.checkSubmit(now, dialog.kind !== 'none');
     if (dialog.kind === 'none') this.blockedDialogKind = undefined;
     if (dialog.kind !== 'none') {
       // 권장 키가 없는 다이얼로그(= CLI 자체 허가 프롬프트, D-23)는 통과 대상이 아니다. 키도 안 보내고 "통과했다"고도 하지 않는다.
@@ -236,8 +257,45 @@ export class InputQueue extends EventEmitter<InputQueueEvents> {
       this.deps.session.sendKeys('enter');
       this.busyUntil = at + TIMING.busyAfterFlushMs;
       this.lastBlockedAt.clear(); // 다음 항목이 막히면 새로 알린다
+      this.awaitingSubmit = { item, enterAt: at, attempt: 0 };
       this.emit('flushed', item);
     });
+  }
+
+  /**
+   * "Enter 가 실제로 먹었는가" 확인(T42 실기에서 나온 문제).
+   *
+   * Codex `resume` 직후에는 화면이 prompt ready 인데도(헤더의 `model: loading` 은 복원된 대화에 밀려 안 보인다)
+   * 세션 복원이 끝나기 전이라 **Enter 가 그냥 버려진다.** 그러면 붙여넣은 `[RESUMED]` 지시가 입력 상자에 남고,
+   * 여러 줄짜리 텍스트가 상자를 채워 `promptReady()` 까지 false 가 되어 **그 멤버의 큐가 영구히 막힌다**
+   * (실기: 복구된 Codex 부장·팀장 둘 다 이 상태였고, 손으로 Enter 를 한 번 더 치니 그대로 제출됐다).
+   *
+   * 판정은 화면 문자열이 아니라 **프롬프트가 들어갔을 때만 생기는 사실**로 한다 — UserPromptSubmit 이 오면
+   * 어댑터가 status 를 working 으로 올리므로 `isIdle()` 이 false 가 된다. submitCheckMs 동안 계속 idle 이면 Enter 를 한 번 더.
+   * 다이얼로그가 떴거나 사용자가 터미널 탭을 쓰는 중이면 확인을 접는다(그 위에 키를 얹지 않는다).
+   */
+  private checkSubmit(now: number, dialogUp: boolean): void {
+    const a = this.awaitingSubmit;
+    if (!a) return;
+    if (!this.deps.isIdle()) {
+      this.awaitingSubmit = undefined; // 프롬프트가 들어갔다
+      return;
+    }
+    if (dialogUp || this.userTyping(now)) {
+      this.awaitingSubmit = undefined;
+      return;
+    }
+    if (now - a.enterAt < TIMING.submitCheckMs) return;
+    if (a.attempt >= SUBMIT_RETRY_MAX) {
+      this.awaitingSubmit = undefined;
+      this.emit('submitLost', a.item);
+      return;
+    }
+    a.attempt += 1;
+    a.enterAt = now;
+    this.deps.session.sendKeys('enter');
+    this.busyUntil = now + TIMING.busyAfterFlushMs;
+    this.emit('submitRetried', a.item, a.attempt);
   }
 
   /** 첫 키는 즉시, 나머지는 keySpacingMs 간격으로 예약. 빈 배열이면 아무것도 안 한다. */
