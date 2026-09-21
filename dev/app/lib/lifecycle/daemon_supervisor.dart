@@ -175,6 +175,15 @@ class DaemonSupervisor {
   bool _stopped = false;
   bool _busy = false;
 
+  /// **포기했다**(실패 화면을 띄웠다). [retry] 만 이것을 푼다.
+  ///
+  /// T46-3 실기 결함 ④: 이 깃발이 없으면 `데몬이 반복해서 종료됩니다` 가 화면에 뜨지 못한다.
+  /// 죽음이 재시작 일정 **도중에** 오면(실기에서는 1.5초·11.9초 간격이었다) `_onDeath` 는 `_busy`
+  /// 때문에 새 루프를 못 열고 죽음만 센다. 그러다 3번째에 [_fail] 이 `crashLoop` 로 바꿔 놓아도
+  /// **앞선 `_restartLoop` 가 아직 돌고 있어서** 다음 칸에서 `restarting` 을 다시 emit 하고 데몬을
+  /// 또 띄운다 — 실기에서 3번째 죽음 36초 뒤에 4번째 데몬이 떴다(원인을 덮지 않겠다는 §4 가 무의미해진다).
+  bool _abandoned = false;
+
   SupervisorStatus get status => _status;
   Stream<SupervisorStatus> get statusStream => _ctl.stream;
 
@@ -211,6 +220,7 @@ class DaemonSupervisor {
   Future<void> retry() async {
     if (_busy) return;
     _stopped = false;
+    _abandoned = false;
     _deaths.clear();
     await start();
   }
@@ -231,21 +241,36 @@ class DaemonSupervisor {
       if (attempt == 0) _fail(SupervisorFailure.startFailed, e.toString());
       return false;
     }
-    if (_stopped) {
+    // 스폰하는 사이에 포기가 결정됐으면(다른 죽음이 crash-loop 을 확정) 그 자식을 두고 가지 않는다.
+    if (_stopped || _abandoned) {
       await proc.killTree();
       return false;
     }
+    // **붙기 전에 죽는 것도 지켜본다**(T46-3 실기 결함 ④). `_watchChild` 는 붙은 **뒤에야** 달리므로,
+    // 띄우자마자 죽은 데몬은 예전에 죽음으로 세어지지 않았다 — 그런데 그게 바로 crash-loop 의 모양이다.
+    int? earlyExitCode;
+    unawaited(proc.exitCode.then((code) => earlyExitCode = code).catchError((Object _) => -1));
     if (await _waitReachable(readyTimeout)) {
       _child = proc;
       _watchChild(proc);
       _running(spawned: true, pid: proc.pid);
       return true;
     }
-    // 떴는데 `daemon.json` 이 안 나타났다(포트 충돌 등) — 남은 프로세스를 치우고 실패로 본다.
+    // 못 붙었다. **치우기 전에** 판정한다 — `killTree()` 자체가 exitCode 를 채우므로 뒤에 보면 늘 "죽었다" 가 된다.
+    final died = earlyExitCode != null;
+    final code = earlyExitCode;
     await proc.killTree();
-    const msg = '데몬이 떴지만 daemon.json 이 나타나지 않았습니다 (포트 충돌일 수 있습니다)';
+    final msg = died
+        ? '띄운 데몬이 붙기 전에 종료됨 (code $code)'
+        : '데몬이 떴지만 daemon.json 이 나타나지 않았습니다 (포트 충돌일 수 있습니다)';
     _emit(_status.copyWith(lastError: msg));
-    if (attempt == 0) _fail(SupervisorFailure.startFailed, msg);
+    if (attempt == 0) {
+      _fail(SupervisorFailure.startFailed, msg);
+      return false;
+    }
+    // 재시작 도중에 **또** 곧바로 죽었으면 그것도 죽음으로 센다 — 1분에 3번이면 여기서 포기한다.
+    // (못 뜬 것(daemon.json 없음)은 죽음이 아니라 "시작 실패" 쪽이라 세지 않는다 — 문구가 다르다.)
+    if (died) _countDeath(msg);
     return false;
   }
 
@@ -262,6 +287,7 @@ class DaemonSupervisor {
 
   void _fail(SupervisorFailure failure, String? error) {
     _child = null;
+    _abandoned = true;
     _emit(_status.copyWith(
       state: SupervisorState.failed,
       failure: failure,
@@ -274,7 +300,7 @@ class DaemonSupervisor {
   /// [budget] 동안 [pollInterval] 마다 [probe] 를 묻는다. 한 번이라도 참이면 즉시 true.
   Future<bool> _waitReachable(Duration budget) async {
     final deadline = _now().add(budget);
-    while (!_stopped) {
+    while (!_stopped && !_abandoned) {
       if (await probe()) return true;
       if (!_now().isBefore(deadline)) return false;
       await _sleep(pollInterval);
@@ -305,16 +331,22 @@ class DaemonSupervisor {
   }
 
   Future<void> _onDeath(String reason) async {
-    if (_stopped) return;
+    if (_stopped || _abandoned) return;
+    if (_countDeath(reason)) return;
+    await _restartLoop();
+  }
+
+  /// 죽음 하나를 세고 `crashWindow` 밖은 버린다. 1분 안에 [crashLimit] 번이면 **포기**하고 true.
+  bool _countDeath(String reason) {
     final t = _now();
     _deaths.add(t);
     _deaths.removeWhere((d) => t.difference(d) > crashWindow);
     _emit(_status.copyWith(deaths: _deaths.length, lastError: reason, spawned: false, clearPid: true));
     if (_deaths.length >= crashLimit) {
       _fail(SupervisorFailure.crashLoop, reason);
-      return;
+      return true;
     }
-    await _restartLoop();
+    return false;
   }
 
   /// 즉시 → 2초 → 5초 → 10초, 최대 [restartDelays].length 회.
@@ -323,10 +355,11 @@ class DaemonSupervisor {
     _busy = true;
     try {
       for (var i = 0; i < restartDelays.length; i++) {
-        if (_stopped) return;
+        // `_abandoned` 도 같이 본다 — 이 루프가 자는 동안 다른 죽음이 crash-loop 을 확정했을 수 있다.
+        if (_stopped || _abandoned) return;
         _emit(_status.copyWith(state: SupervisorState.restarting, restartAttempt: i + 1));
         if (restartDelays[i] > Duration.zero) await _sleep(restartDelays[i]);
-        if (_stopped) return;
+        if (_stopped || _abandoned) return;
         // 그 사이 누가(콘솔에서) 띄웠으면 새로 띄우지 않고 붙는다.
         if (await probe()) {
           _running(spawned: false, pid: null);

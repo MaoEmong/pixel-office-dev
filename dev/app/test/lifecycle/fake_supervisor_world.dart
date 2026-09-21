@@ -49,6 +49,9 @@ class FakeSupervisorWorld {
   /// 스폰 시도 때마다(성공·실패 전에) 불린다 — 테스트가 그 순간 세상을 바꿀 수 있게.
   void Function(FakeSupervisorWorld world)? onSpawnAttempt;
 
+  /// 자식이 만들어진 **직후**(감시자에게 돌려주기 전에) 불린다. "띄우자마자 죽는 데몬" 을 만들 때 쓴다(T46-3).
+  void Function(FakeDaemonProcess proc)? onSpawned;
+
   DateTime now = DateTime.utc(2026, 9, 21, 10);
   final List<Duration> slept = [];
   final List<Map<String, String>> spawnEnvs = [];
@@ -82,6 +85,7 @@ class FakeSupervisorWorld {
     final p = FakeDaemonProcess(_nextPid++, this);
     spawned.add(p);
     if (spawnBecomesReachable) reachable = true;
+    onSpawned?.call(p);
     return p;
   }
 

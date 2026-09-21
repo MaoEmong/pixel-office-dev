@@ -125,6 +125,52 @@ void main() {
       expect(s.status.deaths, 3);
     });
 
+    // T46-3 실기 결함 ④. 실기에서 데몬을 1분 안에 세 번 죽였는데 `데몬이 반복해서 종료됩니다` 가
+    // 끝내 안 떴고, 세 번째 죽음 36초 뒤에 **네 번째 데몬이 떴다.** 까닭: 죽인 순간이 늘 "막 띄워서
+    // 아직 못 붙은" 때였는데 `_watchChild` 는 **붙은 뒤에야** 달리므로 그 죽음이 세어지지 않았다 —
+    // 그런데 "띄우자마자 죽는다" 야말로 crash-loop 의 본모습이다.
+    test('띄우자마자(붙기 전에) 죽는 데몬도 죽음으로 세어 crash-loop 으로 간다', () async {
+      final w = FakeSupervisorWorld();
+      final s = w.supervisor();
+      await s.start();
+      expect(w.spawnCount, 1);
+      // 이제부터 띄우는 족족 붙기 전에 죽는다.
+      w.onSpawned = (p) {
+        p.die(9);
+        w.reachable = false;
+      };
+      w.spawned.first.die(); // 죽음 1
+      await until(() => s.status.state == SupervisorState.failed);
+      expect(s.status.failure, SupervisorFailure.crashLoop);
+      expect(s.status.deaths, 3, reason: '붙기 전에 죽은 둘도 죽음이다');
+      expect(s.status.lastError, contains('붙기 전에 종료'));
+      final n = w.spawnCount;
+      // 포기한 뒤에는 남아 있던 재시작 일정이 **뒤늦게라도** 다시 띄우지 않는다.
+      for (var i = 0; i < 50; i++) {
+        await Future<void>.delayed(Duration.zero);
+      }
+      expect(w.spawnCount, n);
+      expect(s.status.state, SupervisorState.failed);
+    });
+
+    test('포기한 뒤에도 `다시 시도` 는 처음부터 다시 한다', () async {
+      final w = FakeSupervisorWorld();
+      final s = w.supervisor();
+      await s.start();
+      w.onSpawned = (p) {
+        p.die(9);
+        w.reachable = false;
+      };
+      w.spawned.first.die();
+      await until(() => s.status.failure == SupervisorFailure.crashLoop);
+      // 원인을 고쳤다(이제 정상으로 뜬다).
+      w.onSpawned = null;
+      await s.retry();
+      expect(s.status.state, SupervisorState.running);
+      expect(s.status.failure, isNull);
+      expect(s.status.deaths, 0, reason: '죽음 기록까지 지우고 처음부터');
+    });
+
     test('죽음 사이가 1분보다 멀면 crash-loop 이 아니다', () async {
       final w = FakeSupervisorWorld();
       final s = w.supervisor();
