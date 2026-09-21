@@ -82,6 +82,7 @@ PIXEL_IT=1 PIXEL_IT_SANDBOX=D:/myproject/pixel-office/dev/spike-0/sandbox \
 | `PIXEL_FORCE_START` | (없음) | `1` 이면 단일 데몬 가드를 건너뛴다(D-40). **테스트는 이것 대신 `PIXEL_DATA_DIR` 을 따로 줄 것** |
 | `PIXEL_PARENT_PID` | (없음) | **부모 앱의 pid**(T46-1, D-47). 값이 있으면 데몬이 2초마다 그 프로세스를 지켜보다 사라지면 스스로 정리하고 끝난다 — 아래 "수명 주기" |
 | `PIXEL_KEEP_DAEMON` | (없음) | `1` 이면 **부모 감시를 끈다**. 앱을 닫아도 데몬과 세션이 남는다(D-02 의 옛 동작 = 앱 설정 "앱을 닫아도 계속 일하기") |
+| `PIXEL_DAEMON_LOG` | (없음) | 값이 있으면 **`console.*` 를 stdout 이 아니라 그 파일에 직접 이어 쓴다**(T46-3). 앱이 데몬을 띄울 때 `<데이터 폴더>/daemon.log` 로 넘긴다 — 까닭은 아래 "로그는 어디로 가나". 콘솔 실행에서는 주지 않는다(예전처럼 stdout) |
 | `PIXEL_HOOK_LOG` | (없음) | 진단용. 파일 경로를 주면 `hook.js` 가 **CLI 가 보낸 페이로드와 우리가 돌려준 결정**을 JSONL 로 덧붙인다(T42) |
 | `PIXEL_SCREEN_DEBUG` | (없음) | 진단용. `1` 이면 `ScreenModel` 이 **`approval-prompt` 로 판정한 화면을 통째로** 적고, 그 프롬프트가 **몇 ms 만에 사라졌는지**까지 남긴다(T45 — D-26 오탐을 잡은 도구) |
 | `PIXEL_SCREEN_DEBUG_FILE` | `%TEMP%\pixel-screen-debug.log` | 위 덤프를 적을 파일 |
@@ -107,6 +108,24 @@ PIXEL_IT=1 PIXEL_IT_SANDBOX=D:/myproject/pixel-office/dev/spike-0/sandbox \
   × (부장 → 팀장 → 팀원). **하던 일이 있던 캐릭터에게만** `[RESUMED]` 를 타이핑한다 — 나머지는 말없이 앉힌다(토큰 0).
 - **상태 한 줄 더:** `members.status` 에 `suspended`(잠시 닫힘). 사용자 퇴근·상사 dismiss 의 `exited`, 사고의 `error` 와 다르다.
   스키마 v5 — 여는 순간 `members` 표만 자동으로 다시 만들어진다(행은 그대로).
+- **`suspended` 는 hook 이 덮지 못한다**(T46-3 실기): 접어 둔 멤버에게 `/exit` 를 타이핑하면 CLI 가 마지막으로
+  `SessionEnd` 를 보내는데, 그것이 `exited` 로 되돌려 놓아 "다음 기동에 말없이 출근" 이 통째로 죽었다.
+  이제 `BaseHooksAdapter.setStatus` 가 현재 status 가 `suspended` 면 아무것도 하지 않는다(늦게 오는 `Stop` 도 같다).
+- **잠시 닫힌 상사 밑에는 고용할 수 없다**(T46-3): `hireChild` 가 `suspended` 부모를 -32004 로 막는다
+  (프로세스가 없어 `[TEAM] 팀원 변경` 도 못 받는다 — 곧 돌아오니 기다린다).
+- **감시를 끄는 말:** `daemon.stopWatchingParent`(T46-3). 앱이 "앱을 닫아도 계속 일하기" 를 **켠 뒤에** 닫을 때 부른다.
+  이 말이 없으면 데몬은 이미 `PIXEL_PARENT_PID` 를 들고 기동한 뒤라 앱이 닫히는 순간 정리를 해 버린다(정반대 결과).
+
+### 로그는 어디로 가나 (T46-3)
+
+**앱이 띄운 데몬은 stdout 을 쓰지 않는다.** 앱은 데몬을 파이프 모드로 띄우는데(콘솔 창이 안 뜨는 유일한 모드),
+그 파이프를 읽는 사람은 앱 하나뿐이다. 앱이 `taskkill /F` 로 죽으면 읽는 쪽이 사라지고, **그 뒤 데몬이
+`console.log` 를 한 줄만 써도 그 write 가 영영 안 끝나 이벤트 루프가 그 자리에서 멈춘다**(윈도우 실측).
+실기에서 데몬이 그렇게 굳어 `claude.exe` 가 2분 30초 뒤에도 남아 있었다.
+
+그래서 `PIXEL_DAEMON_LOG` 가 있으면 `src/log.ts` 가 `console.*` 를 그 파일에 **직접** 이어 쓴다(`installFileLog()`,
+`src/index.ts` 첫 줄). 덤으로 **앱이 죽은 뒤의 로그도 남는다** — `부모 앱이 사라졌다`·`[office] 종료: …` 가
+그대로 파일에 들어간다(예전에는 죽은 파이프로 흘러가 사고 원인을 볼 길이 없었다).
 
 **`PIXEL_CODEX_EXE` 자동 탐지 (`src/config.ts resolveCodexExe`, T22).** node-pty(ConPTY)는 PATH 의 `codex.cmd`/`codex.ps1`
 셰임을 띄우지 못한다(T20 함정 4). 그래서 기본값이 `'codex'` 가 아니라 다음 순서로 **실제 실행 파일**을 찾은 결과다:

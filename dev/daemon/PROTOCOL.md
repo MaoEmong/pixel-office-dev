@@ -31,6 +31,7 @@
 | `member.instructions.effective` | `{ memberId }` | `{ markdown }` — **다음 SessionStart 에 실제로 주입될 전체 텍스트**(런타임 프리앰블 + 유효 지시문, 아래 "멤버 지시문 주입"). 읽기 전용·부작용 없음. 콘솔 `instr effective <member>`. |
 | `approval.respond` | `{ pendingId, behavior: 'allow'\|'deny', updatedInput?, message?, alwaysThisSession?: boolean }` | `{}` — `message` 는 deny 시 모델에게 보여줄 사유(기본 "Denied by user"). `alwaysThisSession` 은 allow 일 때 같은 멤버·같은 도구의 다음 허가 요청을 데몬이 자동 allow(데몬 메모리, 재시작 시 초기화). 없는 pending -32002, approval 이 아니면 -32602, 이미 answered/expired -32003. |
 | `question.respond` | `{ pendingId, answers: Record<string,string> }` | `{}` — `answers` 는 `{ "<question>": "<label>" }`(자유 답도 `label` 자리에). 오류 코드는 approval.respond 와 동일. **출처별 처리(T17):** TUI `AskUserQuestion`(payload 에 `tool_input` 있음)은 hook 결정으로 돌려주고, TeamTools `ask_user`(payload `source:'ask_user'`)는 pending 을 answered 로 닫은 뒤 그 멤버 입력 큐에 `[ANSWER q#<pendingId>]\n<답>` 시스템 메시지를 넣는다(아래 "TeamTools MCP"). **Codex 질문 폴백**(payload 에 `fallback:'codex-stop'`, 아래 "Codex 폴백")은 봉투 없이 답 본문만 넣는다. 값이 전부 빈 문자열이면 -32602. 멤버가 실행 중이 아니면 -32003. |
+| `daemon.stopWatchingParent` | `{}` | **`{ stopped: boolean }`** — 부모 앱 감시(§3)를 **끈다**(T46-3). 앱이 설정 "앱을 닫아도 계속 일하기" 를 **켠 뒤에** 창을 닫을 때 닫기 직전에 부른다 — 그러지 않으면 데몬이 이미 `PIXEL_PARENT_PID` 를 들고 기동한 뒤라 앱이 사라지는 순간 §3 정리가 돌아 **정반대 결과**가 된다. `stopped` 는 실제로 껐으면 true, 원래 안 보고 있었으면 false(**멱등**). 끈 뒤에도 다음 `hello{parentPid}` 가 다시 켤 수 있다. |
 | `daemon.shutdown` | `{}` | **`{ closing: N }`** — 지금 닫는 AI 세션 수(멤버 세션 + 확인용 세션, T46-1). 응답 후 `daemon.notice{level:'info'}` 를 보내고 전원 정중히 종료(`/exit`) → 모든 소켓 close code 1001 → 프로세스 종료. **살아 있던 멤버는 `suspended`(잠시 닫힘)로 적힌다**(T46-1/D-47 §5 — 다음 기동이 말없이 되살린다. T09 까지는 status 를 아예 건드리지 않았다). **닫는 중에 온 두 번째 요청은 같은 `{closing}` 만 돌려주고 아무것도 다시 하지 않는다.** 자세한 것은 아래 "수명 주기". |
 
 에러 코드: `-32001` 인증 실패, `-32002` 없는 멤버/팀/부서/pending, `-32003` 상태 오류(예: 이미 종료, 정원 초과, 부장·팀장 중복), `-32004` 직급 규칙 위반(T34 "부장에게만 지시", 고용 사슬 위반, TeamTools 의 직급 전용 도구, **디버그 전용 메서드를 `force` 없이 부름**), `-32602` 파라미터. 그 외 JSON-RPC 표준: `-32700` JSON 파싱 실패(id null), `-32600` 봉투 오류(`jsonrpc:"2.0"`·`method` 누락), `-32601` 없는 메서드, `-32000` 내부 오류. 에러 객체는 `{ code, message, data? }`.
@@ -487,6 +488,8 @@ D-02 는 데몬을 "앱과 분리된 상주 프로세스" 로 두었다. D-47 �
   그 앱이 주인이 된다 — 규칙이 하나여야 예측 가능하다.
 - **끄는 법:** `PIXEL_KEEP_DAEMON=1`(앱 설정 "앱을 닫아도 계속 일하기" = D-02 의 옛 동작) 또는 부모 pid 를 주지 않기.
   이때는 `hello{parentPid}` 도 무시한다.
+  **이미 켜져 있는 감시를 끄려면 `daemon.stopWatchingParent`**(T46-3) — 앱을 켠 **뒤에** 그 설정을 켠 경우다.
+  데몬은 이미 `PIXEL_PARENT_PID` 를 들고 기동한 뒤라 이 말이 없으면 앱이 닫히는 순간 아래 정리가 돌아 버린다(실기 결함).
 
 ### `suspended` — 잠시 닫힘 (§5)
 
@@ -501,6 +504,12 @@ D-02 는 데몬을 "앱과 분리된 상주 프로세스" 로 두었다. D-47 �
 
 - 파생 상태(`derived`)는 `suspended` 를 **덮지 않는다** — 프로세스가 없으므로 "질문 대기"·"보고 대기" 로 보이면 안 된다.
   앱은 회색 + 모니터 `(잠시 닫힘)` 으로 그린다. 되살아나는 동안만 잠깐 보인다.
+- **hook 도 `suspended` 를 덮지 못한다**(T46-3 실기 결함). 접어 둔 멤버에게 `/exit` 를 타이핑하면 CLI 가 죽기 직전
+  `SessionEnd{reason:'prompt_input_exit'}` 를 한 번 더 보내는데, 그것이 status 를 `exited` 로 되돌려 놓아 "다음 기동에
+  말없이 출근"(§5)이 통째로 죽었다(앱을 닫았다 켜면 조직 전체가 "퇴근"). 이제 어댑터의 `setStatus` 가 현재 status 가
+  `suspended` 면 아무것도 하지 않는다 — 늦게 도착한 `Stop`(→ idle)도 같다. 되살릴 때는 Office 가 `spawnMember` 에서
+  먼저 `starting` 으로 바꾸므로 이 가드에 걸리지 않는다.
+- **`suspended` 상사 밑에는 고용할 수 없다**(T46-3): `hireChild` 가 -32004 `… 잠시 닫힘(suspended) 입니다 — 다시 출근한 뒤에 고용하세요`.
 - `liveHead`/`liveLead` 는 `suspended` 를 **살아 있는 것으로 본다**(`exited`/`error` 만 제외) — 곧 돌아올 부장이다.
 
 ### 정상 종료가 하는 일 (§2)
@@ -551,5 +560,6 @@ D-02 는 데몬을 "앱과 분리된 상주 프로세스" 로 두었다. D-47 �
 |---|---|
 | `hello` params | `parentPid?: number`(§3 감시 대상) · `activeDepartmentId?: string`(§5 복구 우선순위) — 둘 다 선택, 없으면 예전과 같다 |
 | `daemon.shutdown` result | `{}` → **`{ closing: number }`** |
+| **새 메서드** | **`daemon.stopWatchingParent`** → `{ stopped: boolean }`(T46-3, §3 을 끈다 — "계속 일하기" 를 앱 실행 중에 켠 경우) |
 | `member.status` · `snapshot` 의 `status` | **`suspended`** 가 올 수 있다(`derived` 에도 그대로) |
 | `daemon.notice` params | `{level, message}` 에 **선택 꼬리표** `kind` 가 붙을 수 있다: `'parent-gone'`(§3) · `'recovering'`(+`total`, `done`). 꼬리표가 없는 알림은 예전 그대로다 |

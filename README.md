@@ -56,23 +56,30 @@ pixel-office/
 
 사전 조건: **Node 24+**(데몬이 `node:sqlite` 를 쓴다), **Flutter**(Windows 데스크탑), `claude` 실행 파일 + 로그인, (선택) `codex` + 로그인.
 
-```bash
-# 1) 데몬 — 먼저 떠 있어야 한다. 하나만 뜬다(D-40).
-cd dev/daemon
-npm install
-npm start                # ws 7420 / hook 7421 / mcp 7422, 데이터 %LOCALAPPDATA%\pixel-office
+**앱만 켜면 된다.** 데몬은 앱이 **콘솔 창 없이** 같이 띄우고, 앱을 닫으면 AI 세션까지 같이 꺼진다
+(D-47 이 D-02 의 기본 동작을 뒤집었다 — 전문 `docs/design/수명주기.md`, 실기 `docs/worklog/T46-3-LifecycleLive.md`).
 
-# 2) 앱
+```bash
+# 0) 한 번만 — 데몬의 의존성(앱이 이 폴더를 찾아 띄운다)
+cd dev/daemon && npm install
+
+# 1) 앱 — 이것만 켜면 데몬도 같이 뜬다
 cd dev/app
 flutter pub get
 flutter run -d windows            # 개발 실행
 flutter build windows --release   # build\windows\x64\runner\Release\pixel_office.exe
 
-# 앱 없이 데몬만 만져 보려면 (디버깅·시연용 REPL)
+# 2) (선택) 데몬을 콘솔에서 따로 — 디버깅·로그를 눈으로 볼 때만
+cd dev/daemon && npm start        # ws 7420 / hook 7421 / mcp 7422, 데이터 %LOCALAPPDATA%\pixel-office
+
+# 앱 없이 데몬만 만져 보려면 (디버깅·시연용 REPL — 앱이 띄운 데몬에도 그대로 붙는다)
 cd dev/daemon && npm run cli      # help 로 명령 목록
 ```
 
-앱은 `%LOCALAPPDATA%\pixel-office\daemon.json` 에서 포트·토큰을 읽어 붙는다. 데몬이 없으면 회색 사무실 + "데몬 시작" 버튼이 뜨고 계속 재접속을 시도한다.
+앱은 `%LOCALAPPDATA%\pixel-office\daemon.json` 에서 포트·토큰을 읽어 붙고, 2초 안에 붙을 데몬이 없으면
+직접 띄운다(이미 도는 데몬이 있으면 그대로 붙는다 — 데몬은 하나만 뜬다, D-40).
+데몬 로그는 `%LOCALAPPDATA%\pixel-office\daemon.log`(최근 1MB). 못 띄우면 그 로그 마지막 8줄과
+`다시 시도` 가 화면에 뜬다. 앱을 닫아도 데몬을 남기고 싶으면 상단 바 `⋮` → "앱을 닫아도 계속 일하기".
 
 첫 화면에서 **"부서 만들기"** → 이름 · 작업 폴더(cwd) · 부장 엔진 · 부장 이름 → 부장이 출근한다. 그다음은 아래 지시 바로 **부장에게만** 말하면 된다.
 

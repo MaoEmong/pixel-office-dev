@@ -15,7 +15,7 @@ cd dev/app
 flutter pub get
 flutter run -d windows          # 개발 실행
 flutter build windows --release # build\windows\x64\runner\Release\pixel_office.exe
-flutter analyze && flutter test # 검증 (위젯·상태 653건 +1 skip)
+flutter analyze && flutter test # 검증 (위젯·상태 659건 +1 skip)
 ```
 
 **데몬을 먼저 띄울 필요가 없다.** 앱이 주인이고, 데몬과 AI 세션은 앱의 부속으로 같이 켜지고 같이 꺼진다
@@ -29,12 +29,19 @@ flutter analyze && flutter test # 검증 (위젯·상태 653건 +1 skip)
    남아 있으면) 새로 띄우지 않고 그대로 붙는다.
 3. 못 붙으면 앱이 **직접, 콘솔 창 없이** 띄운다: `dev/daemon` 을 `findDaemonDir()` 로 찾아
    `package.json` 의 `scripts.start`(= `tsx src/index.ts`)를 **`node --import tsx src/index.ts`** 로 실행한다
-   (npm 을 끼지 않아 프로세스가 하나다). 환경변수 `PIXEL_PARENT_PID=<앱 pid>` 를 넘기고,
-   표준 출력·오류는 `<데이터 폴더>/daemon.log` 에 이어 쓴다(기동 때 최근 1MB 만 남기고 자른다).
+   (npm 을 끼지 않아 프로세스가 하나다). 환경변수 둘을 넘긴다 — `PIXEL_PARENT_PID=<앱 pid>` 와
+   **`PIXEL_DAEMON_LOG=<데이터 폴더>\daemon.log`**. 로그 파일은 기동 때 최근 1MB 만 남기고 자른다
+   (뒤쪽을 남기므로 **직전 데몬이 죽은 까닭이 잘려 나가지 않는다** — T46-3 실측).
    - **콘솔 창이 왜 안 뜨나(윈도우 실측):** 콘솔이 없는 GUI 앱에서 `Process.start` 를 **기본 모드(파이프)**
      로 부르면 자식에게 콘솔 자체가 생기지 않는다(`GetConsoleWindow()` 가 0). `inheritStdio` 만 보이는
-     콘솔 창을 만든다. 그래서 기본 모드로 띄우고 파이프를 로그로 흘린다(안 읽으면 64KB 에서 데몬이 멈춘다).
-4. 오버레이는 `사무실을 여는 중…` → 붙으면 사라진다. **10초**(2 + 8) 안에 못 붙으면
+     콘솔 창을 만든다.
+   - **그런데 파이프에 로그를 흘리면 안 된다(T46-3 실기):** 읽는 쪽이 앱 하나뿐이라, 앱이 `taskkill /F` 로
+     죽으면 그 뒤 데몬의 `console.log` 한 줄이 **데몬의 이벤트 루프를 멈춘다**(write 가 영영 안 끝난다).
+     그래서 **데몬이 `PIXEL_DAEMON_LOG` 에 직접** 쓰고 파이프에는 아무것도 흐르지 않는다. 앱은 파이프를
+     계속 읽기는 한다 — node·tsx 의 네이티브 크래시는 console 을 안 거치고 fd 로 나오기 때문이다.
+4. 붙을 수 있게 된 순간(감시자가 `running`) **재접속 backoff 를 즉시 깨운다**(`RpcClient.retryNow()`).
+   이게 없으면 `daemon.json` 이 나온 뒤에도 앱이 자기 backoff(최대 5초)를 다 기다렸다(실측 3.8초 → 8.0초).
+5. 오버레이는 `사무실을 여는 중…` → 붙으면 사라진다. **10초**(2 + 8) 안에 못 붙으면
    `데몬을 시작하지 못했습니다` + `daemon.log` 마지막 8줄 + `다시 시도`. 옛 `데몬 시작` 버튼(보이는 콘솔 창을
    띄운다 — 원인을 눈으로 볼 마지막 수단)은 **이 실패 화면에만** 남는다.
 
@@ -42,6 +49,12 @@ flutter analyze && flutter test # 검증 (위젯·상태 653건 +1 skip)
 **즉시 1회 → 2초 → 5초 → 10초, 최대 4회** 다시 띄운다. 그동안 오버레이는
 `데몬이 멈춰 다시 시작하는 중 · 세션을 복구합니다`(+ `daemon.notice{kind:'recovering', total, done}` 이 오면
 `복구 2 / 5`). **1분 안에 3번** 죽으면 재시작을 멈추고 `데몬이 반복해서 종료됩니다` + 로그를 보여 준다.
+
+> **죽음을 세는 두 자리(T46-3).** `_watchChild` 는 **붙은 뒤에야** 달리므로, 그것만 보면 *띄우자마자 죽는*
+> 데몬 — 즉 crash-loop 의 본모습 — 이 한 번도 세어지지 않는다(실기에서 3번 죽여도 실패 화면이 안 떴고
+> 36초 뒤에 4번째 데몬이 떴다). 그래서 `_spawnOnce` 가 **스폰 직후부터** `exitCode` 를 지켜보다가 붙기 전에
+> 죽으면 그것도 센다. 그리고 포기(`_abandoned`)가 정해지면 **돌고 있던 재시작 일정이 그것을 덮지 못한다**
+> — `다시 시도` 만 그 깃발을 푼다.
 
 **끌 때**(창 X · Alt+F4 · 작업 표시줄 — `AppLifecycleListener.onExitRequested`)
 
@@ -52,8 +65,11 @@ flutter analyze && flutter test # 검증 (위젯·상태 653건 +1 skip)
 3. 앱이 직접 띄운 데몬이 아니어도 똑같이 끈다 — 규칙이 하나여야 예측 가능하다.
 
 **옛 동작(D-02)으로 돌리려면** — 상단 바 `⋮` → **"앱을 닫아도 계속 일하기"**(기본 꺼짐,
-`<데이터 폴더>/app-ui.json` 의 `keepDaemonOnExit`). 켜면 앱을 닫아도 데몬과 세션이 남고, `hello` 에
-`parentPid` 를 보내지 않아 **데몬의 부모 감시도 꺼진다**. 개발용으로는 환경변수 `PIXEL_KEEP_DAEMON=1`
+`<데이터 폴더>/app-ui.json` 의 `keepDaemonOnExit`). 켜면 앱을 닫아도 데몬과 세션이 남는다.
+켠 채로 앱을 켜면 `PIXEL_PARENT_PID` 도 `hello{parentPid}` 도 보내지 않는다(부모 감시 자체가 안 켜진다).
+**앱을 켠 뒤에 켰다면** 데몬은 이미 그 pid 를 들고 기동한 뒤라, 닫기 직전에 앱이
+**`daemon.stopWatchingParent`** 를 보내 감시를 꺼 준다(T46-3 실기 — 이 말이 없으면 "계속 일하기" 인데도
+데몬이 "부모가 사라졌다" 로 보고 사무실을 정리해 버렸다). 개발용으로는 환경변수 `PIXEL_KEEP_DAEMON=1`
 (그 세션 내내 켜지고 메뉴에서 끌 수 없다). 데몬을 콘솔에서 따로 돌리며 앱을 껐다 켜고 싶을 때 쓴다.
 
 **상태 하나 추가**: `members.status` 의 `suspended`(잠시 닫힘) — 정상 종료로 닫혔다가 다음 기동에 말없이
