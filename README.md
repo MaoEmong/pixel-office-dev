@@ -36,7 +36,7 @@ pixel-office/
     01-설계문서.md        설계(rev 2) + 직무 체계 rev 3 + 실측 반영 + 설계 변경 이력
     02-실측-체크리스트.md  CLI·hooks·pty 실측 결과와 근거
     03-작업계획.md        태스크 분해 T00~T41 과 진행 상태 — **진행 상태의 단일 기준**
-    04-결정기록.md        D-01~D-44 (append-only, 맨 위에 목차 표)
+    04-결정기록.md        D-01~D-46 (append-only, 맨 위에 목차 표)
     worklog/            태스크별 기록 T##-*.md + 창 캡처 img/
     design/             와이어프레임
   dev/
@@ -44,10 +44,10 @@ pixel-office/
       PROTOCOL.md         WS JSON-RPC·이벤트·후처리 계약 — 앱과 데몬의 유일한 기준
       src/                office · rpc · pty · screen · hooks · adapters · mcp · input · store · cli
       src/tui-maps/       CLI 버전별 화면 패턴 JSON
-      test/               node:test (511건)
+      test/               node:test (711건)
     app/                Flutter 데스크탑 앱 (Windows)  → dev/app/README.md
       lib/                rpc · model · state · topbar · office · panel · command
-      test/               위젯·상태 테스트 (446건)
+      test/               위젯·상태 테스트 (541건)
       tool/capture-window.ps1   창 단위 캡처 (worklog 증거용, 전체 화면 캡처 금지)
     spike-0/            0단계 실측 스파이크와 sandbox(실기용 작업 폴더)
 ```
@@ -79,8 +79,8 @@ cd dev/daemon && npm run cli      # help 로 명령 목록
 ## 검증
 
 ```bash
-cd dev/daemon && npx tsc --noEmit && npm test     # 511건 (PIXEL_IT=1 이면 실제 CLI 통합 테스트 포함)
-cd dev/app    && flutter analyze && flutter test  # 446건
+cd dev/daemon && npx tsc --noEmit && npm test     # 711건 (PIXEL_IT=1 이면 실제 CLI 통합 테스트 포함)
+cd dev/app    && flutter analyze && flutter test  # 541건
 ```
 
 ## 더 읽을 것
