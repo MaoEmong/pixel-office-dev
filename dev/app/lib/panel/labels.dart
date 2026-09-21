@@ -40,7 +40,12 @@ String memberStatusLabel(MemberStatus s) => switch (s) {
       MemberStatus.waitingAnswer => '답변 대기',
       MemberStatus.exited => '퇴근',
       MemberStatus.error => '오류',
+      // T46(수명주기 §5): 정상 종료로 닫혔다가 되살아나는 중. 퇴근·오류가 아니라 **재고용 배너를 띄우지 않는다**.
+      MemberStatus.suspended => suspendedStatusLabel,
     };
+
+/// `suspended` 의 패널 라벨(캔버스 모니터는 `(잠시 닫힘)` — `office_scene.dart` 의 `suspendedSummary`).
+const String suspendedStatusLabel = '잠시 닫힘';
 
 /// 파생 상태 → 헤더 라벨(free/waiting_reports 만 status 와 다르다).
 String derivedStatusLabel(DerivedStatus d) => switch (d) {
@@ -54,7 +59,8 @@ Color memberStatusColor(MemberStatus s) => switch (s) {
       MemberStatus.idle => Colors.greenAccent,
       MemberStatus.working => Colors.lightBlueAccent,
       MemberStatus.waitingApproval || MemberStatus.waitingAnswer => Colors.amber,
-      MemberStatus.exited => Colors.white38,
+      // 잠시 닫힘은 퇴근과 같은 회색(범례 "퇴근" 칸).
+      MemberStatus.exited || MemberStatus.suspended => Colors.white38,
       MemberStatus.error => Colors.redAccent,
     };
 

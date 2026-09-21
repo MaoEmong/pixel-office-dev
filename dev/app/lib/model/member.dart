@@ -10,7 +10,12 @@ enum MemberStatus {
   waitingApproval('waiting_approval'),
   waitingAnswer('waiting_answer'),
   exited,
-  error;
+  error,
+
+  /// 정상 종료로 **잠시 닫힌** 세션(T46 · D-47 · 수명주기 §5). `exited` 와 다르다 —
+  /// 사용자가 퇴근시킨 것도, 오류로 죽은 것도 아니라 **데몬이 다음 기동에 말없이 되살릴 것**이다.
+  /// 그래서 [isGone] 이 아니다: 재고용 배너를 띄우지 않고 맡은 task 도 중단하지 않는다.
+  suspended;
 
   const MemberStatus([String? wire]) : _wire = wire;
   final String? _wire;
@@ -25,8 +30,12 @@ enum MemberStatus {
     throw FormatException('unknown member status: $s');
   }
 
-  /// 프로세스가 더 이상 살아 있지 않은 상태(재출근 대상).
+  /// 프로세스가 더 이상 살아 있지 않은 상태(재출근 대상). **`suspended` 는 포함하지 않는다** —
+  /// 잠시 닫힌 것은 오류도 퇴근도 아니다(수명주기 §5).
   bool get isGone => this == exited || this == error;
+
+  /// 자리에 사람이 없는 상태(퇴근 · 잠시 닫힘) — 책상에 의자만 남는다.
+  bool get isSeatEmpty => this == exited || this == suspended;
 
   /// 사용자 응답을 기다리는 상태.
   bool get isWaiting => this == waitingApproval || this == waitingAnswer;
@@ -42,7 +51,10 @@ enum DerivedStatus {
   exited,
   error,
   free,
-  waitingReports('waiting_reports');
+  waitingReports('waiting_reports'),
+
+  /// 잠시 닫힘(T46). raw status 와 같은 뜻 — 파생 규칙이 손댈 것이 없다.
+  suspended;
 
   const DerivedStatus([String? wire]) : _wire = wire;
   final String? _wire;

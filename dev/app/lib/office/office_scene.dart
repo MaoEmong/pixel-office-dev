@@ -139,7 +139,9 @@ LegendSlot legendSlotFor({
   bool shellWaiting = false,
   bool queued = false,
 }) {
-  if (status == MemberStatus.exited) return LegendSlot.exited;
+  // 퇴근과 **잠시 닫힘**(T46 `suspended`)은 같은 회색 칸이다 — 자리에 사람이 없다는 뜻은 하나면 된다.
+  // 구분은 모니터 문구([suspendedSummary])가 한다.
+  if (status.isSeatEmpty) return LegendSlot.exited;
   if (status == MemberStatus.error) return LegendSlot.error;
   // ask_parent 답 대기는 "대기"(노랑) — 사용자가 할 일이 없다.
   if (askingParent) return LegendSlot.waiting;
@@ -179,6 +181,10 @@ const String askParentSummary = '❓ 상사에게 질문';
 
 /// 셸 락 대기(`running{waiting:'shell-lock'}`) 앞에 붙는 표시(T29 결함 ③).
 const String waitingPrefix = '◷';
+
+/// `suspended`(T46 · 수명주기 §5) 의 모니터 문구. 정상 종료로 닫혔다가 **되살아나는 동안만** 잠깐 보인다 —
+/// 회색 칸(퇴근)에 앉지만 "퇴근" 과 다른 말을 한다(재고용할 일이 없다).
+const String suspendedSummary = '(잠시 닫힘)';
 
 /// 팀이 없는 멤버를 모으는 클러스터 제목(정상 트리에서는 비어 있다).
 const String unassignedClusterTitle = '미배정';
@@ -282,6 +288,10 @@ class SceneMember {
 
   /// 회색 처리(exited / error).
   bool get isGone => status.isGone;
+
+  /// 자리가 비어 있는가(퇴근 · 잠시 닫힘) — 책상에 **의자만** 그리고 캐릭터·말풍선은 안 그린다.
+  /// 페인터의 "퇴근" 분기는 전부 이것을 본다(T46: `suspended` 도 같은 그림, 문구만 다르다).
+  bool get isSeatEmpty => status.isSeatEmpty;
 
   /// 오류 포즈(T30): 비정상 종료(크래시·강제 종료). 붉은 링 + "⚠ 오류" 말풍선 — 퇴근(exited)과 구분한다.
   bool get isError => status == MemberStatus.error;
@@ -717,6 +727,7 @@ bool _listEq<T>(List<T> a, List<T> b) {
 /// 마지막 이벤트보다 "❓ 질문" 이 앞선다 — 답을 기다리는 동안 "(대기)" 로 보이지 않게(T19 함정 1).
 /// [askingParent] 면 상사 답을 기다리는 중이라 그 표시가 가장 앞선다(T37).
 String summarize(MemberStatus status, OfficeEvent? event, {DerivedStatus? derived, bool askingParent = false}) {
+  if (status == MemberStatus.suspended) return suspendedSummary;
   if (status == MemberStatus.exited) return '(퇴근)';
   if (status == MemberStatus.error) return '⚠ 오류';
   if (askingParent) return askParentSummary;
@@ -754,6 +765,7 @@ String _statusSummary(MemberStatus s) => switch (s) {
       MemberStatus.waitingAnswer => '❓ 질문',
       MemberStatus.exited => '(퇴근)',
       MemberStatus.error => '⚠ 오류',
+      MemberStatus.suspended => suspendedSummary,
     };
 
 /// 모니터 **둘째 줄**(결과 요약, 패스 4). 첫 줄은 명령·도구([summarize]) 이므로 같은 내용은 되풀이하지 않는다.
