@@ -1,0 +1,28 @@
+
+     /context all to expand                                                                                             
+▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔
+   Settings  Status   Config   Usage   Stats
+
+   Version:             2.1.275
+   Session name:        1+1 계산
+   Session ID:          50cc7bea-750f-4e3f-8492-4c4595194b6d
+   Session kind:        interactive
+   Peer address:        uds:\\.\pipe\LOCAL\cc-msg-d2289dfa39d50fb5db48e1e07bb187de                                      
+   cwd:                 D:\myproject\pixel-office\dev\spike-0\sandbox
+   Login method:        Claude Max account
+   Organization:        <이메일>'s Organization
+   Email:               <이메일>                                                                             
+   Cloud sessions:      GitHub connected
+   Anthropic base URL:  https://api.anthropic.com                                                                       
+    
+   Model:               Default (Opus 5 with 1M context · Best for everyday, complex tasks)
+   MCP servers:         2 connected · /mcp
+   Setting sources:     User settings, Command line arguments
+
+   System diagnostics
+    ⚠ Native installation exists but C:\Users\User\.local\bin is not in your PATH. Add it by opening: System
+      Properties → Environment Variables → Edit User PATH → New → Add the path above. Then restart your terminal.
+    ⚠ Native installation exists but C:\Users\User\.local\bin is not in your PATH
+     
+
+   Esc to cancel

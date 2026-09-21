@@ -1,0 +1,93 @@
+{
+  "description": "pixel-office",
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node D:/myproject/pixel-office/dev/daemon/src/hooks/hook.js 6343 SessionStart",
+            "timeout": 86400
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node D:/myproject/pixel-office/dev/daemon/src/hooks/hook.js 6343 UserPromptSubmit",
+            "timeout": 86400
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node D:/myproject/pixel-office/dev/daemon/src/hooks/hook.js 6343 PreToolUse",
+            "timeout": 86400
+          }
+        ]
+      }
+    ],
+    "PermissionRequest": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node D:/myproject/pixel-office/dev/daemon/src/hooks/hook.js 6343 PermissionRequest",
+            "timeout": 86400
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node D:/myproject/pixel-office/dev/daemon/src/hooks/hook.js 6343 PostToolUse",
+            "timeout": 86400
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node D:/myproject/pixel-office/dev/daemon/src/hooks/hook.js 6343 Stop",
+            "timeout": 86400
+          }
+        ]
+      }
+    ],
+    "Interrupt": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node D:/myproject/pixel-office/dev/daemon/src/hooks/hook.js 6343 Interrupt",
+            "timeout": 86400
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node D:/myproject/pixel-office/dev/daemon/src/hooks/hook.js 6343 SessionEnd",
+            "timeout": 86400
+          }
+        ]
+      }
+    ]
+  }
+}

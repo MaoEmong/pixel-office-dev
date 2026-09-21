@@ -1,0 +1,60 @@
+     "input_tokens": 2,
+     "output_tokens": 3,
+     "cache_read_input_tokens": 29413,
+     "cache_creation_input_tokens": 14495,
+     "cache_creation": {
+      "ephemeral_5m_input_tokens": 0,
+      "ephemeral_1h_input_tokens": 14495
+     },
+     "type": "message"
+    }
+   ],
+   "speed": "standard"
+  }
+ }
+]
+--- last 3 usage ---
+[
+ {
+  "ts": "2026-09-21T07:15:24.582Z",
+  "model": "claude-opus-5",
+  "uuid": "10b39be4",
+  "isSidechain": false,
+  "usage": {
+   "input_tokens": 2,
+   "cache_creation_input_tokens": 14495,
+   "cache_read_input_tokens": 29413,
+   "output_tokens": 3,
+   "output_tokens_details": {
+    "thinking_tokens": 0
+   },
+   "server_tool_use": {
+    "web_search_requests": 0,
+    "web_fetch_requests": 0
+   },
+   "service_tier": "standard",
+   "cache_creation": {
+    "ephemeral_1h_input_tokens": 14495,
+    "ephemeral_5m_input_tokens": 0
+   },
+   "inference_geo": "not_available",
+   "iterations": [
+    {
+     "input_tokens": 2,
+     "output_tokens": 3,
+     "cache_read_input_tokens": 29413,
+     "cache_creation_input_tokens": 14495,
+     "cache_creation": {
+      "ephemeral_5m_input_tokens": 0,
+      "ephemeral_1h_input_tokens": 14495
+     },
+     "type": "message"
+    }
+   ],
+   "speed": "standard"
+  }
+ }
+]
+CUMULATIVE {"input_tokens":2,"output_tokens":3,"cache_creation_input_tokens":14495,"cache_read_input_tokens":29413}
+CONTEXT(last in+cc+cr)= 43910
+window mentions: 0

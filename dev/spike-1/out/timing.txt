@@ -1,0 +1,2 @@
+claude auth status 280ms, 261ms, 264ms
+codex login status 55ms, 54ms, 56ms

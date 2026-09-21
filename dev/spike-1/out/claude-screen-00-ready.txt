@@ -1,0 +1,40 @@
+
+ ▐▛███▛█   Claude Code v2.1.275
+▝▜██████▀  Opus 5 (1M context) · Claude Max
+  ▝▝ ▝▝    D:\myproject\pixel-office\dev\spike-0\sandbox
+
+  Updated to latest. Got 27 features, 165 bugfixes, and 76 other changes.
+  code.claude.com/docs/en/changelog for details
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ 
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  PIXEL-STATUSLINE
+  ⏸ manual mode on · ← for agents

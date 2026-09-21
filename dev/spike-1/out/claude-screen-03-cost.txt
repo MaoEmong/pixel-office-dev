@@ -1,0 +1,40 @@
+
+     /context all to expand                                                                                             
+▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔
+   Settings  Status   Config   Usage   Stats
+
+   Session
+
+   Total cost:            $0.1607
+   Total duration (API):  2s
+   Total duration (wall): 1m 58s                                                                                        
+   Total code changes:    0 lines added, 0 lines removed
+   Usage by model:
+       claude-haiku-4-5:  910 input, 14 output, 0 cache read, 0 cache write ($0.0010)
+          claude-opus-5:  2 input, 3 output, 29.4k cache read, 14.5k cache write ($0.1597)                              
+   Prompt cache (main):   1 request · 67% of input tokens from cache · no misses · warm (1h TTL, last activity 6s 
+   ago)                                                                                                                 
+
+   Current session
+   ████████▌                                          17% used
+   Resets 9pm (Asia/Seoul)
+
+   Current week (all models)
+   ███████████████████████████▌                       55% used
+   Resets Sep 23, 12pm (Asia/Seoul)
+
+   Current week (Fable)
+   ███████████████████████████▌                       55% used
+   Resets Sep 23, 11:59am (Asia/Seoul)
+
+   What's contributing to your limits usage?
+   Approximate, based on local sessions on this machine — does not include other devices or claude.ai
+
+   Last 24h · these are independent characteristics of your usage, not a breakdown                                      
+ 
+   99% of your usage came from subagent-heavy sessions
+    Each subagent runs its own requests. Be deliberate about spawning them — and                                        
+    consider configuring a cheaper model for simpler subagents.
+                                                                                                                        
+   76% of your usage was at >150k context
+    Longer sessions are more expensive even when cached. /compact mid-task, /clear                                    ↓

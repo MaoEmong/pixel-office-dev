@@ -1,0 +1,34 @@
+
+╭───────────────────────────────────────────────────────────────╮
+│ ✨ Update available! 0.154.0 -> 0.155.1                       │
+│ See https://github.com/openai/codex for installation options. │
+│                                                               │
+│ See full release notes:                                       │
+│ https://github.com/openai/codex/releases/latest               │
+╰───────────────────────────────────────────────────────────────╯
+
+╭──────────────────────────────────────────────────────────╮
+│ >_ OpenAI Codex (v0.154.0)                               │
+│                                                          │
+│ model:     gpt-6-astra high   /model to change           │
+│ directory: D:\myproject\pixel-office\dev\spike-0\sandbox │
+╰──────────────────────────────────────────────────────────╯
+
+  Tip: New Use /fast to enable our fastest inference with increased plan usage.
+
+⚠ 1 MCP startup issue · ctrl + t for details
+
+⚠ clamping SessionEnd hook timeout to 3s in D:\myproject\pixel-office\dev\spike-0\sandbox\.codex\hooks.json
+
+⚠ clamping Interrupt hook timeout to 3s in D:\myproject\pixel-office\dev\spike-0\sandbox\.codex\hooks.json              
+
+
+› 3+3은? 숫자만.
+
+ 
+• Working (0s • esc to interrupt)
+
+
+› Ask Codex to do anything
+
+  gpt-6-astra high · D:\myproject\pixel-office\dev\spike-0\sandbox · renaming... ⠦

@@ -1,0 +1,31 @@
+
+     /context all to expand                                                                                             
+▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔
+   Settings  Status   Config   Usage   Stats 
+
+    Overview   Models
+
+   
+       Sep Oct Nov Dec Jan Feb Mar Apr May Jun Jul Aug Sep
+       ······························▒······▓···········░··                                                             
+   Mon ········································▓░·····▓▒░█░
+       ···············································█▓░▓
+   Wed ·································▒······█······▓░░█
+       ·········································█·█····▒·█                                                              
+   Fri ···········································▓···█▒░▒
+       ·····························▓·················▒▒··                                                              
+    
+       Less ░ ▒ ▓ █ More
+
+   All time · Last 7 days · Last 30 days
+
+   Favorite model: Opus 5          Total tokens: 4.5b
+
+   Sessions: 89                    Longest session: 17d 5h 18m
+   Active days: 32/150             Longest streak: 10 days
+   Most active day: Sep 16         Current streak: 1 day
+   Input 550.5k · Output 15.3m · Cache read 4.4b · Cache write 143.8m
+
+   Your input and output are ~247x the tokens in Slaughterhouse-Five
+
+     ↓ stats · r to cycle dates · ctrl+s to copy

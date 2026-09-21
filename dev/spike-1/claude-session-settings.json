@@ -1,0 +1,108 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node D:/myproject/pixel-office/dev/spike-1/hookprobe.js 7440 SessionStart",
+            "timeout": 120
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node D:/myproject/pixel-office/dev/spike-1/hookprobe.js 7440 UserPromptSubmit",
+            "timeout": 120
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node D:/myproject/pixel-office/dev/spike-1/hookprobe.js 7440 PreToolUse",
+            "timeout": 120
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node D:/myproject/pixel-office/dev/spike-1/hookprobe.js 7440 PostToolUse",
+            "timeout": 120
+          }
+        ]
+      }
+    ],
+    "PermissionRequest": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node D:/myproject/pixel-office/dev/spike-1/hookprobe.js 7440 PermissionRequest",
+            "timeout": 120
+          }
+        ]
+      }
+    ],
+    "Notification": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node D:/myproject/pixel-office/dev/spike-1/hookprobe.js 7440 Notification",
+            "timeout": 120
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node D:/myproject/pixel-office/dev/spike-1/hookprobe.js 7440 Stop",
+            "timeout": 120
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node D:/myproject/pixel-office/dev/spike-1/hookprobe.js 7440 PreCompact",
+            "timeout": 120
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node D:/myproject/pixel-office/dev/spike-1/hookprobe.js 7440 SessionEnd",
+            "timeout": 120
+          }
+        ]
+      }
+    ]
+  },
+  "statusLine": {
+    "type": "command",
+    "command": "node D:/myproject/pixel-office/dev/spike-1/statusline-dump.js",
+    "padding": 0
+  }
+}

@@ -1,0 +1,7 @@
+{
+  "statusLine": {
+    "type": "command",
+    "command": "node D:/myproject/pixel-office/dev/spike-1/statusline-dump.js D:/myproject/pixel-office/dev/spike-1/out/statusline-fresh.jsonl",
+    "padding": 0
+  }
+}

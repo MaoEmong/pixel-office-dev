@@ -1,0 +1,75 @@
+{
+  "sessionId": "50cc7bea-750f-4e3f-8492-4c4595194b6d",
+  "transcriptPath": "C:\\Users\\User\\.claude\\projects\\D--myproject-pixel-office-dev-spike-0-sandbox\\50cc7bea-750f-4e3f-8492-4c4595194b6d.jsonl",
+  "timings": [
+    {
+      "cmd": "/context",
+      "ms": 2972,
+      "modelTurnTriggered": false
+    },
+    {
+      "cmd": "/cost",
+      "ms": 2439,
+      "modelTurnTriggered": false
+    },
+    {
+      "cmd": "/status",
+      "ms": 2168,
+      "modelTurnTriggered": false
+    },
+    {
+      "cmd": "/usage",
+      "ms": 2184,
+      "modelTurnTriggered": false
+    }
+  ],
+  "hookLog": [
+    {
+      "ev": "SessionStart",
+      "at": 1789974813510,
+      "payload": {
+        "session_id": "50cc7bea-750f-4e3f-8492-4c4595194b6d",
+        "transcript_path": "C:\\Users\\User\\.claude\\projects\\D--myproject-pixel-office-dev-spike-0-sandbox\\50cc7bea-750f-4e3f-8492-4c4595194b6d.jsonl",
+        "cwd": "D:\\myproject\\pixel-office\\dev\\spike-0\\sandbox",
+        "scratchpad_dir": "C:\\Users\\User\\AppData\\Local\\Temp\\claude\\D--myproject-pixel-office-dev-spike-0-sandbox\\50cc7bea-750f-4e3f-8492-4c4595194b6d\\scratchpad",
+        "hook_event_name": "SessionStart",
+        "source": "startup",
+        "model": "claude-opus-5[1m]"
+      }
+    },
+    {
+      "ev": "UserPromptSubmit",
+      "at": 1789974923199,
+      "payload": {
+        "session_id": "50cc7bea-750f-4e3f-8492-4c4595194b6d",
+        "transcript_path": "C:\\Users\\User\\.claude\\projects\\D--myproject-pixel-office-dev-spike-0-sandbox\\50cc7bea-750f-4e3f-8492-4c4595194b6d.jsonl",
+        "cwd": "D:\\myproject\\pixel-office\\dev\\spike-0\\sandbox",
+        "scratchpad_dir": "C:\\Users\\User\\AppData\\Local\\Temp\\claude\\D--myproject-pixel-office-dev-spike-0-sandbox\\50cc7bea-750f-4e3f-8492-4c4595194b6d\\scratchpad",
+        "prompt_id": "747045a1-c82f-4ff7-9790-874bb4bbf83d",
+        "permission_mode": "default",
+        "hook_event_name": "UserPromptSubmit",
+        "prompt": "1+1은?  숫자만 한 줄로 답해."
+      }
+    },
+    {
+      "ev": "Stop",
+      "at": 1789974924764,
+      "payload": {
+        "session_id": "50cc7bea-750f-4e3f-8492-4c4595194b6d",
+        "transcript_path": "C:\\Users\\User\\.claude\\projects\\D--myproject-pixel-office-dev-spike-0-sandbox\\50cc7bea-750f-4e3f-8492-4c4595194b6d.jsonl",
+        "cwd": "D:\\myproject\\pixel-office\\dev\\spike-0\\sandbox",
+        "scratchpad_dir": "C:\\Users\\User\\AppData\\Local\\Temp\\claude\\D--myproject-pixel-office-dev-spike-0-sandbox\\50cc7bea-750f-4e3f-8492-4c4595194b6d\\scratchpad",
+        "prompt_id": "747045a1-c82f-4ff7-9790-874bb4bbf83d",
+        "permission_mode": "default",
+        "effort": {
+          "level": "high"
+        },
+        "hook_event_name": "Stop",
+        "stop_hook_active": false,
+        "last_assistant_message": "2",
+        "background_tasks": [],
+        "session_crons": []
+      }
+    }
+  ]
+}

@@ -1,0 +1,254 @@
+{
+  "sessionId": "01a0c2d3-7225-7eb3-a099-97e0d35c866b",
+  "rollout": "C:\\Users\\User\\.codex\\sessions\\2026\\09\\21\\rollout-2026-09-21T16-17-12-01a0c2d3-7225-7eb3-a099-97e0d35c866b.jsonl",
+  "marks": [
+    {
+      "mark": "turn1",
+      "at": 1789975089660
+    },
+    {
+      "mark": "turn2",
+      "at": 1789975094488
+    },
+    {
+      "mark": "status",
+      "ms": 2478,
+      "modelTurn": false
+    }
+  ],
+  "tokenEvents": [
+    {
+      "kind": "token_usage_record",
+      "ts": "2026-09-21T07:18:06.126Z",
+      "payload": {
+        "thread_id": "01a0c2d3-7225-7eb3-a099-97e0d35c866b",
+        "turn_id": "01a0c2d4-375f-7363-ab4a-b1a289d811b9",
+        "session_id": "01a0c2d3-7225-7eb3-a099-97e0d35c866b",
+        "root_turn_id": "01a0c2d4-375f-7363-ab4a-b1a289d811b9",
+        "response_id": "resp_06ac78ebbe91b09d016ab0da2e41ec87d0ae36187d90ff44b1",
+        "usage": {
+          "input_tokens": 21848,
+          "cached_input_tokens": 0,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 5,
+          "reasoning_output_tokens": 0,
+          "total_tokens": 21853
+        },
+        "turn_token_usage": {
+          "input_tokens": 21848,
+          "cached_input_tokens": 0,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 5,
+          "reasoning_output_tokens": 0,
+          "total_tokens": 21853
+        },
+        "thread_token_usage": {
+          "input_tokens": 21848,
+          "cached_input_tokens": 0,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 5,
+          "reasoning_output_tokens": 0,
+          "total_tokens": 21853
+        }
+      }
+    },
+    {
+      "kind": "token_count",
+      "ts": "2026-09-21T07:18:06.128Z",
+      "payload": {
+        "type": "token_count",
+        "info": {
+          "total_token_usage": {
+            "input_tokens": 21848,
+            "cached_input_tokens": 0,
+            "cache_write_input_tokens": 0,
+            "output_tokens": 5,
+            "reasoning_output_tokens": 0,
+            "total_tokens": 21853
+          },
+          "last_token_usage": {
+            "input_tokens": 21848,
+            "cached_input_tokens": 0,
+            "cache_write_input_tokens": 0,
+            "output_tokens": 5,
+            "reasoning_output_tokens": 0,
+            "total_tokens": 21853
+          },
+          "model_context_window": 258400
+        },
+        "rate_limits": {
+          "limit_id": "codex",
+          "limit_name": null,
+          "primary": {
+            "used_percent": 12,
+            "window_minutes": 10080,
+            "resets_at": 1790571738
+          },
+          "secondary": null,
+          "credits": {
+            "has_credits": false,
+            "unlimited": false,
+            "balance": "0"
+          },
+          "individual_limit": null,
+          "spend_control_reached": null,
+          "plan_type": "pro",
+          "rate_limit_reached_type": null
+        }
+      }
+    },
+    {
+      "kind": "token_usage_record",
+      "ts": "2026-09-21T07:18:12.596Z",
+      "payload": {
+        "thread_id": "01a0c2d3-7225-7eb3-a099-97e0d35c866b",
+        "turn_id": "01a0c2d4-5403-7002-b7c6-273f56cb8fa2",
+        "session_id": "01a0c2d3-7225-7eb3-a099-97e0d35c866b",
+        "root_turn_id": "01a0c2d4-5403-7002-b7c6-273f56cb8fa2",
+        "response_id": "resp_06ac78ebbe91b09d016ab0da34de5487d0853dbabd336db725",
+        "usage": {
+          "input_tokens": 21868,
+          "cached_input_tokens": 21632,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 5,
+          "reasoning_output_tokens": 0,
+          "total_tokens": 21873
+        },
+        "turn_token_usage": {
+          "input_tokens": 21868,
+          "cached_input_tokens": 21632,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 5,
+          "reasoning_output_tokens": 0,
+          "total_tokens": 21873
+        },
+        "thread_token_usage": {
+          "input_tokens": 43716,
+          "cached_input_tokens": 21632,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 10,
+          "reasoning_output_tokens": 0,
+          "total_tokens": 43726
+        }
+      }
+    },
+    {
+      "kind": "token_count",
+      "ts": "2026-09-21T07:18:12.597Z",
+      "payload": {
+        "type": "token_count",
+        "info": {
+          "total_token_usage": {
+            "input_tokens": 43716,
+            "cached_input_tokens": 21632,
+            "cache_write_input_tokens": 0,
+            "output_tokens": 10,
+            "reasoning_output_tokens": 0,
+            "total_tokens": 43726
+          },
+          "last_token_usage": {
+            "input_tokens": 21868,
+            "cached_input_tokens": 21632,
+            "cache_write_input_tokens": 0,
+            "output_tokens": 5,
+            "reasoning_output_tokens": 0,
+            "total_tokens": 21873
+          },
+          "model_context_window": 258400
+        },
+        "rate_limits": {
+          "limit_id": "codex",
+          "limit_name": null,
+          "primary": {
+            "used_percent": 12,
+            "window_minutes": 10080,
+            "resets_at": 1790571738
+          },
+          "secondary": null,
+          "credits": {
+            "has_credits": false,
+            "unlimited": false,
+            "balance": "0"
+          },
+          "individual_limit": null,
+          "spend_control_reached": null,
+          "plan_type": "pro",
+          "rate_limit_reached_type": null
+        }
+      }
+    }
+  ],
+  "hookLog": [
+    {
+      "ev": "SessionStart",
+      "at": 1789975083649,
+      "payload": {
+        "session_id": "01a0c2d3-7225-7eb3-a099-97e0d35c866b",
+        "transcript_path": "C:\\Users\\User\\.codex\\sessions\\2026\\09\\21\\rollout-2026-09-21T16-17-12-01a0c2d3-7225-7eb3-a099-97e0d35c866b.jsonl",
+        "cwd": "D:\\myproject\\pixel-office\\dev\\spike-0\\sandbox",
+        "hook_event_name": "SessionStart",
+        "model": "gpt-6-astra",
+        "permission_mode": "default",
+        "source": "startup"
+      }
+    },
+    {
+      "ev": "UserPromptSubmit",
+      "at": 1789975083902,
+      "payload": {
+        "session_id": "01a0c2d3-7225-7eb3-a099-97e0d35c866b",
+        "turn_id": "01a0c2d4-375f-7363-ab4a-b1a289d811b9",
+        "transcript_path": "C:\\Users\\User\\.codex\\sessions\\2026\\09\\21\\rollout-2026-09-21T16-17-12-01a0c2d3-7225-7eb3-a099-97e0d35c866b.jsonl",
+        "cwd": "D:\\myproject\\pixel-office\\dev\\spike-0\\sandbox",
+        "hook_event_name": "UserPromptSubmit",
+        "model": "gpt-6-astra",
+        "permission_mode": "default",
+        "prompt": "1+1은? 숫자만 한 줄로 답해."
+      }
+    },
+    {
+      "ev": "Stop",
+      "at": 1789975086348,
+      "payload": {
+        "session_id": "01a0c2d3-7225-7eb3-a099-97e0d35c866b",
+        "turn_id": "01a0c2d4-375f-7363-ab4a-b1a289d811b9",
+        "transcript_path": "C:\\Users\\User\\.codex\\sessions\\2026\\09\\21\\rollout-2026-09-21T16-17-12-01a0c2d3-7225-7eb3-a099-97e0d35c866b.jsonl",
+        "cwd": "D:\\myproject\\pixel-office\\dev\\spike-0\\sandbox",
+        "hook_event_name": "Stop",
+        "model": "gpt-6-astra",
+        "permission_mode": "default",
+        "stop_hook_active": false,
+        "last_assistant_message": "2"
+      }
+    },
+    {
+      "ev": "UserPromptSubmit",
+      "at": 1789975090483,
+      "payload": {
+        "session_id": "01a0c2d3-7225-7eb3-a099-97e0d35c866b",
+        "turn_id": "01a0c2d4-5403-7002-b7c6-273f56cb8fa2",
+        "transcript_path": "C:\\Users\\User\\.codex\\sessions\\2026\\09\\21\\rollout-2026-09-21T16-17-12-01a0c2d3-7225-7eb3-a099-97e0d35c866b.jsonl",
+        "cwd": "D:\\myproject\\pixel-office\\dev\\spike-0\\sandbox",
+        "hook_event_name": "UserPromptSubmit",
+        "model": "gpt-6-astra",
+        "permission_mode": "default",
+        "prompt": "2+2는? 숫자만."
+      }
+    },
+    {
+      "ev": "Stop",
+      "at": 1789975092813,
+      "payload": {
+        "session_id": "01a0c2d3-7225-7eb3-a099-97e0d35c866b",
+        "turn_id": "01a0c2d4-5403-7002-b7c6-273f56cb8fa2",
+        "transcript_path": "C:\\Users\\User\\.codex\\sessions\\2026\\09\\21\\rollout-2026-09-21T16-17-12-01a0c2d3-7225-7eb3-a099-97e0d35c866b.jsonl",
+        "cwd": "D:\\myproject\\pixel-office\\dev\\spike-0\\sandbox",
+        "hook_event_name": "Stop",
+        "model": "gpt-6-astra",
+        "permission_mode": "default",
+        "stop_hook_active": false,
+        "last_assistant_message": "4"
+      }
+    }
+  ]
+}
