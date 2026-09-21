@@ -78,6 +78,8 @@ class OfficeState {
     this.memberEvents = const {},
     this.latestEvent = const {},
     this.notices = const [],
+    this.engineUsage = const {},
+    this.memberUsage = const {},
   });
 
   final RpcConnectionState connection;
@@ -119,6 +121,14 @@ class OfficeState {
   /// daemon.notice 최근 [noticeCapacity]건.
   final List<DaemonNotice> notices;
 
+  /// 엔진 → 한도·연결 상태(T43). 스냅샷 `usage.engines` + `usage.engine` 알림.
+  /// **엔진 행은 멤버가 사라져도 남는다**(마지막 값 표시용 — 설계문서 스키마 v3).
+  final Map<Engine, EngineUsage> engineUsage;
+
+  /// 멤버 id → 사용량(T43). 스냅샷 `usage.members` + `usage.member` 알림.
+  /// 멤버 행이 사라지면 같이 지운다.
+  final Map<String, MemberUsage> memberUsage;
+
   bool get isConnected => connection == RpcConnectionState.connected;
 
   List<Member> membersOf(String teamId) => members.values.where((m) => m.teamId == teamId).toList(growable: false);
@@ -145,6 +155,8 @@ class OfficeState {
     Map<String, List<OfficeEvent>>? memberEvents,
     Map<String, OfficeEvent>? latestEvent,
     List<DaemonNotice>? notices,
+    Map<Engine, EngineUsage>? engineUsage,
+    Map<String, MemberUsage>? memberUsage,
   }) =>
       OfficeState(
         connection: connection ?? this.connection,
@@ -163,6 +175,8 @@ class OfficeState {
         memberEvents: memberEvents ?? this.memberEvents,
         latestEvent: latestEvent ?? this.latestEvent,
         notices: notices ?? this.notices,
+        engineUsage: engineUsage ?? this.engineUsage,
+        memberUsage: memberUsage ?? this.memberUsage,
       );
 }
 
@@ -245,10 +259,13 @@ class OfficeNotifier extends Notifier<OfficeState> {
   /// 부서 삭제(PROTOCOL `department.delete`) — 하위 트리를 잎부터 정리한 뒤 행을 지운다.
   Future<void> deleteDepartment(String departmentId) async {
     await client.call('department.delete', {'departmentId': departmentId});
+    final members = {...state.members}..removeWhere((_, m) => m.departmentId == departmentId);
     state = state.copyWith(
       departments: {...state.departments}..remove(departmentId),
       teams: {...state.teams}..removeWhere((_, t) => t.departmentId == departmentId),
-      members: {...state.members}..removeWhere((_, m) => m.departmentId == departmentId),
+      members: members,
+      // 멤버 행이 사라지면 그 멤버의 사용량도 같이 간다(엔진 행은 남는다).
+      memberUsage: {...state.memberUsage}..removeWhere((id, _) => !members.containsKey(id)),
     );
   }
 
@@ -345,7 +362,28 @@ class OfficeNotifier extends Notifier<OfficeState> {
       pending: pending,
       tasks: tasks,
       lastSeq: snap.seq > s.lastSeq ? snap.seq : s.lastSeq,
+      // 엔진 행은 **덮어쓰되 지우지 않는다**(스냅샷에 없는 엔진은 마지막 값을 그대로 둔다 — 설계 스키마 v3).
+      engineUsage: {...s.engineUsage, ...snap.usage.engines},
+      // 멤버 사용량은 **멤버 행을 따라간다**: 스냅샷에 없는 멤버의 값은 버린다(퇴사 = 행 삭제).
+      memberUsage: {
+        for (final e in {...s.memberUsage, ...snap.usage.members}.entries)
+          if (members.containsKey(e.key)) e.key: e.value,
+      },
     );
+  }
+
+  /// `usage.engine` 알림(엔진 한 개). 모르는 엔진이면 무시한다.
+  void applyEngineUsage(Map<String, dynamic> json) {
+    final u = EngineUsage.tryParse(json);
+    if (u == null) return;
+    state = state.copyWith(engineUsage: {...state.engineUsage, u.engine: u});
+  }
+
+  /// `usage.member` 알림(멤버 한 명). 모르는 멤버(행이 없는)면 무시한다 — 지워진 멤버의 뒤늦은 알림이 되살아나지 않게.
+  void applyMemberUsage(Map<String, dynamic> json) {
+    final u = MemberUsage.tryParse(json);
+    if (u == null || !state.members.containsKey(u.memberId)) return;
+    state = state.copyWith(memberUsage: {...state.memberUsage, u.memberId: u});
   }
 
   void _onNotification(RpcNotification n) {
@@ -357,6 +395,11 @@ class OfficeNotifier extends Notifier<OfficeState> {
       case 'daemon.notice':
         final notice = DaemonNotice.fromJson(n.params);
         state = state.copyWith(notices: _push(state.notices, notice, noticeCapacity));
+      // 사용량 알림(T43) — 비영속 · seq 없음 · 바뀔 때만 온다.
+      case 'usage.engine':
+        applyEngineUsage(n.params);
+      case 'usage.member':
+        applyMemberUsage(n.params);
       // 'event' 는 client.events(중복 제거)로, 'term' 은 터미널 탭(T13)이 notifications 를 직접 구독.
     }
   }
@@ -599,3 +642,63 @@ final latestEventProvider = Provider.family<OfficeEvent?, String>(
   (ref, id) => ref.watch(officeProvider.select((s) => s.latestEvent[id])),
 );
 final noticesProvider = Provider<List<DaemonNotice>>((ref) => ref.watch(officeProvider.select((s) => s.notices)));
+
+// ---- 사용량(T43, D-45) -------------------------------------------------------------
+
+/// 엔진 하나의 상태. **없어도 null 이 아니다** — 상단 바는 칩 두 개를 항상 보여 주고,
+/// 아직 아무 말도 못 들은 엔진은 [EngineUsage.unknown](= "첫 작업 후 표시") 로 떨어진다.
+final engineUsageProvider = Provider.family<EngineUsage, Engine>(
+  (ref, engine) => ref.watch(officeProvider.select((s) => s.engineUsage[engine])) ?? EngineUsage.unknown(engine),
+);
+
+/// 엔진 사용량 전체(팝오버가 두 엔진을 한 번에 본다).
+final engineUsagesProvider = Provider<Map<Engine, EngineUsage>>(
+  (ref) => ref.watch(officeProvider.select((s) => s.engineUsage)),
+);
+
+/// 멤버 한 명의 사용량(아직 없으면 null — 패널은 "첫 턴 뒤 표시").
+final memberUsageProvider = Provider.family<MemberUsage?, String>(
+  (ref, memberId) => ref.watch(officeProvider.select((s) => s.memberUsage[memberId])),
+);
+
+/// 팝오버 표의 한 줄 — 멤버 행 + 그 멤버의 사용량(아직 없으면 usage 가 null).
+class DepartmentUsageRow {
+  const DepartmentUsageRow({required this.member, this.usage});
+
+  final Member member;
+  final MemberUsage? usage;
+
+  /// 정렬 키 = 컨텍스트 비율(모르면 null → 맨 뒤).
+  double? get contextPercent => usage?.contextPercent;
+
+  @override
+  bool operator ==(Object other) =>
+      other is DepartmentUsageRow && other.member.id == member.id && other.usage == usage;
+
+  @override
+  int get hashCode => Object.hash(member.id, usage);
+
+  @override
+  String toString() => 'DepartmentUsageRow(${member.id} ctx=$contextPercent)';
+}
+
+/// 그 부서 멤버의 사용량 표 — **컨텍스트 큰 순, 값 없는 사람은 맨 뒤**(설계 §앱 1).
+/// 퇴근한 멤버도 남긴다(마지막 값을 보는 것이 이 표의 일이다).
+final departmentUsageRowsProvider = Provider.family<List<DepartmentUsageRow>, String?>((ref, departmentId) {
+  if (departmentId == null) return const [];
+  final usage = ref.watch(officeProvider.select((s) => s.memberUsage));
+  final rows = [
+    for (final m in ref.watch(membersOfDepartmentProvider(departmentId)))
+      DepartmentUsageRow(member: m, usage: usage[m.id]),
+  ]..sort((a, b) {
+      final ap = a.contextPercent, bp = b.contextPercent;
+      if (ap != bp) {
+        if (ap == null) return 1; // 값 없는 사람은 뒤로
+        if (bp == null) return -1;
+        return bp.compareTo(ap); // 큰 순
+      }
+      final c = a.member.createdAt.compareTo(b.member.createdAt);
+      return c != 0 ? c : a.member.id.compareTo(b.member.id);
+    });
+  return List<DepartmentUsageRow>.unmodifiable(rows);
+});

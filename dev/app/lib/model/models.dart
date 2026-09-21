@@ -6,3 +6,4 @@ export 'pending.dart';
 export 'snapshot.dart';
 export 'task.dart';
 export 'team.dart';
+export 'usage.dart';

@@ -86,6 +86,7 @@ class FakeRpcClient extends RpcClient {
     List<Map<String, dynamic>> members = const [],
     List<Map<String, dynamic>> pending = const [],
     List<Map<String, dynamic>> tasks = const [],
+    Map<String, dynamic>? usage,
   }) {
     _fakeSeq = seq;
     _helloCtl.add(HelloResult(
@@ -98,6 +99,8 @@ class FakeRpcClient extends RpcClient {
         'members': members,
         'pending': pending,
         'tasks': tasks,
+        // T43: 옛 데몬에는 없는 키라 기본은 **안 싣는다**(없을 때의 길도 테스트가 지나가게).
+        'usage': ?usage,
       },
     ));
     setState(RpcConnectionState.connected);
