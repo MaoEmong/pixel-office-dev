@@ -4,6 +4,7 @@
 // 되므로 **멤버마다 바이트 오프셋을 들고** 그 뒤만 읽는다. 규칙은 `tail.ts` 와 같다 — 비동기 · 상한 있음 ·
 // **실패해도 던지지 않는다**(못 읽으면 `null`, 호출자는 이전 값을 그대로 둔다).
 import fs from 'node:fs/promises';
+import path from 'node:path';
 import { advanceClaudeTranscript, emptyClaudeTranscriptState, type ClaudeTranscriptState } from './ClaudeTranscriptUsage.js';
 
 /**
@@ -12,7 +13,64 @@ import { advanceClaudeTranscript, emptyClaudeTranscriptState, type ClaudeTranscr
  */
 export const MAX_SCAN_BYTES = 20 * 1024 * 1024;
 
+/**
+ * 한 멤버에게서 **동시에 따라갈** 서브에이전트 transcript 파일 수 상한(T45).
+ *
+ * 파일 하나당 `seenIds`(최대 2000개) + `counted` 를 들고 있으므로 무제한이면 메모리가 샌다.
+ * 넘치면 **오래된 것부터** 놓아 주고 그때까지의 합계만 남긴다(`UsageTracker` 가 한다) —
+ * 끝난 서브에이전트 파일은 더 자라지 않으므로 놓아 줘도 값이 모자라지 않는다.
+ */
+export const MAX_SUBAGENT_FILES = 50;
+
 const LF = 0x0a;
+
+/**
+ * 본 transcript 경로 → 그 세션의 서브에이전트 폴더(T45).
+ *
+ * CLI 2.1.275 는 `…/<projectDir>/<sessionId>.jsonl` 옆에 `…/<projectDir>/<sessionId>/subagents/agent-*.jsonl`
+ * 을 쓴다(실측). `.jsonl` 로 끝나지 않는 경로면 `null`.
+ */
+export function claudeSubagentsDir(transcriptPath: string): string | null {
+  if (typeof transcriptPath !== 'string' || transcriptPath === '') return null;
+  const base = path.basename(transcriptPath);
+  if (!base.toLowerCase().endsWith('.jsonl')) return null;
+  return path.join(path.dirname(transcriptPath), base.slice(0, -'.jsonl'.length), 'subagents');
+}
+
+/**
+ * 그 세션의 서브에이전트 transcript 를 **새것부터** `cap` 개까지. 폴더가 없으면 빈 배열(정상 —
+ * Task 도구를 한 번도 안 쓴 세션).
+ *
+ * `agent-*.meta.json` 은 usage 를 들고 있지 않으므로 거른다. 실패해도 던지지 않는다.
+ */
+export async function listClaudeSubagentFiles(transcriptPath: string, cap: number = MAX_SUBAGENT_FILES): Promise<string[]> {
+  const dir = claudeSubagentsDir(transcriptPath);
+  if (!dir || !(cap > 0)) return [];
+  try {
+    const names = await fs.readdir(dir);
+    const stamped = await Promise.all(
+      names
+        .filter((n) => /^agent-.+\.jsonl$/i.test(n))
+        .map(async (n) => {
+          const full = path.join(dir, n);
+          try {
+            const st = await fs.stat(full);
+            return st.isFile() ? { full, mtime: st.mtimeMs } : null;
+          } catch {
+            return null;
+          }
+        }),
+    );
+    return stamped
+      .filter((x): x is { full: string; mtime: number } => x !== null)
+      // 같은 ms 에 쓰인 파일이 순서를 뒤집지 않게 경로로 한 번 더 가른다(상한에서 누가 잘릴지 안정적이어야 한다).
+      .sort((a, b) => b.mtime - a.mtime || (a.full < b.full ? -1 : a.full > b.full ? 1 : 0))
+      .slice(0, cap)
+      .map((x) => x.full);
+  } catch {
+    return []; // 폴더 없음 · 권한 — 서브에이전트가 없는 것으로 친다
+  }
+}
 
 /**
  * 이어서 읽을 상태를 고른다. **경로가 바뀌었거나**(= `--resume` 이 새 transcript 를 팠다) **파일이 줄었으면**
