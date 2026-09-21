@@ -1,7 +1,7 @@
 // InputQueue 게이트·순서·타이밍 테스트. 시계는 now() 주입, 지연 동작은 tick() 을 직접 불러 실행한다(setInterval 없음).
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { InputQueue, TIMING } from '../../src/input/InputQueue.js';
+import { InputQueue, SUBMIT_RETRY_MAX, TIMING } from '../../src/input/InputQueue.js';
 import type { BlockReason, DialogKey, InputItem } from '../../src/input/InputQueue.js';
 
 interface Harness {
@@ -113,6 +113,9 @@ describe('flush gate', () => {
     // 큐가 비어(이미 paste 됨) 새 항목을 넣고 사용자가 계속 친다
     h.advance(TIMING.enterDelayMs);
     h.q.tick(); // enter
+    h.state.idle = false; // UserPromptSubmit — 제출 확정. 여기서 임계 구간이 닫힌다(T44)
+    h.q.tick();
+    h.state.idle = true; // 턴 종료
     h.advance(TIMING.busyAfterFlushMs);
     h.q.typeRaw('1');
     h.q.enqueue(instruct('b'));
@@ -527,24 +530,164 @@ describe('submit 확인 — Enter 가 안 먹으면 다시 보낸다 (T42)', () 
     assert.equal(h.calls.filter((c) => c === 'key:enter').length, enters);
   });
 
-  test('다이얼로그가 떴거나 사용자가 터미널을 쓰는 중이면 재시도하지 않는다', () => {
+  test('다이얼로그가 뜨면 재시도하지 않고, 모아 둔 사용자 키를 돌려준다', () => {
     const { h, retried } = retryHarness();
     h.q.enqueue(instruct('a'));
     h.advance(TIMING.enterDelayMs + 1);
     h.q.tick();
+    h.q.typeRaw('z'); // 임계 구간이라 모아 둔다
     h.state.dialog = { kind: 'trust-folder-codex', suggestedKeys: ['enter'] };
     h.advance(TIMING.submitCheckMs);
     h.q.tick();
     assert.deepEqual(retried, []);
+    // 화면을 다이얼로그가 쥐었으니 확인을 접고, 붙잡아 둔 키는 그대로 흘려보낸다(삼켜서는 안 된다).
+    assert.equal(h.q.heldUserInput(), 0);
+    assert.ok(h.calls.includes('write:z'), h.calls.join(' '));
+  });
 
-    // 사용자 타이핑
-    const b = retryHarness();
-    b.h.q.enqueue(instruct('b'));
-    b.h.advance(TIMING.enterDelayMs + 1);
-    b.h.q.tick();
-    b.h.q.typeRaw('x');
-    b.h.advance(TIMING.submitCheckMs);
-    b.h.q.tick();
-    assert.deepEqual(b.retried, []);
+  test('사용자 키는 임계 구간에 모아 두므로 재시도 확인이 접히지 않는다(T44 — 씹힌 Enter 를 계속 확인한다)', () => {
+    const { h, retried } = retryHarness();
+    h.q.enqueue(instruct('b'));
+    h.advance(TIMING.enterDelayMs + 1);
+    h.q.tick();
+    h.q.typeRaw('x'); // pty 로 가지 않는다 → 제출 확인은 그대로 살아 있다
+    assert.equal(h.q.heldUserInput(), 1);
+    h.advance(TIMING.submitCheckMs);
+    h.q.tick();
+    assert.deepEqual(retried, [1]);
+    assert.deepEqual(h.calls, ['paste:b', 'key:enter', 'key:enter']);
+  });
+});
+
+// T44: 붙여넣기와 Enter 사이(또는 Enter 재시도 사이)에 사용자 키가 하나만 끼어도 지시가 깨진다 —
+// T42 실기 함정 2 에서는 `/status` 오버레이 중에 보낸 Esc 가 입력 상자를 비워 Enter 가 빈 상자에 떨어졌고
+// 지시 하나가 통째로 증발했다(task 는 assigned 인 채). paste ~ 제출 확정을 임계 구간으로 묶어 막는다.
+describe('붙여넣기 ↔ Enter 임계 구간 (T44)', () => {
+  const critHarness = () => {
+    const h = harness();
+    const lost: string[] = [];
+    h.q.on('submitLost', (i) => lost.push((i as { text: string }).text));
+    return { h, lost };
+  };
+
+  test('paste 와 Enter 사이의 키는 pty 로 안 가고, 제출이 확정된 뒤에 순서대로 재생된다', () => {
+    const { h } = critHarness();
+    h.q.enqueue(instruct('지시문'));
+    assert.deepEqual(h.calls, ['paste:지시문']);
+
+    h.q.typeRaw('\x1b'); // Esc — 그대로 갔으면 입력 상자가 비어 지시가 증발한다
+    h.q.typeRaw('ab');
+    assert.equal(h.q.heldUserInput(), 2);
+    assert.deepEqual(h.calls, ['paste:지시문']);
+
+    h.advance(TIMING.enterDelayMs);
+    h.q.tick();
+    assert.deepEqual(h.calls, ['paste:지시문', 'key:enter']);
+    assert.equal(h.q.heldUserInput(), 2); // Enter 를 보냈어도 확정 전까지는 계속 붙잡는다
+
+    h.state.idle = false; // UserPromptSubmit — 프롬프트가 들어갔다
+    h.q.tick();
+    assert.deepEqual(h.calls, ['paste:지시문', 'key:enter', 'write:\x1b', 'write:ab']);
+    assert.equal(h.q.heldUserInput(), 0);
+  });
+
+  test('재생된 키가 grace 를 다시 건다 — 다음 지시는 사용자가 멈춘 뒤에 나간다', () => {
+    const { h } = critHarness();
+    h.q.enqueue(instruct('one'));
+    h.q.enqueue(instruct('two'));
+    h.q.typeRaw('x');
+    h.advance(TIMING.enterDelayMs);
+    h.q.tick(); // Enter
+    h.state.idle = false;
+    h.q.tick(); // 확정 → 재생
+    assert.deepEqual(h.calls, ['paste:one', 'key:enter', 'write:x']);
+
+    h.state.idle = true;
+    h.advance(TIMING.busyAfterFlushMs + 1);
+    h.q.tick();
+    assert.deepEqual(h.blocked, ['user-typing']); // 재생 직후 3초는 사용자 차례
+    assert.equal(h.q.size(), 1);
+
+    h.advance(3001);
+    h.q.tick();
+    assert.deepEqual(h.calls, ['paste:one', 'key:enter', 'write:x', 'paste:two']);
+  });
+
+  test('Enter 재시도 중에 친 키도 모아 뒀다가 포기(submitLost) 시점에 순서대로 돌려준다', () => {
+    const { h, lost } = critHarness();
+    h.q.enqueue(instruct('stuck'));
+    h.advance(TIMING.enterDelayMs + 1);
+    h.q.tick();
+    h.q.typeRaw('1');
+    for (let i = 0; i < SUBMIT_RETRY_MAX; i++) {
+      h.advance(TIMING.submitCheckMs);
+      h.q.tick();
+      h.q.typeRaw(String(i + 2)); // 재시도 창마다 한 번씩 더 친다
+    }
+    assert.equal(h.q.heldUserInput(), 5);
+    assert.deepEqual(lost, []);
+
+    h.advance(TIMING.submitCheckMs);
+    h.q.tick();
+    assert.deepEqual(lost, ['stuck']);
+    assert.equal(h.q.heldUserInput(), 0);
+    // Enter 5번(최초 + 재시도 4) 이 **먼저**, 그 다음 사용자 키 5개가 친 순서대로.
+    assert.deepEqual(h.calls, [
+      'paste:stuck',
+      'key:enter',
+      'key:enter',
+      'key:enter',
+      'key:enter',
+      'key:enter',
+      'write:1',
+      'write:2',
+      'write:3',
+      'write:4',
+      'write:5',
+    ]);
+  });
+
+  test('Ctrl+C 는 모으지 않는다 — 앞선 키를 흘린 뒤 즉시 나가고 아직 안 보낸 Enter 를 취소한다', () => {
+    const { h } = critHarness();
+    h.q.enqueue(instruct('중단될 지시'));
+    h.q.typeRaw('ab');
+    assert.deepEqual(h.calls, ['paste:중단될 지시']);
+
+    h.q.interrupt();
+    // 사용자가 친 순서 그대로: ab → Ctrl+C. Enter 는 영영 안 나간다.
+    assert.deepEqual(h.calls, ['paste:중단될 지시', 'write:ab', 'key:ctrl-c']);
+    assert.equal(h.q.heldUserInput(), 0);
+    assert.equal(h.q.pendingActions(), 0, '예약돼 있던 Enter 가 취소됐다');
+
+    h.advance(TIMING.enterDelayMs + TIMING.submitCheckMs * 6);
+    h.q.tick();
+    assert.deepEqual(h.calls, ['paste:중단될 지시', 'write:ab', 'key:ctrl-c']);
+    assert.deepEqual(h.flushed, [], '제출되지 않았으므로 flushed 도 없다');
+
+    // 구간이 닫혔으니 그 뒤의 타이핑은 다시 바로 나간다.
+    h.q.typeRaw('c');
+    assert.equal(h.calls.at(-1), 'write:c');
+  });
+
+  test('Enter 가 이미 나간 뒤의 Ctrl+C 는 재시도만 멈춘다', () => {
+    const { h } = critHarness();
+    h.q.enqueue(instruct('x'));
+    h.advance(TIMING.enterDelayMs + 1);
+    h.q.tick();
+    assert.deepEqual(h.calls, ['paste:x', 'key:enter']);
+    h.q.interrupt();
+    assert.deepEqual(h.calls, ['paste:x', 'key:enter', 'key:ctrl-c']);
+    for (let i = 0; i < 6; i++) {
+      h.advance(TIMING.submitCheckMs);
+      h.q.tick();
+    }
+    assert.equal(h.calls.filter((c) => c === 'key:enter').length, 1, '중단 뒤에는 Enter 를 다시 보내지 않는다');
+  });
+
+  test('임계 구간 밖의 타이핑은 예전 그대로 즉시 나간다', () => {
+    const { h } = critHarness();
+    h.q.typeRaw('hello');
+    assert.deepEqual(h.calls, ['write:hello']);
+    assert.equal(h.q.heldUserInput(), 0);
   });
 });
