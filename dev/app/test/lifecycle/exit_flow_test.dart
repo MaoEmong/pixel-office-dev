@@ -48,6 +48,18 @@ class _World {
     if (diesAfterShutdown) alive = false;
   }
 
+  /// `daemon.stopWatchingParent` 를 몇 번 불렀나(T46-3).
+  int stopWatchCalls = 0;
+
+  /// 그 호출이 던질 것(끊겨 있을 때).
+  Object? stopWatchThrows;
+
+  Future<void> stopWatching() async {
+    stopWatchCalls++;
+    final t = stopWatchThrows;
+    if (t != null) throw t;
+  }
+
   AppExitCoordinator coordinator({
     bool keepDaemon = false,
     int working = 0,
@@ -60,6 +72,7 @@ class _World {
         confirm: confirm ?? (_) async => true,
         daemonPid: () async => daemonPid ?? pid,
         shutdownDaemon: shutdown,
+        stopWatchingParent: stopWatching,
         isAlive: (p) async => p == pid && alive,
         killTree: (p) async {
           killed = true;
@@ -190,6 +203,27 @@ void main() {
       expect(w.killed, isFalse);
       expect(out.keptDaemon, isTrue);
       expect(out.exiting, isTrue);
+    });
+
+    // T46-3 실기 결함 ⑤: 설정을 **앱을 켠 뒤에** 켜면 데몬은 이미 `PIXEL_PARENT_PID` 를 들고 기동한
+    // 뒤라, 앱이 아무것도 안 하고 닫혀도 데몬이 "부모가 사라졌다" 로 보고 사무실을 정리해 버렸다.
+    // 실기 로그: `[office] 부모 앱이 사라졌다 (pid 16500)` → `[office] 종료: 세션 5개 닫음`.
+    test('데몬에게 "부모 감시를 꺼라" 를 말하고 닫는다', () async {
+      final w = _World();
+      final out = await w.coordinator(keepDaemon: true, working: 5).onExitRequested();
+      expect(w.stopWatchCalls, 1);
+      expect(w.shutdownCalled, isFalse);
+      expect(out.keptDaemon, isTrue);
+      expect(out.error, isNull);
+    });
+
+    test('그 말이 실패해도(이미 끊김) 종료를 막지 않는다', () async {
+      final w = _World()..stopWatchThrows = StateError('끊김');
+      final out = await w.coordinator(keepDaemon: true).onExitRequested();
+      expect(w.stopWatchCalls, 1);
+      expect(out.exiting, isTrue);
+      expect(out.keptDaemon, isTrue);
+      expect(out.error, contains('끊김'));
     });
   });
 

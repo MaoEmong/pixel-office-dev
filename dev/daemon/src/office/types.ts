@@ -336,6 +336,11 @@ export interface OfficeApi extends EventEmitter<OfficeEvents> {
 
   /** `hello{parentPid}` — 부모 앱 감시 대상(§3). 앱만 다시 뜬 경우 여기로 바뀐다. `PIXEL_KEEP_DAEMON=1` 이면 무시. */
   watchParent(parentPid: number): void;
+  /**
+   * `daemon.stopWatchingParent` — 부모 감시를 **끈다**(T46-3). 설정 "앱을 닫아도 계속 일하기" 를 앱을 켠 뒤에
+   * 켰을 때 앱이 닫기 직전에 부른다(그러지 않으면 §3 가 발화해 정반대 결과가 된다). 껐으면 true, 이미 꺼져 있으면 false.
+   */
+  stopWatchingParent(): boolean;
   /** `hello{activeDepartmentId}` — 아직 안 깨운 복구 줄에서 그 부서를 맨 앞으로(§5). 복구가 끝난 뒤면 no-op. */
   prioritizeRecovery(departmentId: string): void;
   /** 지금 닫아야 할 AI 세션 수(멤버 + 확인용). `daemon.shutdown` 응답의 `{closing}`. */

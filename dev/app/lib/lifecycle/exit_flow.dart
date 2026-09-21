@@ -77,6 +77,7 @@ class AppExitCoordinator {
     required this.confirm,
     required this.daemonPid,
     required this.shutdownDaemon,
+    this.stopWatchingParent,
     required this.isAlive,
     required this.killTree,
     this.stopSupervisor,
@@ -103,6 +104,9 @@ class AppExitCoordinator {
   /// `daemon.shutdown` RPC.
   final Future<void> Function() shutdownDaemon;
 
+  /// `daemon.stopWatchingParent` RPC — "계속 일하기" 로 닫을 때 **데몬의 부모 감시를 끈다**(T46-3).
+  final Future<void> Function()? stopWatchingParent;
+
   final Future<bool> Function(int pid) isAlive;
   final Future<void> Function(int pid) killTree;
 
@@ -126,7 +130,18 @@ class AppExitCoordinator {
 
     if (keepDaemon()) {
       // 옛 D-02 동작: 데몬과 세션이 그대로 남는다. 멈출 것이 없으니 묻지도 않는다.
-      return const ExitOutcome(response: AppExitResponse.exit, keptDaemon: true);
+      //
+      // 단 **데몬의 부모 감시를 꺼 줘야 한다**(T46-3 실기 결함 ⑤). 설정을 앱을 켠 **뒤에** 켰다면
+      // 데몬은 이미 `PIXEL_PARENT_PID` 를 들고 기동한 뒤다 — 그대로 닫으면 데몬이 "부모가 사라졌다" 로
+      // 보고 §3 정리를 해 버려 **정반대 결과**가 된다(실기에서 세션 5개가 그대로 닫혔다).
+      // 실패해도 종료는 막지 않는다(못 껐으면 옛날처럼 같이 꺼질 뿐이다).
+      String? err;
+      try {
+        await stopWatchingParent?.call();
+      } catch (e) {
+        err = e.toString();
+      }
+      return ExitOutcome(response: AppExitResponse.exit, keptDaemon: true, error: err);
     }
 
     final working = workingCount();

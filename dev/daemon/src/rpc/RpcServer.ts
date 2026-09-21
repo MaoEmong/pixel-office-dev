@@ -321,6 +321,11 @@ export class RpcServer {
         return {};
       },
 
+      // T46-3(§2 예외): 설정 "앱을 닫아도 계속 일하기" 를 **앱을 켠 뒤에** 켰을 때. 데몬은 이미
+      // `PIXEL_PARENT_PID` 를 들고 기동했으므로, 이 말을 안 하면 앱이 닫히는 순간 §3 가 발화해
+      // 사무실을 정리해 버린다(옛 D-02 동작이 되어야 하는데 정반대가 된다). 멱등이다.
+      'daemon.stopWatchingParent': () => ({ stopped: o.stopWatchingParent() }),
+
       'daemon.shutdown': () => {
         // 응답을 먼저 보내고 다음 매크로태스크에서 종료 절차. 서버 자체는 Office 'shutdown' 을 받은 index.ts 가 닫는다.
         // T46-1: `{closing}` 은 **지금 닫는 AI 세션 수**(멤버 + 확인용). 앱은 이 수로 "정리하는 중…" 을 그린다.

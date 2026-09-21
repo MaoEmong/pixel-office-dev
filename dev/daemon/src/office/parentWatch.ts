@@ -100,11 +100,18 @@ export class ParentWatch {
   /**
    * 감시 대상을 바꾼다(`hello{parentPid}` — 앱만 다시 뜬 경우). 이미 `onGone` 을 쏜 뒤에는 무시한다
    * (정리가 이미 돌고 있다 — 그 위에 새 부모를 붙여 봐야 데몬은 내려가는 중이다).
+   *
+   * `undefined` 를 주면 **대상을 지운다**(= 감시 끔, T46-3 `daemon.stopWatchingParent`).
    */
-  retarget(parentPid: number): void {
+  retarget(parentPid: number | undefined): void {
     if (this.fired || parentPid === this.pid) return;
     const wasWatching = this.watching;
     this.stop();
+    if (parentPid === undefined) {
+      this.pid = undefined;
+      this.startedAt = undefined;
+      return; // 대상이 없으면 start() 해도 아무 일도 안 한다 — 확실히 하려고 여기서 끝낸다.
+    }
     this.target(parentPid);
     if (wasWatching) this.start();
   }

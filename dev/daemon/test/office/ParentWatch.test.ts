@@ -224,6 +224,38 @@ describe('Office 배선 — 부모가 사라지면 정리하고 끝난다 (T46-1
     assert.equal(office.watchedParentPid, undefined);
   });
 
+  // T46-3 실기 결함 ⑤. "앱을 닫아도 계속 일하기" 를 **앱을 켠 뒤에** 켜면 데몬은 이미 `PIXEL_PARENT_PID`
+  // 를 들고 기동한 뒤라, 그대로 창을 닫으면 §3 가 발화해 옛 D-02 동작의 **정반대**가 됐다(실기에서
+  // `[office] 부모 앱이 사라졌다` → 세션 5개 닫힘). 앱이 닫기 전에 감시를 꺼 달라고 말한다.
+  test('stopWatchingParent: 감시를 끄면 부모가 사라져도 아무 일도 없다 (멱등 · hello 로 다시 켤 수 있다)', async () => {
+    const table = new Map<number, number | undefined>([[4242, 5000]]);
+    const timer = fakeTimer();
+    office = mk({ parentPid: 4242, timer, probe: fakeProbe(table) });
+    let shut = 0;
+    office.on('shutdown', () => shut++);
+    await office.start();
+    assert.equal(office.watchedParentPid, 4242);
+
+    assert.equal(office.stopWatchingParent(), true);
+    assert.equal(office.watchedParentPid, undefined);
+    assert.equal(office.stopWatchingParent(), false, '두 번째는 끌 것이 없다');
+
+    table.delete(4242); // 앱이 닫혔다
+    timer.fire();
+    await new Promise((r) => setTimeout(r, 50));
+    assert.equal(shut, 0, '감시를 껐으니 데몬은 그대로 남는다(옛 D-02 동작)');
+    assert.equal(fs.existsSync(path.join(dataDir, 'daemon.json')), true);
+
+    // 다음 앱이 붙으면 hello{parentPid} 가 다시 켠다.
+    table.set(9999, 6000);
+    office.watchParent(9999);
+    assert.equal(office.watchedParentPid, 9999);
+    table.delete(9999);
+    timer.fire();
+    await new Promise((r) => setTimeout(r, 50));
+    assert.equal(shut, 1);
+  });
+
   test('부모 pid 가 없으면 감시하지 않다가 hello{parentPid} 로 켜진다', async () => {
     const table = new Map<number, number | undefined>([[1234, 7000]]);
     const timer = fakeTimer();

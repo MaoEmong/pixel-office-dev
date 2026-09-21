@@ -581,6 +581,20 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
   }
 
   /**
+   * **감시를 끈다**(T46-3 · `daemon.stopWatchingParent`). 설정 "앱을 닫아도 계속 일하기" 를 **앱을 켠 뒤에**
+   * 켰을 때 쓴다 — 그때 데몬은 이미 `PIXEL_PARENT_PID` 를 들고 기동한 뒤라 앱이 닫히면 §3 가 발화해
+   * 사무실을 정리해 버린다(실기에서 그렇게 됐다). 끈 다음에는 `hello{parentPid}` 가 다시 켤 수 있다.
+   * 이미 안 보고 있으면 아무 일도 하지 않는다.
+   */
+  stopWatchingParent(): boolean {
+    if (this.parentWatch.parentPid === undefined) return false;
+    this.parentWatch.stop();
+    this.parentWatch.retarget(undefined);
+    console.log('[office] 부모 감시  : 끔 (앱을 닫아도 계속 일하기)');
+    return true;
+  }
+
+  /**
    * 부모 앱이 사라졌다(§3). `daemon.shutdown` 과 **같은** 정리를 한다 — 앱이 강제 종료됐으니 그 코드가 돌지 못했다.
    * 알림을 먼저 내보내 아직 붙어 있는 클라이언트(콘솔 등)가 까닭을 알게 한다.
    */

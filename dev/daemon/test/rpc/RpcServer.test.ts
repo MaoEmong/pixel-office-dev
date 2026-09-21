@@ -220,6 +220,11 @@ class FakeOffice extends EventEmitter<OfficeEvents> implements OfficeApi {
   prioritizeRecovery(departmentId: string): void {
     this.rec('prioritizeRecovery', departmentId);
   }
+  /** T46-3: 처음 한 번만 "껐다"(true), 그 뒤는 이미 꺼진 상태(false) — 멱등을 보이려고. */
+  stopWatchingParent(): boolean {
+    this.rec('stopWatchingParent');
+    return this.calls.filter((x) => x.method === 'stopWatchingParent').length === 1;
+  }
   closingSessions(): number {
     return this.closing;
   }
@@ -637,6 +642,16 @@ describe('RpcServer', () => {
     await tick();
     assert.deepEqual(office.calls.at(-1), { method: 'detachAll', args: [clientId] });
     assert.equal(server.clientCount, before - 1);
+  });
+
+  // T46-3 실기 결함 ⑤: "앱을 닫아도 계속 일하기" 를 **앱을 켠 뒤에** 켜면 데몬은 이미
+  // `PIXEL_PARENT_PID` 를 들고 기동한 뒤라, 앱이 닫히는 순간 §3 가 발화해 사무실을 정리해 버렸다.
+  test('T46-3: daemon.stopWatchingParent 는 부모 감시를 끄고 멱등이다', async () => {
+    const c = await connect();
+    await c.hello();
+    assert.deepEqual(await c.call('daemon.stopWatchingParent', {}), { stopped: true });
+    assert.deepEqual(await c.call('daemon.stopWatchingParent', {}), { stopped: false }, '두 번째는 끌 것이 없다');
+    assert.equal(office.calls.filter((x) => x.method === 'stopWatchingParent').length, 2);
   });
 
   test('daemon.shutdown → {closing} reply first, then daemon.notice and Office.shutdown()', async () => {

@@ -67,6 +67,8 @@ AppExitCoordinator buildExitCoordinator(
     confirm: confirm,
     daemonPid: ref.read(daemonProcessPidProvider),
     shutdownDaemon: () => ref.read(rpcClientProvider).call('daemon.shutdown'),
+    // "계속 일하기" 로 닫을 때만 쓴다 — 데몬이 우리를 지켜보고 있으면 꺼 달라고 한다(T46-3).
+    stopWatchingParent: () => ref.read(rpcClientProvider).call('daemon.stopWatchingParent'),
     isAlive: ref.read(pidAliveProvider),
     killTree: ref.read(killProcessTreeProvider),
     // 감시자를 먼저 멈춘다 — 안 그러면 정상 종료를 "죽었다" 로 보고 다시 띄운다.
