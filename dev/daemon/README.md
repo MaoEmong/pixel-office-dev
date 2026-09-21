@@ -43,6 +43,7 @@ npm run typecheck
 | `PIXEL_CLAUDE_EXE` | **자동 탐지**(아래) | claude 실행 파일 |
 | `PIXEL_CODEX_EXE` | **자동 탐지**(아래) | codex 실행 파일 |
 | `PIXEL_HOOK_TIMEOUT_SEC` | 86400 | 세션 hooks timeout(허가·질문 보류 상한, D-16) |
+| `PIXEL_USAGE_POLL_SEC` | 60 | 엔진 연결 확인(`claude auth status`·`codex login status`) 주기. `0` 이면 **기동 시 한 번만**(아래 "사용량") |
 | `PIXEL_FORCE_START` | (없음) | `1` 이면 단일 데몬 가드를 건너뛴다(D-40). **테스트는 이것 대신 `PIXEL_DATA_DIR` 을 따로 줄 것** |
 | `PIXEL_HOOK_LOG` | (없음) | 진단용. 파일 경로를 주면 `hook.js` 가 **CLI 가 보낸 페이로드와 우리가 돌려준 결정**을 JSONL 로 덧붙인다(T42) |
 
@@ -168,11 +169,50 @@ rev 3 를 **Codex 엔진**으로 돌려 보는 것은 사용량 한도 때문에
 JSONL 로 그 파일에 덧붙인다(옵트인, 안 주면 아무 일도 안 한다). CLI 가 실제로 무엇을 보내는지 볼 유일한 길이다 —
 Codex 의 MCP 도구 이름·`Interrupt` 페이로드를 이걸로 확정했다(T42).
 
+## 사용량 (T43, D-45)
+
+엔진별 남은 주간 한도와 캐릭터별 컨텍스트·누적 토큰·비용을 모아 앱·콘솔에 보여 준다. 와이어 모양은 `PROTOCOL.md` 의
+"사용량" 절, 설계 전문은 `../../docs/design/사용량-표시.md`, 실측 근거는 `../../docs/worklog/T43-0-UsageSpike.md`.
+콘솔에서는 `usage` 한 줄이면 된다.
+
+**원칙(D-45).** 자격 증명 파일을 읽지 않고 벤더 API 를 직접 부르지 않는다 — **CLI 가 스스로 내주는 것만** 쓴다.
+계정 **이메일은 저장도 표시도 하지 않는다**(파서가 그 키를 읽지도 않는다). 멤버 세션에 `/usage`·`/status` 같은
+슬래시 명령을 밀어 넣지 않는다.
+
+**어디서 오는가**
+
+| 값 | 출처 | 언제 |
+|---|---|---|
+| Claude 주간·5시간 한도, 멤버 컨텍스트·비용 | 세션 `--settings` 에 주입한 **statusLine 명령**(`src/hooks/statusline.js` → `POST /status/<memberToken>`)의 페이로드 `rate_limits`·`context_window`·`cost` | 턴 종료·화면 다시 그릴 때(이벤트) |
+| Claude 멤버 누적 토큰 | transcript 의 마지막 `type:"cost-state"` 줄(모델별 합산 — 서브에이전트 haiku 도 잡힌다) | `Stop` 직후 |
+| Codex 주간 한도·요금제, 멤버 컨텍스트·누적 토큰 | rollout(JSONL)의 마지막 `token_count` 중 `limit_id==="codex"` ∧ `primary!=null` 인 것 | `Stop`·화면 idle 폴백 |
+| 연결 여부·Claude 요금제 | `claude auth status`(JSON) · `codex login status` — 5초 타임아웃, `CLAUDE_CODE*`·`CLAUDE_CONFIG_DIR` 을 지우고 띄운다 | 기동 시 + `PIXEL_USAGE_POLL_SEC`(기본 60초) |
+| Codex 비용(USD) | **없다** — Codex 는 토큰만 준다 | — |
+
+기록 파일은 **끝에서 64KB 만** 비동기로 읽고(`src/usage/tail.ts`), 잘린 첫 줄은 버린다. 파일이 없거나 잠겨 있으면
+**이전 값을 그대로 둔다**(지우지 않는다). 파서는 필드별로 방어적이라 CLI 업데이트로 이름이 바뀌면 **그 값만** `null` 이 된다.
+
+**알려진 한계**
+
+- **Claude 한도는 첫 턴 뒤에 온다.** 세션을 막 띄웠거나 `--resume` 한 직후에는 statusLine 페이로드에 `rate_limits`
+  키 자체가 없다(실측). 그래서 마지막으로 본 값을 `engine_usage` 테이블에 남겨 두고 `updatedAt` 과 함께 보여 준다.
+  한 번도 못 봤으면 "첫 작업 후 표시".
+- **Codex 5시간 한도는 요금제에 따라 없다**(Pro 실측 전수 `null`). `session:null` 이 정상이다.
+- **Codex 비용은 없다.** `costUsd` 는 언제나 `null`.
+- **statusLine 은 세션당 하나**라 사용자의 전역 statusLine 설정이 이 툴이 띄운 세션에서만 덮인다(데몬 소유 세션이라
+  수용). 우리 스크립트는 `컨텍스트 37% · 주간 45% 남음` 한 줄을 돌려주고, 실패하면 빈 줄을 찍고 즉시 끝난다 —
+  상태줄 하나 때문에 TUI 가 멈추면 안 된다. **Codex 에는 statusLine 이 없다.**
+- 턴 없이 한도를 갱신하는 "숨은 유틸리티 세션"(`/usage` 화면 폴링)과 모델별 주간 한도는 **v1 범위 밖**이다.
+
+**저장**: 스키마 v3 의 `engine_usage`(엔진 PK — 멤버가 다 나가도 남긴다) · `member_usage`(멤버 PK — 멤버 행과 함께
+FK cascade 로 사라진다). 알림은 **값이 바뀔 때만** 나가고, 값이 같아도 마지막 확인이 60초를 넘겼으면 `updatedAt` 만
+올려 한 번 더 민다(앱의 "N분 전 기준" 이 거짓말을 하지 않게).
+
 ## 구조
 
 ```
 src/
-  index.ts        진입점 — Office + RpcServer 기동, SIGINT 정중 종료
+  index.ts        진입점 — Office + RpcServer 기동, 사용량 연결 폴링 시작, SIGINT 정중 종료
   config.ts       설정
   office/         Office 오케스트레이터(T07) + 재시작 복구·유령 정리(T09) + 엔진 라우팅·Codex 부팅 감시(T20) + codexFallback(T22) + 오류 코드
                   트리(T34: 부서·부장·팀장·팀원, hireChild 단일 스폰) + 직급 도구 관문(T35) + afterCare/derived(T36: 하위 트리 정리·복구 순서)
@@ -180,11 +220,12 @@ src/
   rpc/            WebSocket JSON-RPC 서버(T07) — 계약은 PROTOCOL.md
   pty/            PtyManager — CLI 스폰·입출력·세션 hooks 설정 파일(T01)
   screen/         ScreenModel — headless xterm 화면 상태, 준비/다이얼로그 판정(T02)
-  hooks/          HookReceiver + hook.js(CLI가 실행하는 브리지) + 결정 JSON 빌더(T03)
+  hooks/          HookReceiver(+ `POST /status/<memberToken>`, T43) + hook.js·statusline.js(CLI가 실행하는 브리지) + 결정 JSON 빌더(T03)
+  usage/          UsageTracker(엔진·멤버 사용량 + 영속·변화 감지) + parse/(statusLine·cost-state·token_count·auth) + tail.ts(64KB 꼬리) + connection.ts(T43)
   adapters/       BaseHooksAdapter(공통 뼈대) + ClaudeHooksAdapter(T04) / CodexHooksAdapter·codexMapping(T20) — hook 이벤트 → 오피스 이벤트·pending
   mcp/            TeamToolsServer — Streamable HTTP MCP `/mcp/<memberToken>`. **직급별 도구 표 `RANK_TOOLS`**(T35)가 여기 하나뿐. 두 엔진 공통
   input/          InputQueue — 타이핑 직렬화, prompt-ready 게이팅, 다이얼로그 통과(T05)
-  store/          node:sqlite 저장소 — departments/teams/members(parent_id·rank)/events(seq)/pending/tasks(T06, 스키마 v2 = T34)
+  store/          node:sqlite 저장소 — departments/teams/members(parent_id·rank)/events(seq)/pending/tasks + engine_usage/member_usage(T06, 스키마 v3 = T43)
   cli/            콘솔 클라이언트(T08, rev 3 = T38) — RpcClient + REPL/--exec, parse.ts(순수 파싱)·format.ts(출력·tree)·help.ts(도움말 절)
   tui-maps/       CLI 버전별 화면 패턴 JSON (verified 플래그)
 test/             node:test (모듈별 폴더; *.integration.test.ts 는 PIXEL_IT=1)
@@ -197,6 +238,8 @@ RPC member.instruct ─▶ Store.tasks ─▶ InputQueue ─(idle ∧ promptRead
 claude.exe|codex.exe ──stdout──▶ ScreenModel(화면) ──▶ term 알림(attach 클라이언트)
 claude.exe|codex.exe ──hooks(node hook.js)──▶ HookReceiver ─▶ adapterFor(member.engine) ─▶ Store.events/pending ─▶ event/member.status 알림
 approval.respond / question.respond ─▶ Adapter.resolve* ─▶ 보류 중인 hook 응답(allow/deny/answers)
+claude.exe ──statusLine(node statusline.js)──▶ POST /status ─▶ UsageTracker ─▶ usage.engine/usage.member 알림 + 상태 줄 한 줄
+Stop/화면 idle ─▶ transcript·rollout 꼬리 64KB ─▶ UsageTracker(누적 토큰·Codex 한도)
 ```
 
 멤버마다 pty·ScreenModel·InputQueue·어댑터 라우팅·MCP 엔드포인트가 따로다 — 엔진이 섞여도 서로 간섭하지 않는다(T23 `test/office/MixedTeam.test.ts`).
