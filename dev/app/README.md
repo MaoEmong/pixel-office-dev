@@ -8,17 +8,57 @@
 그 캐릭터를 누르면 오른쪽 패널 머리에 `⚠ 오류로 종료됨 (code N)` + **`재고용`** 배너가 뜬다. 누르면 `member.rehire` → `--resume` 으로
 같은 문맥을 물고 되살아난다(T31 실기: 클릭 → `text: resumed` → 다음 지시 정상, `docs/worklog/T31-M5정리.md`).
 
-## 실행
+## 실행 · 수명 주기 (T46-2, D-47 · `docs/design/수명주기.md`)
 
 ```
 cd dev/app
 flutter pub get
 flutter run -d windows          # 개발 실행
 flutter build windows --release # build\windows\x64\runner\Release\pixel_office.exe
-flutter analyze && flutter test # 검증 (위젯·상태 529건 +1 skip)
+flutter analyze && flutter test # 검증 (위젯·상태 653건 +1 skip)
 ```
 
-데몬이 먼저 떠 있어야 한다(`cd dev/daemon && npm start`). 없으면 앱은 회색 오버레이 + "데몬 연결 안 됨" 을 보이며 1→2→4→5초 간격으로 계속 재접속을 시도한다("데몬 시작" 버튼은 T14).
+**데몬을 먼저 띄울 필요가 없다.** 앱이 주인이고, 데몬과 AI 세션은 앱의 부속으로 같이 켜지고 같이 꺼진다
+(D-47 이 D-02 의 기본 동작을 뒤집었다). 코드는 `lib/lifecycle/`.
+
+**켤 때**(`main()` → `DaemonSupervisor`)
+
+1. `<데이터 폴더>/app.lock` 으로 **앱을 하나만** 켠다. 이미 켜져 있으면 `픽셀 오피스가 이미 실행 중입니다` 만
+   보이고 끝낸다(창이 둘이면 한쪽을 닫을 때 다른 쪽의 데몬이 죽는다). 죽은 pid 의 낡은 잠금은 빼앗는다.
+2. `daemon.json` 을 읽어 **2초** 동안 붙어 본다. 이미 도는 데몬이 있으면(콘솔에서 띄웠거나 지난번 것이
+   남아 있으면) 새로 띄우지 않고 그대로 붙는다.
+3. 못 붙으면 앱이 **직접, 콘솔 창 없이** 띄운다: `dev/daemon` 을 `findDaemonDir()` 로 찾아
+   `package.json` 의 `scripts.start`(= `tsx src/index.ts`)를 **`node --import tsx src/index.ts`** 로 실행한다
+   (npm 을 끼지 않아 프로세스가 하나다). 환경변수 `PIXEL_PARENT_PID=<앱 pid>` 를 넘기고,
+   표준 출력·오류는 `<데이터 폴더>/daemon.log` 에 이어 쓴다(기동 때 최근 1MB 만 남기고 자른다).
+   - **콘솔 창이 왜 안 뜨나(윈도우 실측):** 콘솔이 없는 GUI 앱에서 `Process.start` 를 **기본 모드(파이프)**
+     로 부르면 자식에게 콘솔 자체가 생기지 않는다(`GetConsoleWindow()` 가 0). `inheritStdio` 만 보이는
+     콘솔 창을 만든다. 그래서 기본 모드로 띄우고 파이프를 로그로 흘린다(안 읽으면 64KB 에서 데몬이 멈춘다).
+4. 오버레이는 `사무실을 여는 중…` → 붙으면 사라진다. **10초**(2 + 8) 안에 못 붙으면
+   `데몬을 시작하지 못했습니다` + `daemon.log` 마지막 8줄 + `다시 시도`. 옛 `데몬 시작` 버튼(보이는 콘솔 창을
+   띄운다 — 원인을 눈으로 볼 마지막 수단)은 **이 실패 화면에만** 남는다.
+
+**데몬이 죽으면**(§4) 앱이 알아챈다 — 자식 종료 알림, 또는 소켓 끊김 + `daemon.json` 의 pid 가 죽어 있음.
+**즉시 1회 → 2초 → 5초 → 10초, 최대 4회** 다시 띄운다. 그동안 오버레이는
+`데몬이 멈춰 다시 시작하는 중 · 세션을 복구합니다`(+ `daemon.notice{kind:'recovering', total, done}` 이 오면
+`복구 2 / 5`). **1분 안에 3번** 죽으면 재시작을 멈추고 `데몬이 반복해서 종료됩니다` + 로그를 보여 준다.
+
+**끌 때**(창 X · Alt+F4 · 작업 표시줄 — `AppLifecycleListener.onExitRequested`)
+
+1. 일하는 중인 캐릭터(범례 "작업" 칸)가 있으면 확인 한 번:
+   `일하는 중인 캐릭터가 N명 있습니다. 닫으면 전부 멈춥니다. (다음에 켜면 이어서 합니다)`. 없으면 안 묻는다.
+2. 감시자를 멈추고 `daemon.shutdown` → `정리하는 중…` 을 띄운 채 데몬 프로세스가 사라질 때까지 **최대 8초**
+   → 넘으면 `taskkill /PID <pid> /T /F` 로 트리째 끝낸다(손자 `claude.exe`·`codex.exe` 까지 간다).
+3. 앱이 직접 띄운 데몬이 아니어도 똑같이 끈다 — 규칙이 하나여야 예측 가능하다.
+
+**옛 동작(D-02)으로 돌리려면** — 상단 바 `⋮` → **"앱을 닫아도 계속 일하기"**(기본 꺼짐,
+`<데이터 폴더>/app-ui.json` 의 `keepDaemonOnExit`). 켜면 앱을 닫아도 데몬과 세션이 남고, `hello` 에
+`parentPid` 를 보내지 않아 **데몬의 부모 감시도 꺼진다**. 개발용으로는 환경변수 `PIXEL_KEEP_DAEMON=1`
+(그 세션 내내 켜지고 메뉴에서 끌 수 없다). 데몬을 콘솔에서 따로 돌리며 앱을 껐다 켜고 싶을 때 쓴다.
+
+**상태 하나 추가**: `members.status` 의 `suspended`(잠시 닫힘) — 정상 종료로 닫혔다가 다음 기동에 말없이
+되살아날 캐릭터. 회색 책상 + 모니터 `(잠시 닫힘)`, 되살아나는 동안만 잠깐 보인다. **퇴근·오류가 아니라서
+재고용 배너가 뜨지 않고 맡은 task 도 중단되지 않는다.**
 
 ## 엔진(Claude / Codex)
 
@@ -362,7 +402,15 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tool\capture-window.ps1 -Out
 
 ```
 lib/
-  main.dart                 MaterialApp(dark, pixelOfficeTheme) + AppShortcuts + TopBar / PanelSplitter(OfficeView · RightPanel) / CommandBar / DisconnectedOverlay
+  main.dart                 app.lock → "계속 일하기" 설정 → DaemonSupervisor.start() → MaterialApp(dark, pixelOfficeTheme)
+                            + LifecycleGate + AppShortcuts + TopBar / PanelSplitter(OfficeView · RightPanel) / CommandBar / 오버레이
+  lifecycle/                수명 주기(T46-2, D-47 · 위 "실행 · 수명 주기" 절):
+    daemon_process.dart       데몬 띄우기(콘솔 창 없이) · daemon.log 1MB · tasklist 생존 확인 · taskkill /T /F
+    daemon_supervisor.dart    attaching → starting → running → restarting → failed | stopped (시계·스폰 주입 = 단위 테스트 가능)
+    exit_flow.dart            확인 → daemon.shutdown → 8초 → 트리 강제 종료(위젯을 모른다)
+    lifecycle_gate.dart       AppLifecycleListener(onExitRequested) 배선 + 끊김을 감시자에게 알림
+    lifecycle_providers.dart  감시자 상태 · 일하는 중 인원 · 오버레이 표시 조건 · daemon.log 꼬리
+    app_lock.dart already_running_app.dart   앱 하나만(pid + 이미지 이름 가드)
   rpc/
     daemon_info.dart        %LOCALAPPDATA%\pixel-office\daemon.json 읽기 (wsPort, token, pid, version …)
     rpc_client.dart         JSON-RPC 2.0 over WebSocket: connect / hello / call / 알림 스트림 / lastSeq / 자동 재접속
@@ -376,7 +424,8 @@ lib/
   topbar/
     top_bar.dart            부서 탭(폴더 아이콘) + 개수·"보고 N" · "부서 만들기"(부장 임명) · 부서 삭제 · 비상 퇴근
     daemon_pill.dart        데몬 상태 pill 3상태 + 상단 바 "보고 N" 배지(T40-5)
-    disconnected_overlay.dart  끊김 오버레이 — 진행 바 · "데몬 시작"/"다시 연결" · 예외 "자세히" 접힘(T40-5)
+    disconnected_overlay.dart  오버레이 6종(T40-5 → T46-2) — 여는 중 · 다시 시작 중(+복구 N/M) · 실패(+로그 8줄) ·
+                            정리하는 중 · 감시자 없음(옛 화면). 예외는 어느 화면에서든 "자세히" 접힘
     selected_department.dart  상단 부서 탭 상태(T37, T24 의 selected_team.dart 를 대체)
     daemon_launcher.dart notices.dart   데몬 시작 버튼(T14) · daemon.notice 배너
   office/                   사무실 캔버스(T12·T16·T37·T40a·T33): office_scene/layout/painter/motion/view + office_sprites
@@ -396,7 +445,8 @@ tool/
     pending_card.dart         허가/질문 카드, AskParentCard
     report_tab.dart           보고서 문서 흐름 + 미확인 배지 프로바이더
     panel_splitter.dart       사무실↔패널 드래그 분할 + Ctrl+T 터미널 오버레이
-    ui_prefs.dart             앱 로컬 UI 설정(패널 폭 저장, 터미널 오버레이 상태, 부서 폴더 선택기의 시작 폴더 T41)
+    ui_prefs.dart             앱 로컬 UI 설정(패널 폭 저장, 터미널 오버레이 상태, 부서 폴더 선택기의 시작 폴더 T41,
+                              "앱을 닫아도 계속 일하기" T46-2)
   command/
     command_bar.dart          지시 바 — 대상은 그 부서의 살아 있는 부장 하나로 고정, 정적 칩(T37·T40-5)
     shortcuts.dart            앱 전역 단축키 Ctrl+K/L/T/I/R · Esc(T40-5)
@@ -411,6 +461,9 @@ test/
                             command/create_department_test.dart 는 폴더 선택기·기본값 T41)
   usage/                    사용량(T43-2): usage_model(방어적 파싱) · usage_state(스냅샷·알림·프로바이더) ·
                             usage_format(단위·문구·색) · usage_chips(칩 5종·축약·팝오버) · usage_panel · usage_canvas
+  lifecycle/                수명 주기(T46-2): daemon_supervisor(가짜 시계로 재시작 일정·crash-loop) ·
+                            daemon_process(node 로 진짜 자식을 띄워 로그·환경변수·트리 kill 확인) · app_lock ·
+                            exit_flow · keep_daemon · overlay_lifecycle · hello_params · recovery_notice
 windows/runner/main.cpp     창 제목 "픽셀 오피스"
 ```
 
