@@ -14,6 +14,7 @@ import '../panel/ui_prefs.dart';
 import '../rpc/daemon_info.dart';
 import '../rpc/rpc_client.dart';
 import '../state/office_state.dart';
+import '../topbar/selected_department.dart' show activeDepartmentIdProvider;
 import 'daemon_process.dart';
 import 'exit_flow.dart';
 import 'lifecycle_providers.dart';
@@ -120,6 +121,9 @@ class LifecycleGateState extends ConsumerState<LifecycleGate> {
     // 설정을 **미리** 읽어 둔다 — 창을 닫는 순간에 처음 읽으면 파일을 기다릴 시간이 없어
     // 항상 기본값(꺼짐)으로 보인다.
     ref.watch(keepDaemonProvider);
+    // 지금 보고 있는 부서를 클라이언트에 적어 둔다 — **다음 hello** 가 복구 순서 힌트로 싣는다(§5).
+    // 되살리는 도중에 탭을 바꿔도 전용 RPC 는 없다(PROTOCOL 미정): 다음 재접속에 반영된다.
+    ref.read(rpcClientProvider).activeDepartmentId = ref.watch(activeDepartmentIdProvider);
     // 끊김 → 감시자에게 알린다. 감시자는 daemon.json 의 pid 가 살아 있으면 무시한다(일시적 끊김).
     ref.listen<RpcConnectionState>(connectionStateProvider, (prev, next) {
       if (next != RpcConnectionState.disconnected) return;

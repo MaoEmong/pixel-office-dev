@@ -18,9 +18,9 @@ import '../office/office_harness.dart';
 
 /// 가짜 데몬 프로세스 세계(pid 하나).
 class _World {
-  _World({this.pid = 5555, this.diesAfterShutdown = true});
+  _World({this.diesAfterShutdown = true});
 
-  final int pid;
+  final int pid = 5555;
 
   /// `daemon.shutdown` 을 받으면 스스로 꺼지는가(false = 안 꺼져서 강제 종료해야 한다).
   bool diesAfterShutdown;

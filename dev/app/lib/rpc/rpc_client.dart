@@ -100,6 +100,15 @@ class RpcClient {
   /// daemon.json 을 못 읽었을 때의 오류 문구(오버레이 "자세히" 에 그대로 나온다).
   final String noDaemonInfoMessage;
 
+  /// `hello` 에 실어 보낼 **앱 pid**(T46 · 수명주기 §3). 데몬은 이 pid 를 2초마다 보다가 사라지면
+  /// 스스로 정리하고 끝낸다. **null 이면 파라미터를 아예 넣지 않는다** — 설정 "앱을 닫아도 계속 일하기"
+  /// (와 `PIXEL_KEEP_DAEMON=1`)일 때 부모 감시를 끄는 방법이다.
+  int? parentPid;
+
+  /// `hello` 에 실어 보낼 **지금 보고 있는 부서**(수명주기 §5: 그 부서부터 되살린다). 힌트일 뿐이라
+  /// 전용 RPC 를 두지 않는다 — 값이 바뀌어도 **다음 hello(재접속) 때** 반영된다(PROTOCOL 미정).
+  String? activeDepartmentId;
+
   WebSocketChannel? _channel;
   StreamSubscription<dynamic>? _sub;
   Completer<void>? _closedCompleter;
@@ -227,6 +236,8 @@ class RpcClient {
     final params = <String, dynamic>{
       'token': token,
       'since': ?since,
+      'parentPid': ?parentPid,
+      'activeDepartmentId': ?activeDepartmentId,
       'client': {'name': clientName, 'version': clientVersion},
     };
     final result = await _send('hello', params, isHello: true);

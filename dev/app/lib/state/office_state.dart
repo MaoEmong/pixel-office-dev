@@ -51,9 +51,14 @@ class DaemonConnector {
 
 final daemonConnectorProvider = Provider<DaemonConnector>((ref) => DaemonConnector.fromDaemonJson());
 
+/// `hello` 에 실어 보낼 앱 pid(T46 · 수명주기 §3). 기본은 null(= 안 보낸다) — `main()` 이 덮어쓴다.
+/// "앱을 닫아도 계속 일하기" 면 `main()` 이 null 그대로 둬 데몬의 부모 감시를 끈다.
+final helloParentPidProvider = Provider<int?>((_) => null);
+
 final rpcClientProvider = Provider<RpcClient>((ref) {
   // 못 붙을 때의 문구에 **찾아본 daemon.json 경로**와 환경변수 유무를 싣는다(T41 실기 사고).
   final client = RpcClient(noDaemonInfoMessage: daemonJsonMissingMessage());
+  client.parentPid = ref.watch(helloParentPidProvider);
   ref.onDispose(() => client.close());
   return client;
 });
