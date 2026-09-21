@@ -15,7 +15,7 @@ npm start                 # 데몬 1회 실행 (ws://127.0.0.1:7420, hook 7421, 
 npm run dev               # tsx watch
 npm run cli               # 콘솔 클라이언트 REPL (help 로 명령 목록)
 npm run cli -- --exec "dept create demo D:/proj claude 부장" --exec "say 부장 안녕" --wait-idle 부장   # 비대화형
-npm test                  # node:test 전체 539건 (통합 테스트는 PIXEL_IT=1 없으면 skip — 아래 "테스트" 절)
+npm test                  # node:test 전체 771건 (통합 테스트는 PIXEL_IT=1 없으면 skip — 아래 "테스트" 절)
 npm run typecheck
 ```
 
@@ -81,6 +81,8 @@ PIXEL_IT=1 PIXEL_IT_SANDBOX=D:/myproject/pixel-office/dev/spike-0/sandbox \
 | `PIXEL_USAGE_PROBE_SEC` | 300 | 확인용 세션이 `/usage`·`/status` 를 여는 주기(초). 모델 턴을 쓰지 않아 할당량이 들지 않는다 |
 | `PIXEL_FORCE_START` | (없음) | `1` 이면 단일 데몬 가드를 건너뛴다(D-40). **테스트는 이것 대신 `PIXEL_DATA_DIR` 을 따로 줄 것** |
 | `PIXEL_HOOK_LOG` | (없음) | 진단용. 파일 경로를 주면 `hook.js` 가 **CLI 가 보낸 페이로드와 우리가 돌려준 결정**을 JSONL 로 덧붙인다(T42) |
+| `PIXEL_SCREEN_DEBUG` | (없음) | 진단용. `1` 이면 `ScreenModel` 이 **`approval-prompt` 로 판정한 화면을 통째로** 적고, 그 프롬프트가 **몇 ms 만에 사라졌는지**까지 남긴다(T45 — D-26 오탐을 잡은 도구) |
+| `PIXEL_SCREEN_DEBUG_FILE` | `%TEMP%\pixel-screen-debug.log` | 위 덤프를 적을 파일 |
 
 세 포트는 전부 `127.0.0.1` 전용이고 기동할 때마다 `daemon.json` 에 실제 값이 적힌다(클라이언트는 그 파일을 읽는다).
 
@@ -180,6 +182,13 @@ rev 3 를 **Codex 엔진**으로 돌려 보는 것은 사용량 한도 때문에
   한도 안내의 모델 전환 제안(`model-switch-offer`) → **Esc**(현재 모델 유지, 사용자 설정을 바꾸지 않는다 — T21).
   ScreenModel 이 감지하고 InputQueue 가 키를 보내며 `daemon.notice{info}` 를 남긴다. 사용자가 터미널 탭에서 직접 치는 중이면 얹지 않는다.
   CLI 자체 **허가 프롬프트**(`approval-prompt`)는 감지만 하고 **키를 절대 자동으로 보내지 않는다**(두 엔진 공통, T21).
+- **허가 프롬프트 경고는 "계속 떠 있을 때" 만 낸다 (T45, D-26).** MCP 도구(`mcp__team__*`)를 부를 때 CLI 는 자기
+  허가 프롬프트를 **진짜로 한 프레임 그렸다가**, 곧 도착한 우리 `PermissionRequest` hook 의 allow 로 지운다
+  (실측 502ms — 폴링 한 판, 화면 이력에 `⎿ Allowed by PermissionRequest hook`). 그래서 지시가 잘 돌아가는 중에도
+  `CLI 허가 프롬프트가 떠 있음` 경고가 떴다. **화면 판정이 틀린 게 아니라** 아무도 답할 필요가 없는 프롬프트였다.
+  지금은 `InputQueue` 가 **`TIMING.dialogBlockedNoticeMs`(3초) 동안 연속으로** 보인 뒤에만 `dialogBlocked` 를 낸다.
+  큐를 막는 것과 키를 안 보내는 것은 **지연 없이 그대로**이고, 진짜 프롬프트(hook 없음·만료 — D-16)는 사람이 답할
+  때까지 남으므로 그대로 경고한다.
 - **중단:** `Interrupt` hook 은 Ctrl+C 전용이 아니다 — **Esc 로 턴을 끊어도 같은 hook 이 온다**(T42 실측). 퇴근 Ctrl+C 도
   `Interrupt` → `SessionEnd` 순으로 낸다. 페이로드는 `session_id turn_id transcript_path cwd hook_event_name model permission_mode`
   일곱 개뿐이라 어댑터가 읽을 것이 없다(`test/fixtures/hooklog-codex-t42.json`).
@@ -242,8 +251,16 @@ Codex 의 MCP 도구 이름·`Interrupt` 페이로드를 이걸로 확정했다(
   중간값**이라 마지막 값으로 교체한다(실측 중복 481건 중 112건이 달랐다).
 - **`thinkingTokens` 를 `output` 에 더하지 않는다** — `output_tokens` 에 이미 들어 있다(실측: cost-state 의
   `outputTokens` 가 줄 합과 같고 `thinkingTokens` 는 그 부분집합).
-- 이 합은 CLI 의 `/cost` 보다 **0~4% 낮다.** 제목 생성용 배경 haiku 호출 등이 transcript 에 줄을 남기지 않는다.
-  세션이 끝나 `cost-state` 가 나타나면 그쪽으로 정확히 맞춰진다. 근거 전문: `../../docs/worklog/T43-5-ClaudeTokens.md`.
+- **서브에이전트(Task 도구) transcript 도 더한다 (T45).** CLI 2.1.275 는 그 줄을 본 파일에 섞지 않고
+  `<sessionId>/subagents/agent-*.jsonl` 에 따로 쓴다. **끝난 세션의 `cost-state` 는 그 몫을 포함하므로**
+  (실측 3세션: 본 파일만 세면 `cacheCreate` 가 48~65% 모자라고 서브에이전트를 더하면 0.1% 안으로 들어온다)
+  살아 있는 동안에도 더해야 세션이 끝날 때 숫자가 튀지 않는다. 같은 증분 기계를 파일마다 하나씩 돌리고
+  **새것부터 50개**(`MAX_SUBAGENT_FILES`)까지 따라간다 — 상한 밖으로 밀린 파일은 **합계만 접어 두고** 놓아 주므로
+  누적 토큰이 줄어들지 않는다. 본 `transcript_path` 가 바뀌면 이 상태도 통째로 버린다.
+- 이 합은 CLI 의 `/cost` 보다 **0~4% 낮다**(서브에이전트를 더한 뒤 기준으로도 그렇다 — 실측 3세션에서 남은
+  차이는 전부 세션 끝 숨은 호출의 `cacheRead` 였다). 제목 생성용 배경 haiku 호출 등이 transcript 에 줄을 남기지
+  않는다. 세션이 끝나 `cost-state` 가 나타나면 그쪽으로 정확히 맞춰진다.
+  근거 전문: `../../docs/worklog/T43-5-ClaudeTokens.md` · `../../docs/worklog/T45-UsageAndNotice.md`.
 - 누적 상태는 **메모리에만** 있다. 재기동 직후에는 `member_usage` 의 합계가 화면을 채우고, 그 멤버의 첫 턴
   종료 때 파일을 0 부터 한 번 다시 훑어 오프셋을 되찾는다(id 로 세므로 이중 계산이 없다).
 
