@@ -114,7 +114,7 @@ raw `status` 는 "CLI 프로세스가 어떤 상태인가" 일 뿐이다 — `id
 | 값 | 출처 | 갱신 |
 |---|---|---|
 | Claude `weekly`/`session`, 멤버 `context`·`costUsd` | 세션 `--settings` 에 주입한 **statusLine 명령**의 페이로드 | 턴 종료·화면 다시 그릴 때(이벤트) |
-| Claude 멤버 `tokens`·`costUsd` | transcript 의 마지막 `type:"cost-state"` 줄(모델별 합산) | `Stop` 직후 |
+| Claude 멤버 `tokens`·`costUsd` | **살아 있는 동안**: transcript 의 `type:"assistant"` 줄을 증분 합산. **끝난 뒤**: 마지막 `type:"cost-state"` 줄(모델별 합산)이 이긴다 | `Stop` 직후 |
 | Codex `weekly`/`session`/`plan`, 멤버 `context`·`tokens` | rollout 의 마지막 `token_count`(`limit_id==="codex"` ∧ `primary!=null`) | `Stop`·화면 idle 폴백 |
 | `connected`/`reason`, Claude `plan` | `claude auth status` · `codex login status` | 기동 시 + 60초(`PIXEL_USAGE_POLL_SEC`) |
 | 두 엔진 `weekly`/`session`/`models`, Codex `plan` | **확인용 세션**(T43-4)이 읽은 `/usage`·`/status` 화면 | 5분(`PIXEL_USAGE_PROBE_SEC`) |
@@ -123,6 +123,8 @@ raw `status` 는 "CLI 프로세스가 어떤 상태인가" 일 뿐이다 — `id
 `plan` 은 이 표의 어느 줄에서 오든 **소문자로 통일해서** 나간다(위 규칙) — `/status` 화면의 `Pro` 도 rollout `plan_type` 의 `pro` 도 `"pro"` 하나다.
 
 기록 파일은 **끝에서 64KB 만** 비동기로 읽고, 못 읽으면(파일 없음·잠김) **이전 값을 그대로 둔다**(지우지 않는다). CLI 업데이트로 필드 이름이 바뀌면 그 값만 `null` 로 떨어지고 나머지는 계속 돈다.
+
+**Claude 토큰은 살아 있는 동안 per-message `usage` 를 합산한 값이다(T43-5).** `cost-state` 줄은 **CLI 프로세스가 끝날 때만** 적히므로(실측: 살아 있는 세션의 transcript 에 0개) 그전까지는 `type:"assistant"` 줄의 `message.usage` 를 `message.id` 로 중복 제거해 증분으로 더한다. 세션이 끝나 `cost-state` 가 나타나면 **그쪽이 최종값**이다. 그래서 `members[].tokens` 는 **살아 있는 동안 CLI 의 `/cost` 보다 0~4% 낮을 수 있고**(제목 생성용 배경 haiku 호출 등은 transcript 에 줄을 남기지 않는다) 세션이 끝나면 정확히 맞춰진다. 클라이언트가 할 일은 없다 — 모양(`UsageTokens`)은 그대로고 숫자는 언제나 "지금까지 쓴 누적" 이다. `--resume` 이 새 transcript 파일을 파면 CLI 자신의 `/cost` 처럼 **0 부터 다시 센다**(회계 단위가 파일 하나다).
 
 **statusLine 주입.** Claude 세션 설정에 `statusLine{type:'command', command:'node <…>/statusline.js <hookPort>'}` 가 들어간다. 그 스크립트는 `POST /status/<memberToken>` 으로 페이로드를 보내고 **응답 한 줄**(`컨텍스트 37% · 주간 45% 남음`, 모르는 칸은 뺀다)을 터미널 하단에 찍는다. 실패하면 빈 줄을 찍고 즉시 끝난다 — 상태줄 때문에 TUI 가 멈추면 안 된다. **Codex 에는 statusLine 이 없다.** 사용자의 전역 statusLine 설정은 이 툴이 띄운 세션에서만 덮인다(데몬 소유 세션이라 수용).
 

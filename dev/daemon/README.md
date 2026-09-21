@@ -219,7 +219,7 @@ Codex 의 MCP 도구 이름·`Interrupt` 페이로드를 이걸로 확정했다(
 | 값 | 출처 | 언제 |
 |---|---|---|
 | Claude 주간·5시간 한도, 멤버 컨텍스트·비용 | 세션 `--settings` 에 주입한 **statusLine 명령**(`src/hooks/statusline.js` → `POST /status/<memberToken>`)의 페이로드 `rate_limits`·`context_window`·`cost` | 턴 종료·화면 다시 그릴 때(이벤트) |
-| Claude 멤버 누적 토큰 | transcript 의 마지막 `type:"cost-state"` 줄(모델별 합산 — 서브에이전트 haiku 도 잡힌다) | `Stop` 직후 |
+| Claude 멤버 누적 토큰 | **살아 있는 동안**: transcript 의 `type:"assistant"` 줄 `message.usage` 를 증분 합산(T43-5). **세션이 끝난 뒤**: 마지막 `type:"cost-state"` 줄(모델별 합산 — 배경 haiku 까지)이 이긴다 | `Stop` 직후 |
 | Codex 주간 한도·요금제, 멤버 컨텍스트·누적 토큰 | rollout(JSONL)의 마지막 `token_count` 중 `limit_id==="codex"` ∧ `primary!=null` 인 것 | `Stop`·화면 idle 폴백 |
 | 연결 여부·Claude 요금제 | `claude auth status`(JSON) · `codex login status` — 5초 타임아웃, `CLAUDE_CODE*`·`CLAUDE_CONFIG_DIR` 을 지우고 띄운다 | 기동 시 + `PIXEL_USAGE_POLL_SEC`(기본 60초) |
 | 두 엔진 주간·5시간 한도, **모델별 주간 한도**, Codex 요금제 | **확인용 세션**(아래 절)이 읽은 `/usage`·`/status` 화면 | `PIXEL_USAGE_PROBE_SEC`(기본 300초) |
@@ -230,6 +230,22 @@ Codex 의 MCP 도구 이름·`Interrupt` 페이로드를 이걸로 확정했다(
 
 기록 파일은 **끝에서 64KB 만** 비동기로 읽고(`src/usage/tail.ts`), 잘린 첫 줄은 버린다. 파일이 없거나 잠겨 있으면
 **이전 값을 그대로 둔다**(지우지 않는다). 파서는 필드별로 방어적이라 CLI 업데이트로 이름이 바뀌면 **그 값만** `null` 이 된다.
+
+**Claude 토큰은 살아 있는 동안 줄 단위로 합산한다 (T43-5, `src/usage/ClaudeTranscriptUsage.ts`).**
+`cost-state` 줄은 **CLI 프로세스가 끝날 때만** 적힌다(실측: 살아 있는 세션의 transcript 에 0개). 멤버 세션은 몇
+시간씩 살아 있으므로 그때까지 토큰 칸이 비어 있었다 — 그래서 `type:"assistant"` 줄의 `message.usage` 를 직접 더한다.
+
+- **멤버마다 바이트 오프셋**을 들고 덧붙은 부분만 읽는다(`claudeTranscriptReader.ts`). 파일이 줄면 회전으로 보고
+  리셋, **`transcript_path` 가 바뀌면 리셋**한다 — `--resume` 이 새 파일을 파면 CLI 자신의 `/cost` 도 0 부터
+  다시 세기 때문이다(실측). 재기동 뒤 첫 훑기가 20MB 를 넘으면 뒤쪽만 읽는다.
+- **같은 `message.id` 는 한 번만** 센다. 내용 블록이 스트리밍되며 같은 응답이 여러 줄로 적히고 **앞 줄은
+  중간값**이라 마지막 값으로 교체한다(실측 중복 481건 중 112건이 달랐다).
+- **`thinkingTokens` 를 `output` 에 더하지 않는다** — `output_tokens` 에 이미 들어 있다(실측: cost-state 의
+  `outputTokens` 가 줄 합과 같고 `thinkingTokens` 는 그 부분집합).
+- 이 합은 CLI 의 `/cost` 보다 **0~4% 낮다.** 제목 생성용 배경 haiku 호출 등이 transcript 에 줄을 남기지 않는다.
+  세션이 끝나 `cost-state` 가 나타나면 그쪽으로 정확히 맞춰진다. 근거 전문: `../../docs/worklog/T43-5-ClaudeTokens.md`.
+- 누적 상태는 **메모리에만** 있다. 재기동 직후에는 `member_usage` 의 합계가 화면을 채우고, 그 멤버의 첫 턴
+  종료 때 파일을 0 부터 한 번 다시 훑어 오프셋을 되찾는다(id 로 세므로 이중 계산이 없다).
 
 **알려진 한계**
 
@@ -280,6 +296,7 @@ src/
   screen/         ScreenModel — headless xterm 화면 상태, 준비/다이얼로그 판정(T02)
   hooks/          HookReceiver(+ `POST /status/<memberToken>`, T43) + hook.js·statusline.js(CLI가 실행하는 브리지) + 결정 JSON 빌더(T03)
   usage/          UsageTracker(엔진·멤버 사용량 + 영속·변화 감지·출처 병합) + UsageProbe(확인용 세션, T43-4)
+                  + ClaudeTranscriptUsage/claudeTranscriptReader(살아 있는 세션의 토큰 증분 누적, T43-5)
                   + parse/(statusLine·cost-state·token_count·auth·usageScreen·resetText) + tail.ts(64KB 꼬리) + connection.ts
   adapters/       BaseHooksAdapter(공통 뼈대) + ClaudeHooksAdapter(T04) / CodexHooksAdapter·codexMapping(T20) — hook 이벤트 → 오피스 이벤트·pending
   mcp/            TeamToolsServer — Streamable HTTP MCP `/mcp/<memberToken>`. **직급별 도구 표 `RANK_TOOLS`**(T35)가 여기 하나뿐. 두 엔진 공통
