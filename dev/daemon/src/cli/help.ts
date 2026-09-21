@@ -70,6 +70,9 @@ export const HELP: HelpSection[] = [
       ['fire <member>', '**비상 퇴근** (member.clockOut). 확인 프롬프트 y — 부장·팀장이면 **하위 전원**이 잎부터 정리된다'],
       ['rehire <member>', 'exited/error 멤버 재출근 (member.rehire)'],
       ['restart <member>', '지시문 즉시 반영 재시작 (member.restart) — 열린 ask_user/ask_parent 질문은 살아남는다(D-36)'],
+      ['', '상태: starting · idle · working · waiting_approval · waiting_answer · **suspended**(잠시 닫힘) · exited · error'],
+      ['', '  suspended = 데몬이 정상 종료하며 접어 둔 세션(T46-1) — 다음 기동에 **말없이** 다시 출근한다.'],
+      ['', '  퇴근(exited)·오류(error)와 다르다: 그 둘은 rehire 해야 돌아온다.'],
     ],
   },
   {
@@ -88,7 +91,7 @@ export const HELP: HelpSection[] = [
       ['reconnect', '끊긴 뒤 자동 재접속이 포기했을 때 다시 붙는다 (백오프 1초→30초, 8회 실패하면 멈춘다 — T30)'],
       ['help', '이 도움말'],
       ['quit', '클라이언트 종료'],
-      ['shutdown', '데몬 종료 (daemon.shutdown)'],
+      ['shutdown', '데몬 종료 (daemon.shutdown) — 살아 있던 캐릭터는 suspended 로 접히고 AI 세션·확인용 세션이 전부 닫힌다(T46-1)'],
     ],
   },
 ];
