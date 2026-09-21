@@ -2,7 +2,9 @@
 import { test, describe, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
+import fs from 'node:fs';
 import net from 'node:net';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { HookReceiver, type HookRequest, type PendingHold } from '../../src/hooks/HookReceiver.js';
@@ -19,11 +21,11 @@ interface HookRun {
 }
 
 /** `node hook.js <port> <event>` 를 PIXEL_MEMBER 와 함께 실행하고 stdout 을 모은다. */
-function runHook(port: number, event: string, payload: unknown, member = 'tok1'): Promise<HookRun> {
+function runHook(port: number, event: string, payload: unknown, member = 'tok1', extraEnv: Record<string, string> = {}): Promise<HookRun> {
   return new Promise((resolve, reject) => {
     const started = Date.now();
     const child = spawn(process.execPath, [HOOK_JS, String(port), event], {
-      env: { ...process.env, PIXEL_MEMBER: member },
+      env: { ...process.env, PIXEL_MEMBER: member, ...extraEnv },
       stdio: ['pipe', 'pipe', 'pipe'],
     });
     let stdout = '';
@@ -84,6 +86,52 @@ describe('HookReceiver + hook.js', () => {
     assert.equal(seen[0]!.memberToken, 'tok1');
     assert.equal(seen[0]!.event, 'PreToolUse');
     assert.deepEqual(seen[0]!.payload, PAYLOAD);
+    assert.deepEqual(JSON.parse(run.stdout), allow());
+  });
+
+  // 실측용 옵션(T42): CLI 가 실제로 보내는 원문을 볼 유일한 길. 안 주면 파일을 만들지 않는다.
+  test('PIXEL_HOOK_LOG: 보낸 페이로드와 받은 결정을 JSONL 로 남긴다 (없으면 아무것도 안 남긴다)', async () => {
+    const { r, port } = await make();
+    r.on('hook', (req) => req.respond(allow()));
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pixel-hooklog-'));
+    const logFile = path.join(dir, 'hooks.jsonl');
+    try {
+      // ① 안 주면 파일이 안 생긴다
+      await runHook(port, 'PreToolUse', PAYLOAD);
+      assert.equal(fs.existsSync(logFile), false);
+
+      // ② 주면 payload 한 줄 + decision 한 줄
+      const run = await runHook(port, 'PreToolUse', PAYLOAD, 'tok1', { PIXEL_HOOK_LOG: logFile });
+      assert.equal(run.code, 0, run.stderr);
+      const rows = fs
+        .readFileSync(logFile, 'utf8')
+        .split(/\r?\n/)
+        .filter(Boolean)
+        .map((l) => JSON.parse(l) as { member: string; event: string; kind: string; data: unknown });
+      assert.equal(rows.length, 2);
+      assert.deepEqual(
+        rows.map((x) => x.kind),
+        ['payload', 'decision'],
+      );
+      assert.equal(rows[0]!.member, 'tok1');
+      assert.equal(rows[0]!.event, 'PreToolUse');
+      assert.deepEqual(JSON.parse(rows[0]!.data as string), PAYLOAD);
+      assert.deepEqual(JSON.parse(rows[1]!.data as string), allow());
+
+      // ③ 덧붙인다(같은 파일에 여러 hook)
+      await runHook(port, 'Stop', { hook_event_name: 'Stop' }, 'tok1', { PIXEL_HOOK_LOG: logFile });
+      assert.equal(fs.readFileSync(logFile, 'utf8').split(/\r?\n/).filter(Boolean).length, 4);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('쓸 수 없는 PIXEL_HOOK_LOG 경로여도 hook 왕복은 그대로 된다', async () => {
+    const { r, port } = await make();
+    r.on('hook', (req) => req.respond(allow()));
+    const bad = path.join(os.tmpdir(), 'pixel-hooklog-no-such-dir-t42', 'x', 'y.jsonl');
+    const run = await runHook(port, 'PreToolUse', PAYLOAD, 'tok1', { PIXEL_HOOK_LOG: bad });
+    assert.equal(run.code, 0, run.stderr);
     assert.deepEqual(JSON.parse(run.stdout), allow());
   });
 

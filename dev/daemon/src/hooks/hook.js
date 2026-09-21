@@ -9,12 +9,26 @@
 'use strict';
 
 const http = typeof require === 'function' ? require('http') : process.getBuiltinModule('http');
+const fs = typeof require === 'function' ? require('fs') : process.getBuiltinModule('fs');
 
 const CONNECT_TIMEOUT_MS = 2000; // 데몬이 죽어 있으면 이 안에 '{}' 를 찍고 나간다
 const [portArg, eventArg] = process.argv.slice(2);
 const port = Number(portArg);
 const event = eventArg || 'Unknown';
 const member = process.env.PIXEL_MEMBER || 'unknown';
+// 실측용 옵션(T42): PIXEL_HOOK_LOG 에 파일 경로를 주면 **보낸 페이로드와 받은 결정**을 JSONL 로 덧붙인다.
+// CLI 가 실제로 무엇을 보내는지(예: Codex 의 Interrupt·MCP 도구 tool_name) 보려면 이것 말고는 길이 없다 —
+// 어댑터는 payload 를 다 읽지 않고, 데몬 로그에도 원문이 남지 않는다. 안 주면 아무 일도 하지 않는다.
+const logPath = process.env.PIXEL_HOOK_LOG || '';
+
+function jot(kind, data) {
+  if (!logPath) return;
+  try {
+    fs.appendFileSync(logPath, JSON.stringify({ at: new Date().toISOString(), member, event, kind, data }) + '\n');
+  } catch {
+    // 진단용이므로 실패해도 hook 흐름을 막지 않는다
+  }
+}
 
 let finished = false;
 // 응답을 stdout 에 쓰고 종료. 어떤 경로로 와도 exit 0 (hook 실패로 CLI 가 도구를 막는 일이 없게).
@@ -22,6 +36,7 @@ function finish(out) {
   if (finished) return;
   finished = true;
   const body = out && out.length ? out : '{}';
+  jot('decision', body);
   process.stdout.write(body, () => process.exit(0));
 }
 
@@ -38,6 +53,7 @@ if (!Number.isInteger(port) || port <= 0) {
 
 function send(payload) {
   if (finished) return;
+  jot('payload', payload);
   const req = http.request(
     {
       host: '127.0.0.1',
