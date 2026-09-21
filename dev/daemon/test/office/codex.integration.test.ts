@@ -1,15 +1,18 @@
-// T20 통합 테스트(opt-in): 실제 데몬 + 실제 Codex CLI 로 "출근 → 지시 → 허가 → 파일 → 퇴근(Ctrl+C×2)" 한 바퀴.
-//   데몬(임시 포트·임시 dataDir) → team.create(sandbox) → clockIn(codex)  [신뢰 다이얼로그는 InputQueue 가 Enter 로 통과]
-//   → idle → instruct "셸 명령 \"echo t20 > ../t20.txt\" …"  [workspace 밖 쓰기 → PermissionRequest]
-//   → waiting_approval → approval.respond allow → idle → ../t20.txt 존재 확인 → 파일 삭제
-//   → clockOut(Ctrl+C ×2) → status exited + codex 프로세스 종료 확인 → daemon.shutdown
+// T20 통합 테스트(opt-in): 실제 데몬 + 실제 Codex CLI 로 "출근 → 지시 → 허가 → 파일 → 보고 → 퇴근" 한 바퀴.
+//   데몬(임시 포트·임시 dataDir) → department.create(sandbox, headEngine:'codex')  [신뢰 다이얼로그는 InputQueue 가 Enter 로 통과]
+//   → idle(화면 부팅 감시, Codex 의 SessionStart 는 첫 프롬프트 때 온다 — D-24)
+//   → instruct "셸 명령 \"echo t20 > ../t20.txt\" …"  [workspace 밖 쓰기 → PermissionRequest]
+//   → waiting_approval → approval.respond allow → idle → ../t20.txt 존재 확인 → task reported(보고 폴백, T22) → 파일 삭제
+//   → clockOut(Ctrl+C) → status exited + codex 프로세스 종료 확인 → daemon.shutdown
 // 실행: PIXEL_IT=1 npx tsx --test test/office/codex.integration.test.ts   (bash)
 // 전제: dev/spike-0/sandbox 가 Codex 에서 신뢰된 폴더이고 codex 로그인이 끝나 있다.
 //       node-pty 는 .ps1/.cmd 셰임을 못 띄우므로 실제 codex.exe 경로를 PIXEL_CODEX_EXE 로 넘긴다.
 //
-// ⚠ 2026-09-16 현재 ChatGPT 계정이 **사용량 한도**에 걸려 모델 턴이 안 돈다("You've hit your usage limit … try again at
-// Sep 21st, 2026 1:58 PM"). 그래서 이 테스트는 waiting_approval 에서 타임아웃한다 — 실기동 확인은 2026-09-21 이후로 미룬다.
-// (한도와 무관한 부분: 출근·hooks.json·부팅 idle·지시 주입·SessionEnd·Ctrl+C 종료는 T20 worklog 에 실행 로그로 남겼다.)
+// T42(2026-09-21, 한도 리셋 후) 갱신 — 두 가지를 고쳤다:
+//   ① rev 3(T34, D-34) 이후 `team.create`/`member.clockIn` 은 디버그 전용이고 `team.create` 는 `departmentId` 를 요구한다.
+//      옛 경로 그대로여서 이 테스트는 한도와 무관하게 -32004 로 죽고 있었다. 지금은 **사용자의 정식 경로**인
+//      `department.create{headEngine:'codex'}` 로 Codex 멤버(부장)를 세운다 — 프로세스도 하나뿐이고 `instruct` 에 force 도 필요 없다.
+//   ② 보고 폴백(T22 F) 확인을 뒤에 붙였다.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -17,7 +20,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { resolveCodexExe } from '../../src/config.js';
 import type { DaemonInfo } from '../../src/office/types.js';
-import type { Member, OfficeEvent, Snapshot, Team } from '../../src/store/types.js';
+import type { Department } from '../../src/store/types.js';
+import type { Member, OfficeEvent, Snapshot } from '../../src/store/types.js';
 import { Client, IT, SANDBOX, freePort, killTree, pidAlive, sleep, startDaemon, waitExit } from './it-helpers.js';
 
 const TARGET = path.resolve(SANDBOX, '..', 't20.txt'); // workspace(sandbox) 밖 → 승인 필요
@@ -54,10 +58,16 @@ test('real daemon + real Codex: clockIn → instruct → waiting_approval → al
     client = await Client.connect(info.wsPort, 'c');
     await client.call('hello', { token: info.token, client: { name: 't20-it', version: '0' } });
 
-    const { team } = await client.call<{ team: Team }>('team.create', { name: 'it', cwd: SANDBOX, leaderEngine: 'codex', allowedEngines: ['claude', 'codex'] });
-    const { member } = await client.call<{ member: Member }>('member.clockIn', { teamId: team.id, engine: 'codex', name: '코덱스' });
+    // rev 3(T34, D-32/D-34): 사용자가 하는 유일한 생성은 부서다. 부장 엔진을 codex 로 주면 Codex 멤버가 하나 선다.
+    const { department, head: member } = await client.call<{ department: Department; head: Member }>('department.create', {
+      name: 'it',
+      cwd: SANDBOX,
+      headEngine: 'codex',
+      headName: '코덱스',
+    });
     if (member.childPid) codexPids.push(member.childPid);
-    console.log(`[IT] clockIn member=${member.id} pid=${member.childPid} (${el()})`);
+    console.log(`[IT] department=${department.id} head=${member.id} rank=${member.rank} engine=${member.engine} pid=${member.childPid} (${el()})`);
+    assert.equal(member.engine, 'codex');
 
     // .codex/hooks.json 이 우리 것으로 쓰였는지(Interrupt 포함)
     const hooksFile = path.join(SANDBOX, '.codex', 'hooks.json');
@@ -66,12 +76,17 @@ test('real daemon + real Codex: clockIn → instruct → waiting_approval → al
     assert.equal(hooks.description, 'pixel-office');
     assert.ok(hooks.hooks.Interrupt, 'Codex hooks.json 에 Interrupt 가 있다');
 
-    // SessionStart → idle (신뢰 다이얼로그가 뜨면 InputQueue 가 Enter 로 통과)
+    // 첫 idle 은 **화면 부팅 감시**로 온다 — Codex 의 SessionStart 는 기동이 아니라 첫 프롬프트 제출 때다(T20 함정 1, D-24).
+    // 그래서 이 시점의 session_id 는 아직 null 인 것이 정상이다.
     await client.waitStatus(member.id, 'idle', 180_000);
-    const snap0 = (await client.call<{ snapshot: Snapshot }>('snapshot', {})).snapshot;
-    const sid = snap0.members.find((m) => m.id === member.id)!.sessionId;
-    console.log(`[IT] idle, session_id=${sid} (${el()})`);
-    assert.ok(sid, 'SessionStart 로 session_id 를 받았다');
+    const snapshotNow = async (tag: string): Promise<Snapshot> => {
+      const peek = await Client.connect(info.wsPort, tag);
+      const s = (await peek.call<{ snapshot: Snapshot }>('hello', { token: info.token, client: { name: tag, version: '0' } })).snapshot;
+      peek.close();
+      return s;
+    };
+    const sidAtBoot = (await snapshotNow('peek0')).members.find((m) => m.id === member.id)!.sessionId;
+    console.log(`[IT] boot idle, session_id=${String(sidAtBoot)} (${el()})  ← Codex 는 여기서 null 이 정상(D-24)`);
 
     // ---- 지시 → workspace 밖 쓰기 → 허가 요청 -------------------------------------------------
     const seq0 = client.lastSeq;
@@ -94,6 +109,16 @@ test('real daemon + real Codex: clockIn → instruct → waiting_approval → al
     assert.ok(fs.existsSync(TARGET), `${TARGET} 가 만들어졌다`);
     console.log(`[IT] ${TARGET} = ${JSON.stringify(fs.readFileSync(TARGET, 'utf8'))}`);
     fs.rmSync(TARGET, { force: true });
+
+    // ---- 보고 폴백(T22 / 목록 F): Codex 가 report 도구를 안 불러도 턴 종료 메시지가 task 보고로 승격된다 -------
+    const reporting = await client.waitEvent(member.id, 'reporting', approval.seq, 30_000);
+    console.log(`[IT] reporting #${reporting.seq} task#${String(reporting.ref.taskId)} ${JSON.stringify(reporting.detail).slice(0, 200)}`);
+    assert.equal(reporting.ref.taskId, taskId, '보고가 이 지시의 task 에 달린다');
+
+    // 첫 턴을 돌고 나면 SessionStart 가 와 있다(= `codex resume <id>` 로 복구할 수 있다).
+    const sidAfterTurn = (await snapshotNow('peek1')).members.find((m) => m.id === member.id)!.sessionId;
+    console.log(`[IT] session_id after first turn = ${String(sidAfterTurn)}`);
+    assert.ok(sidAfterTurn, '첫 턴의 SessionStart 로 session_id 를 받았다');
 
     // ---- 퇴근: Ctrl+C ×2 -------------------------------------------------------------------
     await client.call('member.clockOut', { memberId: member.id });
