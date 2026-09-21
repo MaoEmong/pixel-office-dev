@@ -122,8 +122,8 @@ describe('스키마 v2 → v3 마이그레이션 (T43, D-45 사용량)', () => {
     store.close();
 
     const raw = new DatabaseSync(dbPath);
-    assert.equal((raw.prepare('SELECT version FROM schema_version').get() as { version: number }).version, 3);
-    assert.equal(SCHEMA_VERSION, 3);
+    // v2 DB 는 최신(SCHEMA_VERSION) 까지 한 번에 간다 — v3·v4 둘 다 `CREATE TABLE IF NOT EXISTS` 뿐이다.
+    assert.equal((raw.prepare('SELECT version FROM schema_version').get() as { version: number }).version, SCHEMA_VERSION);
     const tables = (raw.prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name").all() as Array<{ name: string }>).map((r) => r.name);
     assert.ok(tables.includes('engine_usage'), tables.join(','));
     assert.ok(tables.includes('member_usage'), tables.join(','));
@@ -201,7 +201,7 @@ describe('스키마 v2 → v3 마이그레이션 (T43, D-45 사용량)', () => {
     assert.equal(s2.listMembers().length, 2);
     s2.close();
     const raw = new DatabaseSync(dbPath);
-    assert.equal((raw.prepare('SELECT version FROM schema_version').get() as { version: number }).version, 3);
+    assert.equal((raw.prepare('SELECT version FROM schema_version').get() as { version: number }).version, SCHEMA_VERSION);
     raw.close();
   });
 

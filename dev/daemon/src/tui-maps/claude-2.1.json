@@ -65,5 +65,22 @@
       "source": "fixtures/claude/approval-prompt.txt (Bash, 4항목) → ↓×3 = fixtures/claude/approval-prompt-no-highlighted.txt('❯ 4. No') → Enter = fixtures/claude/approval-after-deny.txt",
       "all": ["Do you want to proceed\\?"],
       "allowKeys": ["enter"], "denyKeys": ["down", "down", "down", "enter"] }
-  ]
+  ],
+  "usage": {
+    "verified": true,
+    "source": "dev/spike-1/out/claude-screen-05-usage.txt(턴 1회 뒤) · claude-full-usage-fresh.txt(턴 0회) — T43-0 Q3, 2026-09-21 2.1.275",
+    "command": "/usage",
+    "closeKeys": ["esc"],
+    "scrollback": false,
+    "ready": ["^\\s*Current week \\(all models\\)\\s*$", "^\\s*Current session\\s*$"],
+    "blocks": [
+      {
+        "target": "auto",
+        "percentIs": "used",
+        "sessionLabel": "^Current session$",
+        "weeklyLabel": "^Current week \\(all models\\)$",
+        "pattern": "^\\s*(?<label>Current session|Current week \\((?<model>[^)]+)\\))\\s*$\\n^\\s*\\S*\\s*(?<percent>\\d+)% used\\s*$\\n^\\s*Resets (?<resets>[^\\n]+?)\\s*$"
+      }
+    ]
+  }
 }

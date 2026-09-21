@@ -1,0 +1,50 @@
+
+╭───────────────────────────────────────────────────────────────╮
+│ ✨ Update available! 0.154.0 -> 0.155.1                       │
+│ See https://github.com/openai/codex for installation options. │
+│                                                               │
+│ See full release notes:                                       │
+│ https://github.com/openai/codex/releases/latest               │
+╰───────────────────────────────────────────────────────────────╯
+
+╭──────────────────────────────────────────────────────────╮
+│ >_ OpenAI Codex (v0.154.0)                               │
+│                                                          │
+│ model:     gpt-6-astra high   /model to change           │
+│ directory: D:\myproject\pixel-office\dev\spike-0\sandbox │
+╰──────────────────────────────────────────────────────────╯
+
+  Tip: Paste an image with Ctrl+V to attach it to your next message.
+
+⚠ 2 startup issues (1 MCP) · ctrl + t for details
+
+⚠ `--dangerously-bypass-hook-trust` is enabled. Enabled hooks may run without review for this invocation.
+
+⚠ clamping SessionEnd hook timeout to 3s in D:\myproject\pixel-office\dev\spike-0\sandbox\.codex\hooks.json
+
+⚠ clamping Interrupt hook timeout to 3s in D:\myproject\pixel-office\dev\spike-0\sandbox\.codex\hooks.json
+
+/status
+
+╭─────────────────────────────────────────────────────────────────────────────────╮
+│  >_ OpenAI Codex (v0.154.0)                                                     │
+│                                                                                 │
+│ Visit https://chatgpt.com/codex/settings/usage for up-to-date                   │
+│ information on rate limits and credits                                          │
+│                                                                                 │
+│  Model:                gpt-6-astra (reasoning high, summaries auto)             │
+│  Model provider:       openai                                                   │                                     
+│  Directory:            D:\myproject\pixel-office\dev\spike-0\sandbox            │                                     
+│  Permissions:          Workspace (Ask for approval)                             │                                     
+│  Agents.md:            ~\.codex\AGENTS.md                                       │                                     
+│  Account:              <이메일> (Pro)                                │                                     
+│  Collaboration mode:   Default                                                  │                                     
+│  Session:              01a0c2d7-1149-76b2-a5e0-923f22576399                     │                                     
+│                                                                                 │                                     
+│  Weekly limit:         [██████████████████░░] 88% left (resets 14:02 on 28 Sep) │                                     
+╰─────────────────────────────────────────────────────────────────────────────────╯                                     
+                                                                                                                        
+                                                                                                                        
+› Ask Codex to do anything                                                                                              
+                                                                                                                        
+  gpt-6-astra high · D:\myproject\pixel-office\dev\spike-0\sandbox

@@ -198,3 +198,82 @@ describe('사용량 배선 (T43, D-45)', () => {
     assert.equal(codexSpawn.statusLineScriptPath, undefined, 'Codex 에는 statusLine 설정이 없다');
   });
 });
+
+// ---- T43-4 확인용 세션(UsageProbe)과 Office 의 관계 ------------------------------------
+
+describe('확인용 세션 배선 (T43-4)', () => {
+  let dataDir: string;
+  let store: Store;
+  let office: Office;
+
+  beforeEach(() => {
+    dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pixel-office-probe-wire-'));
+    store = new Store(':memory:');
+  });
+  afterEach(async () => {
+    await office?.shutdown().catch(() => {});
+    fs.rmSync(dataDir, { recursive: true, force: true });
+  });
+
+  /** 확인용 세션을 **시작하지 않는다** — Office 는 스스로 CLI 를 띄우지 않는다(index.ts 가 켠다). */
+  function makeOffice(orphanOps?: { alive(pid: number): boolean; name(pid: number): string | undefined; kill(pid: number): void }): Office {
+    return new Office({
+      config: { dataDir, hookPort: 0, wsPort: 0, mcpPort: 0 },
+      store,
+      pty: new FakePty(),
+      receiver: new FakeReceiver(),
+      mcp: new FakeMcp(),
+      usage: new UsageTracker({ store, pollIntervalMs: 0, probeClaude: async () => ({ connected: true, plan: 'max', reason: null }), probeCodex: async () => ({ connected: true, plan: null, reason: null }) }),
+      version: 't43-4',
+      ...(orphanOps ? { recovery: { orphanOps } } : {}),
+    });
+  }
+
+  test('Office.start() 는 확인용 세션을 띄우지 않는다(멤버 CLI 말고는 스스로 안 띄운다)', async () => {
+    office = makeOffice();
+    await office.start();
+    assert.deepEqual(office.usageProbe.pids(), []);
+    assert.equal(office.usageProbe.phaseOf('claude'), 'off');
+  });
+
+  test('확인용 세션은 멤버가 아니다 — 스냅샷의 members 에도 usage.members 에도 없다', async () => {
+    office = makeOffice();
+    await office.start();
+    makeTree(office, { name: 'alpha', cwd: dataDir, headName: '국장', engine: 'claude' });
+    // 확인용 세션이 실제로 읽은 값을 넣어도 멤버 행은 생기지 않는다.
+    office.usage.applyProbe('claude', { weekly: { usedPercent: 40, resetsAt: null }, models: [{ label: 'Fable', usedPercent: 40, resetsAt: null }] });
+    const snap = office.snapshot();
+    assert.ok(!snap.members.some((m) => m.id.includes('usage-probe')), JSON.stringify(snap.members.map((m) => m.id)));
+    assert.ok(!snap.usage!.members.some((m) => m.memberId.includes('usage-probe')));
+    assert.equal(snap.usage!.engines.find((e) => e.engine === 'claude')!.source, 'probe');
+    assert.deepEqual(snap.usage!.engines.find((e) => e.engine === 'claude')!.models.map((m) => m.label), ['Fable']);
+  });
+
+  test('shutdown 이 확인용 세션을 내린다', async () => {
+    office = makeOffice();
+    await office.start();
+    let stopped = false;
+    const realStop = office.usageProbe.stop.bind(office.usageProbe);
+    office.usageProbe.stop = () => {
+      stopped = true;
+      realStop();
+    };
+    await office.shutdown();
+    assert.equal(stopped, true);
+  });
+
+  test('기동할 때 이전 기동의 확인용 세션 pid 를 정리하고 표를 비운다', async () => {
+    store.putUsageProbePid('claude', 4242);
+    store.putUsageProbePid('codex', 4243);
+    const killed: number[] = [];
+    office = makeOffice({
+      alive: () => true,
+      // pid 재사용 가드: 이름이 엔진 이름을 포함할 때만 죽인다.
+      name: (pid) => (pid === 4242 ? 'claude.exe' : 'notepad.exe'),
+      kill: (pid) => killed.push(pid),
+    });
+    await office.start();
+    assert.deepEqual(killed, [4242], '이름이 다른 pid(4243)는 건드리지 않는다');
+    assert.deepEqual(store.listUsageProbePids(), [], '표는 비운다');
+  });
+});

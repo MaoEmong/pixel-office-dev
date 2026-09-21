@@ -13,7 +13,9 @@ const CLAUDE: EngineUsage = {
   plan: 'max',
   weekly: { usedPercent: 54, resetsAt: '2026-09-23T03:00:00.000Z' },
   session: { usedPercent: 17, resetsAt: '2026-09-21T12:00:00.000Z' },
+  models: [],
   updatedAt: '2026-09-21T10:00:00.000Z',
+  source: 'turn',
   reason: null,
 };
 const CODEX_OFF: EngineUsage = {
@@ -22,7 +24,9 @@ const CODEX_OFF: EngineUsage = {
   plan: null,
   weekly: null,
   session: null,
+  models: [],
   updatedAt: null,
+  source: null,
   reason: 'not-installed',
 };
 const HEAD: MemberUsage = {

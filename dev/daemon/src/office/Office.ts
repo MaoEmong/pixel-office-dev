@@ -31,6 +31,7 @@ import { ClaudeHooksAdapter } from '../adapters/ClaudeHooksAdapter.js';
 import { CodexHooksAdapter } from '../adapters/CodexHooksAdapter.js';
 import { ScreenModel } from '../screen/ScreenModel.js';
 import { InputQueue } from '../input/InputQueue.js';
+import { UsageProbe } from '../usage/UsageProbe.js';
 import { UsageTracker } from '../usage/UsageTracker.js';
 import { ALL_TEAM_TOOLS, TeamToolsServer, TEAM_MCP_NAME, canUseTool, rankToolMessage, type TeamToolName } from '../mcp/TeamToolsServer.js';
 import { CHILD_RANK, USER_ACTOR } from '../store/types.js';
@@ -172,6 +173,8 @@ export interface OfficeOptions {
   statusLineScriptPath?: string;
   /** 사용량 추적기(T43). 생략 시 store 를 물린 UsageTracker 를 만든다. */
   usage?: UsageTracker;
+  /** 확인용 세션(T43-4). 생략 시 만들되 **start() 는 index.ts 가 부른다**(Office 는 스스로 프로세스를 띄우지 않는다). */
+  usageProbe?: UsageProbe;
   version?: string;
   /** "데몬은 하나만" 가드(T30)의 pid·포트 확인 연산. 테스트가 가짜로 바꿔 끼운다. */
   singletonProbe?: SingletonProbe;
@@ -246,6 +249,12 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
   readonly statusLineScriptPath: string;
   /** 엔진·멤버 사용량(T43, D-45). 스냅샷 `usage` 와 `usage.*` 알림의 출처. */
   readonly usage: UsageTracker;
+  /**
+   * 확인용 세션(T43-4) — 엔진마다 숨은 CLI 하나를 띄워 `/usage`·`/status` 화면만 읽는다. **멤버가 아니다.**
+   * 연결 폴링과 같은 이유로 `start()` 는 `index.ts` 가 부르고(Office 단위 테스트가 CLI 를 띄우면 안 된다)
+   * 끄는 것은 `shutdown()` 이 같이 한다.
+   */
+  readonly usageProbe: UsageProbe;
 
   readonly store: Store;
   readonly pty: PtyManagerLike;
@@ -306,6 +315,26 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
     this.store = opts.store ?? new Store(path.join(this.cfg.dataDir, 'pixel-office.db'));
     this.usage =
       opts.usage ?? new UsageTracker({ store: this.store, pollIntervalMs: Math.max(0, this.cfg.usagePollSec) * 1000 });
+    this.usageProbe =
+      opts.usageProbe ??
+      new UsageProbe({
+        tracker: this.usage,
+        dataDir: this.cfg.dataDir,
+        intervalMs: Math.max(0, this.cfg.usageProbeSec) * 1000,
+        enabled: this.cfg.usageProbe,
+        claudeExe: this.cfg.claudeExe,
+        codexExe: this.cfg.codexExe,
+        cols: this.cfg.cols,
+        rows: this.cfg.rows,
+        // 데몬이 하드 킬돼도 다음 기동이 이 pid 를 보고 정리한다(D-17 과 같은 이유, v4 스키마).
+        recordPid: (engine, pid) => {
+          try {
+            this.store.putUsageProbePid(engine, pid);
+          } catch (err) {
+            console.warn(`[usage-probe] pid 기록 실패(${engine}):`, err);
+          }
+        },
+      });
     this.pty =
       opts.pty ??
       new PtyManager({
@@ -428,6 +457,8 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
     // 다른 프로세스를 스스로 띄우지 않는다(단위 테스트가 Office 를 그냥 만들어 쓴다). 실제 데몬은 index.ts 가
     // `office.usage.start()` 로 켠다. 끄는 것은 shutdown() 이 같이 한다.
     this.usage.pruneMissingMembers();
+    // T43-4: 이전 기동의 확인용 세션이 하드 킬에서 살아남았을 수 있다(멤버가 아니라 recover() 가 못 본다).
+    this.reapUsageProbes();
     // 재시작 복구(T09): RPC 클라이언트가 붙기 전에 이전 기동의 멤버를 되살린다. 절대 throw 하지 않는다.
     this.recovery = this.recover();
     return this.info;
@@ -511,6 +542,7 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
     this.runtimes.clear();
     this.shell.clear(); // T27: 남은 보류·타이머 정리
     this.usage.stop(); // T43: 연결 폴링 타이머
+    this.usageProbe.stop(); // T43-4: 확인용 세션(숨은 CLI)을 죽인다 — 데몬이 내려가면 남아 있으면 안 된다
     if (this.retentionTimer) {
       clearInterval(this.retentionTimer);
       this.retentionTimer = undefined;
@@ -1916,6 +1948,36 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
   }
 
   /**
+   * 확인용 세션(T43-4)의 유령 정리. 이 프로세스들은 **멤버가 아니라** `members.child_pid` 에 자리가 없어
+   * `usage_probe` 표(v4)에 따로 적어 둔다. 기동할 때 남아 있는 pid 를 같은 가드(프로세스 이름이 엔진 이름을
+   * 포함할 때만)로 정리하고 표를 비운다 — 안 그러면 데몬을 하드 킬할 때마다 숨은 CLI 가 한 개씩 쌓인다.
+   */
+  private reapUsageProbes(): void {
+    let rows: Array<{ engine: Engine; childPid: number }>;
+    try {
+      rows = this.store.listUsageProbePids();
+    } catch (err) {
+      console.warn('[office] usage_probe 목록 읽기 실패:', err);
+      return;
+    }
+    for (const row of rows) {
+      try {
+        const verdict = reapOrphan(this.orphanOps, row.childPid, row.engine);
+        if (verdict.action === 'killed') {
+          this.notice('warn', `복구: 이전 기동의 사용량 확인용 세션(${row.engine}, pid ${row.childPid})을 종료함`);
+        }
+      } catch (err) {
+        console.warn(`[office] usage_probe orphan check for pid ${row.childPid} failed:`, err);
+      }
+    }
+    try {
+      this.store.clearUsageProbePids();
+    } catch (err) {
+      console.warn('[office] usage_probe 정리 실패:', err);
+    }
+  }
+
+  /**
    * [RESUMED] 를 먼저, 그 뒤에 queued task 를 id 순으로(원래 `instruct` 와 같은 모양이라 flush 시 assigned 가 된다).
    * 발행자가 팀장인 task(위임, T25)는 `[TASK#n from <팀장>(팀장)]` 봉투로 들어간다.
    */
@@ -2143,6 +2205,8 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
     // T43: 사용량이 **바뀔 때만** 알림으로 흘린다(비영속·seq 없음). 계산은 UsageTracker 한 곳에서만 한다.
     this.usage.on('engine', (u) => this.emit('usage.engine', u));
     this.usage.on('member', (u) => this.emit('usage.member', u));
+    // T43-4: 확인용 세션이 화면을 못 읽었다 — **엔진당 데몬 수명에 한 번**만 온다(UsageProbe 가 막는다).
+    this.usageProbe.on('warn', (_engine, message) => this.notice('warn', message));
 
     // T27: 대기·강제 해제는 사용자에게 보여야 한다(대기는 이벤트, 강제 해제는 알림).
     this.shell.on('waiting', (info, holder) => this.noticeShellWait(info, holder));

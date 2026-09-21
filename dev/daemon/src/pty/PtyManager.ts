@@ -6,7 +6,7 @@ import { EventEmitter } from 'node:events';
 import * as pty from 'node-pty';
 import { config as defaultConfig } from '../config.js';
 import { buildClaudeArgs, buildCodexArgs } from './args.js';
-import { CHILD_TERM, sanitizeEnv } from './env.js';
+import { CHILD_TERM, sanitizeEnv, stripDaemonEnv } from './env.js';
 import { ensureCodexHooksFile, writeClaudeSessionSettings } from './hookSettings.js';
 import type { Engine, ExitInfo, KeyName, PtySession, SpawnOptions } from './types.js';
 
@@ -53,6 +53,20 @@ export const PASTE_END = '\x1b[201~';
  * 턴이 도는 중이면 첫 Ctrl+C 는 그 턴만 끊으므로 안 죽었을 때만 한 번 더 보낸다.
  */
 export const CODEX_SECOND_CTRL_C_WAIT_MS = 2000;
+
+/** [PtyManager.spawnBare] 인자 — 멤버가 아닌 세션(확인용 세션, T43-4). */
+export interface BareSpawnOptions {
+  /** 세션 키(`usage-probe:claude` 등). **멤버 id 가 아니다.** */
+  id: string;
+  engine: Engine;
+  cwd: string;
+  /** 실행 파일 뒤에 그대로 붙일 인자 전부(`args.ts` 의 `build*ProbeArgs`). */
+  args: string[];
+  cols?: number;
+  rows?: number;
+  /** 기본은 `stripDaemonEnv(process.env)` + TERM — **`PIXEL_MEMBER` 는 넣지 않는다**(hook 이 붙을 자리가 없다). */
+  env?: Record<string, string>;
+}
 
 /** gracefulQuit 가 건드리는 세션의 최소 모양(테스트에서 가짜로 대체). */
 export type QuitTarget = Pick<PtySession, 'engine' | 'alive' | 'write' | 'sendKeys'>;
@@ -180,20 +194,45 @@ export class PtyManager extends EventEmitter<PtyManagerEvents> {
 
     const { file, args } = this.prepareCommand(opts);
     const env = sanitizeEnv(process.env, opts.memberToken);
-    const cols = opts.cols ?? this.cfg.cols;
-    const rows = opts.rows ?? this.cfg.rows;
+    return this.spawnRaw(opts.memberId, opts.engine, file, args, opts.cwd, env, opts.cols, opts.rows);
+  }
 
-    const proc = pty.spawn(file, args, { name: CHILD_TERM, cols, rows, cwd: opts.cwd, env });
-    const session = new PtySessionImpl(opts.memberId, opts.engine, proc);
-    this.sessions.set(opts.memberId, session);
+  /**
+   * **멤버가 아닌** 프로세스를 띄운다(T43-4 확인용 세션). 설정 파일을 쓰지 않고 `PIXEL_MEMBER` 도 넣지 않는다 —
+   * 인자를 통째로 받아 그대로 실행할 뿐이다. `id` 는 세션 키일 뿐 멤버 id 가 아니며, 이 세션은 DB 의 `members`
+   * 에도 스냅샷에도 사무실에도 나타나지 않는다(D-45 ⑦).
+   *
+   * 확인용 세션은 **자기 PtyManager 인스턴스**를 쓴다 — Office 의 세션 목록에 섞이면 언젠가 멤버로 취급된다.
+   */
+  spawnBare(opts: BareSpawnOptions): PtySession {
+    const existing = this.sessions.get(opts.id);
+    if (existing?.alive) throw new Error(`bare session ${opts.id} already alive (pid ${existing.pid})`);
+    const file = opts.engine === 'claude' ? this.cfg.claudeExe : this.cfg.codexExe;
+    const env = opts.env ?? { ...stripDaemonEnv(process.env), TERM: CHILD_TERM };
+    return this.spawnRaw(opts.id, opts.engine, file, opts.args, opts.cwd, env, opts.cols, opts.rows);
+  }
 
-    proc.onData((chunk) => this.emit('data', opts.memberId, chunk));
+  private spawnRaw(
+    id: string,
+    engine: Engine,
+    file: string,
+    args: string[],
+    cwd: string,
+    env: Record<string, string>,
+    cols?: number,
+    rows?: number,
+  ): PtySession {
+    const proc = pty.spawn(file, args, { name: CHILD_TERM, cols: cols ?? this.cfg.cols, rows: rows ?? this.cfg.rows, cwd, env });
+    const session = new PtySessionImpl(id, engine, proc);
+    this.sessions.set(id, session);
+
+    proc.onData((chunk) => this.emit('data', id, chunk));
     proc.onExit((e) => {
       session.markExited();
       releaseConptyResources(proc);
       // 그 사이 같은 id 로 새 세션이 떴을 수 있으니 내 것일 때만 지운다.
-      if (this.sessions.get(opts.memberId) === session) this.sessions.delete(opts.memberId);
-      this.emit('exit', opts.memberId, { exitCode: e.exitCode, signal: e.signal });
+      if (this.sessions.get(id) === session) this.sessions.delete(id);
+      this.emit('exit', id, { exitCode: e.exitCode, signal: e.signal });
     });
     return session;
   }

@@ -180,6 +180,16 @@ export const config = {
    * 타이머를 걸지 않는다. 명령이 0.3초 이하라 60초는 부담이 없다.
    */
   usagePollSec: Number(process.env.PIXEL_USAGE_POLL_SEC || 60),
+  /**
+   * 확인용 세션(T43-4)을 쓰는가. `PIXEL_USAGE_PROBE=0` 이면 엔진마다 숨은 CLI 를 띄우지 않고 턴 종료 출처만
+   * 쓴다(상주 프로세스가 싫을 때). 그러면 아무도 일을 안 한 동안·툴 밖에서 쓴 사용량은 반영되지 않는다.
+   */
+  usageProbe: process.env.PIXEL_USAGE_PROBE !== '0',
+  /**
+   * 확인용 세션이 `/usage`·`/status` 를 여는 주기(초, `PIXEL_USAGE_PROBE_SEC`). 모델 턴을 쓰지 않으므로
+   * 할당량이 들지 않는다. 0 이하면 기동 뒤 **한 번만** 읽는다.
+   */
+  usageProbeSec: Number(process.env.PIXEL_USAGE_PROBE_SEC || 300),
   /** 기본 터미널 크기. */
   cols: 120,
   rows: 40,

@@ -54,6 +54,16 @@ console.log(`[daemon] codex     : ${config.codexExe}`);
 // Office.start() 가 아니라 여기서 켠다 — Office 는 멤버 CLI 말고 다른 프로세스를 스스로 띄우지 않는다.
 office.usage.start();
 console.log(`[daemon] usage     : 연결 확인 ${config.usagePollSec > 0 ? `${config.usagePollSec}초마다` : '기동 시 한 번만'} (PIXEL_USAGE_POLL_SEC)`);
+// T43-4: 엔진마다 숨은 확인용 세션 하나를 띄워 `/usage`·`/status` 화면만 읽는다(모델 턴 0). 멤버가 아니다.
+// 여기서 켜는 이유는 연결 확인과 같다 — Office 는 멤버 CLI 말고 다른 프로세스를 스스로 띄우지 않는다.
+office.usageProbe.start();
+console.log(
+  `[daemon] probe     : ${
+    office.usageProbe.isEnabled
+      ? `확인용 세션 ${config.usageProbeSec > 0 ? `${config.usageProbeSec}초마다` : '기동 뒤 한 번만'} (PIXEL_USAGE_PROBE_SEC, 끄려면 PIXEL_USAGE_PROBE=0)`
+      : '꺼짐 (PIXEL_USAGE_PROBE=0) — 턴 종료 출처만 씁니다'
+  }`,
+);
 console.log(`[daemon] listening`);
 
 office.once('shutdown', async () => {

@@ -1,8 +1,8 @@
 // 환경변수 정리기 + 인자 생성기 단위 테스트 — 스폰 없음.
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { CHILD_TERM, DROP_ENV_RE, sanitizeEnv } from '../../src/pty/env.js';
-import { buildClaudeArgs, buildCodexArgs } from '../../src/pty/args.js';
+import { CHILD_TERM, DROP_ENV_RE, sanitizeEnv, stripDaemonEnv } from '../../src/pty/env.js';
+import { buildClaudeArgs, buildClaudeProbeArgs, buildCodexArgs, buildCodexProbeArgs } from '../../src/pty/args.js';
 
 describe('sanitizeEnv', () => {
   const base: NodeJS.ProcessEnv = {
@@ -103,5 +103,30 @@ describe('buildCodexArgs', () => {
     assert.deepEqual(buildCodexArgs('01a09f4f', ['-m', 'x']), [
       'resume', '01a09f4f', '--dangerously-bypass-hook-trust', '-c', 'approval_policy="on-request"', '-c', 'sandbox_mode="workspace-write"', '-m', 'x',
     ]);
+  });
+});
+
+describe('확인용 세션 인자 (T43-4) — 멤버와 달리 아무것도 주입하지 않는다', () => {
+  test('claude: --settings 없음 = hook·statusLine·MCP 없음, permission-mode 는 멤버와 같다', () => {
+    const args = buildClaudeProbeArgs();
+    assert.deepEqual(args, ['--permission-mode', 'default']);
+    assert.ok(!args.includes('--settings'), 'hook/statusLine 을 주입할 자리 자체가 없다');
+    assert.ok(!args.includes('--mcp-config'), '팀 도구를 주지 않는다');
+    assert.ok(!args.includes('--resume'), '재개하지 않는다 — 기록 없는 새 세션');
+  });
+
+  test('codex: hook 검토 패널을 피하고 샌드박스는 읽기 전용', () => {
+    const args = buildCodexProbeArgs();
+    assert.ok(args.includes('--dangerously-bypass-hook-trust'), args.join(' '));
+    assert.ok(args.includes('sandbox_mode="read-only"'), args.join(' '));
+    assert.ok(!args.some((a) => a.includes('mcp_servers')), '팀 도구를 주지 않는다');
+    assert.ok(!args.includes('resume'));
+  });
+
+  test('확인용 세션 환경변수에는 PIXEL_MEMBER 가 없다(hook 이 붙을 자리가 없다)', () => {
+    const env: Record<string, string> = { ...stripDaemonEnv({ PATH: 'p', CLAUDE_CODE_CHILD_SESSION: '1' }), TERM: 'xterm-256color' };
+    assert.equal(env.PIXEL_MEMBER, undefined);
+    assert.equal(env.CLAUDE_CODE_CHILD_SESSION, undefined, '부모 Claude 의 환경은 그대로 새면 안 된다');
+    assert.equal(env.TERM, 'xterm-256color');
   });
 });

@@ -17,8 +17,14 @@
 //   member_usage(member_id PK, json, updated_at)   멤버 세션의 컨텍스트·누적 토큰·비용. 멤버 행과 함께 사라진다
 //                                                  (FK ON DELETE CASCADE — 부서·팀 삭제 경로가 그대로 탄다).
 // v2 → v3 은 `CREATE TABLE IF NOT EXISTS` 두 개라 별도 스텝이 없다: SCHEMA_SQL 을 그대로 실행하고 버전만 올린다.
+//
+// v4(T43-4 확인용 세션): **추가만** 한다.
+//   usage_probe(engine PK, child_pid, updated_at)   확인용 세션(멤버가 아닌 CLI 프로세스)의 pid.
+//                                                   데몬이 하드 킬되면 이 프로세스도 살아남는다(D-17 과 같은 이유) —
+//                                                   멤버가 아니라 `members.child_pid` 에 자리가 없어 따로 적는다.
+// v3 → v4 도 `CREATE TABLE IF NOT EXISTS` 하나라 별도 스텝이 없다.
 
-export const SCHEMA_VERSION = 3;
+export const SCHEMA_VERSION = 4;
 
 export const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -127,6 +133,14 @@ CREATE TABLE IF NOT EXISTS engine_usage (
 CREATE TABLE IF NOT EXISTS member_usage (
   member_id  TEXT PRIMARY KEY REFERENCES members(id) ON DELETE CASCADE,
   json       TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+-- v4(T43-4): 확인용 세션의 자식 pid. **멤버가 아니라 FK 가 없다.** 기동할 때 여기 남은 pid 를 먼저 정리하고
+-- (프로세스 이름이 엔진 이름을 포함할 때만 — orphans.ts 의 가드) 표를 비운다.
+CREATE TABLE IF NOT EXISTS usage_probe (
+  engine     TEXT PRIMARY KEY,
+  child_pid  INTEGER,
   updated_at TEXT NOT NULL
 );
 `;

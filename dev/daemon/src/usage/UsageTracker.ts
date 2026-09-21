@@ -28,7 +28,9 @@ import type {
   EngineUsage,
   MemberUsage,
   UsageContext,
+  UsageModel,
   UsageSnapshot,
+  UsageSource,
   UsageTokens,
   UsageWindow,
 } from './types.js';
@@ -70,7 +72,20 @@ export interface UsageMemberRef {
 interface LimitPatch {
   weekly?: UsageWindow | null;
   session?: UsageWindow | null;
+  /** 모델별 주간 한도(확인용 세션 전용). 빈 배열도 "봤는데 없더라" 가 아니라 **안 준 것**으로 친다. */
+  models?: UsageModel[] | null;
   plan?: string | null;
+}
+
+/** 한도 칸별 "이 값을 언제 읽었나"(epoch ms). 더 최근 것이 이긴다(T43-4). */
+interface LimitStamps {
+  weekly: number;
+  session: number;
+  models: number;
+}
+
+function emptyStamps(): LimitStamps {
+  return { weekly: Number.NEGATIVE_INFINITY, session: Number.NEGATIVE_INFINITY, models: Number.NEGATIVE_INFINITY };
 }
 
 interface MemberPatch {
@@ -81,7 +96,7 @@ interface MemberPatch {
 
 function emptyEngine(engine: Engine): EngineUsage {
   // 폴링 전에는 "물어보지 않았다" 다. 앱은 회색 칩으로 그린다.
-  return { engine, connected: false, plan: null, weekly: null, session: null, updatedAt: null, reason: 'unknown' };
+  return { engine, connected: false, plan: null, weekly: null, session: null, models: [], updatedAt: null, source: null, reason: 'unknown' };
 }
 
 /** `updatedAt` 을 뺀 나머지가 같은가(변화 감지). 값이 작아 JSON 비교로 충분하다. */
@@ -106,6 +121,7 @@ export class UsageTracker extends EventEmitter<UsageTrackerEvents> {
   private readonly probeCodex: () => Promise<EngineConnection>;
   private readonly readTail: (file: string) => Promise<string>;
   private readonly engines = new Map<Engine, EngineUsage>();
+  private readonly stamps = new Map<Engine, LimitStamps>();
   private readonly members = new Map<string, MemberUsage>();
   private timer?: NodeJS.Timeout;
   private polling?: Promise<void>;
@@ -164,7 +180,7 @@ export class UsageTracker extends EventEmitter<UsageTrackerEvents> {
   applyStatusLine(member: UsageMemberRef, payload: unknown): string {
     const info = parseClaudeStatusLine(payload);
     if (info.weekly || info.session) {
-      this.recordEngineLimits(member.engine, { weekly: info.weekly, session: info.session });
+      this.recordEngineLimits(member.engine, { weekly: info.weekly, session: info.session }, 'turn');
     }
     if (info.context || info.costUsd !== null) {
       this.recordMemberUsage(member, { context: info.context, costUsd: info.costUsd });
@@ -196,14 +212,26 @@ export class UsageTracker extends EventEmitter<UsageTrackerEvents> {
     if (tail === '') return;
     const tc = parseCodexTokenCounts(tail);
     if (tc.weekly || tc.session || tc.plan) {
-      this.recordEngineLimits(member.engine, { weekly: tc.weekly, session: tc.session, plan: tc.plan });
+      this.recordEngineLimits(member.engine, { weekly: tc.weekly, session: tc.session, plan: tc.plan }, 'turn');
     }
     if (tc.context || tc.tokens) {
       this.recordMemberUsage(member, { context: tc.context, tokens: tc.tokens, costUsd: null });
     }
   }
 
-  // ---- 입력 ③ 연결 폴링 --------------------------------------------------------
+  // ---- 입력 ③ 확인용 세션 화면 (T43-4) ------------------------------------------
+
+  /**
+   * 확인용 세션(`UsageProbe`)이 `/usage`·`/status` 화면에서 읽은 한도를 반영한다.
+   *
+   * 턴이 한 번도 없어도(= statusLine·rollout 이 아무 말도 안 해도) 숫자가 들어오는 유일한 길이다.
+   * 턴 종료 값과 **칸마다 더 최근 것이 이긴다** — `measuredAt` 은 화면을 실제로 읽은 시각이다.
+   */
+  applyProbe(engine: Engine, patch: { weekly?: UsageWindow | null; session?: UsageWindow | null; models?: UsageModel[]; plan?: string | null }, measuredAt: number = this.now()): void {
+    this.recordEngineLimits(engine, patch, 'probe', measuredAt);
+  }
+
+  // ---- 입력 ④ 연결 폴링 --------------------------------------------------------
 
   /** 기동 시 한 번 + 주기 타이머. 두 번 불러도 타이머는 하나. */
   start(): void {
@@ -283,7 +311,20 @@ export class UsageTracker extends EventEmitter<UsageTrackerEvents> {
     for (const row of this.store.listEngineUsage()) {
       const value = row.value as Partial<EngineUsage> | null;
       if (!value || typeof value !== 'object') continue;
-      this.engines.set(row.engine, { ...emptyEngine(row.engine), ...value, engine: row.engine });
+      // 옛 데몬(v3)이 쓴 행에는 `models`·`source` 가 없다 — 기본값으로 채운다.
+      const models = Array.isArray(value.models) ? value.models : [];
+      const source = value.source === 'probe' || value.source === 'turn' ? value.source : null;
+      const usage: EngineUsage = { ...emptyEngine(row.engine), ...value, models, source, engine: row.engine };
+      this.engines.set(row.engine, usage);
+      // 재기동 뒤에도 "언제 읽은 값인가" 를 알아야 새 측정과 나이를 견줄 수 있다.
+      const at = usage.updatedAt ? Date.parse(usage.updatedAt) : Number.NaN;
+      if (Number.isFinite(at)) {
+        this.stamps.set(row.engine, {
+          weekly: usage.weekly ? at : Number.NEGATIVE_INFINITY,
+          session: usage.session ? at : Number.NEGATIVE_INFINITY,
+          models: usage.models.length ? at : Number.NEGATIVE_INFINITY,
+        });
+      }
     }
     for (const row of this.store.listMemberUsage()) {
       const value = row.value as Partial<MemberUsage> | null;
@@ -309,16 +350,44 @@ export class UsageTracker extends EventEmitter<UsageTrackerEvents> {
     }
   }
 
-  /** 한도 값 갱신(= "방금 확인했다"). 주어지지 않은 칸은 이전 값을 유지한다. */
-  private recordEngineLimits(engine: Engine, patch: LimitPatch): void {
+  /**
+   * 한도 값 갱신. 주어지지 않은 칸은 이전 값을 유지한다.
+   *
+   * **칸마다 더 최근 측정이 이긴다**(T43-4): 확인용 세션(5분 주기)과 턴 종료 이벤트가 같은 값을 서로 다른
+   * 시각에 읽어 오므로, 늦게 **도착한** 것이 아니라 늦게 **측정된** 것을 남긴다. `measuredAt` 은 화면을
+   * 실제로 읽은 시각이고(기본은 지금), 그 칸의 직전 측정보다 오래됐으면 조용히 버린다.
+   */
+  private recordEngineLimits(engine: Engine, patch: LimitPatch, source: UsageSource, measuredAt: number = this.now()): void {
     const prev = this.engineUsage(engine);
-    const next: EngineUsage = {
-      ...prev,
-      weekly: patch.weekly ?? prev.weekly,
-      session: patch.session ?? prev.session,
-      plan: patch.plan ?? prev.plan,
-      updatedAt: new Date(this.now()).toISOString(),
-    };
+    const stamps = this.stamps.get(engine) ?? emptyStamps();
+    const next: EngineUsage = { ...prev };
+    let accepted = false;
+
+    if (patch.weekly != null && measuredAt >= stamps.weekly) {
+      next.weekly = patch.weekly;
+      stamps.weekly = measuredAt;
+      accepted = true;
+    }
+    if (patch.session != null && measuredAt >= stamps.session) {
+      next.session = patch.session;
+      stamps.session = measuredAt;
+      accepted = true;
+    }
+    if (patch.models != null && patch.models.length > 0 && measuredAt >= stamps.models) {
+      next.models = patch.models;
+      stamps.models = measuredAt;
+      accepted = true;
+    }
+    // 요금제는 시각을 따지지 않는다 — 한도 숫자가 아니라 계정 속성이라 자주 바뀌지 않는다.
+    if (patch.plan) next.plan = patch.plan;
+    if (!accepted && !patch.plan) return;
+    this.stamps.set(engine, stamps);
+
+    // `updatedAt`/`source` 는 **가장 최근 측정**을 가리킨다. 옛 측정이 빈 칸을 채우기만 했으면 건드리지 않는다.
+    if (accepted && measuredAt >= (prev.updatedAt ? Date.parse(prev.updatedAt) : Number.NEGATIVE_INFINITY)) {
+      next.updatedAt = new Date(measuredAt).toISOString();
+      next.source = source;
+    }
     this.writeEngine(next, prev);
   }
 

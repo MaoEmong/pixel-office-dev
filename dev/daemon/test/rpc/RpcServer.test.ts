@@ -57,8 +57,8 @@ const DEPT: Department = { id: 'd1', name: 'dept', cwd: 'D:\\x', headId: null, c
 /** T43: 스냅샷의 `usage` 칸(엔진은 항상 둘 다). */
 const USAGE: UsageSnapshot = {
   engines: [
-    { engine: 'claude', connected: true, plan: 'max', weekly: { usedPercent: 54, resetsAt: '2026-09-23T03:00:00.000Z' }, session: null, updatedAt: '2026-09-21T10:00:00.000Z', reason: null },
-    { engine: 'codex', connected: false, plan: null, weekly: null, session: null, updatedAt: null, reason: 'not-installed' },
+    { engine: 'claude', connected: true, plan: 'max', weekly: { usedPercent: 54, resetsAt: '2026-09-23T03:00:00.000Z' }, session: null, models: [], updatedAt: '2026-09-21T10:00:00.000Z', source: 'turn', reason: null },
+    { engine: 'codex', connected: false, plan: null, weekly: null, session: null, models: [], updatedAt: null, source: null, reason: 'not-installed' },
   ],
   members: [],
 };

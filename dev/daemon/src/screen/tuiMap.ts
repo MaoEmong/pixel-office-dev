@@ -46,6 +46,56 @@ export interface TuiMapJson {
   /** lastNonEmptyLine 에서 건너뛸 줄(괘선·상태줄 등). */
   skipLines: string[];
   dialogs: TuiDialogJson[];
+  /** 확인용 세션(T43-4)이 여는 사용량 화면. 없으면 그 엔진은 확인용 세션을 띄우지 않는다. */
+  usage?: TuiUsageJson;
+}
+
+/**
+ * 사용량 화면(Claude `/usage` · Codex `/status`) 한 판의 패턴(T43-4, D-45).
+ * **여기 있는 것이 전부다** — 파서(`src/usage/parse/usageScreen.ts`)에는 CLI 문구가 한 글자도 없다.
+ */
+export interface TuiUsageJson {
+  /** 화면을 여는 슬래시 명령. 붙여넣기 없이 그대로 타이핑한 뒤 Enter. */
+  command: string;
+  /** 화면을 닫는 키 순서(보통 `["esc"]`). */
+  closeKeys: Key[];
+  /**
+   * 뷰포트가 아니라 **스크롤백 전체**를 읽어야 하는가. Codex TUI 는 인라인 렌더라 패널이 위로 밀려
+   * 40줄 뷰포트만 보면 잘린다(T43-0 Q7). Claude 는 전체 화면 패널이라 false.
+   */
+  scrollback?: boolean;
+  /**
+   * "패널이 다 그려졌다" 표지. **전부** 보여야 한다. 확인용 세션은 명령을 치기 **전의 등장 횟수**를 세 두고
+   * 그보다 늘어났을 때만 읽는다 — 스크롤백에 남은 지난번 패널을 다시 읽지 않기 위해서다.
+   */
+  ready: string[];
+  /** 한도 블록. 이름 있는 그룹(`percent`·`resets`·`label`·`model`)만 읽는다. */
+  blocks: TuiUsageBlockJson[];
+  /**
+   * 요금제(선택). 이름 있는 그룹 **`plan` 하나만** 읽는다 — 같은 줄에 계정 이메일이 있어도 그 그룹은
+   * 만들지 않는다(D-45 ②).
+   */
+  plan?: string;
+  verified?: boolean;
+  source?: string;
+}
+
+export interface TuiUsageBlockJson {
+  /**
+   * 이 블록이 채우는 칸.
+   *   `weekly` · `session` — 그 칸에 바로 넣는다(Codex).
+   *   `auto` — 한 정규식이 여러 블록을 잡는다(Claude). `label` 그룹을 `sessionLabel`/`weeklyLabel` 에
+   *            대어 가르고, 둘 다 아니면 **모델별 한도**(`model` 그룹이 라벨)로 간다.
+   */
+  target: 'auto' | 'weekly' | 'session';
+  /** 정규식(m·g·u 플래그로 컴파일). 여러 번 맞으면 **뒤의 것이 이긴다**(스크롤백에 옛 패널이 남아 있을 수 있다). */
+  pattern: string;
+  /** `percent` 그룹이 "쓴 비율" 인가 "남은 비율" 인가. Claude 는 `used`, Codex 화면은 `left`(데몬이 뒤집는다). */
+  percentIs: 'used' | 'left';
+  /** `auto` 에서 5시간(세션) 블록을 가르는 `label` 패턴. */
+  sessionLabel?: string;
+  /** `auto` 에서 주간 전체 블록을 가르는 `label` 패턴. */
+  weeklyLabel?: string;
 }
 
 export interface TuiDialogJson {
@@ -80,6 +130,27 @@ export interface TuiMap {
   inputBox?: { prompt: RegExp; ruleAbove?: RegExp };
   skipLines: RegExp[];
   dialogs: TuiDialog[];
+  /** 확인용 세션(T43-4). 없으면 그 엔진은 화면에서 한도를 읽지 않는다. */
+  usage?: TuiUsage;
+}
+
+/** 컴파일된 `usage` 절. */
+export interface TuiUsage {
+  command: string;
+  closeKeys: Key[];
+  scrollback: boolean;
+  ready: RegExp[];
+  blocks: TuiUsageBlock[];
+  plan?: RegExp;
+}
+
+export interface TuiUsageBlock {
+  target: 'auto' | 'weekly' | 'session';
+  /** 항상 g 플래그로 컴파일된다(여러 번 맞으면 뒤의 것이 이긴다). */
+  pattern: RegExp;
+  percentIs: 'used' | 'left';
+  sessionLabel?: RegExp;
+  weeklyLabel?: RegExp;
 }
 
 export interface TuiDialog {
@@ -164,9 +235,42 @@ export function compileTuiMap(json: TuiMapJson): TuiMap {
     },
     skipLines: json.skipLines.map((p) => rx(`${tag} skipLines`, p)),
     dialogs,
+    usage: json.usage && compileUsage(tag, json.usage),
   };
   Object.defineProperty(map, COMPILED, { value: true, enumerable: false });
   return map;
+}
+
+/** `usage` 절 컴파일 + 검증. 이름 있는 그룹이 빠졌으면 **로드 시점에** 던진다(런타임에 조용히 null 이 되지 않게). */
+function compileUsage(tag: string, u: TuiUsageJson): TuiUsage {
+  const where = `${tag} usage`;
+  if (!u.command) throw new Error(`${where}: "command" is required`);
+  if (!u.ready?.length) throw new Error(`${where}: "ready" must be a non-empty array`);
+  if (!u.blocks?.length) throw new Error(`${where}: "blocks" must be a non-empty array`);
+  const blocks = u.blocks.map((b, i) => {
+    const bw = `${where}.blocks[${i}]`;
+    if (b.target !== 'auto' && b.target !== 'weekly' && b.target !== 'session') throw new Error(`${bw}: unknown target ${JSON.stringify(b.target)}`);
+    if (b.percentIs !== 'used' && b.percentIs !== 'left') throw new Error(`${bw}: percentIs must be "used" or "left"`);
+    const pattern = rx(bw, b.pattern, 'gmu');
+    if (!/\(\?<percent>/.test(b.pattern)) throw new Error(`${bw}: pattern must have a named group (?<percent>…)`);
+    if (b.target === 'auto' && !/\(\?<label>/.test(b.pattern)) throw new Error(`${bw}: target "auto" needs a named group (?<label>…)`);
+    return {
+      target: b.target,
+      pattern,
+      percentIs: b.percentIs,
+      sessionLabel: b.sessionLabel ? rx(`${bw}.sessionLabel`, b.sessionLabel) : undefined,
+      weeklyLabel: b.weeklyLabel ? rx(`${bw}.weeklyLabel`, b.weeklyLabel) : undefined,
+    };
+  });
+  if (u.plan !== undefined && !/\(\?<plan>/.test(u.plan)) throw new Error(`${where}.plan: pattern must have a named group (?<plan>…)`);
+  return {
+    command: u.command,
+    closeKeys: keys(`${where}.closeKeys`, u.closeKeys),
+    scrollback: u.scrollback === true,
+    ready: u.ready.map((p) => rx(`${where}.ready`, p, 'gmu')),
+    blocks,
+    plan: u.plan ? rx(`${where}.plan`, u.plan, 'mu') : undefined,
+  };
 }
 
 const BUILTIN: Record<Engine, TuiMapJson> = {

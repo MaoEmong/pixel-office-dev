@@ -251,7 +251,7 @@ describe('UsageTracker — 연결 폴링', () => {
     });
     await h.tracker.pollConnections();
     const e = h.tracker.engineUsage('claude');
-    assert.deepEqual(Object.keys(e).sort(), ['connected', 'engine', 'plan', 'reason', 'session', 'updatedAt', 'weekly']);
+    assert.deepEqual(Object.keys(e).sort(), ['connected', 'engine', 'models', 'plan', 'reason', 'session', 'source', 'updatedAt', 'weekly']);
     assert.ok(!JSON.stringify(e).includes('@'), JSON.stringify(e));
     assert.ok(!JSON.stringify(e).includes('org_'), JSON.stringify(e));
     // 스냅샷 전체에도 없다.
@@ -314,5 +314,106 @@ describe('UsageTracker — 스냅샷·영속', () => {
     assert.equal(h.tracker.memberUsage('m_ghost')?.engine, 'claude', 'FK 로 저장은 실패해도 메모리에는 남는다');
     h.tracker.pruneMissingMembers();
     assert.equal(h.tracker.memberUsage('m_ghost'), undefined);
+  });
+});
+
+// ---- T43-4: 확인용 세션과 턴 종료 값의 합류 ------------------------------------------------
+
+describe('UsageTracker — 출처 병합(probe ↔ turn)', () => {
+  const probeWeekly = (p: number) => ({ usedPercent: p, resetsAt: '2026-09-23T03:00:00.000Z' });
+
+  test('확인용 세션이 읽은 값은 source:"probe" 로 실리고 models 도 같이 온다', () => {
+    h = harness();
+    h.tracker.applyProbe('claude', { weekly: probeWeekly(40), session: probeWeekly(10), models: [{ label: 'Fable', usedPercent: 40, resetsAt: null }] });
+    const u = h.tracker.engineUsage('claude');
+    assert.equal(u.weekly?.usedPercent, 40);
+    assert.equal(u.source, 'probe');
+    assert.deepEqual(u.models.map((m) => m.label), ['Fable']);
+  });
+
+  test('턴 종료가 더 최근이면 턴이 이긴다', () => {
+    h = harness();
+    const t0 = h.now();
+    h.tracker.applyProbe('claude', { weekly: probeWeekly(40) }, t0);
+    h.tick(30_000);
+    h.tracker.applyStatusLine(CLAUDE, statusLine(1)); // 실측 주간 54%
+    const u = h.tracker.engineUsage('claude');
+    assert.equal(u.weekly?.usedPercent, 54);
+    assert.equal(u.source, 'turn');
+  });
+
+  test('확인용 세션이 더 최근이면 확인용 세션이 이긴다', () => {
+    h = harness();
+    h.tracker.applyStatusLine(CLAUDE, statusLine(1)); // 54%
+    h.tick(30_000);
+    h.tracker.applyProbe('claude', { weekly: probeWeekly(40) });
+    const u = h.tracker.engineUsage('claude');
+    assert.equal(u.weekly?.usedPercent, 40);
+    assert.equal(u.source, 'probe');
+  });
+
+  test('**늦게 도착한 옛 측정**은 버린다(화면을 읽은 시각 기준)', () => {
+    h = harness();
+    const t0 = h.now();
+    h.tick(60_000);
+    h.tracker.applyStatusLine(CLAUDE, statusLine(1)); // 지금(= t0+60초) 읽은 54%
+    // 확인용 세션이 t0 에 읽은 화면이 파싱을 마치고 이제야 들어온다.
+    h.tracker.applyProbe('claude', { weekly: probeWeekly(40) }, t0);
+    const u = h.tracker.engineUsage('claude');
+    assert.equal(u.weekly?.usedPercent, 54, '더 최근 측정이 남는다');
+    assert.equal(u.source, 'turn');
+  });
+
+  test('칸마다 따로 견준다 — 옛 확인용 세션 값도 비어 있던 칸은 채운다', () => {
+    h = harness();
+    const t0 = h.now();
+    h.tick(60_000);
+    // 턴 종료는 주간·5시간만 준다(모델별은 화면에만 있다).
+    h.tracker.applyStatusLine(CLAUDE, statusLine(1));
+    h.tracker.applyProbe('claude', { weekly: probeWeekly(40), models: [{ label: 'Fable', usedPercent: 40, resetsAt: null }] }, t0);
+    const u = h.tracker.engineUsage('claude');
+    assert.equal(u.weekly?.usedPercent, 54, '주간은 더 최근(turn)');
+    assert.deepEqual(u.models.map((m) => m.label), ['Fable'], '모델별은 아무도 안 채운 칸이라 옛 값도 들어간다');
+    assert.equal(u.source, 'turn', '가장 최근 측정의 출처는 그대로');
+  });
+
+  test('확인용 세션이 준 요금제는 그대로 실린다(Codex 는 화면이 유일한 출처일 수 있다)', () => {
+    h = harness();
+    h.tracker.applyProbe('codex', { weekly: probeWeekly(12), plan: 'Pro' });
+    assert.equal(h.tracker.engineUsage('codex').plan, 'Pro');
+  });
+
+  test('models 는 DB 에 남고 재기동 뒤에도 그대로다', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pixel-office-usage4-'));
+    try {
+      const dbPath = path.join(dir, 'pixel-office.db');
+      const store = new Store(dbPath);
+      h = harness({ store });
+      h.tracker.applyProbe('claude', { weekly: probeWeekly(40), models: [{ label: 'Fable', usedPercent: 40, resetsAt: null }] });
+      h.tracker.stop();
+      store.close();
+
+      const reopened = new Store(dbPath);
+      const again = new UsageTracker({ store: reopened, pollIntervalMs: 0 });
+      const u = again.engineUsage('claude');
+      assert.deepEqual(u.models.map((m) => m.label), ['Fable']);
+      assert.equal(u.source, 'probe');
+      reopened.close();
+      h = harness();
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('옛 데몬(v3)이 쓴 행에는 models·source 가 없다 — 기본값으로 읽는다', () => {
+    const store = memStore();
+    store.putEngineUsage('claude', { engine: 'claude', connected: true, plan: 'max', weekly: { usedPercent: 54, resetsAt: null }, session: null, updatedAt: '2026-09-21T10:00:00.000Z', reason: null });
+    const tracker = new UsageTracker({ store, pollIntervalMs: 0 });
+    const u = tracker.engineUsage('claude');
+    assert.deepEqual(u.models, []);
+    assert.equal(u.source, null);
+    assert.equal(u.weekly?.usedPercent, 54);
+    store.close();
+    h = harness();
   });
 });

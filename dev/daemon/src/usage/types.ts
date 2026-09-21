@@ -19,6 +19,20 @@ export interface UsageWindow {
   resetsAt: string | null;
 }
 
+/** 모델별 주간 한도 한 줄(Claude `/usage` 화면의 `Current week (<라벨>)`). */
+export interface UsageModel {
+  /**
+   * 괄호 안 문자열을 **그대로**. 실측값은 `Fable` 이었다 — 모델 이름을 하드코딩하지 않는다(T43-0 Q3).
+   * CLI 가 라벨을 바꾸면 그 문자열이 그대로 앱에 보인다.
+   */
+  label: string;
+  usedPercent: number | null;
+  resetsAt: string | null;
+}
+
+/** 이 한도 숫자를 누가 읽었는가. `probe` = 확인용 세션 화면(T43-4), `turn` = 턴 종료(statusLine · rollout). */
+export type UsageSource = 'probe' | 'turn';
+
 /** 엔진(= 구독) 단위 사용량. `snapshot.usage.engines[]` 와 `usage.engine` 알림의 모양. */
 export interface EngineUsage {
   engine: Engine;
@@ -29,8 +43,15 @@ export interface EngineUsage {
   weekly: UsageWindow | null;
   /** 5시간 한도. Claude 는 보통 있고 Codex 는 요금제에 따라 없다(null 이 정상). */
   session: UsageWindow | null;
+  /**
+   * 모델별 주간 한도(T43-4). **모르면 빈 배열**(null 이 아니다) — Codex 는 언제나 빈 배열이고,
+   * Claude 는 확인용 세션이 `/usage` 를 읽었을 때만 채워진다.
+   */
+  models: UsageModel[];
   /** 이 한도 숫자를 마지막으로 확인한 시각(ISO). 한 번도 못 봤으면 null. */
   updatedAt: string | null;
+  /** 마지막으로 이긴 측정의 출처. 한 번도 못 봤으면 null. */
+  source: UsageSource | null;
   /** connected=false 일 때의 이유. 붙어 있으면 null. */
   reason: NotConnectedReason | null;
 }

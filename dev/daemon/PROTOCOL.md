@@ -74,7 +74,9 @@ raw `status` 는 "CLI 프로세스가 어떤 상태인가" 일 뿐이다 — `id
       "plan": "max",                 // 요금제 이름. **이메일·계정 식별자는 절대 오지 않는다**(D-45 ②)
       "weekly":  { "usedPercent": 54, "resetsAt": "2026-09-23T03:00:00.000Z" },
       "session": { "usedPercent": 17, "resetsAt": "2026-09-21T12:00:00.000Z" },  // 5시간 한도. 없으면 null
+      "models": [ { "label": "Fable", "usedPercent": 55, "resetsAt": "…" } ],    // 모델별 주간 한도. **모르면 빈 배열**
       "updatedAt": "2026-09-21T10:00:00.000Z",   // 이 **한도 숫자**를 마지막으로 확인한 시각. 한 번도 못 봤으면 null
+      "source": "probe",             // 'probe'(확인용 세션 화면) | 'turn'(턴 종료) | null(한 번도 못 봤다)
       "reason": null }               // connected:false 일 때만 값이 있다
   ],
   "members": [
@@ -94,6 +96,8 @@ raw `status` 는 "CLI 프로세스가 어떤 상태인가" 일 뿐이다 — `id
 - **퍼센트는 전부 `usedPercent`(쓴 비율 0~100 정수)** 다. 앱은 `100 - usedPercent` 로 "남음 N%" 를 그린다(사용자 표현). Codex 화면이 말하는 `% left` 는 데몬이 뒤집어서 넣는다.
 - **시각은 전부 ISO 8601(UTC) 문자열**이다. CLI 가 주는 유닉스 초는 데몬이 바꾼다. "3일 뒤" 같은 사람 표기는 앱이 `resetsAt - now` 로 만든다 — 화면의 사람 표기를 파싱해 날짜로 되돌리지 않는다(연말에 깨진다).
 - **값이 없는 것과 연결이 안 된 것은 다른 상태다.** 숫자를 모르면 그 칸만 `null` 이고, 안 붙어 있으면 `connected:false` + `reason`.
+- `models[]` 는 **Claude `/usage` 화면에만 있는 값**이다(statusLine 에는 없다). `label` 은 괄호 안 문자열을 **그대로** 실은 것이라 모델 이름이 아닐 수 있다(실측값은 `Fable`) — 클라이언트는 그대로 찍고 해석하지 않는다. Codex 는 언제나 빈 배열이다.
+- `source` 는 그 한도 숫자를 **마지막으로 읽은 출처**다. 두 출처(확인용 세션 화면 · 턴 종료 이벤트)가 같은 칸을 대므로 **칸마다 더 최근에 측정된 값이 이긴다** — 늦게 도착해도 오래된 측정이면 버린다.
 - `reason` 은 셋뿐이다: `not-installed`(실행 파일을 못 찾았다) · `logged-out`(CLI 가 로그인 안 됐다고 한다) · `unknown`(명령이 실패·타임아웃했거나 출력 모양이 바뀌었다). `connected:true` 면 항상 `null`.
 
 **신선도(staleness).** `updatedAt` 은 **그 한도 숫자를 마지막으로 확인한 시각**이다. 연결 폴링은 이 값을 건드리지 않는다(연결을 확인한 것이지 한도를 다시 본 것이 아니다). 값이 그대로여도 마지막 확인이 60초를 넘겼으면 데몬이 `updatedAt` 만 올려 한 번 더 민다 — 그래야 앱의 "N분 전 기준" 이 거짓말을 하지 않는다. 그래서 **값이 안 변해도 분당 한 번까지는 알림이 올 수 있다**(그보다 잦지는 않다).
@@ -112,13 +116,22 @@ raw `status` 는 "CLI 프로세스가 어떤 상태인가" 일 뿐이다 — `id
 | Claude 멤버 `tokens`·`costUsd` | transcript 의 마지막 `type:"cost-state"` 줄(모델별 합산) | `Stop` 직후 |
 | Codex `weekly`/`session`/`plan`, 멤버 `context`·`tokens` | rollout 의 마지막 `token_count`(`limit_id==="codex"` ∧ `primary!=null`) | `Stop`·화면 idle 폴백 |
 | `connected`/`reason`, Claude `plan` | `claude auth status` · `codex login status` | 기동 시 + 60초(`PIXEL_USAGE_POLL_SEC`) |
+| 두 엔진 `weekly`/`session`/`models`, Codex `plan` | **확인용 세션**(T43-4)이 읽은 `/usage`·`/status` 화면 | 5분(`PIXEL_USAGE_PROBE_SEC`) |
 | Codex `costUsd` | **없다** — Codex 는 토큰만 준다 | — |
 
 기록 파일은 **끝에서 64KB 만** 비동기로 읽고, 못 읽으면(파일 없음·잠김) **이전 값을 그대로 둔다**(지우지 않는다). CLI 업데이트로 필드 이름이 바뀌면 그 값만 `null` 로 떨어지고 나머지는 계속 돈다.
 
 **statusLine 주입.** Claude 세션 설정에 `statusLine{type:'command', command:'node <…>/statusline.js <hookPort>'}` 가 들어간다. 그 스크립트는 `POST /status/<memberToken>` 으로 페이로드를 보내고 **응답 한 줄**(`컨텍스트 37% · 주간 45% 남음`, 모르는 칸은 뺀다)을 터미널 하단에 찍는다. 실패하면 빈 줄을 찍고 즉시 끝난다 — 상태줄 때문에 TUI 가 멈추면 안 된다. **Codex 에는 statusLine 이 없다.** 사용자의 전역 statusLine 설정은 이 툴이 띄운 세션에서만 덮인다(데몬 소유 세션이라 수용).
 
-**멤버 세션에 `/usage`·`/status` 를 밀어 넣지 않는다**(D-45 ⑦) — 일하는 AI 의 화면을 건드리지 않는다. 턴 없이 한도를 갱신하는 "숨은 유틸리티 세션" 과 모델별 주간 한도는 v1 범위 밖이다.
+**멤버 세션에 `/usage`·`/status` 를 밀어 넣지 않는다**(D-45 ⑦) — 일하는 AI 의 화면을 건드리지 않는다.
+
+**확인용 세션(T43-4).** 대신 데몬이 **연결된 엔진마다 숨은 CLI 하나**를 띄워 그 화면만 읽는다. 실측(T43-0 Q3): 새 세션에서 `/usage` 만 치면 **모델 턴 0 · 토큰 0** 으로 주간 한도가 그대로 나온다 — 그래서 아무도 일하지 않은 동안·툴 밖에서 쓴 사용량도 5분 안에 따라잡는다.
+
+- **멤버가 아니다.** `members` 행이 없고, 스냅샷(`members`·`usage.members`)·사무실·이벤트 어디에도 없고, hooks·MCP·statusLine 을 주입받지 않고, 지시를 받지 않는다. cwd 는 `<dataDir>/usage-probe/<engine>` 의 빈 폴더다.
+- 주기는 `PIXEL_USAGE_PROBE_SEC`(기본 300초), **끄는 것은 `PIXEL_USAGE_PROBE=0`** (그러면 턴 종료 출처만 쓴다).
+- 화면 패턴은 `src/tui-maps/<engine>-<ver>.json` 의 `usage` 절에 있다. **안 맞으면 그 판을 버리고 `daemon.notice{warn}` 을 엔진당 데몬 수명에 한 번**만 낸다 — 기능이 죽지는 않는다(턴 종료 출처가 계속 값을 댄다).
+- 엔진이 `connected:false` 면 띄우지 않고, 죽으면 1분 → 최대 10분 백오프로 다시 띄운다. Claude 는 기동에 **약 60초** 걸린다(그 동안은 마지막 값 + "N분 전").
+- 데몬 종료가 이 세션들을 죽이고, 하드 킬로 살아남은 것은 다음 기동이 `usage_probe` 표(스키마 v4)를 보고 정리한다.
 
 ## 부서·팀·직급 트리 (T34, D-32 "직무 체계 rev 3")
 

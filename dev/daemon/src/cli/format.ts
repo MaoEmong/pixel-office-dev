@@ -218,12 +218,21 @@ export function formatEngineUsage(u: EngineUsage): string {
   const parts = [u.engine.padEnd(6), head];
   if (u.updatedAt || u.weekly || u.session) {
     // 마지막으로 확인한 값은 연결이 끊겨도 보여 준다(엔진 행을 남기는 이유 — D-45).
-    parts.push(windowText('주간', u.weekly), windowText('5시간', u.session), `측정 ${u.updatedAt ?? '-'}`);
+    parts.push(windowText('주간', u.weekly), windowText('5시간', u.session), `측정 ${u.updatedAt ?? '-'}${u.source ? `(${u.source})` : ''}`);
   } else if (u.connected) {
-    // 붙어는 있는데 한도를 한 번도 못 봤다 = Claude 는 첫 턴 뒤에나 온다.
+    // 붙어는 있는데 한도를 한 번도 못 봤다 = Claude 는 첫 턴 뒤에나 온다(확인용 세션이 뜨는 데 약 1분).
     parts.push('한도 미확인 — 첫 작업 후 표시');
   }
   return parts.join('  ');
+}
+
+/**
+ * 모델별 주간 한도 줄(T43-4, Claude `/usage` 화면 전용). 라벨은 **CLI 가 준 그대로**다.
+ *   `    모델 Fable  45% 남음 (리셋 …)`
+ * 비어 있으면 빈 배열 — 확인용 세션이 아직 못 읽었거나 그 엔진에는 없는 값이다.
+ */
+export function formatEngineModels(u: EngineUsage): string[] {
+  return (u.models ?? []).map((m) => `    ${windowText(`모델 ${m.label}`, m)}`);
 }
 
 /**
@@ -247,7 +256,7 @@ export function usageLines(
   nameOf: NameOf,
 ): string[] {
   if (!usage) return ['(사용량 정보 없음 — 스냅샷에 usage 가 없습니다)'];
-  const out = usage.engines.map(formatEngineUsage);
+  const out = usage.engines.flatMap((e) => [formatEngineUsage(e), ...formatEngineModels(e)]);
   const members = [...usage.members].sort((a, b) => (b.context?.percent ?? -1) - (a.context?.percent ?? -1));
   if (members.length === 0) out.push('(멤버 사용량 없음 — 첫 턴 뒤에 들어옵니다)');
   else for (const m of members) out.push('  ' + formatMemberUsage(m, nameOf));

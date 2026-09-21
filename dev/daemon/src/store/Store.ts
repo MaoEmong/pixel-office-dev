@@ -906,6 +906,38 @@ export class Store {
     return toNum(this.db.prepare('DELETE FROM member_usage WHERE member_id = ?').run(memberId).changes) > 0;
   }
 
+  // ---- 확인용 세션 pid (v4, T43-4) ----------------------------------------------
+
+  /**
+   * 확인용 세션(멤버가 아닌 CLI 프로세스)의 pid 를 적는다. `pid` 가 null 이면 행을 지운다.
+   * 데몬이 하드 킬되면 이 프로세스도 살아남으므로(D-17) 다음 기동이 여기를 보고 정리한다.
+   */
+  putUsageProbePid(engine: Engine, pid: number | null, updatedAt: string = nowIso()): void {
+    if (pid === null) {
+      this.db.prepare('DELETE FROM usage_probe WHERE engine = ?').run(engine);
+      return;
+    }
+    this.db
+      .prepare(
+        `INSERT INTO usage_probe(engine, child_pid, updated_at) VALUES (?, ?, ?)
+         ON CONFLICT(engine) DO UPDATE SET child_pid = excluded.child_pid, updated_at = excluded.updated_at`,
+      )
+      .run(engine, pid, updatedAt);
+  }
+
+  /** 적혀 있는 확인용 세션 pid 전부(engine 순). */
+  listUsageProbePids(): Array<{ engine: Engine; childPid: number }> {
+    return (this.db.prepare('SELECT * FROM usage_probe ORDER BY engine').all() as Row[]).flatMap((r) => {
+      const pid = r.child_pid == null ? null : toNum(r.child_pid as number);
+      return pid ? [{ engine: r.engine as Engine, childPid: pid }] : [];
+    });
+  }
+
+  /** 표를 비운다(기동 정리 뒤). */
+  clearUsageProbePids(): void {
+    this.db.prepare('DELETE FROM usage_probe').run();
+  }
+
   // ---- snapshot -------------------------------------------------------------
 
   /** `hello` 응답용 스냅샷. seq 는 lastSeq — 클라이언트는 그보다 큰 event 만 적용한다. */

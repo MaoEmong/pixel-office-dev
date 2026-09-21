@@ -21,6 +21,24 @@ export function buildClaudeArgs(settingsPath: string, resumeSessionId?: string, 
   ];
 }
 
+/**
+ * 확인용 세션(T43-4)의 Claude 인자 — **hook·statusLine·MCP 를 하나도 주입하지 않는다.**
+ * `--settings` 를 아예 주지 않으므로 이 세션은 센서도 상태줄도 팀 도구도 없다(멤버가 아니다, D-45 ⑦).
+ * `--permission-mode default` 는 멤버와 같게 둔다 — 화면 흐름이 갈라지지 않게.
+ */
+export function buildClaudeProbeArgs(): string[] {
+  return ['--permission-mode', 'default'];
+}
+
+/**
+ * 확인용 세션의 Codex 인자. hook 을 안 쓰지만 `--dangerously-bypass-hook-trust` 는 그대로 둔다 —
+ * 사용자 전역 `hooks.json` 이 있으면 `/status` 자리에 "Hooks 검토" 패널이 떠 화면을 못 읽는다(T43-0 Q7 함정).
+ * 쓰기가 필요 없는 세션이라 샌드박스는 **읽기 전용**이다(멤버는 `workspace-write`).
+ */
+export function buildCodexProbeArgs(): string[] {
+  return ['--dangerously-bypass-hook-trust', '-c', 'approval_policy="on-request"', '-c', 'sandbox_mode="read-only"'];
+}
+
 export interface CodexArgsOptions {
   /** TeamTools MCP 엔드포인트(T22). 있으면 `-c mcp_servers.team.url="<url>"` 을 붙인다. */
   mcpUrl?: string;

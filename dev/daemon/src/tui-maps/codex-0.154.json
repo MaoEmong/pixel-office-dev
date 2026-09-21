@@ -60,5 +60,18 @@
       "source": "fixtures/codex/approval-prompt.txt (T42 실측 2026-09-21, capture-codex.ts 4단계 `echo x > ../x.txt`) → esc → approval-after-esc-1/2.txt. 제목 외의 문구는 여전히 바이너리 문자열 기준(notes 참고).",
       "all": ["Would you like to (run the following command|make the following edits|grant these permissions)\\?|Do you want to approve network access to|needs your approval\\."],
       "allowKeys": ["enter"], "denyKeys": ["esc"] }
-  ]
+  ],
+  "usage": {
+    "verified": true,
+    "source": "dev/spike-1/out/codex-full-03-status-after-turn.txt(턴 1회 뒤) · codex-full-05-status-fresh.txt(턴 0회) — T43-0 Q7, 2026-09-21 0.154.0. **`5h limit` 줄은 미검증** — Pro 계정에서는 안 나온다(rollout `secondary` 도 전수 null). 나오면 `Weekly limit` 과 같은 모양이라고 가정한 패턴이다.",
+    "command": "/status",
+    "closeKeys": ["esc"],
+    "scrollback": true,
+    "ready": ["Weekly limit:"],
+    "plan": "^\\s*│?\\s*Account:\\s+\\S+\\s+\\((?<plan>[^)]+)\\)",
+    "blocks": [
+      { "target": "weekly", "percentIs": "left", "pattern": "Weekly limit:\\s+\\[[^\\]]*\\]\\s+(?<percent>\\d+)% left \\(resets (?<resets>[^)]+)\\)" },
+      { "target": "session", "percentIs": "left", "pattern": "5h limit:\\s+\\[[^\\]]*\\]\\s+(?<percent>\\d+)% left \\(resets (?<resets>[^)]+)\\)" }
+    ]
+  }
 }

@@ -13,7 +13,7 @@ import type { DialogKind, Engine, Key, TuiDialog, TuiMap, TuiMapJson } from './t
 const { Terminal } = xterm;
 const { SerializeAddon } = serialize;
 
-export type { DialogKind, Engine, Key, TuiDialog, TuiMap, TuiMapJson } from './tuiMap.js';
+export type { DialogKind, Engine, Key, TuiDialog, TuiMap, TuiMapJson, TuiUsage, TuiUsageBlock } from './tuiMap.js';
 
 export interface ScreenModelOptions {
   engine: Engine;
@@ -111,6 +111,17 @@ export class ScreenModel {
 
   text(): string {
     return this.lines().join('\n');
+  }
+
+  /**
+   * **스크롤백까지 포함한** 버퍼 전체 텍스트. Codex TUI 는 인라인 렌더라 `/status` 패널이 40줄 뷰포트 위로
+   * 밀려 [text] 로는 잘린다(T43-0 Q7 — 확인용 세션이 이걸 쓴다). Claude 는 전체 화면 패널이라 [text] 로 충분하다.
+   */
+  fullText(): string {
+    const buf = this.term.buffer.active;
+    const out: string[] = [];
+    for (let y = 0; y < buf.length; y++) out.push(buf.getLine(y)?.translateToString(true) ?? '');
+    return out.join('\n');
   }
 
   /** 아래에서 n 줄(빈 줄 포함, 그대로). */

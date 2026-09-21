@@ -45,6 +45,33 @@ const BUILTIN: Record<Engine, TuiMapJson> = {
 | `interrupted.anyOf` | Ctrl+C 뒤 중단 안내 |
 | `inputBox` / `skipLines` | 책상 모니터 "마지막 줄" 계산에서 제외할 입력 상자·괘선·상태줄 |
 | `dialogs[]` | 순서 = 우선순위. `all` 전부 매치하면 그 `kind` 와 통과 `keys`(`highlight` 로 현재 강조 항목에 따라 키를 바꿀 수 있다) |
+| `usage` | **확인용 세션**(T43-4)이 여는 사용량 화면. 없으면 그 엔진은 화면에서 한도를 읽지 않는다 — 아래 절 |
+
+### `usage` — 사용량 화면 (T43-4, D-45)
+
+확인용 세션(`src/usage/UsageProbe.ts`)이 `/usage`(Claude) · `/status`(Codex) 를 열어 한도를 읽는다.
+**CLI 문구는 코드에 한 글자도 없다** — 파서(`src/usage/parse/usageScreen.ts`)는 여기 적힌 정규식만 쓴다.
+
+| 키 | 뜻 |
+|---|---|
+| `command` | 화면을 여는 슬래시 명령. 그대로 **타이핑**하고(붙여넣기 아님) 0.7초 뒤 Enter |
+| `closeKeys` | 화면을 닫는 키 순서(보통 `["esc"]`) |
+| `scrollback` | `true` 면 뷰포트가 아니라 **버퍼 전체**를 읽는다. Codex TUI 는 인라인 렌더라 패널이 40줄 위로 밀린다(T43-0 Q7) |
+| `ready` | "패널이 다 그려졌다" 표지. **전부** 보여야 한다. 확인용 세션은 명령을 치기 **전의 `ready[0]` 등장 횟수**를 세 두고 그보다 늘어났을 때만 읽는다 — 스크롤백에 남은 지난번 패널을 새 것으로 착각하지 않게 |
+| `blocks[]` | 한도 블록. **이름 있는 그룹**(`(?<percent>…)` 필수, `(?<resets>…)`·`(?<label>…)`·`(?<model>…)`)만 읽는다 |
+| `blocks[].target` | `weekly`/`session` 이면 그 칸에 바로. `auto` 면 한 정규식이 여러 블록을 잡고 `label` 을 `sessionLabel`/`weeklyLabel` 에 대어 가른다 — 둘 다 아니면 **모델별 한도**(`model` 그룹이 라벨) |
+| `blocks[].percentIs` | `used`(Claude `NN% used`) 또는 `left`(Codex `NN% left`). 데몬 안에서는 전부 `usedPercent` 로 통일한다(D-45 ③) |
+| `plan` | 요금제(선택). 이름 있는 그룹 **`plan` 하나만** 읽는다 — 같은 줄에 계정 이메일이 있어도 그 그룹은 **만들지 않는다**(D-45 ②) |
+
+규칙:
+
+- 같은 칸을 여러 번 잡으면 **뒤의 것이 이긴다**(스크롤백에 옛 패널이 남는다).
+- 리셋 문자열(`Sep 23, 12pm (Asia/Seoul)` · `14:02 on 28 Sep`)은 `parse/resetText.ts` 가 ISO(UTC)로 바꾼다.
+  **연도가 화면에 없으므로** 작년·올해·내년 중 `now` 에 가장 가까운 것을 고른다. 못 읽어도 **퍼센트는 살린다**(`resetsAt:null`).
+- 블록이 **하나도** 안 맞으면 그 판을 통째로 버리고 `daemon.notice{warn}` 을 **엔진당 데몬 수명에 한 번**만 낸다.
+- 로더가 `(?<percent>…)` 없는 패턴·모르는 `target`/`percentIs` 를 **로드 시점에** 거부한다.
+- 검증은 `test/usage/usageScreen.test.ts` 가 **실측 캡처**(`test/fixtures/usage/screens/`, 원본 `dev/spike-1/out/`)로 한다.
+  Codex 의 `5h limit` 줄만 **미검증**이다 — Pro 계정에서는 나오지 않는다(rollout `secondary` 도 전수 null).
 
 ### `dialogs[].kind`
 
@@ -55,7 +82,7 @@ const BUILTIN: Record<Engine, TuiMapJson> = {
 
 ### `verified` / `source`
 
-패턴마다(`promptReady`, `busy`, `interrupted`, `dialogs[]`) 실물을 봤는지 적는다(D-13).
+패턴마다(`promptReady`, `busy`, `interrupted`, `dialogs[]`, `usage`) 실물을 봤는지 적는다(D-13).
 
 - `verified: true` — `source` 에 적힌 **실제 화면 캡처 픽스처**(`test/screen/fixtures/…`)로 `test/screen/screens.test.ts` 가 검사한다. `verified:true` 인데 `source` 가 없으면 `ScreenModel.test.ts` 가 실패한다.
 - `verified: false` — 추정 패턴. `source` 에 근거(바이너리 문자열, 문서 등)와 왜 실물을 못 봤는지 적는다. 실기동에서 확인되면 픽스처를 추가하고 `true` 로 바꾼다.
