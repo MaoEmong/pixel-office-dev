@@ -300,29 +300,39 @@ test('codex(T21): trust dialog fixture is still detected with the reworked map',
   sm.dispose();
 });
 
-// Codex 승인 프롬프트는 실물 캡처를 못 했다(사용량 한도, 2026-09-21 리셋). 문구는 codex.exe 0.154.0 바이너리 문자열 →
-// 여기서는 그 문구로 합성한 화면으로 "감지되면 자동 통과 키가 없다" 는 계약만 검사한다(verified:false).
-test('codex: approval prompt (binary-string wording, unverified) → approval-prompt with NO suggested keys; allow=enter deny=esc', async () => {
-  const sm = await screenFrom('codex', 'codex/ready.txt');
-  const row = sm.lines().findIndex((l) => /^› Ask Codex to do anything/.test(l));
-  assert.ok(row >= 0);
-  const overlay = [
-    '  Would you like to run the following command?',
-    '',
-    '  $ echo x > ../x.txt',
-    '',
-    '› 1. Yes, just this once',
-    "  2. Yes, and don't ask again for this command in this session",
-    '  3. No, continue without running it',
-    '  4. No, and tell Codex what to do differently',
-    '',
-    '  Press enter to confirm or esc to go back',
-  ];
-  await sm.feed(overlay.map((l, i) => `\x1b[${row + i};1H\x1b[2K${l}`).join(''));
+// Codex 승인 프롬프트 — **실물 캡처**(T42, 2026-09-21 한도 리셋 후 capture-codex.ts 4단계 `echo x > ../x.txt`).
+// T21 이 바이너리 문자열로 추정했던 것과 제목은 같고 항목 문구는 달랐다(아래). allow=enter / deny=esc 는 맞았다.
+test('codex(T42 실물): approval prompt → approval-prompt with NO suggested keys; allow=enter deny=esc', async () => {
+  const sm = await screenFrom('codex', 'codex/approval-prompt.txt');
   assert.deepEqual(sm.detectDialog(), { kind: 'approval-prompt', suggestedKeys: [], highlightDriven: false });
   assert.deepEqual(sm.approvalPrompt(), { visible: true, id: 'approval-exec', allowKeys: ['enter'], denyKeys: ['esc'] });
   assert.equal(sm.promptReady(), false);
   assert.equal(sm.busyIndicator(), false);
+  // 실물 문구: 제목은 추정과 같고, 항목은 `Yes, proceed (y)` / `…don't ask again for commands that start with …(p)` /
+  // `No, and tell Codex what to do differently (esc)`. 첫 항목이 `›` 로 강조되고 푸터는 "…esc to cancel"(추정은 "go back").
+  const text = sm.text();
+  assert.match(text, /Would you like to run the following command\?/);
+  assert.match(text, /^› 1\. Yes, proceed \(y\)$/m);
+  assert.match(text, /Press enter to confirm or esc to cancel/);
+  // `Reason:` 은 hook 의 tool_input.description 과 같은 한국어 승인 문구다(어댑터가 detail.summary 로 싣는 그것).
+  assert.match(text, /Reason: .*허용하시겠습니까\?/);
+  sm.dispose();
+});
+
+test('codex(T42 실물): esc 로 거부하면 "You canceled the request" 뒤 READY 로 돌아온다', async () => {
+  const sm = await screenFrom('codex', 'codex/approval-after-esc-2.txt');
+  assert.equal(sm.detectDialog().kind, 'none');
+  assert.equal(sm.approvalPrompt().visible, false);
+  assert.equal(sm.promptReady(), true);
+  assert.equal(sm.busyIndicator(), false);
+  sm.dispose();
+});
+
+test('codex(T42 실물): 도구가 실제로 도는 중 화면 — busy, 입력 상자는 그대로 보인다', async () => {
+  const sm = await screenFrom('codex', 'codex/working-4.txt');
+  assert.equal(sm.busyIndicator(), true);
+  assert.equal(sm.promptReady(), false); // busy 가 promptReady 보다 우선
+  assert.equal(sm.detectDialog().kind, 'none');
   sm.dispose();
 });
 

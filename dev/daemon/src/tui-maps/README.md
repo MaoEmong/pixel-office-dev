@@ -61,7 +61,14 @@ const BUILTIN: Record<Engine, TuiMapJson> = {
 - `verified: false` — 추정 패턴. `source` 에 근거(바이너리 문자열, 문서 등)와 왜 실물을 못 봤는지 적는다. 실기동에서 확인되면 픽스처를 추가하고 `true` 로 바꾼다.
 - 파일 상단 `source` / `notes` 에는 실측 조건(날짜, 터미널 크기, 플래그)과 함정을 적는다.
 
-현재 미검증: Claude `login-success`(항상 로그인된 상태라 못 봄), Codex `approval-exec`(2026-09-16 실측 시 ChatGPT 사용량 한도로 모델이 도구를 못 불러 TUI 승인 프롬프트가 안 뜸 — 문구는 `codex.exe` 바이너리 문자열, 한도 리셋 후 재확인).
+현재 미검증: Claude `login-success`(항상 로그인된 상태라 못 봄) 하나뿐이다.
+
+Codex `approval-exec` 는 **T42(2026-09-21)에 실물로 확정**됐다(`fixtures/codex/approval-prompt.txt`). T21 이 바이너리
+문자열로 추정했던 제목·키(`allowKeys:['enter']`, `denyKeys:['esc']`)는 맞았고, 항목 문구만 달랐다 —
+실물은 `› 1. Yes, proceed (y)` / `2. …don't ask again for commands that start with … (p)` /
+`3. No, and tell Codex what to do differently (esc)`, 푸터는 `Press enter to confirm or esc to cancel`.
+제목 위에 `Environment: local` 과 `Reason: <한국어 승인 문구>`(= hook `tool_input.description` 과 같은 문장)가 붙는다.
+같은 캡처에서 **도구가 실제로 도는 중 화면**(`working-1~4.txt`)도 처음 받았다.
 
 ## 픽스처 다시 뜨기
 

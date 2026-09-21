@@ -1,11 +1,11 @@
-╭────────────────────────────────────────────────────────╮
-│ >_ OpenAI Codex (v0.154.0)                             │
-│                                                        │
-│ model:     loading   /model to change                  │
-│ directory: ~\AppData\Local\Temp\…\scratchpad\codex-cwd │
-╰────────────────────────────────────────────────────────╯
+╭────────────────────────────────────────────────────╮
+│ >_ OpenAI Codex (v0.154.0)                         │
+│                                                    │
+│ model:     loading   /model to change              │
+│ directory: D:\myproject\…\dev\spike-0\sandbox-t42b │
+╰────────────────────────────────────────────────────╯
 
 
 › Ask Codex to do anything
 
-  gpt-6-astra default · ~\AppData\Local\Temp\claude\D--myproject\4c203ce2-02f5-49e5-be58-5f0af9538df6\scratchpad\codex-…
+  ? for shortcuts
