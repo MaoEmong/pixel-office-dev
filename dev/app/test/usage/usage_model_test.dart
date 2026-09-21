@@ -97,6 +97,66 @@ void main() {
       expect(u.connected, isTrue);
       expect(u.hasLimits, isFalse);
     });
+
+    // ---- T43-4: 모델별 한도 + 출처 -------------------------------------------------
+
+    test('models[] 와 source 를 읽는다 — 라벨은 CLI 가 준 그대로', () {
+      final u = EngineUsage.tryParse({
+        ...claudeEngineJson(),
+        'models': [
+          {'label': 'Fable', 'usedPercent': 55, 'resetsAt': '2026-09-24T08:59:00Z'},
+          {'label': 'Nebula 9 preview', 'usedPercent': 3, 'resetsAt': null},
+        ],
+        'source': 'probe',
+      })!;
+      expect(u.models.map((m) => m.label), ['Fable', 'Nebula 9 preview'], reason: '모델 이름이 아닐 수 있다 — 해석하지 않는다');
+      expect(u.models.first.window.usedPercent, 55);
+      expect(u.models.first.window.resetsAt, DateTime.parse('2026-09-24T08:59:00Z'));
+      expect(u.models.last.window.resetsAt, isNull, reason: '리셋을 못 읽어도 퍼센트는 산다');
+      expect(u.source, UsageSource.probe);
+    });
+
+    test('옛 데몬(키 없음)·딴 타입·깨진 행 — 빈 목록이거나 그 행만 버린다', () {
+      final old = EngineUsage.tryParse(claudeEngineJson())!;
+      expect(old.models, isEmpty, reason: '키가 없으면 빈 목록(null 이 아니다)');
+      expect(old.source, isNull);
+
+      final weird = EngineUsage.tryParse({...claudeEngineJson(), 'models': 'nope', 'source': 'ouija'})!;
+      expect(weird.models, isEmpty);
+      expect(weird.source, isNull, reason: '모르는 출처 문자열은 null');
+
+      final partly = EngineUsage.tryParse({
+        ...claudeEngineJson(),
+        'models': [
+          {'label': 'Fable', 'usedPercent': 55},
+          {'usedPercent': 10}, // 라벨 없음 → 버린다
+          {'label': '라벨만'}, // 퍼센트 없음 → 버린다
+          '문자열',
+        ],
+      })!;
+      expect(partly.models.map((m) => m.label), ['Fable']);
+    });
+
+    test('source 는 "turn" 도 읽는다', () {
+      expect(EngineUsage.tryParse({...claudeEngineJson(), 'source': 'turn'})!.source, UsageSource.turn);
+    });
+
+    test('models 가 다르면 EngineUsage 도 다르다(알림이 씹히지 않게)', () {
+      final a = EngineUsage.tryParse({
+        ...claudeEngineJson(),
+        'models': [
+          {'label': 'Fable', 'usedPercent': 55},
+        ],
+      })!;
+      final b = EngineUsage.tryParse({
+        ...claudeEngineJson(),
+        'models': [
+          {'label': 'Fable', 'usedPercent': 56},
+        ],
+      })!;
+      expect(a == b, isFalse);
+      expect(a == EngineUsage.tryParse({...claudeEngineJson(), 'models': [{'label': 'Fable', 'usedPercent': 55}]}), isTrue);
+    });
   });
 
   group('MemberUsage 파싱', () {

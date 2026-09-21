@@ -62,7 +62,57 @@ class UsageWindow {
   String toString() => 'UsageWindow(${usedPercent.toStringAsFixed(1)}% → $resetsAt)';
 }
 
-/// 엔진 하나의 상태 — 연결 여부 · 요금제 · 주간/5시간 한도.
+/// 모델별 주간 한도 한 줄(Claude `/usage` 화면의 `Current week (<라벨>)`, T43-4).
+///
+/// **[label] 은 CLI 가 준 문자열 그대로다** — 실측값이 `Fable` 이었듯 모델 이름이 아닐 수 있다.
+/// 앱은 해석하지 않고 그대로 찍는다.
+class UsageModel {
+  const UsageModel({required this.label, required this.window});
+
+  final String label;
+  final UsageWindow window;
+
+  /// 라벨이나 퍼센트가 없으면 보여 줄 게 없다 → null(그 행만 버린다).
+  static UsageModel? tryParse(Object? v) {
+    if (v is! Map) return null;
+    final j = Map<String, dynamic>.from(v);
+    final label = _text(j['label']);
+    final window = UsageWindow.tryParse(j);
+    if (label == null || window == null) return null;
+    return UsageModel(label: label, window: window);
+  }
+
+  @override
+  bool operator ==(Object other) => other is UsageModel && other.label == label && other.window == window;
+
+  @override
+  int get hashCode => Object.hash(label, window);
+
+  @override
+  String toString() => 'UsageModel($label $window)';
+}
+
+/// 이 한도 숫자를 마지막으로 읽은 출처(T43-4). 모르는 문자열·없는 키는 null.
+enum UsageSource {
+  /// 확인용 세션이 `/usage`·`/status` 화면에서 읽었다(턴이 없어도 갱신된다).
+  probe('probe'),
+
+  /// 턴이 끝날 때 statusLine·rollout 이 줬다.
+  turn('turn');
+
+  const UsageSource(this.wire);
+
+  final String wire;
+
+  static UsageSource? tryParse(Object? v) {
+    for (final s in values) {
+      if (s.wire == v) return s;
+    }
+    return null;
+  }
+}
+
+/// 엔진 하나의 상태 — 연결 여부 · 요금제 · 주간/5시간 한도 · 모델별 한도.
 class EngineUsage {
   const EngineUsage({
     required this.engine,
@@ -71,7 +121,9 @@ class EngineUsage {
     this.plan,
     this.weekly,
     this.session,
+    this.models = const [],
     this.updatedAt,
+    this.source,
   });
 
   /// 아직 데몬이 아무 말도 안 한 엔진의 자리(상단 바는 칩 두 개를 **항상** 보여 준다).
@@ -96,8 +148,14 @@ class EngineUsage {
   /// 5시간 한도. 요금제에 따라 늘 null 일 수 있다.
   final UsageWindow? session;
 
+  /// 모델별 주간 한도(T43-4). **모르면 빈 목록** — Codex 는 언제나 비어 있다.
+  final List<UsageModel> models;
+
   /// 이 값을 마지막으로 확인한 시각.
   final DateTime? updatedAt;
+
+  /// 이 한도 숫자를 마지막으로 읽은 출처(T43-4). 옛 데몬은 안 준다 → null.
+  final UsageSource? source;
 
   /// 한 번이라도 한도를 본 적이 있는가.
   bool get hasLimits => weekly != null;
@@ -117,7 +175,10 @@ class EngineUsage {
       plan: _text(j['plan']),
       weekly: UsageWindow.tryParse(j['weekly']),
       session: UsageWindow.tryParse(j['session']),
+      // 옛 데몬에는 키가 없고, 딴 타입이 와도 죽지 않는다 → 빈 목록. 깨진 행만 골라 버린다.
+      models: [for (final m in _rows(j['models'])) ?UsageModel.tryParse(m)],
       updatedAt: _time(j['updatedAt']),
+      source: UsageSource.tryParse(j['source']),
     );
   }
 
@@ -130,10 +191,12 @@ class EngineUsage {
       other.plan == plan &&
       other.weekly == weekly &&
       other.session == session &&
-      other.updatedAt == updatedAt;
+      _sameModels(other.models, models) &&
+      other.updatedAt == updatedAt &&
+      other.source == source;
 
   @override
-  int get hashCode => Object.hash(engine, connected, reason, plan, weekly, session, updatedAt);
+  int get hashCode => Object.hash(engine, connected, reason, plan, weekly, session, Object.hashAll(models), updatedAt, source);
 
   @override
   String toString() => 'EngineUsage(${engine.wire} connected=$connected weekly=$weekly)';
@@ -317,6 +380,14 @@ class UsageSnapshot {
 
 /// 리스트가 아니면 빈 목록(키가 통째로 딴 타입이어도 죽지 않는다).
 List<Object?> _rows(Object? v) => v is List ? v : const [];
+
+bool _sameModels(List<UsageModel> a, List<UsageModel> b) {
+  if (a.length != b.length) return false;
+  for (var i = 0; i < a.length; i++) {
+    if (a[i] != b[i]) return false;
+  }
+  return true;
+}
 
 double? _num(Object? v) {
   if (v is num) return v.toDouble();

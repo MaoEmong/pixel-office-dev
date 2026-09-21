@@ -38,7 +38,8 @@ import 'selected_department.dart';
 export 'daemon_pill.dart' show DaemonPill, ReportCountBadge, daemonPillLabel, daemonPillColor, daemonBlinkHalfPeriod;
 export 'disconnected_overlay.dart';
 export 'selected_department.dart';
-export '../usage/usage_chips.dart' show EngineUsageChip, EngineUsageChips, usageChipsCompact, usageChipsCompactWidth;
+export '../usage/usage_chips.dart'
+    show EngineUsageChip, EngineUsageChips, usageChipForm, usageChipsCompact, usageChipsCompactWidth, usageChipsMinimalWidth;
 export '../usage/usage_popover.dart' show UsagePopover, showUsagePopover, usagePopoverTitle, usagePopoverWidth;
 
 /// `department.create` 에 `headName` 을 안 보냈을 때 데몬이 붙이는 기본 부장 이름(daemon `DEFAULT_HEAD_NAME`).
@@ -46,6 +47,15 @@ const kDefaultHeadName = '부장';
 
 /// 비상 퇴근 확인 다이얼로그의 경고(D-32: 사용자는 더 이상 팀장·팀원을 출퇴근시키지 않는다).
 const String clockOutEmergencyWarning = '비상용: 부장/팀장 퇴근 시 하위 전원이 정리됩니다';
+
+/// 이 폭보다 좁으면 상단 바가 **글자를 더 뺀다**(T43-4).
+///
+/// 앱 이름과 "부서 만들기" 의 **글자**를 지운다(버튼은 아이콘만 + 툴팁으로 남는다). 왜 필요한가:
+/// 선택한 캐릭터가 있으면 오른쪽에 직급 배지 + 이름 + 퇴근 버튼이 붙는데, 그 상태의 상단 바는
+/// **패스 6 의 최소 창(1100)에서 이미 넘치고 있었다**(T43-4 에서 발견 — 엔진 칩과 무관한 예전 결함이다:
+/// 옛 `C 45%` 칩으로도 34px 넘쳤다). 부서 탭과 선택 캐릭터 이름은 이미 줄어들 수 있으므로
+/// 남은 고정 폭에서 뺀다. 1200 인 이유는 기존 상단 바 테스트가 쓰는 1400 을 건드리지 않기 위해서다.
+const double topBarTightWidth = 1200;
 
 class TopBar extends ConsumerWidget {
   const TopBar({super.key, this.selectedMemberId});
@@ -74,10 +84,15 @@ class TopBar extends ConsumerWidget {
       color: scheme.surfaceContainerHigh,
       // 창이 좁으면(패스 6 최소 1100) 엔진 칩이 **넘치기 전에** 짧은 꼴로 줄어든다.
       child: LayoutBuilder(
-        builder: (context, box) => Row(
+        builder: (context, box) {
+        final tight = box.maxWidth < topBarTightWidth;
+        return Row(
         children: [
-          Text('픽셀 오피스', style: style?.copyWith(fontWeight: FontWeight.bold)),
-          const SizedBox(width: 16),
+          // 좁으면 앱 이름부터 뺀다 — 창 제목이 이미 말해 주는, 이 줄에서 가장 덜 중요한 글자다.
+          if (!tight) ...[
+            Text('픽셀 오피스', style: style?.copyWith(fontWeight: FontWeight.bold)),
+            const SizedBox(width: 16),
+          ],
           Expanded(
             child: SingleChildScrollView(
               scrollDirection: Axis.horizontal,
@@ -125,7 +140,7 @@ class TopBar extends ConsumerWidget {
             const SizedBox(width: 8),
           ],
           // 엔진 칩(사용량) → 데몬 pill 순서(설계 §앱 1: "데몬 pill 왼쪽").
-          EngineUsageChips(compact: usageChipsCompact(box.maxWidth)),
+          EngineUsageChips(form: usageChipForm(box.maxWidth)),
           const SizedBox(width: 6),
           const DaemonPill(),
           const SizedBox(width: 12),
@@ -142,16 +157,21 @@ class TopBar extends ConsumerWidget {
             ),
           ],
           const SizedBox(width: 12),
-          FilledButton.tonalIcon(
-            key: const Key('topbar.createDepartment'),
-            onPressed: connected ? () => showCreateDepartmentDialog(context) : null,
-            style: FilledButton.styleFrom(visualDensity: VisualDensity.compact),
-            icon: const Icon(Icons.add_business, size: 16),
-            label: const Text('부서 만들기'),
+          Tooltip(
+            message: tight ? '부서 만들기' : '',
+            child: FilledButton.tonalIcon(
+              key: const Key('topbar.createDepartment'),
+              onPressed: connected ? () => showCreateDepartmentDialog(context) : null,
+              style: FilledButton.styleFrom(visualDensity: VisualDensity.compact),
+              icon: const Icon(Icons.add_business, size: 16),
+              // 좁으면 글자를 빼고 아이콘만(툴팁이 뜻을 지킨다). 위젯 종류는 그대로 둔다.
+              label: tight ? const SizedBox.shrink() : const Text('부서 만들기'),
+            ),
           ),
           _DepartmentMenu(departmentId: activeDept, enabled: connected),
         ],
-        ),
+        );
+        },
       ),
     );
   }

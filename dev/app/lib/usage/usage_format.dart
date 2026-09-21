@@ -174,14 +174,40 @@ String engineChipLabel(EngineUsage u, {DateTime? now}) {
   return parts.join(' · ');
 }
 
-/// 좁을 때의 칩 문구 — `C 45%` / `X 연결 안 됨` / `C —`.
-String engineChipCompactLabel(EngineUsage u) {
-  final mark = engineMark(u.engine);
-  if (!u.connected) return '$mark $usageNotConnectedLabel';
-  final weekly = u.weekly;
-  if (weekly == null) return '$mark —';
-  return '$mark ${formatPercent(remainingPercent(weekly.usedPercent))}';
+/// 칩이 줄어드는 세 단계(T43-4). **글자를 빼는 순서가 정해져 있다** — 이름은 마지막까지 지킨다.
+enum UsageChipForm {
+  /// `Claude 남음 45% · 3일 뒤 · 12분 전`
+  full,
+
+  /// `Claude 45%` — "남음"·리셋·신선도만 뺀다. **엔진 이름은 남는다**(T43-4: `C 45%` 는 읽을 수 없었다).
+  compact,
+
+  /// `C 45%` — 이름까지 뺀 마지막 수단. 여기서도 넘치면 상단 바 쪽을 손봐야 한다.
+  minimal,
 }
+
+/// 좁을 때의 칩 문구 — `Claude 45%` / `Codex 연결 안 됨` / `Claude —`.
+///
+/// 예전에는 `C 45%` / `X 연결 안 됨` 이었는데 **무슨 글자인지 알 수 없었다**(T43-4). 엔진 이름은
+/// 짧기도 하거니와 칩이 말해 주는 유일한 것이라 마지막까지 지킨다 — 대신 `남음`·리셋·신선도를 뺀다.
+String engineChipCompactLabel(EngineUsage u) => _chipShort(u, engineLabel(u.engine));
+
+/// 그래도 넘칠 때의 마지막 꼴 — `C 45%` / `X 연결 안 됨`.
+String engineChipMinimalLabel(EngineUsage u) => _chipShort(u, engineMark(u.engine));
+
+String _chipShort(EngineUsage u, String name) {
+  if (!u.connected) return '$name $usageNotConnectedLabel';
+  final weekly = u.weekly;
+  if (weekly == null) return '$name —';
+  return '$name ${formatPercent(remainingPercent(weekly.usedPercent))}';
+}
+
+/// 꼴에 맞는 칩 문구.
+String engineChipLabelFor(EngineUsage u, UsageChipForm form, {DateTime? now}) => switch (form) {
+      UsageChipForm.full => engineChipLabel(u, now: now),
+      UsageChipForm.compact => engineChipCompactLabel(u),
+      UsageChipForm.minimal => engineChipMinimalLabel(u),
+    };
 
 /// 칩 색 — 연결 안 됨은 회색, 아니면 남은 비율로.
 Color engineChipColor(EngineUsage u) {

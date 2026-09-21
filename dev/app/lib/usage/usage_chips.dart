@@ -7,8 +7,15 @@
 // 칩은 **엔진마다 항상 하나씩**이다 — 데몬이 아직 아무 말도 안 했어도 자리를 비우지 않는다
 // (`engineUsageProvider` 가 EngineUsage.unknown 을 준다).
 //
-// 좁은 창(패스 6: 최소 1100×640)에서는 글자를 빼 `C 45%` / `X 연결 안 됨` 으로 줄인다 —
-// 상단 바가 넘치기 **전에** 줄어든다(패스 1 D7 "글자 빼기" 와 같은 원칙).
+// 좁은 창(패스 6: 최소 1100×640)에서는 글자를 뺀다 — 상단 바가 넘치기 **전에** 줄어든다
+// (패스 1 D7 "글자 빼기" 와 같은 원칙). **빼는 순서가 정해져 있다**(T43-4):
+//
+//   1500↑  `Claude 남음 45% · 3일 뒤`   (full)
+//   1500↓  `Claude 45%`                 (compact — "남음"·리셋·신선도만 뺀다. **이름은 남긴다**)
+//   1000↓  `C 45%`                      (minimal — 마지막 수단)
+//
+// 예전에는 1500 아래가 바로 `C 45%` / `X 연결 안 됨` 이었는데 **무슨 글자인지 알 수 없었다**.
+// 기본 창(1280)·1400 에서 쓰는 꼴이 그것이면 사실상 늘 암호였던 셈이다.
 //
 // 사용량은 참고 정보다(패스 1 시선 서열: 허가 카드 > 내 책상 > 부장 > 클러스터 > 로그). 그래서 평소엔
 // 보조 글자 색이고, 남은 양이 적을 때만 주황·빨강이 든다.
@@ -29,21 +36,35 @@ import 'usage_popover.dart';
 /// RenderFlex 가 160px 넘쳤다. 1920 창부터 긴 꼴이 뜬다. 짧은 꼴에서도 툴팁에 원문이 그대로 있다.
 const double usageChipsCompactWidth = 1500;
 
-/// 이 폭에서 칩을 줄일지.
-bool usageChipsCompact(double topBarWidth) => topBarWidth < usageChipsCompactWidth;
+/// 이 폭보다 좁으면 엔진 **이름까지** 뺀 마지막 꼴(`C 45%`)로 간다.
+///
+/// **왜 1000 인가**: 패스 6 의 최소 창은 1100 이고, 거기서도 `Claude 45%` 두 개(약 190px)는 들어간다
+/// (레이아웃 테스트가 1100·1280·1400·1920 에서 넘치지 않는 것을 지킨다). 1000 은 그보다 더 좁게
+/// 줄였을 때의 안전망이다 — 최소 창 아래는 지원 범위가 아니지만 넘쳐 보이느니 암호가 낫다.
+const double usageChipsMinimalWidth = 1000;
+
+/// 이 폭에 맞는 칩 꼴.
+UsageChipForm usageChipForm(double topBarWidth) {
+  if (topBarWidth < usageChipsMinimalWidth) return UsageChipForm.minimal;
+  if (topBarWidth < usageChipsCompactWidth) return UsageChipForm.compact;
+  return UsageChipForm.full;
+}
+
+/// 이 폭에서 칩을 줄일지(= full 이 아닌가).
+bool usageChipsCompact(double topBarWidth) => usageChipForm(topBarWidth) != UsageChipForm.full;
 
 /// 엔진 칩 두 개(Claude · Codex). 순서는 [Engine.values] 고정.
 class EngineUsageChips extends StatelessWidget {
-  const EngineUsageChips({super.key, this.compact = false});
+  const EngineUsageChips({super.key, this.form = UsageChipForm.full});
 
-  final bool compact;
+  final UsageChipForm form;
 
   @override
   Widget build(BuildContext context) => Row(
         mainAxisSize: MainAxisSize.min,
         children: [
           for (final e in Engine.values) ...[
-            EngineUsageChip(engine: e, compact: compact),
+            EngineUsageChip(engine: e, form: form),
             const SizedBox(width: 6),
           ],
         ],
@@ -51,10 +72,10 @@ class EngineUsageChips extends StatelessWidget {
 }
 
 class EngineUsageChip extends ConsumerWidget {
-  const EngineUsageChip({super.key, required this.engine, this.compact = false});
+  const EngineUsageChip({super.key, required this.engine, this.form = UsageChipForm.full});
 
   final Engine engine;
-  final bool compact;
+  final UsageChipForm form;
 
   /// 칩 위젯 키(`topbar.usage.claude` / `topbar.usage.codex`).
   static Key keyFor(Engine engine) => Key('topbar.usage.${engine.wire}');
@@ -64,7 +85,7 @@ class EngineUsageChip extends ConsumerWidget {
     final usage = ref.watch(engineUsageProvider(engine));
     final color = engineChipColor(usage);
     final full = engineChipLabel(usage);
-    final label = compact ? engineChipCompactLabel(usage) : full;
+    final label = engineChipLabelFor(usage, form);
     // 연결이 안 됐으면 **이유와 할 일**을, 붙어 있으면 짧아진 글자의 원문 + 여는 법을 툴팁에 둔다.
     final tooltip = usage.connected ? '$full — 눌러서 사용량 보기' : notConnectedTooltip(engine, usage.reason);
     return Tooltip(

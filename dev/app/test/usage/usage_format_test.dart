@@ -163,11 +163,24 @@ void main() {
       expect(engineChipColor(fresh), usageCalmColor);
     });
 
-    test('좁을 때: C 45% / X 연결 안 됨 / C —', () {
-      expect(engineChipCompactLabel(engine(weeklyUsed: 55)), 'C 45%');
-      expect(engineChipCompactLabel(engine(engine: Engine.codex, weeklyUsed: 10)), 'X 90%');
-      expect(engineChipCompactLabel(engine(engine: Engine.codex, connected: false)), 'X 연결 안 됨');
-      expect(engineChipCompactLabel(engine()), 'C —');
+    test('좁을 때(T43-4): 이름은 지키고 "남음"·리셋만 뺀다 — Claude 45% / Codex 연결 안 됨', () {
+      expect(engineChipCompactLabel(engine(weeklyUsed: 55)), 'Claude 45%');
+      expect(engineChipCompactLabel(engine(engine: Engine.codex, weeklyUsed: 10)), 'Codex 90%');
+      expect(engineChipCompactLabel(engine(engine: Engine.codex, connected: false)), 'Codex 연결 안 됨');
+      expect(engineChipCompactLabel(engine()), 'Claude —');
+    });
+
+    test('그래도 넘치면 마지막 꼴: C 45% / X 연결 안 됨', () {
+      expect(engineChipMinimalLabel(engine(weeklyUsed: 55)), 'C 45%');
+      expect(engineChipMinimalLabel(engine(engine: Engine.codex, connected: false)), 'X 연결 안 됨');
+      expect(engineChipMinimalLabel(engine()), 'C —');
+    });
+
+    test('engineChipLabelFor 는 꼴에 맞는 문구를 고른다', () {
+      final u = engine(weeklyUsed: 55, resetsAt: now.add(const Duration(days: 3)));
+      expect(engineChipLabelFor(u, UsageChipForm.full, now: now), 'Claude 남음 45% · 3일 뒤');
+      expect(engineChipLabelFor(u, UsageChipForm.compact, now: now), 'Claude 45%');
+      expect(engineChipLabelFor(u, UsageChipForm.minimal, now: now), 'C 45%');
     });
 
     test('연결 안 됨 툴팁은 이유별로 다르고 할 일을 적는다', () {

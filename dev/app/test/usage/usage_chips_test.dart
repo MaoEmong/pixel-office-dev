@@ -11,7 +11,7 @@ import 'package:pixel_office/usage/usage_format.dart';
 import '../command/fake_rpc_client.dart';
 
 /// 상단 바를 [width] 폭으로 띄운다(창 크기 = 상단 바 폭).
-Future<ProviderContainer> pumpBar(WidgetTester tester, FakeRpcClient fake, {double width = 1920}) async {
+Future<ProviderContainer> pumpBar(WidgetTester tester, FakeRpcClient fake, {double width = 1920, String? selectedMemberId}) async {
   tester.view.physicalSize = Size(width, 800);
   tester.view.devicePixelRatio = 1.0;
   addTearDown(tester.view.reset);
@@ -19,7 +19,7 @@ Future<ProviderContainer> pumpBar(WidgetTester tester, FakeRpcClient fake, {doub
     overrides: fake.overrides,
     child: MaterialApp(
       theme: ThemeData(brightness: Brightness.dark, useMaterial3: true),
-      home: const Scaffold(body: Column(children: [TopBar(), Spacer()])),
+      home: Scaffold(body: Column(children: [TopBar(selectedMemberId: selectedMemberId), const Spacer()])),
     ),
   ));
   await tester.pump();
@@ -35,6 +35,8 @@ Map<String, dynamic> engineJson(
   String? weeklyResetsAt,
   num? sessionUsed,
   String? updatedAt,
+  List<Map<String, dynamic>>? models,
+  String? source,
 }) =>
     {
       'engine': engine,
@@ -43,7 +45,9 @@ Map<String, dynamic> engineJson(
       'plan': plan,
       'weekly': weeklyUsed == null ? null : {'usedPercent': weeklyUsed, 'resetsAt': weeklyResetsAt},
       'session': sessionUsed == null ? null : {'usedPercent': sessionUsed},
+      'models': models ?? const [],
       'updatedAt': updatedAt,
+      'source': source,
     };
 
 Map<String, dynamic> memberUsageJson(String id, {num? percent, int total = 1000, double? cost, String engine = 'claude'}) => {
@@ -150,11 +154,16 @@ void main() {
   });
 
   group('좁은 창(패스 6 최소 1100)', () {
-    testWidgets('1100 에서는 칩이 "C 45%" / "X 연결 안 됨" 으로 줄고 넘치지 않는다', (tester) async {
-      await pumpBar(tester, fake, width: 1100);
+    /// 상단 바를 최대한 빽빽하게 — 긴 선택 멤버 이름 + 부서 탭까지 넣고 넘치는지 본다(T43-4).
+    Future<void> pumpCrowded(WidgetTester tester, double width) async {
+      await pumpBar(tester, fake, width: width, selectedMemberId: 'mH');
       fake.emitHello(
-        departments: [fakeDepartment('d1', name: '픽셀오피스', headId: 'mH')],
-        members: [fakeMember('mH', rank: 'head', name: '부장')],
+        departments: [
+          fakeDepartment('d1', name: '픽셀오피스', headId: 'mH'),
+          fakeDepartment('d2', name: '하루기록'),
+          fakeDepartment('d3', name: '모시모시'),
+        ],
+        members: [fakeMember('mH', rank: 'head', name: '아주아주긴이름의부장님')],
         usage: {
           'engines': [
             engineJson('claude', weeklyUsed: 55, weeklyResetsAt: inDays(3)),
@@ -163,11 +172,26 @@ void main() {
         },
       );
       await tester.pumpAndSettle();
-      expect(find.text('C 45%'), findsOneWidget);
-      expect(find.text('X 연결 안 됨'), findsOneWidget);
+    }
+
+    testWidgets('1100 에서는 "Claude 45%" / "Codex 연결 안 됨" — 암호(C/X)가 아니다', (tester) async {
+      await pumpCrowded(tester, 1100);
+      expect(find.text('Claude 45%'), findsOneWidget);
+      expect(find.text('Codex 연결 안 됨'), findsOneWidget);
       expect(find.text('Claude 남음 45% · 3일 뒤'), findsNothing);
+      expect(find.text('C 45%'), findsNothing, reason: 'T43-4 이전의 암호 꼴로 돌아가지 않는다');
       expect(tester.takeException(), isNull, reason: '상단 바가 넘치지 않는다');
     });
+
+    for (final width in [1100.0, 1280.0, 1400.0, 1920.0]) {
+      testWidgets('$width: 칩 둘 + 긴 선택 멤버 이름 + 부서 탭 셋이 있어도 상단 바가 넘치지 않는다', (tester) async {
+        await pumpCrowded(tester, width);
+        expect(tester.takeException(), isNull);
+        // 어느 폭에서든 두 엔진이 **읽을 수 있는 이름**으로 보인다.
+        expect(find.textContaining('Claude'), findsWidgets);
+        expect(find.textContaining('Codex'), findsWidgets);
+      });
+    }
 
     testWidgets('1920 에서는 긴 꼴 그대로', (tester) async {
       await pumpBar(tester, fake, width: 1920);
@@ -176,14 +200,19 @@ void main() {
       });
       await tester.pumpAndSettle();
       expect(find.text('Claude 남음 45% · 3일 뒤'), findsOneWidget);
-      expect(find.text('C 45%'), findsNothing);
+      expect(find.text('Claude 45%'), findsNothing);
     });
 
-    test('축약 경계', () {
-      expect(usageChipsCompact(1100), isTrue, reason: '패스 6 최소 창');
-      expect(usageChipsCompact(1280), isTrue, reason: '기본 창도 짧은 꼴 — 상단 바가 이미 빽빽하다');
-      expect(usageChipsCompact(usageChipsCompactWidth - 1), isTrue);
-      expect(usageChipsCompact(usageChipsCompactWidth), isFalse);
+    test('축약 경계 — 세 단계', () {
+      expect(usageChipForm(1920), UsageChipForm.full);
+      expect(usageChipForm(usageChipsCompactWidth), UsageChipForm.full);
+      expect(usageChipForm(usageChipsCompactWidth - 1), UsageChipForm.compact);
+      expect(usageChipForm(1400), UsageChipForm.compact, reason: '기본 창도 짧은 꼴 — 상단 바가 이미 빽빽하다');
+      expect(usageChipForm(1280), UsageChipForm.compact);
+      expect(usageChipForm(1100), UsageChipForm.compact, reason: '패스 6 최소 창에서도 이름은 지킨다');
+      expect(usageChipForm(usageChipsMinimalWidth), UsageChipForm.compact);
+      expect(usageChipForm(usageChipsMinimalWidth - 1), UsageChipForm.minimal, reason: '지원 범위 밖의 안전망');
+      expect(usageChipsCompact(1280), isTrue);
       expect(usageChipsCompact(1920), isFalse);
     });
   });
@@ -218,6 +247,38 @@ void main() {
       expect(find.text('남음 45%'), findsOneWidget);
       // 5시간 한도가 없는 엔진은 그 줄을 아예 안 만든다.
       expect(find.byKey(const Key('usage.window.codex.session')), findsNothing);
+    });
+
+    testWidgets('T43-4: 주간 막대 아래에 모델별 막대가 한 줄씩 — 라벨은 CLI 가 준 그대로', (tester) async {
+      await openPopover(tester, usage: {
+        'engines': [
+          engineJson('claude', plan: 'max', weeklyUsed: 55, weeklyResetsAt: inDays(3), source: 'probe', models: [
+            {'label': 'Fable', 'usedPercent': 55, 'resetsAt': inDays(3)},
+            {'label': 'Nebula 9 preview', 'usedPercent': 90},
+          ]),
+          engineJson('codex', weeklyUsed: 20),
+        ],
+      });
+      expect(find.byKey(const Key('usage.window.claude.weekly')), findsOneWidget);
+      expect(find.byKey(const Key('usage.window.claude.model.Fable')), findsOneWidget);
+      expect(find.byKey(const Key('usage.window.claude.model.Nebula 9 preview')), findsOneWidget);
+      expect(find.text('Fable'), findsOneWidget);
+      expect(find.text('Nebula 9 preview'), findsOneWidget);
+      // 색은 주간 막대와 같은 규칙 — 10% 남은 모델은 빨강 문구가 따로 뜬다.
+      expect(find.text('남음 10%'), findsOneWidget);
+      // Codex 에는 모델 줄이 없다.
+      expect(find.byKey(const Key('usage.window.codex.model.Fable')), findsNothing);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('T43-4: 모델별 값이 없으면 줄을 아예 만들지 않는다 · 칩에는 아무것도 안 붙는다', (tester) async {
+      await openPopover(tester, usage: {
+        'engines': [engineJson('claude', weeklyUsed: 55, weeklyResetsAt: inDays(3), source: 'turn')],
+      });
+      expect(find.byKey(const Key('usage.window.claude.weekly')), findsOneWidget);
+      expect(find.byWidgetPredicate((w) => w is Row && (w.key?.toString().contains('.model.') ?? false)), findsNothing);
+      // 칩 문구는 모델·출처와 무관하다(칩에는 주간 하나만).
+      expect(find.text('Claude 남음 45% · 3일 뒤'), findsOneWidget);
     });
 
     testWidgets('리셋은 절대 + 상대 둘 다', (tester) async {

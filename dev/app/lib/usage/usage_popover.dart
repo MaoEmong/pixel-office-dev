@@ -161,6 +161,13 @@ class _EngineSection extends ConsumerWidget {
               )
             else ...[
               _WindowRow(label: '주간', window: u.weekly!, keySuffix: '${engine.wire}.weekly'),
+              // 모델별 한도(T43-4)는 주간 막대 **바로 아래** 한 줄씩. 라벨은 CLI 가 준 그대로다
+              // (실측값이 `Fable` 이었듯 모델 이름이 아닐 수 있다 — 해석하지 않는다).
+              // 확인용 세션이 `/usage` 화면을 읽었을 때만 있고, Codex 는 언제나 비어 있다.
+              for (final m in u.models) ...[
+                const SizedBox(height: 4),
+                _WindowRow(label: m.label, window: m.window, keySuffix: '${engine.wire}.model.${m.label}', indent: true),
+              ],
               // 5시간 한도는 요금제에 따라 아예 안 온다 — 없으면 줄 자체를 만들지 않는다(빼기 원칙).
               if (u.session != null) ...[
                 const SizedBox(height: 4),
@@ -175,12 +182,14 @@ class _EngineSection extends ConsumerWidget {
 }
 
 /// 한도 창 한 줄: `주간 [막대] 남음 45% · 9월 24일 18:00 (3일 뒤)`.
+/// [indent] 면 모델별 줄 — 주간 막대에 딸린 것으로 보이게 라벨 칸을 들여 쓴다.
 class _WindowRow extends StatelessWidget {
-  const _WindowRow({required this.label, required this.window, required this.keySuffix});
+  const _WindowRow({required this.label, required this.window, required this.keySuffix, this.indent = false});
 
   final String label;
   final UsageWindow window;
   final String keySuffix;
+  final bool indent;
 
   @override
   Widget build(BuildContext context) {
@@ -191,8 +200,18 @@ class _WindowRow extends StatelessWidget {
     return Row(
       key: Key('usage.window.$keySuffix'),
       children: [
-        SizedBox(width: 40, child: Text(label, style: const TextStyle(fontSize: 11.5, color: usageCalmColor))),
-        UsageBar(percent: remaining, color: color, width: 90),
+        if (indent) const SizedBox(width: 10),
+        SizedBox(
+          // 모델 라벨은 길 수 있다(CLI 가 준 그대로) — 들여 쓴 줄은 라벨 칸을 넓히고 막대를 줄여 총폭을 맞춘다.
+          width: indent ? 66 : 40,
+          child: Text(
+            label,
+            style: const TextStyle(fontSize: 11.5, color: usageCalmColor),
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+          ),
+        ),
+        UsageBar(percent: remaining, color: color, width: indent ? 60 : 90),
         const SizedBox(width: 8),
         Text('남음 ${formatPercent(remaining)}', style: TextStyle(fontSize: 12, color: color)),
         const SizedBox(width: 8),
