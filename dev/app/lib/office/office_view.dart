@@ -86,7 +86,12 @@ class ExpandedExitedTeams extends Notifier<Set<String>> {
       state = state.contains(teamId) ? ({...state}..remove(teamId)) : {...state, teamId};
 }
 
-/// 화면용 장면(**부서 id 별**, null = 전체). members / teams / latestEvent / pending / derived 중 하나라도
+/// 멤버별 사용량 맵(T43) — 캔버스는 컨텍스트 비율 하나만 쓴다(≥70% 경고 막대).
+final officeMemberUsageProvider = Provider<Map<String, MemberUsage>>(
+  (ref) => ref.watch(officeProvider.select((s) => s.memberUsage)),
+);
+
+/// 화면용 장면(**부서 id 별**, null = 전체). members / teams / latestEvent / pending / derived / usage 중 하나라도
 /// 바뀌면 다시 만든다(값 비교로 불필요한 repaint 는 페인터가 거른다).
 final officeSceneProvider = Provider.family<OfficeScene, String?>(
   (ref, departmentId) => OfficeScene.build(
@@ -99,6 +104,7 @@ final officeSceneProvider = Provider.family<OfficeScene, String?>(
     now: DateTime.now(),
     expandedTeamIds: ref.watch(expandedExitedTeamsProvider),
     reportCounts: ref.watch(officeReportCountsProvider),
+    usage: ref.watch(officeMemberUsageProvider),
   ),
 );
 

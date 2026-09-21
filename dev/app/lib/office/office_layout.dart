@@ -330,6 +330,16 @@ class OfficeLayout {
     return Rect.fromLTWH(d.left + 0.12 * d.width, d.top + 0.30 * d.height, 0.76 * d.width, 0.42 * d.height);
   }
 
+  /// 컨텍스트 경고 막대(T43 · 설계 §앱 3) — 모니터 **아랫변**에 걸친 3px 띠.
+  /// 70% 미만이면 페인터가 아예 그리지 않는다(색 판정은 `usage/usage_format.dart` 의 `contextWarningColor`).
+  Rect contextWarningRect(int index) {
+    final m = monitorRect(index);
+    return Rect.fromLTWH(m.left, m.bottom - contextWarningThickness, m.width, contextWarningThickness);
+  }
+
+  /// 경고 막대 두께(3px 고정 — 축소해도 한 줄이 보이게 스케일을 태우지 않는다).
+  static const double contextWarningThickness = 3;
+
   /// 캐릭터가 자리에 앉을 때의 원 중심 — 책상 아래 가장자리에 걸친다.
   Offset seatCenter(int index) {
     final d = deskRect(index);
