@@ -99,6 +99,18 @@ function emptyEngine(engine: Engine): EngineUsage {
   return { engine, connected: false, plan: null, weekly: null, session: null, models: [], updatedAt: null, source: null, reason: 'unknown' };
 }
 
+/**
+ * 요금제 이름은 **전선에 나갈 때 항상 다듬고 소문자**다.
+ *
+ * 출처마다 대소문자가 다르다 — Codex 는 `/status` 화면이 `Pro`, rollout 의 `plan_type` 이 `pro` 를 준다.
+ * 그대로 두면 마지막에 들어온 쪽이 이기면서 몇 분마다 값이 뒤집히고, 바뀐 것도 없는데 알림·저장이 헛돈다.
+ * 파서는 **본 대로** 돌려주고(raw), 소문자화는 값이 tracker 로 들어오는 이 한 곳에서만 한다
+ * (Claude `subscriptionType` 이 이미 `max` 처럼 소문자라 그쪽에 맞춘다). 문자열이 아니면 없는 값으로 친다.
+ */
+function normalizePlan(plan: unknown): string | null {
+  return typeof plan === 'string' ? plan.trim().toLowerCase() || null : null;
+}
+
 /** `updatedAt` 을 뺀 나머지가 같은가(변화 감지). 값이 작아 JSON 비교로 충분하다. */
 function sameExceptUpdatedAt(a: object, b: object): boolean {
   const strip = (o: object) => JSON.stringify({ ...(o as Record<string, unknown>), updatedAt: null });
@@ -279,7 +291,7 @@ export class UsageTracker extends EventEmitter<UsageTrackerEvents> {
     const next: EngineUsage = {
       ...prev,
       connected: conn.connected,
-      plan: conn.plan ?? prev.plan,
+      plan: normalizePlan(conn.plan) ?? prev.plan,
       reason: conn.connected ? null : (conn.reason ?? 'unknown'),
     };
     this.writeEngine(next, prev);
@@ -314,7 +326,9 @@ export class UsageTracker extends EventEmitter<UsageTrackerEvents> {
       // 옛 데몬(v3)이 쓴 행에는 `models`·`source` 가 없다 — 기본값으로 채운다.
       const models = Array.isArray(value.models) ? value.models : [];
       const source = value.source === 'probe' || value.source === 'turn' ? value.source : null;
-      const usage: EngineUsage = { ...emptyEngine(row.engine), ...value, models, source, engine: row.engine };
+      // 옛 행에는 대문자 요금제("Pro")가 남아 있을 수 있다 — 다음 측정까지 기다리지 말고 읽을 때 고친다.
+      const plan = normalizePlan(value.plan);
+      const usage: EngineUsage = { ...emptyEngine(row.engine), ...value, models, source, plan, engine: row.engine };
       this.engines.set(row.engine, usage);
       // 재기동 뒤에도 "언제 읽은 값인가" 를 알아야 새 측정과 나이를 견줄 수 있다.
       const at = usage.updatedAt ? Date.parse(usage.updatedAt) : Number.NaN;
@@ -361,6 +375,8 @@ export class UsageTracker extends EventEmitter<UsageTrackerEvents> {
     const prev = this.engineUsage(engine);
     const stamps = this.stamps.get(engine) ?? emptyStamps();
     const next: EngineUsage = { ...prev };
+    // 대소문자만 다른 요금제(화면 "Pro" ↔ rollout "pro")가 변화로 보이지 않게 여기서 한 번 다듬는다.
+    const plan = normalizePlan(patch.plan);
     let accepted = false;
 
     if (patch.weekly != null && measuredAt >= stamps.weekly) {
@@ -379,8 +395,8 @@ export class UsageTracker extends EventEmitter<UsageTrackerEvents> {
       accepted = true;
     }
     // 요금제는 시각을 따지지 않는다 — 한도 숫자가 아니라 계정 속성이라 자주 바뀌지 않는다.
-    if (patch.plan) next.plan = patch.plan;
-    if (!accepted && !patch.plan) return;
+    if (plan) next.plan = plan;
+    if (!accepted && !plan) return;
     this.stamps.set(engine, stamps);
 
     // `updatedAt`/`source` 는 **가장 최근 측정**을 가리킨다. 옛 측정이 빈 칸을 채우기만 했으면 건드리지 않는다.

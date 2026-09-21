@@ -101,6 +101,7 @@ describe('parseUsageScreen — Codex /status (실측 화면)', () => {
     assert.equal(got.ok, true);
     assert.equal(got.weekly?.usedPercent, 12, '화면은 88% left');
     assert.equal(got.session, null, 'Pro 계정에는 5h limit 줄이 없다 — null 이 정상');
+    // 파서는 화면에 쓰인 대로 돌려준다. 소문자화(rollout 의 "pro" 와 맞추기)는 UsageTracker 가 한다.
     assert.equal(got.plan, 'Pro');
   });
 

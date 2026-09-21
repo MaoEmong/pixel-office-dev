@@ -71,7 +71,7 @@ raw `status` 는 "CLI 프로세스가 어떤 상태인가" 일 뿐이다 — `id
   "engines": [
     { "engine": "claude",            // 'claude' | 'codex' — 엔진은 **항상 둘 다** 실린다
       "connected": true,
-      "plan": "max",                 // 요금제 이름. **이메일·계정 식별자는 절대 오지 않는다**(D-45 ②)
+      "plan": "max",                 // 요금제 이름. **언제나 소문자**(아래). **이메일·계정 식별자는 절대 오지 않는다**(D-45 ②)
       "weekly":  { "usedPercent": 54, "resetsAt": "2026-09-23T03:00:00.000Z" },
       "session": { "usedPercent": 17, "resetsAt": "2026-09-21T12:00:00.000Z" },  // 5시간 한도. 없으면 null
       "models": [ { "label": "Fable", "usedPercent": 55, "resetsAt": "…" } ],    // 모델별 주간 한도. **모르면 빈 배열**
@@ -98,6 +98,7 @@ raw `status` 는 "CLI 프로세스가 어떤 상태인가" 일 뿐이다 — `id
 - **값이 없는 것과 연결이 안 된 것은 다른 상태다.** 숫자를 모르면 그 칸만 `null` 이고, 안 붙어 있으면 `connected:false` + `reason`.
 - `models[]` 는 **Claude `/usage` 화면에만 있는 값**이다(statusLine 에는 없다). `label` 은 괄호 안 문자열을 **그대로** 실은 것이라 모델 이름이 아닐 수 있다(실측값은 `Fable`) — 클라이언트는 그대로 찍고 해석하지 않는다. Codex 는 언제나 빈 배열이다.
 - `source` 는 그 한도 숫자를 **마지막으로 읽은 출처**다. 두 출처(확인용 세션 화면 · 턴 종료 이벤트)가 같은 칸을 대므로 **칸마다 더 최근에 측정된 값이 이긴다** — 늦게 도착해도 오래된 측정이면 버린다.
+- **`plan` 은 출처가 어디든 언제나 소문자**다. 데몬이 `UsageTracker` 입구에서 한 번 다듬는다(앞뒤 공백 제거 + 소문자). 같은 요금제를 출처마다 다르게 적기 때문이다 — Codex `/status` 화면의 `Pro` 와 rollout `plan_type` 의 `pro` 가 **둘 다 `pro` 로** 들어온다(그러지 않으면 마지막에 들어온 쪽이 이기면서 몇 분마다 값이 뒤집힌다). 파서는 본 대로 돌려주고 소문자화는 이 한 곳에서만 한다. **보기 좋게 대문자로 만드는 것은 클라이언트 몫이다.**
 - `reason` 은 셋뿐이다: `not-installed`(실행 파일을 못 찾았다) · `logged-out`(CLI 가 로그인 안 됐다고 한다) · `unknown`(명령이 실패·타임아웃했거나 출력 모양이 바뀌었다). `connected:true` 면 항상 `null`.
 
 **신선도(staleness).** `updatedAt` 은 **그 한도 숫자를 마지막으로 확인한 시각**이다. 연결 폴링은 이 값을 건드리지 않는다(연결을 확인한 것이지 한도를 다시 본 것이 아니다). 값이 그대로여도 마지막 확인이 60초를 넘겼으면 데몬이 `updatedAt` 만 올려 한 번 더 민다 — 그래야 앱의 "N분 전 기준" 이 거짓말을 하지 않는다. 그래서 **값이 안 변해도 분당 한 번까지는 알림이 올 수 있다**(그보다 잦지는 않다).
@@ -118,6 +119,8 @@ raw `status` 는 "CLI 프로세스가 어떤 상태인가" 일 뿐이다 — `id
 | `connected`/`reason`, Claude `plan` | `claude auth status` · `codex login status` | 기동 시 + 60초(`PIXEL_USAGE_POLL_SEC`) |
 | 두 엔진 `weekly`/`session`/`models`, Codex `plan` | **확인용 세션**(T43-4)이 읽은 `/usage`·`/status` 화면 | 5분(`PIXEL_USAGE_PROBE_SEC`) |
 | Codex `costUsd` | **없다** — Codex 는 토큰만 준다 | — |
+
+`plan` 은 이 표의 어느 줄에서 오든 **소문자로 통일해서** 나간다(위 규칙) — `/status` 화면의 `Pro` 도 rollout `plan_type` 의 `pro` 도 `"pro"` 하나다.
 
 기록 파일은 **끝에서 64KB 만** 비동기로 읽고, 못 읽으면(파일 없음·잠김) **이전 값을 그대로 둔다**(지우지 않는다). CLI 업데이트로 필드 이름이 바뀌면 그 값만 `null` 로 떨어지고 나머지는 계속 돈다.
 

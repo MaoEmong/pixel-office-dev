@@ -377,10 +377,10 @@ describe('UsageTracker — 출처 병합(probe ↔ turn)', () => {
     assert.equal(u.source, 'turn', '가장 최근 측정의 출처는 그대로');
   });
 
-  test('확인용 세션이 준 요금제는 그대로 실린다(Codex 는 화면이 유일한 출처일 수 있다)', () => {
+  test('확인용 세션이 준 요금제도 실린다(Codex 는 화면이 유일한 출처일 수 있다) — 소문자로', () => {
     h = harness();
     h.tracker.applyProbe('codex', { weekly: probeWeekly(12), plan: 'Pro' });
-    assert.equal(h.tracker.engineUsage('codex').plan, 'Pro');
+    assert.equal(h.tracker.engineUsage('codex').plan, 'pro');
   });
 
   test('models 는 DB 에 남고 재기동 뒤에도 그대로다', () => {
@@ -413,6 +413,52 @@ describe('UsageTracker — 출처 병합(probe ↔ turn)', () => {
     assert.deepEqual(u.models, []);
     assert.equal(u.source, null);
     assert.equal(u.weekly?.usedPercent, 54);
+    store.close();
+    h = harness();
+  });
+});
+
+// ---- 요금제 대소문자: 전선 값은 언제나 소문자 -----------------------------------------------
+
+describe('UsageTracker — 요금제 대소문자', () => {
+  const probeWeekly = (p: number) => ({ usedPercent: p, resetsAt: '2026-09-23T03:00:00.000Z' });
+  const stored = (store: Store, engine: 'claude' | 'codex') =>
+    store.listEngineUsage().find((r) => r.engine === engine)?.value as EngineUsage | undefined;
+
+  test('화면 "Pro" 와 rollout "pro" 는 같은 값이다 — 소문자로 실리고 대소문자만으로는 다시 밀지 않는다', () => {
+    h = harness();
+    h.tracker.applyProbe('codex', { weekly: probeWeekly(12), plan: 'Pro' }); // /status 화면은 "Pro"
+    assert.equal(h.tracker.engineUsage('codex').plan, 'pro', '전선에 나가는 값은 언제나 소문자');
+    assert.equal(h.engines.length, 1);
+    assert.equal(stored(h.store, 'codex')?.plan, 'pro', 'DB 에도 소문자로 남는다');
+
+    // 턴 종료(rollout `plan_type`)가 같은 요금제를 다른 대소문자로 들고 온다.
+    h.tracker.applyProbe('codex', { weekly: probeWeekly(12), plan: 'pro' });
+    assert.equal(h.tracker.engineUsage('codex').plan, 'pro');
+    assert.equal(h.engines.length, 1, '대소문자만 다른 값은 변화가 아니다 — 알림도 저장도 없다');
+
+    // 공백뿐인 요금제는 "값 없음" 이라 한도 변화가 없으면 아무 일도 하지 않는다.
+    h.tracker.applyProbe('codex', { plan: '   ' });
+    assert.equal(h.tracker.engineUsage('codex').plan, 'pro');
+    assert.equal(h.engines.length, 1);
+  });
+
+  test('연결 폴링이 준 요금제도 소문자로 — "Max" 가 "max" 로 실린다', () => {
+    h = harness();
+    h.tracker.setConnection('claude', { connected: true, plan: 'Max', reason: null });
+    assert.equal(h.tracker.engineUsage('claude').plan, 'max');
+    assert.equal(stored(h.store, 'claude')?.plan, 'max');
+  });
+
+  test('DB 에 남은 옛 대문자 요금제는 읽을 때 고친다(다음 측정을 기다리지 않는다)', () => {
+    const store = memStore();
+    store.putEngineUsage('codex', { engine: 'codex', connected: true, plan: 'Pro', weekly: { usedPercent: 12, resetsAt: null }, session: null, models: [], source: 'probe', updatedAt: '2026-09-21T10:00:00.000Z', reason: null });
+    // 모양이 깨진 행(요금제가 문자열이 아니다)도 죽지 않고 "모른다" 로 떨어진다.
+    store.putEngineUsage('claude', { engine: 'claude', connected: true, plan: 42, weekly: null, session: null, models: [], source: null, updatedAt: null, reason: null });
+    const tracker = new UsageTracker({ store, pollIntervalMs: 0 });
+    assert.equal(tracker.engineUsage('codex').plan, 'pro');
+    assert.equal(tracker.engineUsage('codex').weekly?.usedPercent, 12, '나머지 값은 그대로');
+    assert.equal(tracker.engineUsage('claude').plan, null);
     store.close();
     h = harness();
   });

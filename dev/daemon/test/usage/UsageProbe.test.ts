@@ -226,7 +226,7 @@ describe('UsageProbe — Codex(스크롤백)', () => {
 
     const u = h!.tracker.engineUsage('codex');
     assert.equal(u.weekly?.usedPercent, 12, '88% left → 12% used');
-    assert.equal(u.plan, 'Pro');
+    assert.equal(u.plan, 'pro', '화면은 "Pro" 지만 tracker 가 소문자로 눕힌다');
     assert.equal(u.source, 'probe');
   });
 });
