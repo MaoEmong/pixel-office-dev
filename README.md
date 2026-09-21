@@ -26,7 +26,7 @@ AI 코딩 에이전트(Claude Code, Codex) 팀을 **픽셀아트 사무실**에�
 | M5 | 안정화 (오류 포즈·재고용·보존·단일 데몬) — **v1b** | 완료 (T30·T31) |
 | M6 | 디자인 (레이아웃 v2, 스프라이트) | **완료** (T32 [레이아웃 v2](docs/design/레이아웃-v2.md) → T40/T40d [구현](docs/worklog/T40-LayoutV2.md) → T33 [스프라이트·서체](docs/worklog/T33-Sprites.md), D-42~D-44) |
 
-**v1 이후(2026-09-21).** Codex 실기 점검을 닫았다(T42 — 이월 목록 A~J 중 I 만 보류, 부장을 codex 로도 통과, [worklog](docs/worklog/T42-CodexLive.md)). **사용량 표시**를 넣었다(T43 — 상단 엔진 칩·사용량 패널·캐릭터별 컨텍스트/토큰/비용, 숨은 확인용 세션이 5분마다 `/usage`·`/status` 를 읽는다, 토큰·서버 조회 없음 D-45, [설계](docs/design/사용량-표시.md)). 낡은 통합 테스트와 붙여넣기↔Enter 키 끼임도 정리했다(T44).
+**v1 이후(2026-09-21).** Codex 실기 점검을 닫았다(T42 — 이월 목록 A~J 중 I 만 보류, 부장을 codex 로도 통과, [worklog](docs/worklog/T42-CodexLive.md)). **사용량 표시**를 넣었다(T43 — 상단 엔진 칩·사용량 패널·캐릭터별 컨텍스트/토큰/비용, 숨은 확인용 세션이 5분마다 `/usage`·`/status` 를 읽는다, 토큰·서버 조회 없음 D-45, [설계](docs/design/사용량-표시.md)). 낡은 통합 테스트와 붙여넣기↔Enter 키 끼임도 정리했다(T44). **앱·데몬·AI 세션을 한 몸으로 묶었다**(T46, D-47 — 앱을 켜면 데몬이 같이 뜨고, 닫으면 전부 같이 꺼지고, 어느 쪽이 죽어도 남는 프로세스가 없고, 다시 켜면 어제의 조직이 말없이 출근한다, [설계](docs/design/수명주기.md) · [실기](docs/worklog/T46-3-LifecycleLive.md)).
 
 ## 폴더
 
@@ -35,7 +35,7 @@ pixel-office/
   docs/               설계·계획·결정·작업 기록  → docs/README.md 부터
     01-설계문서.md        설계(rev 2) + 직무 체계 rev 3 + 실측 반영 + 설계 변경 이력
     02-실측-체크리스트.md  CLI·hooks·pty 실측 결과와 근거
-    03-작업계획.md        태스크 분해 T00~T44 와 진행 상태 — **진행 상태의 단일 기준**
+    03-작업계획.md        태스크 분해 T00~T47 과 진행 상태 — **진행 상태의 단일 기준**
     04-결정기록.md        D-01~D-47 (append-only, 맨 위에 목차 표)
     worklog/            태스크별 기록 T##-*.md + 창 캡처 img/
     design/             와이어프레임
@@ -44,10 +44,10 @@ pixel-office/
       PROTOCOL.md         WS JSON-RPC·이벤트·후처리 계약 — 앱과 데몬의 유일한 기준
       src/                office · rpc · pty · screen · hooks · adapters · mcp · input · store · cli
       src/tui-maps/       CLI 버전별 화면 패턴 JSON
-      test/               node:test (742건)
+      test/               node:test (817건)
     app/                Flutter 데스크탑 앱 (Windows)  → dev/app/README.md
       lib/                rpc · model · state · topbar · office · panel · command
-      test/               위젯·상태 테스트 (541건)
+      test/               위젯·상태 테스트 (659건)
       tool/capture-window.ps1   창 단위 캡처 (worklog 증거용, 전체 화면 캡처 금지)
     spike-0/            0단계 실측 스파이크와 sandbox(실기용 작업 폴더)
 ```
@@ -86,8 +86,8 @@ cd dev/daemon && npm run cli      # help 로 명령 목록
 ## 검증
 
 ```bash
-cd dev/daemon && npx tsc --noEmit && npm test     # 742건 (PIXEL_IT=1 이면 실제 CLI 통합 테스트 포함)
-cd dev/app    && flutter analyze && flutter test  # 541건
+cd dev/daemon && npx tsc --noEmit && npm test     # 817건 (PIXEL_IT=1 이면 실제 CLI 통합 테스트 포함)
+cd dev/app    && flutter analyze && flutter test  # 659건
 ```
 
 ## 더 읽을 것
