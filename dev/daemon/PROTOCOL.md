@@ -9,7 +9,7 @@
 
 | method | params | result |
 |---|---|---|
-| `hello` | `{ token, since?: number, client: { name, version } }` | `{ daemon: { version, pid }, snapshot }` 후 `seq > since` 인 `event` 알림 replay(응답이 먼저, replay 는 오름차순). `since` 없으면 스냅샷만. |
+| `hello` | `{ token, since?: number, parentPid?: number, activeDepartmentId?: string, client: { name, version } }` | `{ daemon: { version, pid }, snapshot }` 후 `seq > since` 인 `event` 알림 replay(응답이 먼저, replay 는 오름차순). `since` 없으면 스냅샷만. **T46-1(D-47, 아래 "수명 주기"):** `parentPid` 는 데몬이 지켜볼 부모 앱 pid(앱만 재시작되면 감시 대상이 그쪽으로 바뀐다. `PIXEL_KEEP_DAEMON=1` 이면 무시). `activeDepartmentId` 는 앱이 보고 있는 부서 — 아직 안 깨운 기동 복구 줄에서 그 부서를 맨 앞으로 당긴다(복구가 이미 끝났으면 아무 일도 없다). 둘 다 선택이고, 이상한 값은 조용히 무시한다. |
 | `events.query` | `{ departmentId?, teamId?, memberId?, beforeSeq?, limit? }` | `{ events: OfficeEvent[] }` (seq 내림차순 아님 — 오름차순 반환. `beforeSeq` 미만 중 최신 `limit`(기본 200)건; 다음 페이지는 첫 건 seq 를 `beforeSeq` 로) |
 | `department.create` | `{ name, cwd, headEngine: 'claude'\|'codex', headName? }` | `{ department, head: Member }` — **사용자가 하는 유일한 생성**(T34, D-32). 부서 행 → 부장 멤버(`rank:'head'`, `parentId:null`, `teamId:null`, `hiredBy:'user'`, 이름 `headName ?? '부장'`, 엔진 `headEngine`) → CLI 스폰 → `department.headId` 기록. 부장 출근은 보통 멤버와 같은 경로라 `member.status{starting}` 알림이 다른 클라이언트에도 나간다. `headEngine:'codex'` 도 그대로 허용한다(**T43 에서 "v1 권장은 claude" 경고를 지웠다** — T42 실기에서 Codex 부장이 오케스트레이션 도구를 전부 통과해 근거가 사라졌다, D-46). 오류: `cwd` 가 폴더가 아님·모르는 엔진·빈 이름 → -32602. 부장 스폰이 실패하면 부서 행도 되돌린다. 성공하면 전 클라이언트에 `snapshot` 알림을 민다(T38). |
 | `department.delete` | `{ departmentId }` | `{}` — 하위 트리 전체(팀원 → 팀장 → 부장, **잎부터**)를 후처리·퇴근시키고 부서·팀·멤버·task 행을 지운다. events 는 남는다. 없는 부서 -32002. 삭제 후 전 클라이언트에 `snapshot` 알림(T38) — 다른 클라이언트의 부서 탭·책상이 그때 사라진다. |
@@ -31,7 +31,7 @@
 | `member.instructions.effective` | `{ memberId }` | `{ markdown }` — **다음 SessionStart 에 실제로 주입될 전체 텍스트**(런타임 프리앰블 + 유효 지시문, 아래 "멤버 지시문 주입"). 읽기 전용·부작용 없음. 콘솔 `instr effective <member>`. |
 | `approval.respond` | `{ pendingId, behavior: 'allow'\|'deny', updatedInput?, message?, alwaysThisSession?: boolean }` | `{}` — `message` 는 deny 시 모델에게 보여줄 사유(기본 "Denied by user"). `alwaysThisSession` 은 allow 일 때 같은 멤버·같은 도구의 다음 허가 요청을 데몬이 자동 allow(데몬 메모리, 재시작 시 초기화). 없는 pending -32002, approval 이 아니면 -32602, 이미 answered/expired -32003. |
 | `question.respond` | `{ pendingId, answers: Record<string,string> }` | `{}` — `answers` 는 `{ "<question>": "<label>" }`(자유 답도 `label` 자리에). 오류 코드는 approval.respond 와 동일. **출처별 처리(T17):** TUI `AskUserQuestion`(payload 에 `tool_input` 있음)은 hook 결정으로 돌려주고, TeamTools `ask_user`(payload `source:'ask_user'`)는 pending 을 answered 로 닫은 뒤 그 멤버 입력 큐에 `[ANSWER q#<pendingId>]\n<답>` 시스템 메시지를 넣는다(아래 "TeamTools MCP"). **Codex 질문 폴백**(payload 에 `fallback:'codex-stop'`, 아래 "Codex 폴백")은 봉투 없이 답 본문만 넣는다. 값이 전부 빈 문자열이면 -32602. 멤버가 실행 중이 아니면 -32003. |
-| `daemon.shutdown` | `{}` | `{}` — 응답 후 `daemon.notice{level:'info'}` 를 보내고 전원 정중히 종료(`/exit`) → 모든 소켓 close code 1001 → 프로세스 종료. 멤버 status 는 바꾸지 않는다(T09 재시작 복구용). |
+| `daemon.shutdown` | `{}` | **`{ closing: N }`** — 지금 닫는 AI 세션 수(멤버 세션 + 확인용 세션, T46-1). 응답 후 `daemon.notice{level:'info'}` 를 보내고 전원 정중히 종료(`/exit`) → 모든 소켓 close code 1001 → 프로세스 종료. **살아 있던 멤버는 `suspended`(잠시 닫힘)로 적힌다**(T46-1/D-47 §5 — 다음 기동이 말없이 되살린다. T09 까지는 status 를 아예 건드리지 않았다). **닫는 중에 온 두 번째 요청은 같은 `{closing}` 만 돌려주고 아무것도 다시 하지 않는다.** 자세한 것은 아래 "수명 주기". |
 
 에러 코드: `-32001` 인증 실패, `-32002` 없는 멤버/팀/부서/pending, `-32003` 상태 오류(예: 이미 종료, 정원 초과, 부장·팀장 중복), `-32004` 직급 규칙 위반(T34 "부장에게만 지시", 고용 사슬 위반, TeamTools 의 직급 전용 도구, **디버그 전용 메서드를 `force` 없이 부름**), `-32602` 파라미터. 그 외 JSON-RPC 표준: `-32700` JSON 파싱 실패(id null), `-32600` 봉투 오류(`jsonrpc:"2.0"`·`method` 누락), `-32601` 없는 메서드, `-32000` 내부 오류. 에러 객체는 `{ code, message, data? }`.
 
@@ -42,10 +42,10 @@
 | `event` | `OfficeEvent` — `{ seq, ts, departmentId, teamId, memberId, kind, detail, ref }` (영속, 전역 단조 seq). `departmentId` 는 T34 부터, `teamId` 는 팀이 없는 부장의 이벤트에서 `''`. |
 | `snapshot` | `{ seq, departments, teams, members, pending, tasks, usage }` — `hello` 응답에 포함되지만 데몬이 필요 시 재전송한다. `pending` 은 `status:'open'` 만, `tasks` 는 `queued|assigned` 만. **`members[]` 의 각 행에는 Member 칼럼 + `derived`(그 시점의 파생 상태, 아래 표)가 같이 온다(T28)** — 클라이언트가 파생 규칙을 다시 구현하지 않아도 재접속 직후 화면이 맞는다. **데몬이 미는 때(T38): 트리 모양이 바뀔 때마다 — `department.create` · `department.delete` · `team.create` · 부장의 `create_team` · `team.delete` · 부장의 `dismiss_team`.** 멤버 행의 생멸은 `member.status` 가 알리지만 **부서·팀 행의 생멸을 알리는 알림은 이것뿐이다** — 이 알림이 없으면 다른 클라이언트는 재접속할 때까지 지워진 부서 탭·책상을 그대로 그린다(T37 함정 ①). 요청한 클라이언트에게도 함께 가며(응답 **뒤**에 도착한다) `hello` 스냅샷과 **똑같이** 적용하면 된다 — departments/teams/members/pending/tasks/**usage** 를 통째로 **교체**(없어진 행 삭제). 이벤트 링버퍼·말풍선 같은 클라이언트 로컬 상태는 유지한다. `usage` 는 아래 "사용량" 절. |
 | `term` | `{ memberId, data }` — attach한 클라이언트에만, 비영속 |
-| `member.status` | `{ memberId, status, derived, member? }` — `status` 는 raw(`starting\|idle\|working\|waiting_approval\|waiting_answer\|exited\|error`), `derived` 는 **파생 상태**(아래 표). `member` 는 그 시점의 Member 행(새 멤버 출근을 다른 클라이언트가 알 수 있게; 행이 삭제됐으면 생략). **status 값이 바뀔 때 + `derived` 만 바뀔 때** 온다(T28 — 예: 팀장이 raw `idle` 인 채로 `delegate` 하면 `free → waiting_reports`). 둘 다 그대로면 오지 않는다. |
+| `member.status` | `{ memberId, status, derived, member? }` — `status` 는 raw(`starting\|idle\|working\|waiting_approval\|waiting_answer\|`**`suspended`**`\|exited\|error` — `suspended` 는 T46-1/D-47, 아래 "수명 주기"), `derived` 는 **파생 상태**(아래 표). `member` 는 그 시점의 Member 행(새 멤버 출근을 다른 클라이언트가 알 수 있게; 행이 삭제됐으면 생략). **status 값이 바뀔 때 + `derived` 만 바뀔 때** 온다(T28 — 예: 팀장이 raw `idle` 인 채로 `delegate` 하면 `free → waiting_reports`). 둘 다 그대로면 오지 않는다. |
 | `usage.engine` | `EngineUsage` — 엔진(구독) 하나의 사용량. **비영속·seq 없음·값이 바뀔 때만.** 아래 "사용량" 절. |
 | `usage.member` | `MemberUsage` — 멤버(캐릭터 세션) 하나의 사용량. 같은 규칙. |
-| `daemon.notice` | `{ level: 'info'\|'warn'\|'error', message }` — 예: hook 보류 타임아웃, 알 수 없는 멤버 토큰, 첫 실행 다이얼로그 자동 통과, 자동 allow, 데몬 종료. **자동 통과할 수 없는 다이얼로그**(CLI 자체 허가 프롬프트 `approval-prompt`, D-23/D-26)는 `{level:'warn', message:'<이름>: CLI 허가 프롬프트가 떠 있음 — 카드로 답하거나 터미널에서 직접 답하세요'}` 로 **한 번만** 나온다(그 다이얼로그가 사라졌다 다시 뜨면 다시 한 번). 데몬은 이때 키를 보내지 않는다 — 사용자가 "재지시 필요" 카드나 터미널 탭에서 답해야 한다. |
+| `daemon.notice` | `{ level: 'info'\|'warn'\|'error', message, kind?, ... }` — **`kind` 는 T46-1 이 더한 선택 꼬리표**(없는 알림이 기본이다): `'parent-gone'`(부모 앱이 사라져 데몬이 스스로 정리하는 중) · `'recovering'`(기동 복구 진행 — `total`·`done` 이 같이 온다). 그 밖에 예: hook 보류 타임아웃, 알 수 없는 멤버 토큰, 첫 실행 다이얼로그 자동 통과, 자동 allow, 데몬 종료. **자동 통과할 수 없는 다이얼로그**(CLI 자체 허가 프롬프트 `approval-prompt`, D-23/D-26)는 `{level:'warn', message:'<이름>: CLI 허가 프롬프트가 떠 있음 — 카드로 답하거나 터미널에서 직접 답하세요'}` 로 **한 번만** 나온다(그 다이얼로그가 사라졌다 다시 뜨면 다시 한 번). 데몬은 이때 키를 보내지 않는다 — 사용자가 "재지시 필요" 카드나 터미널 탭에서 답해야 한다. |
 
 ## 멤버 파생 상태 `derived` (T28, 01 §2 "멤버 표시 상태(파생)")
 
@@ -53,7 +53,7 @@ raw `status` 는 "CLI 프로세스가 어떤 상태인가" 일 뿐이다 — `id
 
 | `derived` | 조건(위에서부터 먼저 맞는 것) |
 |---|---|
-| `exited` / `error` | raw 가 그것이면 무조건(나간 멤버는 파생이 덮지 않는다) |
+| `exited` / `error` / **`suspended`** | raw 가 그것이면 무조건(나가거나 잠시 닫힌 멤버는 파생이 덮지 않는다 — `suspended` 는 T46-1/D-47, 열린 `ask_*` 질문을 **일부러 남긴 채** 접히므로 "질문 대기" 로 보이면 안 된다) |
 | `waiting_approval` | 열린 `pending(approval)` 이 있다 — raw 가 무엇이든 |
 | `waiting_answer` | 열린 `pending(question)` 이 있다 — raw 가 무엇이든(`ask_user`·`ask_parent` 는 raw `idle` 에서도 열려 있다, T17·T35) |
 | raw 값 그대로 | raw 가 `idle` 이 아니다(`starting` / `working`) |
@@ -241,7 +241,11 @@ v1a 에서 데몬이 만드는 이벤트(어댑터 표는 worklog T04 참고):
 
 데몬이 기동할 때(`daemon.json` 기록 직후, WS 서버가 열리기 전) 이전 기동이 DB 에 남긴 멤버를 되살린다. 클라이언트는 아무것도 요청하지 않아도 된다 — `hello` 때 스냅샷과 `since` replay 로 결과를 본다.
 
-1. **대상·순서:** `members.status ∈ {starting, idle, working, waiting_approval, waiting_answer}`. `exited`/`error` 는 손대지 않는다(`member.rehire` 대상). 되살리는 순서는 **트리 위에서부터**(부장 → 팀장 → 팀원, T36) — 부하가 먼저 깨어나 보고를 올리면 받을 상사가 아직 없다. 그래서 **상사가 되살아나지 못한 부하는 깨우지 않는다**: 부모 행이 없거나 `exited`/`error` 면 그 부하도 `error{summary:'restart: parent gone'}` + status `error` + 미종료 task aborted(재스폰 없음). 사용자가 `member.rehire` 로 되살리거나 부서를 다시 세운다.
+> **T46-1(D-47)이 이 절에 더한 것:** 대상에 **`suspended`** 가 들어가고, 한꺼번에 띄우는 CLI 가 **최대 3개**가 되고(복구가 비동기가 된다),
+> 부서 순서가 생기고(`hello{activeDepartmentId}` → 마지막 활동 부서), **하던 일이 없는 캐릭터에게는 `[RESUMED]` 를 타이핑하지 않는다**.
+> 아래 5·8 을 읽을 때 마지막 절 "수명 주기" 를 같이 본다.
+
+1. **대상·순서:** `members.status ∈ {starting, idle, working, waiting_approval, waiting_answer, suspended}`. `exited`/`error` 는 손대지 않는다(`member.rehire` 대상). 되살리는 순서는 **트리 위에서부터**(부장 → 팀장 → 팀원, T36) — 부하가 먼저 깨어나 보고를 올리면 받을 상사가 아직 없다. 그래서 **상사가 되살아나지 못한 부하는 깨우지 않는다**: 부모 행이 없거나 `exited`/`error` 면 그 부하도 `error{summary:'restart: parent gone'}` + status `error` + 미종료 task aborted(재스폰 없음). 사용자가 `member.rehire` 로 되살리거나 부서를 다시 세운다.
 2. **유령 정리:** 이전 데몬이 하드 킬됐으면 ConPTY 자식(`child_pid`)이 살아남는다(T09 실측 — 정상 종료 때만 같이 죽는다). 그 pid 가 살아 있고 프로세스 이름이 엔진 이름(`claude`/`codex`)을 포함하면 트리째 종료한 뒤 진행한다. 이름이 다르면(pid 재사용) 건드리지 않고 `daemon.notice{warn}` 만.
 3. **pending:** 열린 `approval` 전부 → `expired` + `error{재지시 필요…, pendingId}`. 열린 `question` 중 TUI `AskUserQuestion`(payload `tool_input` 있음) → 같은 처리. 그 외 질문(`ask_user`·`ask_parent`, 턴 종료 상태)은 그대로 `open` — 스냅샷 `pending` 에 남는다.
 4. **재스폰:** `session_id` 가 있으면 `member.rehire` 와 같은 경로로 `--resume <session_id>`(status `starting` → SessionStart 로 `idle`). 없으면 status `error` + `error{restart: no session id to resume}`, 미종료 task aborted.
@@ -463,3 +467,89 @@ Codex 멤버에게도 TeamTools MCP 가 붙지만(위 표), 모델이 `ask_user`
    **어떤 경우에도 1초보다 촘촘하게 재시도하지 않는다** — 콘솔이 데몬 사망 시 폭주해 TIME_WAIT 소켓이 수천 개 쌓이면
    정작 데몬을 다시 띄울 때 `EADDRINUSE` 가 난다(T38·T39 관찰). 콘솔은 8회 실패하면 멈추고 `reconnect` 를 안내한다.
    앱은 1초 → 5초 상한으로 계속 시도한다(상단 "데몬 시작" 버튼이 있으니 멈출 이유가 없다).
+
+## 수명 주기 — 앱 · 데몬 · AI 세션 (T46-1, D-47 · 설계 전문 `docs/design/수명주기.md`)
+
+D-02 는 데몬을 "앱과 분리된 상주 프로세스" 로 두었다. D-47 이 그 **기본 동작을 뒤집는다** — 앱·데몬·AI 세션은 한 몸이라
+같이 켜지고 같이 꺼진다. 프로세스 분리와 이 문서의 계약은 그대로다(콘솔 클라이언트·향후 모바일은 영향 없음).
+아래는 **데몬 쪽**만이다. 앱 쪽(§1 직접 띄우기·§2 확인 대화·§4 자동 재시작)은 `dev/app` 에 있다.
+
+### 부모 앱 감시 (§3)
+
+- 환경변수 **`PIXEL_PARENT_PID`** 가 있으면 데몬은 **2초마다** 그 pid 가 살아 있는지 본다(`process.kill(pid, 0)` — 시스템 콜 하나).
+- **pid 재사용 가드:** 대상이 정해질 때(기동 때 + `hello{parentPid}` 때) **한 번만** 프로세스 시작 시각을 읽어 둔다
+  (win32 는 PowerShell `Get-CimInstance Win32_Process` 한 번 — 비싸서 폴링에는 절대 쓰지 않는다). 폴링에서 그 값이
+  달라지면 "같은 번호의 다른 프로그램" 으로 본다. **읽지 못했으면 pid 만 본다**(감시를 끄지 않는다).
+- 부모가 사라지면: 로그에 `부모 앱이 사라졌다`, 아직 붙어 있는 클라이언트에
+  `daemon.notice{level:'warn', kind:'parent-gone', message:'부모 앱이 사라졌다 (…) — 사무실을 정리하고 데몬을 종료합니다'}`,
+  그리고 **`daemon.shutdown` 과 똑같은 정리**(아래). 한 번만 쏜다.
+- `hello{parentPid}` 가 오면 감시 대상을 그 pid 로 **바꾼다**(앱만 재시작된 경우). 콘솔에서 띄운 데몬도 앱이 붙으면
+  그 앱이 주인이 된다 — 규칙이 하나여야 예측 가능하다.
+- **끄는 법:** `PIXEL_KEEP_DAEMON=1`(앱 설정 "앱을 닫아도 계속 일하기" = D-02 의 옛 동작) 또는 부모 pid 를 주지 않기.
+  이때는 `hello{parentPid}` 도 무시한다.
+
+### `suspended` — 잠시 닫힘 (§5)
+
+`members.status` 에 값 하나가 늘었다(스키마 v5, **추가만**):
+`starting | idle | working | waiting_approval | waiting_answer |` **`suspended`** `| exited | error`.
+
+| 어쩌다 그렇게 됐나 | status | 다음 기동에 |
+|---|---|---|
+| 데몬이 정상 종료(앱 닫기 · 신호 · 부모 사라짐) | **`suspended`** | **말없이 다시 출근** |
+| 사용자가 퇴근시킴 · 상사가 `dismiss` · 팀/부서 삭제 | `exited` | 그대로 둔다(`member.rehire` 대상) |
+| 세션이 죽음 · 복구 실패 | `error` | 그대로 둔다(오류 포즈 + 재고용) |
+
+- 파생 상태(`derived`)는 `suspended` 를 **덮지 않는다** — 프로세스가 없으므로 "질문 대기"·"보고 대기" 로 보이면 안 된다.
+  앱은 회색 + 모니터 `(잠시 닫힘)` 으로 그린다. 되살아나는 동안만 잠깐 보인다.
+- `liveHead`/`liveLead` 는 `suspended` 를 **살아 있는 것으로 본다**(`exited`/`error` 만 제외) — 곧 돌아올 부장이다.
+
+### 정상 종료가 하는 일 (§2)
+
+`daemon.shutdown` · SIGINT/SIGTERM · 부모 사라짐이 **같은 길**로 들어온다. 두 번 불러도 안전하다.
+
+1. 부모 감시를 끄고, 아직 안 깨운 복구 줄을 버린다(내려가는 데몬이 새 CLI 를 띄우면 안 된다).
+2. 살아 있던 멤버를 **잎부터** `suspended` 로 접는다. 후처리(`SETTLE_MATRIX` 의 `suspend` 행)는:
+   **진행 중 task 를 끊지 않고**(다음 기동이 `[RESUMED]` 로 잇는다), 열린 `ask_user`/`ask_parent` 질문을 **남기고**,
+   열린 **허가 요청과 TUI `AskUserQuestion` 은 만료**시킨다(`error{summary:'재지시 필요: … 앱 종료로 만료됨', pendingId}`
+   → "다시 지시 필요" 카드). 열린 hook 보류는 끊는다 — 안 끊으면 CLI 가 `/exit` 전에 응답을 기다리며 선다.
+3. 전원 정중히 종료(Claude `/exit`, Codex Ctrl+C ×2) → 안 닫히면 강제 종료(8초).
+4. hook 수신·MCP 종료, 확인용 세션(T43-4) 종료, 타이머 정리, DB 닫기.
+5. **DB 에 적힌 자식 pid 가 정말 다 사라졌는지 확인한다**(멤버 `child_pid` + `usage_probe.child_pid`, 상한 4초).
+   남아 있으면 이름 확인(아래)을 거쳐 트리째 강제 종료한다.
+6. **그제야** `daemon.json` 을 지우고 끝낸다. 이 순서가 "앱을 닫으면 `claude.exe`·`codex.exe` 가 하나도 남지 않는다" 를 만든다.
+
+`daemon.shutdown` 응답은 **`{closing: N}`** — 지금 닫는 AI 세션 수(멤버 세션 + 확인용 세션). 앱이 `정리하는 중…` 을
+그릴 때 쓴다. **닫는 중에 온 두 번째 `daemon.shutdown` 은 같은 `{closing}` 을 돌려주고 아무것도 다시 하지 않는다**(멱등).
+
+### 기동 복구 (§4·§5) — 위 "재시작 복구" 절의 T46 판
+
+위의 "재시작 복구" 절이 규칙의 본문이고, T46-1 이 네 가지를 더했다.
+
+1. **대상에 `suspended` 가 들어간다.** 되살리는 status = `starting`/`idle`/`working`/`waiting_*`/**`suspended`**.
+2. **한꺼번에 띄우는 CLI 는 최대 3개**(기동 부하). 하나가 `starting` 을 벗어나면(SessionStart hook 또는 화면 감시)
+   다음이 뜬다. 신호가 영영 안 와도 60초면 자리를 돌려준다. 그래서 복구는 **`hello` 를 받기 전에 다 끝나지 않는다** —
+   앱은 스냅샷에서 `suspended`·`starting` 을 보고 그 뒤 `member.status` 로 이어 받는다.
+3. **순서는 두 겹.** ① 부서 — `hello{activeDepartmentId}`(앱이 보고 있는 탭) → **마지막으로 활동한 부서**(가장 최근 이벤트)
+   → 나머지. 힌트는 복구가 시작된 뒤에 올 수 있으므로 **아직 안 깨운 줄만** 다시 세운다(이미 띄운 것은 되돌릴 수 없다).
+   ② 부서 안에서는 트리 순서(부장 → 팀장 → 팀원, T36).
+4. **말없이 앉힌다.** `[RESUMED]` 를 타이핑하는 것은 **하던 일이 있던 캐릭터뿐**이다 —
+   진행 중 task(`assigned`) · 밀린 지시(`queued`) · **자기가 낸 일 중 보고를 기다리는 것**(부장·팀장) · 열린 질문.
+   넷 다 없으면 **아무것도 타이핑하지 않는다**(모델 턴 0, 토큰 0). 정상 종료 뒤 앱을 다시 켜면 보통 전원이 여기에 든다.
+
+진행은 `daemon.notice{level:'info', kind:'recovering', total, done}` 으로 나간다(`done` = 성공 + 실패). 끝나면 같은 꼬리표로
+`복구: N명 재개, M건 만료[, 말없이 K명][, J명 재개 불가][, 유령 I개 정리]`. 복구는 WS 서버가 열리기 전에 시작하므로
+처음 몇 건은 보통 아무도 받지 못한다 — 결과는 스냅샷과 `member.status` 로 본다.
+
+**유령 정리의 이름 확인**(§4-1): 살아남은 `child_pid` 는 프로세스 **이미지 이름**이 엔진 이름(`claude`/`codex`)을 포함하거나
+**데몬이 실제로 띄운 실행 파일 이름**(`PIXEL_CLAUDE_EXE`/`PIXEL_CODEX_EXE` 가 node 진입점을 가리키면 `node.exe`)과 같을 때만
+죽인다. 그 밖의 이름은 pid 재사용으로 보고 건드리지 않는다(`daemon.notice{warn}` 만). 데몬 자신의 pid 는 언제나 제외.
+확인용 세션(`usage_probe` 표)도 같은 가드로 정리한다.
+
+### 와이어 변화 요약
+
+| 무엇 | 어떻게 |
+|---|---|
+| `hello` params | `parentPid?: number`(§3 감시 대상) · `activeDepartmentId?: string`(§5 복구 우선순위) — 둘 다 선택, 없으면 예전과 같다 |
+| `daemon.shutdown` result | `{}` → **`{ closing: number }`** |
+| `member.status` · `snapshot` 의 `status` | **`suspended`** 가 올 수 있다(`derived` 에도 그대로) |
+| `daemon.notice` params | `{level, message}` 에 **선택 꼬리표** `kind` 가 붙을 수 있다: `'parent-gone'`(§3) · `'recovering'`(+`total`, `done`). 꼬리표가 없는 알림은 예전 그대로다 |

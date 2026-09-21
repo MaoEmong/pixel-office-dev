@@ -20,6 +20,7 @@ export type SettleReason =
   | 'teamDelete'
   | 'departmentDelete'
   | 'parentGone'
+  | 'suspend'
   | 'recover';
 
 /** 이유 하나의 정책(= 표의 한 행). */
@@ -63,6 +64,8 @@ export interface SettlePolicy {
   issuedWhy: string;
   /** 알림 문구에 쓰는 사람 말. */
   label: string;
+  /** `pendingEvent` 가 켜진 행에서 만료 이벤트 문구에 들어가는 까닭("재시작" / "앱 종료"). */
+  expiredWhy?: string;
 }
 
 /**
@@ -77,7 +80,12 @@ export interface SettlePolicy {
  * | departmentDelete | aborted | 취소 | 전부 만료 | 해제 | aborted | interrupt | **잎부터 정리** | 끊음 |
  * | parentGone       | aborted(보고 없음) | 취소 | 전부 만료 | 해제 | aborted | — | (호출자가 이미 잎부터 내려왔다) | 끊음 |
  * | restart          | 유지 | 취소 | 허가·TUI 질문만 만료, **`ask_*` 질문 유지**(D-36) | 해제 | 유지 | — | 그대로 | 유지 |
+ * | **suspend**      | 유지 | 취소 | 허가·TUI 질문만 만료 + error 이벤트 | 해제 | 유지 | — | 그대로 | 유지 |
  * | recover          | 유지 | — | 허가·TUI 질문만 만료(D-19) + error 이벤트 | 해제 | 유지 | — | 그대로 | 유지 |
+ *
+ * `suspend`(T46-1, D-47)는 **앱을 닫아 데몬이 정상 종료하는 경로**다 — 하던 일을 끊지 않고 접어 두었다가 다음 기동에
+ * 그대로 잇는다. `recover` 와 하는 일이 거의 같고 딱 한 칸이 다르다: 살아 있는 CLI 를 닫는 길이라 **보류를 끊는다**
+ * (`recover` 는 이전 기동의 보류가 이미 프로세스와 함께 사라진 뒤다).
  *
  * `interrupt` 만 상위의 발행 task 를 그대로 둔다 — Ctrl+C 는 **그 사람의 턴**을 끊는 것이지 아래에 내린 지시를 거두는 게 아니다.
  * 반대로 퇴근·종료·팀/부서 삭제는 상위가 사라지는 것이라 받을 사람이 없는 task 를 남기면 하위가 영원히 보고하게 된다.
@@ -182,6 +190,21 @@ export const SETTLE_MATRIX: Readonly<Record<SettleReason, SettlePolicy>> = {
     issuedWhy: '재시작',
     label: '재시작',
   },
+  suspend: {
+    ownTasks: 'keep', // §5: "있었다면 그 task 는 종료 시점에 aborted 가 아니라 **그대로 두고** [RESUMED] 로 이어 준다"
+    pending: 'keep-ask', // 허가는 만료(hook 프로세스가 같이 죽는다), `ask_*` 질문은 다음 기동까지 그대로 열려 있다
+    cancelHolds: true, // 살아 있는 CLI 를 정중히 닫는 경로다 — 보류를 안 끊으면 `/exit` 전에 CLI 가 응답을 기다리며 선다
+    subtree: false, // 데몬이 전원을 같은 한 번의 종료로 접는다(잎부터 도는 것은 Office.shutdown 이 한다)
+    reportToIssuer: true,
+    pendingEvent: true, // 만료된 허가는 "다시 지시 필요" 카드로 남는다(§4-4 와 같은 모양)
+    issuedTasks: 'keep', // 맡긴 일도 그대로 — 다음 기동에 부하가 같이 되살아나 보고한다
+    interruptTargets: false,
+    disposeMcp: false,
+    why: '앱 종료',
+    issuedWhy: '앱 종료',
+    label: '잠시 닫힘',
+    expiredWhy: '앱 종료로',
+  },
   recover: {
     ownTasks: 'keep',
     pending: 'keep-ask',
@@ -195,6 +218,7 @@ export const SETTLE_MATRIX: Readonly<Record<SettleReason, SettlePolicy>> = {
     why: '데몬 재시작',
     issuedWhy: '데몬 재시작',
     label: '데몬 재시작',
+    expiredWhy: '재시작으로',
   },
 };
 
@@ -386,7 +410,8 @@ function expirePending(store: SettleStore, ctx: SettleCtx, member: Member, polic
     if (final?.status !== 'expired') continue;
     out.push(final);
     if (!policy.pendingEvent) continue;
-    const summary = p.type === 'approval' ? '재지시 필요: 허가 요청이 재시작으로 만료됨' : '재지시 필요: 질문이 재시작으로 만료됨';
+    const why = policy.expiredWhy ?? '재시작으로';
+    const summary = p.type === 'approval' ? `재지시 필요: 허가 요청이 ${why} 만료됨` : `재지시 필요: 질문이 ${why} 만료됨`;
     const ref = p.type === 'approval' ? { approvalId: p.id } : { questionId: p.id };
     ctx.appendEvent(member, 'error', { summary, pendingId: p.id, pendingType: p.type }, ref);
   }

@@ -80,9 +80,31 @@ PIXEL_IT=1 PIXEL_IT_SANDBOX=D:/myproject/pixel-office/dev/spike-0/sandbox \
 | `PIXEL_USAGE_PROBE` | (켬) | `0` 이면 **확인용 세션을 띄우지 않는다**(턴 종료 출처만 쓴다 — 아래 "확인용 세션") |
 | `PIXEL_USAGE_PROBE_SEC` | 300 | 확인용 세션이 `/usage`·`/status` 를 여는 주기(초). 모델 턴을 쓰지 않아 할당량이 들지 않는다 |
 | `PIXEL_FORCE_START` | (없음) | `1` 이면 단일 데몬 가드를 건너뛴다(D-40). **테스트는 이것 대신 `PIXEL_DATA_DIR` 을 따로 줄 것** |
+| `PIXEL_PARENT_PID` | (없음) | **부모 앱의 pid**(T46-1, D-47). 값이 있으면 데몬이 2초마다 그 프로세스를 지켜보다 사라지면 스스로 정리하고 끝난다 — 아래 "수명 주기" |
+| `PIXEL_KEEP_DAEMON` | (없음) | `1` 이면 **부모 감시를 끈다**. 앱을 닫아도 데몬과 세션이 남는다(D-02 의 옛 동작 = 앱 설정 "앱을 닫아도 계속 일하기") |
 | `PIXEL_HOOK_LOG` | (없음) | 진단용. 파일 경로를 주면 `hook.js` 가 **CLI 가 보낸 페이로드와 우리가 돌려준 결정**을 JSONL 로 덧붙인다(T42) |
 
 세 포트는 전부 `127.0.0.1` 전용이고 기동할 때마다 `daemon.json` 에 실제 값이 적힌다(클라이언트는 그 파일을 읽는다).
+
+## 수명 주기 — 누가 데몬을 끄는가 (T46-1, D-47 · 설계 `docs/design/수명주기.md`, 계약 `PROTOCOL.md` "수명 주기")
+
+앱·데몬·AI 세션은 **한 몸**이다: 앱을 켜면 데몬이 같이 켜지고, 앱을 끄면 AI 세션까지 전부 닫힌다.
+데몬 쪽이 하는 일은 셋이다 — 부모 감시 · 종료 완결 · 기동 복구.
+
+| 어떻게 띄웠나 | 부모 감시 | 앱이 사라지면 | 다시 켰을 때 |
+|---|---|---|---|
+| 앱이 띄움 (`PIXEL_PARENT_PID=<앱 pid>`) | **켬** — 2초마다 | 로그 `부모 앱이 사라졌다` + `daemon.notice{kind:'parent-gone'}` → `daemon.shutdown` 과 같은 정리 후 종료 | `suspended` 캐릭터가 **말없이** 다시 출근 |
+| 콘솔에서 띄움 (`npm start`) | 끔 — 주인이 없다 | (아무 일 없음) | 같음 |
+| 콘솔에서 띄웠는데 앱이 붙음 (`hello{parentPid}`) | **켬** — 그 앱이 주인이 된다 | 위와 같음 | 같음 |
+| `PIXEL_KEEP_DAEMON=1` | **끔**(강제) | 남는다 — `hello{parentPid}` 도 무시 | 같음 |
+
+- **종료 완결:** 어느 길로 들어오든 ① 살아 있던 멤버를 `suspended` 로 접고(하던 task 는 끊지 않는다) ② 정중히 닫고
+  ③ 확인용 세션까지 죽이고 ④ **자식 pid 가 정말 사라졌는지 확인한 뒤**(안 닫혔으면 이름 확인을 거쳐 트리째)
+  ⑤ 그제야 `daemon.json` 을 지운다. `daemon.shutdown` 응답은 `{closing: N}`(닫는 세션 수), 두 번째 요청은 멱등.
+- **기동 복구:** `suspended` 도 되살린다. 한꺼번에 띄우는 CLI 는 **최대 3개**, 순서는 (보고 있는 부서 → 마지막 활동 부서)
+  × (부장 → 팀장 → 팀원). **하던 일이 있던 캐릭터에게만** `[RESUMED]` 를 타이핑한다 — 나머지는 말없이 앉힌다(토큰 0).
+- **상태 한 줄 더:** `members.status` 에 `suspended`(잠시 닫힘). 사용자 퇴근·상사 dismiss 의 `exited`, 사고의 `error` 와 다르다.
+  스키마 v5 — 여는 순간 `members` 표만 자동으로 다시 만들어진다(행은 그대로).
 
 **`PIXEL_CODEX_EXE` 자동 탐지 (`src/config.ts resolveCodexExe`, T22).** node-pty(ConPTY)는 PATH 의 `codex.cmd`/`codex.ps1`
 셰임을 띄우지 못한다(T20 함정 4). 그래서 기본값이 `'codex'` 가 아니라 다음 순서로 **실제 실행 파일**을 찾은 결과다:

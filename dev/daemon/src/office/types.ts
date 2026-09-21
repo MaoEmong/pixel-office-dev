@@ -234,6 +234,24 @@ export interface DepartmentTree {
 
 export type NoticeLevel = 'info' | 'warn' | 'error';
 
+/**
+ * `daemon.notice` 에 붙는 **기계가 읽는 꼬리표**(T46-1, D-47). 지금까지 알림은 사람이 읽는 문장 하나뿐이라
+ * 앱이 "이건 오버레이로, 저건 토스트로" 를 문자열 매칭으로 가려야 했다. 수명 주기 알림 둘만 먼저 붙인다:
+ *   `parent-gone`  부모 앱이 사라져 데몬이 스스로 정리하는 중(§3)
+ *   `recovering`   기동 복구 진행 중 — `total`/`done` 이 같이 온다(§4)
+ * 꼬리표가 없는 알림은 예전 모양 그대로다(`{level, message}`).
+ */
+export type NoticeKind = 'parent-gone' | 'recovering';
+
+/** 꼬리표가 붙은 알림의 덧붙는 필드. 그대로 `daemon.notice` params 에 펼쳐진다. */
+export interface NoticeExtra {
+  kind: NoticeKind;
+  /** `recovering`: 되살릴 멤버 수. */
+  total?: number;
+  /** `recovering`: 지금까지 처리한 멤버 수(성공·실패 합). */
+  done?: number;
+}
+
 // ---- Office 이벤트 -------------------------------------------------------------
 
 export type OfficeEvents = {
@@ -243,8 +261,8 @@ export type OfficeEvents = {
   status: [memberId: string, status: MemberStatus, derived: DerivedStatus];
   /** pty 출력 → `term` 알림(attach 한 클라이언트만). */
   term: [memberId: string, data: string];
-  /** 사용자에게 보여줄 데몬 알림 → `daemon.notice`. */
-  notice: [level: NoticeLevel, message: string];
+  /** 사용자에게 보여줄 데몬 알림 → `daemon.notice`. `extra` 가 있으면 params 에 그대로 펼쳐진다(T46-1). */
+  notice: [level: NoticeLevel, message: string, extra?: NoticeExtra];
   /**
    * 트리 **모양**이 바뀌었다(부서·팀 생성/삭제, T38) → RpcServer 가 `snapshot` 알림을 민다.
    * 멤버 행의 생멸은 `member.status` 가 알리지만 부서·팀 행의 생멸을 알리는 알림은 없어서,
@@ -313,6 +331,17 @@ export interface OfficeApi extends EventEmitter<OfficeEvents> {
   respondApproval(pendingId: string, decision: ApprovalRespondParams): void;
   /** TUI AskUserQuestion 은 hook 결정으로, TeamTools ask_user 는 `[ANSWER q#<id>]` 큐 주입으로(T17). */
   respondQuestion(pendingId: string, answers: Record<string, string>): void;
+
+  // ---- 수명 주기(T46-1, D-47 · docs/design/수명주기.md) ----
+
+  /** `hello{parentPid}` — 부모 앱 감시 대상(§3). 앱만 다시 뜬 경우 여기로 바뀐다. `PIXEL_KEEP_DAEMON=1` 이면 무시. */
+  watchParent(parentPid: number): void;
+  /** `hello{activeDepartmentId}` — 아직 안 깨운 복구 줄에서 그 부서를 맨 앞으로(§5). 복구가 끝난 뒤면 no-op. */
+  prioritizeRecovery(departmentId: string): void;
+  /** 지금 닫아야 할 AI 세션 수(멤버 + 확인용). `daemon.shutdown` 응답의 `{closing}`. */
+  closingSessions(): number;
+  /** 종료 절차가 이미 돌고 있는가(두 번째 `daemon.shutdown` 은 아무것도 다시 하지 않는다). */
+  readonly isClosing: boolean;
 
   shutdown(): Promise<void>;
 }

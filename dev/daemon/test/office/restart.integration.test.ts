@@ -126,7 +126,8 @@ test('real daemon restart: greet → kill daemon → new daemon resumes member �
     daemons.push(d2);
     const recoveryLine = await d2.waitLine('recovery notice', (l) => /\[office\] 복구: \d+명 재개/.test(l), 30_000);
     console.log(`[IT] recovery notice (${el()}): ${recoveryLine}`);
-    assert.match(recoveryLine, /복구: 1명 재개, 0건 만료/);
+    // T46-1(D-47 원칙 4): 인사 task 는 죽기 전에 `reported` 로 끝났다 = **하던 일이 없다** → 말없이 앉힌다.
+    assert.match(recoveryLine, /복구: 1명 재개, 0건 만료, 말없이 1명/);
     if (claude1Alive) {
       assert.match(recoveryLine, /유령 1개 정리/);
       await sleep(500);
@@ -155,14 +156,14 @@ test('real daemon restart: greet → kill daemon → new daemon resumes member �
     const resumedEv = await client2.waitEvent(member.id, 'text', seqBeforeKill, 90_000, (e) => e.detail.summary === 'resumed');
     console.log(`[IT] resumed event #${resumedEv.seq} (${el()})`);
 
-    // [RESUMED] 턴: thinking 이 [RESUMED] 로 시작 → idle
-    const resumedTurn = await client2.waitEvent(member.id, 'thinking', resumedEv.seq, 120_000, (e) => String(e.detail.text ?? '').startsWith('[RESUMED]'));
-    console.log(`[IT] [RESUMED] typed (${el()}): ${String(resumedTurn.detail.text)}`);
-    const resumedIdle = await client2.waitEvent(member.id, 'idle', resumedTurn.seq, 180_000);
-    const resumedReply = client2.notifications
+    // **말없이 앉힌다**(T46-1): 하던 일이 없으므로 `[RESUMED]` 를 타이핑하지 않는다 = 모델 턴 0, 토큰 0.
+    // T46 이전에는 여기서 [RESUMED] thinking → 답 → idle 한 턴이 돌았다. 그 턴이 사라진 것이 이 태스크의 이득이다.
+    await sleep(8000); // 되살아난 CLI 가 무엇이든 타이핑했다면 이 안에 thinking 이 왔을 시간
+    const typedAfterResume = client2.notifications
       .map((n) => n.params as unknown as OfficeEvent)
-      .find((e) => e.kind === 'text' && e.seq > resumedTurn.seq && e.seq < resumedIdle.seq && typeof e.detail.text === 'string');
-    console.log(`[IT] reply to [RESUMED] (${el()}): ${JSON.stringify(resumedReply?.detail.text ?? null)}`);
+      .filter((e) => e.memberId === member.id && e.seq > resumedEv.seq && e.kind === 'thinking');
+    console.log(`[IT] silent seat check (${el()}): thinking events after resume = ${JSON.stringify(typedAfterResume.map((e) => e.detail.text))}`);
+    assert.deepEqual(typedAfterResume, [], '쉬고 있던 캐릭터에게는 아무것도 타이핑하지 않는다(토큰 0)');
 
     // 터미널 화면에 이전 대화가 보인다
     const attach = await client2.call<{ screen: string; cols: number; rows: number }>('member.attach', { memberId: member.id, cols: 120, rows: 40 });
@@ -186,7 +187,10 @@ test('real daemon restart: greet → kill daemon → new daemon resumes member �
     await client2.call('member.clockOut', { memberId: member.id });
     await client2.waitStatus(member.id, 'exited', 20_000);
     console.log(`[IT] clockOut done (${el()}); claude#2 alive=${pidAlive(after.childPid!)}`);
-    await client2.call('daemon.shutdown', {});
+    // T46-1: `daemon.shutdown` 은 `{closing}`(닫는 AI 세션 수)을 돌려준다. 멤버는 방금 퇴근했으니 확인용 세션만 남는다.
+    const closing = await client2.call<{ closing: number }>('daemon.shutdown', {});
+    console.log(`[IT] daemon.shutdown → ${JSON.stringify(closing)}`);
+    assert.equal(typeof closing.closing, 'number', 'daemon.shutdown 응답에 closing 이 있다');
     const d2Exited = await waitExit(d2.child, 20_000);
     console.log(`[IT] d2 exited=${d2Exited} code=${d2.child.exitCode} (${el()})`);
     assert.ok(d2Exited, 'daemon #2 did not exit after daemon.shutdown');

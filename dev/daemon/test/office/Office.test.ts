@@ -484,7 +484,7 @@ describe('Office', () => {
     assert.throws(() => office.typeRaw(m.id, 'x'), (e: { code: number }) => e.code === RPC_ERROR.BAD_STATE);
   });
 
-  test('deleteTeam clocks out live members and removes rows; shutdown keeps member status for T09', async () => {
+  test('deleteTeam clocks out live members and removes rows; shutdown 은 살아 있던 멤버를 suspended 로 접는다 (T46-1)', async () => {
     const m = clockIn();
     sessionStart(m);
     await office.deleteTeam(team.id);
@@ -503,8 +503,10 @@ describe('Office', () => {
     assert.equal(receiver.closed, true);
     assert.equal(pty.last(), undefined);
     assert.equal(fs.existsSync(path.join(dataDir, 'daemon.json')), false);
-    // store 는 닫혔으므로 새로 열어 확인할 수 없지만(메모리 DB), 종료 직전 status 는 working 그대로였다
-    assert.equal(statuses.at(-1)![1], 'working');
+    // T46-1(D-47 §5): 정상 종료는 살아 있던 멤버를 `exited` 가 아니라 **`suspended`**(잠시 닫힘)로 적는다 —
+    // 다음에 앱을 켜면 그대로 말없이 다시 출근한다. 진행 중이던 task 는 끊지 않는다.
+    assert.equal(statuses.at(-1)![1], 'suspended');
+    assert.equal(statuses.at(-1)![0], m2.id);
     await office.shutdown(); // 두 번째는 no-op
     // afterEach 의 shutdown 도 no-op — 새 store 를 만들어 두 번째 close 를 막을 필요 없음
   });

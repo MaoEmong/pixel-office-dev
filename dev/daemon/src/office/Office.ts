@@ -55,7 +55,10 @@ import { OfficeError, RPC_ERROR, badState, invalidParams, notFound } from './err
 import { settleMember, type SettleCtx, type SettleReason, type SettleSummary } from './afterCare.js';
 import { derivedStatus } from './derived.js';
 import { CODEX_FALLBACK, detectQuestion, isFallbackQuestion, type FallbackQuestionPayload } from './codexFallback.js';
-import { defaultOrphanOps, reapOrphan, type OrphanOps } from './orphans.js';
+import { defaultOrphanOps, exeImageName, reapOrphan, type OrphanOps } from './orphans.js';
+// T46-1(D-47): 부모 앱 감시(§3)와 기동 복구의 순서·침묵 규칙(§4~5)은 각각 한 파일에 모여 있다.
+import { ParentWatch, type ParentWatchOptions, type ProcessProbe, type WatchTimer } from './parentWatch.js';
+import { RECOVER_BOOT_SLOT_MS, RECOVER_MAX_IN_FLIGHT, needsResumedText, recoveryOrder } from './recovery.js';
 import { assertSingleDaemon, bindOrRefuse, defaultSingletonProbe, type SingletonProbe } from './singleton.js';
 import { ShellMutex, shellLockCommand, type ShellLockInfo } from './ShellMutex.js';
 import { RANK_LABEL, defaultInstructions, type TemplateScope } from './instructions/templates.js';
@@ -78,6 +81,7 @@ import type {
   HireChildParams,
   HookReceiverLike,
   InstructOptions,
+  NoticeExtra,
   NoticeLevel,
   OfficeApi,
   OfficeEvents,
@@ -97,8 +101,18 @@ export { OfficeError, RPC_ERROR } from './errors.js';
 
 /** `member.restart` 직후 큐에 넣는 시스템 메시지(01 §데몬 재시작 복구). 데몬 재시작 복구는 `buildResumedText` 로 task·이벤트 요약을 붙인다(T09). */
 export const RESUMED_TEXT = '[RESUMED] 데몬이 세션을 재시작했다. 현재 상태를 점검하고 이어서 진행하라.';
-/** 데몬 재시작 복구(T09)에서 되살린 멤버를 대상으로 하는 status. exited/error 는 손대지 않는다. */
-export const RECOVERABLE: ReadonlySet<MemberStatus> = new Set(['starting', 'idle', 'working', 'waiting_approval', 'waiting_answer']);
+/**
+ * 기동 복구(T09 → T46-1)에서 되살리는 status. `exited`/`error` 는 손대지 않는다(`member.rehire` 대상).
+ * **`suspended` 가 들어간다**(D-47 §5) — 정상 종료로 접어 둔 세션은 다음에 앱을 켤 때 말없이 다시 출근한다.
+ */
+export const RECOVERABLE: ReadonlySet<MemberStatus> = new Set([
+  'starting',
+  'idle',
+  'working',
+  'waiting_approval',
+  'waiting_answer',
+  'suspended',
+]);
 /** `--resume` 직후 이 시간 안에 0 이 아닌 코드로 죽으면 "세션 없음" 증상으로 보고 새 세션으로 한 번 폴백한다(T07 남은 것). */
 export const RESUME_FALLBACK_WINDOW_MS = 10_000;
 /** [RESUMED] 에 싣는 마지막 이벤트 수·instruction 글자 수·이벤트 요약 글자 수. */
@@ -153,6 +167,12 @@ const IDLE_SCREEN_STATUSES: ReadonlySet<MemberStatus> = new Set(['working', 'wai
 export const SCREEN_IDLE_SUMMARY = 'screen-idle';
 /** 정중한 종료 대기(Claude `/exit`). */
 const KILL_TIMEOUT_MS = 8000;
+/**
+ * 종료 마무리(T46-1 · 수명주기.md §2, 검증 2): `daemon.json` 을 지우기 전에 **DB 에 적힌 자식 pid 가 정말 다 사라졌는지**
+ * 확인하는 상한·간격. 앱은 데몬 프로세스가 사라지기를 8초까지 기다리므로 그 안에서 끝나야 한다.
+ */
+const SHUTDOWN_REAP_MS = 4000;
+const SHUTDOWN_REAP_STEP_MS = 100;
 /** 보존 정리 주기(T30/D-39). 기동 때 한 번 + 하루에 한 번. */
 export const RETENTION_INTERVAL_MS = 24 * 60 * 60 * 1000;
 const COLS_RANGE = [20, 500] as const;
@@ -186,10 +206,30 @@ export interface OfficeOptions {
     fallbackWindowMs?: number;
     /** 유령 자식(child_pid) 확인·종료 연산. 기본 defaultOrphanOps(tasklist/taskkill). */
     orphanOps?: OrphanOps;
+    /** 한꺼번에 띄우는 CLI 수 상한(T46-1). 기본 RECOVER_MAX_IN_FLIGHT(3). */
+    maxInFlight?: number;
+    /** 한 멤버의 "기동 중" 자리를 붙잡아 두는 상한(ms). 기본 RECOVER_BOOT_SLOT_MS. */
+    bootSlotMs?: number;
   };
+  /**
+   * 부모 앱 감시(T46-1, §3). 테스트는 가짜 시계·가짜 프로세스 표를 넣는다. `parentPid` 를 주지 않으면
+   * `config.parentPid`(= `PIXEL_PARENT_PID`)를 쓰고, `config.keepDaemon`(= `PIXEL_KEEP_DAEMON=1`)이면 감시하지 않는다.
+   */
+  parentWatch?: {
+    probe?: ProcessProbe;
+    timer?: WatchTimer;
+    intervalMs?: number;
+  };
+  /** 종료 때 "자식 pid 가 다 사라졌는지" 를 기다리는 상한(ms). 기본 SHUTDOWN_REAP_MS. 테스트가 줄인다. */
+  shutdownReapMs?: number;
 }
 
-/** `start()` 의 재시작 복구 결과(로그·notice·테스트용). */
+/**
+ * `start()` 의 기동 복구 결과(로그·notice·테스트용).
+ *
+ * T46-1 부터 복구는 **비동기**다(한꺼번에 띄우는 CLI 가 최대 3개) — 이 객체는 `start()` 가 돌아온 뒤에도
+ * 복구가 진행되며 **그대로 채워진다**. 끝을 기다리려면 `office.recoveryDone`(Promise)을 쓴다.
+ */
 export interface RecoveryResult {
   /** `--resume` 으로 다시 띄운 멤버 id. */
   resumed: string[];
@@ -201,6 +241,10 @@ export interface RecoveryResult {
   requeued: number[];
   /** 이전 데몬이 하드 킬돼 살아남은 자식 중 종료한 pid. */
   orphansKilled: number[];
+  /** `[RESUMED]` 를 **타이핑하지 않고** 말없이 앉힌 멤버 id(D-47 원칙 4 — 토큰 0). */
+  silent: string[];
+  /** 되살릴 대상 수(= resumed + failed 의 최종 합). */
+  total: number;
 }
 
 /** 살아 있거나 마지막 화면을 들고 있는 멤버별 런타임. */
@@ -237,6 +281,22 @@ interface MemberRuntime {
    * 같은 [RESUMED]·queued task 를 다시 큐에 넣는다.
    */
   resumeFallback?: { until: number; resumedText: string };
+}
+
+/**
+ * 기동 복구의 진행 상태(T46-1). 줄(`queue`)에서 하나씩 꺼내 띄우고, 띄운 멤버는 `starting` 을 벗어날 때까지
+ * `inFlight` 에 자리를 잡는다(상한 `RECOVER_MAX_IN_FLIGHT`). `hello{activeDepartmentId}` 가 오면 `queue` 만 다시 세운다.
+ */
+interface RecoverPlan {
+  queue: Member[];
+  result: RecoveryResult;
+  /** 지금 기동 중인 멤버 → 자리 상한 타이머. */
+  inFlight: Map<string, NodeJS.Timeout>;
+  done: Promise<RecoveryResult>;
+  finish: () => void;
+  finished: boolean;
+  /** 마지막으로 내보낸 진행 수(같은 수를 두 번 내지 않게). */
+  lastProgress?: number;
 }
 
 export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
@@ -297,14 +357,34 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
   private info?: DaemonInfo;
   private started = false;
   private stopping = false;
-  /** 이번 기동의 재시작 복구 결과. start() 뒤에 채워진다. */
+  /** 이번 기동의 재시작 복구 결과. start() 뒤에 채워지고 복구가 진행되며 계속 갱신된다. */
   private recovery?: RecoveryResult;
+  /** 기동 복구의 진행 상태(T46-1). 복구가 끝나면 undefined. */
+  private recoverPlan?: RecoverPlan;
+  /** 부모 앱 감시(T46-1, §3). 대상이 없으면(콘솔 데몬·`PIXEL_KEEP_DAEMON=1`) 만들어지기만 하고 아무 일도 하지 않는다. */
+  private readonly parentWatch: ParentWatch;
+  /** `daemon.shutdown` 이 시작될 때 세어 둔 "닫는 세션 수"(멤버 + 확인용). 두 번째 요청도 같은 수를 본다. */
+  private closingCount?: number;
+  private readonly recoverMaxInFlight: number;
+  private readonly recoverBootSlotMs: number;
+  private readonly shutdownReapMs: number;
 
   constructor(opts: OfficeOptions = {}) {
     super();
     this.cfg = { ...defaultConfig, ...opts.config };
     this.fallbackWindowMs = opts.recovery?.fallbackWindowMs ?? RESUME_FALLBACK_WINDOW_MS;
     this.orphanOps = opts.recovery?.orphanOps ?? defaultOrphanOps;
+    this.recoverMaxInFlight = Math.max(1, opts.recovery?.maxInFlight ?? RECOVER_MAX_IN_FLIGHT);
+    this.recoverBootSlotMs = opts.recovery?.bootSlotMs ?? RECOVER_BOOT_SLOT_MS;
+    this.shutdownReapMs = opts.shutdownReapMs ?? SHUTDOWN_REAP_MS;
+    // §3: 부모 감시는 **대상이 있을 때만** 돈다. `PIXEL_KEEP_DAEMON=1`(앱 설정 "앱을 닫아도 계속 일하기")이면 대상을 안 준다.
+    this.parentWatch = new ParentWatch({
+      parentPid: this.cfg.keepDaemon ? undefined : this.cfg.parentPid,
+      intervalMs: opts.parentWatch?.intervalMs,
+      probe: opts.parentWatch?.probe,
+      timer: opts.parentWatch?.timer,
+      onGone: (info) => this.onParentGone(info),
+    });
     this.singletonProbe = opts.singletonProbe ?? defaultSingletonProbe;
     this.retentionIntervalMs = opts.retentionIntervalMs ?? RETENTION_INTERVAL_MS;
     this.version = opts.version ?? (pkg as { version?: string }).version ?? '0.0.0';
@@ -459,14 +539,55 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
     this.usage.pruneMissingMembers();
     // T43-4: 이전 기동의 확인용 세션이 하드 킬에서 살아남았을 수 있다(멤버가 아니라 recover() 가 못 본다).
     this.reapUsageProbes();
-    // 재시작 복구(T09): RPC 클라이언트가 붙기 전에 이전 기동의 멤버를 되살린다. 절대 throw 하지 않는다.
+    // 기동 복구(T09 → T46-1): RPC 클라이언트가 붙기 전에 시작한다. 절대 throw 하지 않는다.
+    // **끝까지 기다리지는 않는다** — CLI 를 최대 3개씩 띄우므로 조직이 크면 오래 걸리고, 그동안 앱이 붙어
+    // 스냅샷을 받고 `hello{activeDepartmentId}` 로 "지금 보는 부서부터" 를 알려 줄 수 있어야 한다(§5).
     this.recovery = this.recover();
+    // §3: 부모 앱 감시 시작. 대상이 없으면 아무 일도 하지 않는다.
+    this.parentWatch.start();
+    if (this.parentWatch.watching) {
+      console.log(
+        `[office] 부모 감시  : pid ${this.parentWatch.parentPid} (${this.parentWatch.parentStartedAt === undefined ? 'pid 만' : '시작 시각까지'} 확인, PIXEL_KEEP_DAEMON=1 이면 끔)`,
+      );
+    }
     return this.info;
   }
 
-  /** 이번 기동의 재시작 복구 결과(start() 전에는 undefined). */
+  /** 이번 기동의 재시작 복구 결과(start() 전에는 undefined). 복구가 진행되며 계속 채워진다. */
   get recoveryResult(): RecoveryResult | undefined {
     return this.recovery;
+  }
+
+  /** 기동 복구가 다 끝나면 resolve(복구할 것이 없었으면 즉시). 통합 테스트·진단용. */
+  get recoveryDone(): Promise<RecoveryResult | undefined> {
+    return this.recoverPlan ? this.recoverPlan.done : Promise.resolve(this.recovery);
+  }
+
+  /** 지금 지켜보는 부모 pid(없으면 undefined). */
+  get watchedParentPid(): number | undefined {
+    return this.parentWatch.parentPid;
+  }
+
+  /**
+   * `hello{parentPid}`(T46-1, §3) — 앱만 다시 뜬 경우 감시 대상을 새 pid 로 바꾼다. 데몬을 콘솔에서 띄웠어도
+   * 앱이 붙으면 그 앱이 주인이 된다(규칙이 하나여야 예측 가능하다 — §2). `PIXEL_KEEP_DAEMON=1` 이면 무시한다.
+   */
+  watchParent(parentPid: number): void {
+    if (this.cfg.keepDaemon || !Number.isInteger(parentPid) || parentPid <= 0) return;
+    if (this.parentWatch.parentPid === parentPid) return;
+    this.parentWatch.retarget(parentPid);
+    this.parentWatch.start();
+    console.log(`[office] 부모 감시  : pid ${parentPid} 로 바꿈 (hello)`);
+  }
+
+  /**
+   * 부모 앱이 사라졌다(§3). `daemon.shutdown` 과 **같은** 정리를 한다 — 앱이 강제 종료됐으니 그 코드가 돌지 못했다.
+   * 알림을 먼저 내보내 아직 붙어 있는 클라이언트(콘솔 등)가 까닭을 알게 한다.
+   */
+  private onParentGone(info: { pid: number; reason: 'exited' | 'pid-reused' }): void {
+    const why = info.reason === 'pid-reused' ? `pid ${info.pid} 가 다른 프로세스로 바뀜` : `pid ${info.pid}`;
+    this.notice('warn', `부모 앱이 사라졌다 (${why}) — 사무실을 정리하고 데몬을 종료합니다`, { kind: 'parent-gone' });
+    this.shutdown().catch((err) => console.error('[office] parent-gone shutdown failed:', err));
   }
 
   /**
@@ -518,17 +639,54 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
   }
 
   /**
-   * 전원 정중히 종료(Claude `/exit`) → hook 수신 종료 → store 닫기. 멤버 status 는 건드리지 않는다
-   * (T09 재시작 복구가 working/waiting 이던 멤버를 --resume 으로 되살린다).
+   * 지금 닫아야 할 AI 세션 수(멤버 + 확인용, T46-1). `daemon.shutdown` 응답의 `{closing}` 이다. 종료가 이미
+   * 시작됐으면 **그때 센 수**를 그대로 돌려준다 — 두 번째 `daemon.shutdown` 도 같은 수를 본다(멱등).
+   */
+  closingSessions(): number {
+    if (this.closingCount !== undefined) return this.closingCount;
+    let probes = 0;
+    try {
+      probes = this.usageProbe.pids().length;
+    } catch {
+      probes = 0;
+    }
+    return this.pty.list().filter((s) => s.alive).length + probes;
+  }
+
+  /** 종료 절차가 이미 돌고 있는가(두 번째 `daemon.shutdown` 판정용). */
+  get isClosing(): boolean {
+    return this.stopping;
+  }
+
+  /**
+   * 정상 종료(수명주기.md §2 · §5, D-47). 앱이 `daemon.shutdown` 을 보냈거나, 신호를 받았거나, 부모 앱이 사라졌을 때
+   * **같은 길**로 들어온다. 두 번 불러도 안전하다(두 번째는 바로 돌아온다).
+   *
+   *   ① 살아 있던 멤버를 `suspended` 로 적는다 — **`exited` 가 아니다.** 하던 일(task)은 **그대로 두고**, 열린
+   *      `ask_*` 질문도 남기고, 허가 요청만 만료시킨다(hook 프로세스가 같이 죽으므로 답을 돌려줄 길이 없다).
+   *      그래야 다음에 앱을 켤 때 "어제의 사무실" 이 말없이 그대로 출근한다(§5 — T41 실기에서 쉬던 부장이 매번
+   *      "퇴근" 으로 남아 재고용해야 했던 것이 이 한 줄 때문이다).
+   *   ② 전원 정중히 종료(Claude `/exit` · Codex Ctrl+C ×2) → 안 닫히면 강제 종료(`PtyManager.kill` 의 기존 상한).
+   *   ③ 확인용 세션(T43-4)도 같이 죽인다 — 숨은 CLI 가 남으면 안 된다.
+   *   ④ **DB 에 적힌 자식 pid 가 정말 다 사라졌는지 확인**하고(안 사라졌으면 트리째 강제 종료) 그 뒤에야
+   *      `daemon.json` 을 지운다. 이 순서가 "앱을 닫으면 `claude.exe`·`codex.exe` 가 하나도 남지 않는다"(검증 2)를 만든다.
    */
   async shutdown(): Promise<void> {
     if (this.stopping) return;
     this.stopping = true;
+    this.closingCount = this.closingSessions();
+    this.parentWatch.stop();
+    this.cancelRecovery();
+    // ① 잠시 닫힘(§5). 잎부터 도는 이유는 T28 과 같다 — 위를 먼저 접으면 그 후처리가 아래를 건드린다.
+    const suspended = this.suspendLiveMembers();
+    // 종료 뒤 정리할 자식 pid 를 **지금** 모아 둔다(store 를 닫은 뒤에는 못 읽는다).
+    const childPids = this.recordedChildPids();
     for (const rt of this.runtimes.values()) {
       rt.exitMode = 'shutdown';
       rt.queue.stop();
       clearWatches(rt);
     }
+    // ②
     await Promise.all(
       this.pty.list().map((s) =>
         this.pty.kill(s.memberId, { graceful: true, timeoutMs: KILL_TIMEOUT_MS }).catch((err) => {
@@ -542,12 +700,14 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
     this.runtimes.clear();
     this.shell.clear(); // T27: 남은 보류·타이머 정리
     this.usage.stop(); // T43: 연결 폴링 타이머
-    this.usageProbe.stop(); // T43-4: 확인용 세션(숨은 CLI)을 죽인다 — 데몬이 내려가면 남아 있으면 안 된다
+    this.usageProbe.stop(); // ③ T43-4: 확인용 세션(숨은 CLI)을 죽인다 — 데몬이 내려가면 남아 있으면 안 된다
     if (this.retentionTimer) {
       clearInterval(this.retentionTimer);
       this.retentionTimer = undefined;
     }
     this.store.close();
+    // ④ 자식이 정말 다 나갔는지 확인하고(남았으면 트리째) 그 뒤에 daemon.json 을 지운다.
+    await this.awaitChildrenGone(childPids);
     if (this.info) {
       try {
         fs.rmSync(this.daemonJsonPath, { force: true });
@@ -555,7 +715,90 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
         // 지우지 못해도 무해 — pid 가 죽어 있으면 클라이언트가 stale 로 본다
       }
     }
+    if (suspended > 0 || this.closingCount > 0) {
+      console.log(`[office] 종료: 세션 ${this.closingCount}개 닫음, ${suspended}명 잠시 닫힘(suspended)`);
+    }
     this.emit('shutdown');
+  }
+
+  /**
+   * 살아 있는 멤버를 `suspended` 로 접는다(§5). 사용자 퇴근(`exited`)·오류(`error`)와 **구별되는 값**이라
+   * 다음 기동의 복구가 "말없이 되살릴 대상" 으로 알아본다. 이미 나간 행(`exited`/`error`)은 건드리지 않는다.
+   */
+  private suspendLiveMembers(): number {
+    let n = 0;
+    let members: Member[];
+    try {
+      members = this.store.listMembers();
+    } catch {
+      return 0;
+    }
+    for (const member of this.settleOrder(members)) {
+      if (GONE.has(member.status) || member.status === 'suspended') continue;
+      // 프로세스 없이 status 만 살아 있던 행(복구를 기다리던 멤버 등)도 같이 접는다 — 다음 기동이 이어받는다.
+      try {
+        this.settle(member.id, 'suspend');
+        this.setStatus(member.id, 'suspended');
+        n += 1;
+      } catch (err) {
+        console.warn(`[office] suspend ${member.id} 실패:`, err);
+      }
+    }
+    return n;
+  }
+
+  /** DB 에 적힌 자식 pid 전부(멤버 + 확인용 세션). store 를 닫기 전에 부른다. */
+  private recordedChildPids(): Array<{ pid: number; engine: Engine; what: string }> {
+    const out: Array<{ pid: number; engine: Engine; what: string }> = [];
+    try {
+      for (const m of this.store.listMembers()) {
+        if (m.childPid) out.push({ pid: m.childPid, engine: m.engine, what: m.name });
+      }
+    } catch {
+      // DB 를 못 읽어도 종료는 계속한다
+    }
+    try {
+      for (const row of this.store.listUsageProbePids()) out.push({ pid: row.childPid, engine: row.engine, what: `확인용(${row.engine})` });
+    } catch {
+      // 같은 이유
+    }
+    // 지금 살아 있는 세션의 pid 도 더한다(DB 기록이 늦었을 수 있다).
+    try {
+      for (const p of this.usageProbe.pids()) out.push({ pid: p.pid, engine: p.engine, what: `확인용(${p.engine})` });
+    } catch {
+      // 같은 이유
+    }
+    const seen = new Set<number>();
+    return out.filter((r) => r.pid > 0 && r.pid !== process.pid && !seen.has(r.pid) && (seen.add(r.pid), true));
+  }
+
+  /**
+   * 자식 pid 가 전부 사라질 때까지 기다린다(상한 SHUTDOWN_REAP_MS). 상한을 넘겨도 살아 있으면 **트리째 강제 종료**한다 —
+   * 이름 확인(`reapOrphan`)을 그대로 거치므로 pid 재사용된 남의 프로세스는 건드리지 않는다.
+   */
+  private async awaitChildrenGone(children: Array<{ pid: number; engine: Engine; what: string }>): Promise<void> {
+    if (children.length === 0) return;
+    const deadline = Date.now() + this.shutdownReapMs;
+    let left = children;
+    while (left.length > 0 && Date.now() < deadline) {
+      left = left.filter((c) => {
+        try {
+          return this.orphanOps.alive(c.pid);
+        } catch {
+          return false;
+        }
+      });
+      if (left.length === 0) break;
+      await new Promise((r) => setTimeout(r, SHUTDOWN_REAP_STEP_MS));
+    }
+    for (const c of left) {
+      try {
+        const verdict = reapOrphan(this.orphanOps, c.pid, c.engine, { exeName: this.engineExeName(c.engine) });
+        if (verdict.action === 'killed') console.warn(`[office] 종료: ${c.what} 의 자식(pid ${c.pid})이 안 닫혀 강제 종료`);
+      } catch (err) {
+        console.warn(`[office] 종료: pid ${c.pid} 정리 실패:`, err);
+      }
+    }
   }
 
   // ---- 조회 ------------------------------------------------------------------------
@@ -1842,47 +2085,159 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
     return rt.screen.promptReady();
   }
 
-  // ---- 내부: 재시작 복구(T09) ----------------------------------------------------------------
+  // ---- 내부: 기동 복구(T09 → T36 트리 → T46-1 수명 주기) -----------------------------------------
 
   /**
-   * 기동 시 이전 기동의 멤버를 되살린다(01 §데몬 재시작 복구, §실측 "프로세스 수명": 데몬이 죽으면 ConPTY 자식도 죽는다).
-   *   - status 가 starting/idle/working/waiting_* 인 멤버: session_id 있으면 `--resume` 재스폰 + [RESUMED](진행 task·최근 이벤트 요약)
-   *     + queued task 를 id 순으로 다시 큐에. 없으면 error(재고용으로 새 세션).
+   * 기동 시 이전 기동의 멤버를 되살린다(01 §데몬 재시작 복구 · 수명주기.md §4-2~3, §5).
+   *   - 대상: status 가 starting/idle/working/waiting_* **또는 `suspended`**(정상 종료로 접어 둔 세션, D-47 §5).
+   *     `session_id` 가 있으면 `--resume` 재스폰, 없으면 error(재고용으로 새 세션).
    *   - 열린 approval 은 전부 expired(hook 프로세스가 죽었으므로), 열린 question 은 TUI AskUserQuestion(payload.tool_input)만 expired
    *     — M2 `ask_user`/`ask_parent`(턴 종료 상태) 질문은 그대로 유효.
    *   - assigned task 는 그대로(멤버가 이어서 진행), queued 는 재큐잉.
    *   - **트리 순서**(부장 → 팀장 → 팀원, T36)로 되살린다. 부하가 먼저 깨어나 보고를 올리면 받을 상사가 아직 없다.
    *     상사가 되살아나지 못한(`exited`/`error`) 부하는 `error{summary:'restart: parent gone'}` 로 두고 재스폰하지 않는다 —
    *     받을 사람 없는 세션을 깨워 봐야 보고가 갈 곳이 없다. 사용자가 부서를 다시 세우거나 `rehire` 로 되살린다.
+   *   - **말없이**(T46-1, 원칙 4): `[RESUMED]` 는 하던 일이 있던 캐릭터에게만 타이핑한다(`needsResumedText`).
+   *     쉬고 있던 캐릭터는 자리에만 앉힌다 — 토큰 0.
+   *   - **한꺼번에 최대 3개**(§5): CLI 를 세 개까지만 동시에 띄우고, 하나가 `starting` 을 벗어나면 다음을 띄운다.
+   *     그래서 `recover()` 는 **바로 돌아오고** 뒤에서 줄이 흘러간다(`recoveryDone` 으로 끝을 기다린다).
    * 멤버 하나가 실패해도 나머지는 계속한다. 절대 throw 하지 않는다.
    */
   private recover(): RecoveryResult {
-    const result: RecoveryResult = { resumed: [], failed: [], expired: [], requeued: [], orphansKilled: [] };
+    const result: RecoveryResult = { resumed: [], failed: [], expired: [], requeued: [], orphansKilled: [], silent: [], total: 0 };
     let members: Member[];
     try {
-      members = this.recoverOrder(this.store.listMembers().filter((m) => RECOVERABLE.has(m.status)));
+      members = this.store.listMembers().filter((m) => RECOVERABLE.has(m.status));
     } catch (err) {
       console.error('[office] recover: listMembers failed:', err);
       return result;
     }
-    for (const member of members) {
-      try {
-        this.recoverMember(member, result);
-      } catch (err) {
-        console.error(`[office] recover ${member.id} (${member.name}) failed:`, err);
-        this.markRecoveryFailure(member, `restart: recovery failed: ${errMsg(err)}`, result);
-      }
-    }
-    if (members.length > 0 || result.expired.length > 0) {
-      let message = `복구: ${result.resumed.length}명 재개, ${result.expired.length}건 만료`;
-      if (result.failed.length > 0) message += `, ${result.failed.length}명 재개 불가`;
-      if (result.orphansKilled.length > 0) message += `, 유령 ${result.orphansKilled.length}개 정리`;
-      this.notice('info', message);
-    }
+    if (members.length === 0) return result;
+    const queue = recoveryOrder(members, { recentDepartmentId: this.recentDepartmentId() });
+    result.total = queue.length;
+    let settle!: () => void;
+    const done = new Promise<RecoveryResult>((resolve) => {
+      settle = () => resolve(result);
+    });
+    this.recoverPlan = { queue, result, inFlight: new Map(), done, finish: settle, finished: false };
+    this.noticeRecovering(); // 0/N — 앱 오버레이가 진행 막대를 세울 수 있게
+    this.pumpRecovery();
     return result;
   }
 
-  private recoverMember(member: Member, result: RecoveryResult): void {
+  /**
+   * 마지막으로 활동한 부서(= 가장 최근 이벤트의 부서). 앱의 `hello{activeDepartmentId}` 힌트가 오기 **전**의
+   * 기본 우선순위다(§5 "지금 보고 있는 탭의 부서부터" — 보통 마지막에 보던 부서가 그 부서다).
+   */
+  private recentDepartmentId(): string | undefined {
+    try {
+      const last = this.store.eventsQuery({ limit: 1 });
+      return last[last.length - 1]?.departmentId || undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  /**
+   * `hello{activeDepartmentId}`(T46-1, §5) — 앱이 보고 있는 부서를 **아직 안 깨운 줄의 맨 앞**으로 당긴다.
+   * 이미 띄운 멤버는 건드리지 않는다(되돌릴 수 없다). 복구가 끝난 뒤면 no-op.
+   */
+  prioritizeRecovery(departmentId: string): void {
+    const plan = this.recoverPlan;
+    if (!plan || !departmentId || plan.queue.length === 0) return;
+    plan.queue = recoveryOrder(plan.queue, { hintDepartmentId: departmentId, recentDepartmentId: this.recentDepartmentId() });
+  }
+
+  /** 종료 경로에서 남은 줄을 버린다 — 내려가는 데몬이 새 CLI 를 띄우면 안 된다. */
+  private cancelRecovery(): void {
+    const plan = this.recoverPlan;
+    if (!plan) return;
+    plan.queue = [];
+    for (const timer of plan.inFlight.values()) clearTimeout(timer);
+    plan.inFlight.clear();
+    this.finishRecovery(plan);
+  }
+
+  /** 빈자리가 있는 만큼 다음 멤버를 띄운다. 줄도 비고 띄운 것도 없으면 복구 끝. */
+  private pumpRecovery(): void {
+    const plan = this.recoverPlan;
+    if (!plan) return;
+    while (plan.inFlight.size < this.recoverMaxInFlight && plan.queue.length > 0) {
+      const member = plan.queue.shift()!;
+      // 줄에 서 있는 동안 행이 바뀌었을 수 있다(사용자가 퇴근시킴 등) — 지금 값을 다시 본다.
+      const fresh = this.store.getMember(member.id) ?? member;
+      if (!RECOVERABLE.has(fresh.status)) continue;
+      const spawned = this.recoverOne(fresh, plan);
+      // 실패한 멤버는 자리를 잡지 않는다(다음 사람이 바로 들어온다).
+      if (spawned) plan.inFlight.set(fresh.id, this.bootSlotTimer(fresh.id));
+      this.noticeRecovering();
+    }
+    // **줄이 비면 복구는 끝난 것으로 본다** — 아직 기동 중인 CLI 가 남아 있어도 "무엇을 되살리고 무엇을 포기했는가" 는
+    // 이미 다 정해졌다(그 뒤는 CLI 가 준비 화면에 도달하는 시간일 뿐이고, SessionStart·화면 감시가 알아서 받는다).
+    if (plan.queue.length === 0) this.finishRecovery(plan);
+  }
+
+  /** 기동 신호가 영영 안 와도 줄이 막히지 않게 하는 상한 타이머. */
+  private bootSlotTimer(memberId: string): NodeJS.Timeout {
+    const t = setTimeout(() => this.releaseBootSlot(memberId), this.recoverBootSlotMs);
+    t.unref?.();
+    return t;
+  }
+
+  /**
+   * 한 멤버의 "기동 중" 자리를 돌려준다. 부르는 곳은 셋이다 — status 가 `starting` 을 벗어날 때(정상),
+   * 프로세스가 죽을 때, 상한 타이머. 몇 번 불려도 한 번만 먹는다.
+   */
+  private releaseBootSlot(memberId: string): void {
+    const plan = this.recoverPlan;
+    const timer = plan?.inFlight.get(memberId);
+    if (!plan || timer === undefined) return;
+    clearTimeout(timer);
+    plan.inFlight.delete(memberId);
+    this.pumpRecovery();
+  }
+
+  private finishRecovery(plan: RecoverPlan): void {
+    if (plan.finished) return;
+    plan.finished = true;
+    for (const timer of plan.inFlight.values()) clearTimeout(timer);
+    plan.inFlight.clear();
+    this.recoverPlan = undefined;
+    const r = plan.result;
+    let message = `복구: ${r.resumed.length}명 재개, ${r.expired.length}건 만료`;
+    // "말없이" 는 있을 때만 적는다 — 0 명이면 문장이 길어지기만 한다.
+    if (r.silent.length > 0) message += `, 말없이 ${r.silent.length}명`;
+    if (r.failed.length > 0) message += `, ${r.failed.length}명 재개 불가`;
+    if (r.orphansKilled.length > 0) message += `, 유령 ${r.orphansKilled.length}개 정리`;
+    this.notice('info', message, { kind: 'recovering', total: r.total, done: r.total });
+    plan.finish();
+  }
+
+  /**
+   * 진행 표시(§4 오버레이). `done` 은 성공·실패를 합친 처리 수다. 콘솔에는 찍지 않는다(줄마다 한 줄씩 나오면 시끄럽다) —
+   * 수가 그대로면 아무것도 내지 않는다.
+   */
+  private noticeRecovering(): void {
+    const plan = this.recoverPlan;
+    if (!plan) return;
+    const done = plan.result.resumed.length + plan.result.failed.length;
+    if (plan.lastProgress === done) return;
+    plan.lastProgress = done;
+    this.emit('notice', 'info', `복구 중 ${done}/${plan.result.total}`, { kind: 'recovering', total: plan.result.total, done });
+  }
+
+  /** 멤버 하나를 되살린다. CLI 를 실제로 띄웠으면 true(= "기동 중" 자리를 하나 쓴다). */
+  private recoverOne(member: Member, plan: RecoverPlan): boolean {
+    try {
+      return this.recoverMember(member, plan.result);
+    } catch (err) {
+      console.error(`[office] recover ${member.id} (${member.name}) failed:`, err);
+      this.markRecoveryFailure(member, `restart: recovery failed: ${errMsg(err)}`, plan.result);
+      return false;
+    }
+  }
+
+  private recoverMember(member: Member, result: RecoveryResult): boolean {
     this.reapOrphanOf(member, result);
     // 트리 순서 복구(T36): 내 상사가 이미 되살아나지 못했으면 나도 깨우지 않는다 — 보고가 갈 곳이 없다.
     const parent = member.parentId ? this.store.getMember(member.parentId) : undefined;
@@ -1896,35 +2251,46 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
 
     if (parentGone) {
       this.markRecoveryFailure(member, 'restart: parent gone', result);
-      return;
+      return false;
     }
     if (!member.sessionId) {
       this.markRecoveryFailure(member, 'restart: no session id to resume', result);
-      return;
+      return false;
     }
 
+    // **말없이 앉히기**(D-47 원칙 4): 하던 일이 없으면 `[RESUMED]` 를 아예 만들지 않는다 — 모델 턴 0, 토큰 0.
+    // 열린 질문은 만료를 **거친 뒤** 남은 것만 센다(허가는 이미 만료됐고, `ask_*` 질문은 살아 있다).
+    const openQuestions = this.store.listOpenPending(member.id).filter((p) => p.type === 'question');
+    const issued = this.store.openTasksIssuedBy(member.id);
+    const speak = needsResumedText({ assigned, queued, issued, openQuestions });
     // 상위 직급의 [RESUMED] 에는 "내가 낸 일 + 직속 부하" 가 같이 실린다 — 깨어나자마자 누구를 기다리는지 알아야 한다.
-    const resumedText = buildResumedText({
-      assigned,
-      events: recent,
-      expiredCount: expired.length,
-      issued: this.store.openTasksIssuedBy(member.id),
-      children: this.store.childrenOf(member.id),
-    });
+    const resumedText = speak
+      ? buildResumedText({ assigned, events: recent, expiredCount: expired.length, issued, children: this.store.childrenOf(member.id) })
+      : '';
     let rt: MemberRuntime;
     try {
       rt = this.spawnMember(member, true);
     } catch (err) {
       this.markRecoveryFailure(member, `restart: spawn failed: ${errMsg(err)}`, result);
-      return;
+      return false;
     }
     rt.resumeFallback = { until: Date.now() + this.fallbackWindowMs, resumedText };
     this.enqueueResumed(rt, resumedText, queued);
     result.resumed.push(member.id);
+    if (!speak) result.silent.push(member.id);
     result.requeued.push(...queued.map((t) => t.id));
     console.log(
-      `[office] recover ${member.name}(${member.id}): --resume ${member.sessionId}, assigned ${assigned.length}, requeued ${queued.length}, expired ${expired.length}`,
+      `[office] recover ${member.name}(${member.id}): --resume ${member.sessionId}, assigned ${assigned.length}, requeued ${queued.length}, expired ${expired.length}${speak ? '' : ', 말없이'}`,
     );
+    return true;
+  }
+
+  /**
+   * 그 엔진을 띄울 때 쓰는 실행 파일 이름(`claude.exe` / `codex.exe`, 또는 `PIXEL_*_EXE` 가 가리키는 것 — node 래퍼면
+   * `node.exe`). 유령 정리의 이름 확인이 "내가 띄운 그 실행 파일" 까지 인정하도록 같이 넘긴다(orphans.ts 주석).
+   */
+  private engineExeName(engine: Engine): string | undefined {
+    return exeImageName(engine === 'claude' ? this.cfg.claudeExe : this.cfg.codexExe);
   }
 
   /**
@@ -1935,7 +2301,7 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
     const pid = member.childPid;
     if (!pid) return;
     try {
-      const verdict = reapOrphan(this.orphanOps, pid, member.engine);
+      const verdict = reapOrphan(this.orphanOps, pid, member.engine, { exeName: this.engineExeName(member.engine) });
       if (verdict.action === 'killed') {
         result.orphansKilled.push(pid);
         this.notice('warn', `복구: ${member.name} 의 이전 프로세스(pid ${pid})가 살아 있어 종료함`);
@@ -1962,7 +2328,7 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
     }
     for (const row of rows) {
       try {
-        const verdict = reapOrphan(this.orphanOps, row.childPid, row.engine);
+        const verdict = reapOrphan(this.orphanOps, row.childPid, row.engine, { exeName: this.engineExeName(row.engine) });
         if (verdict.action === 'killed') {
           this.notice('warn', `복구: 이전 기동의 사용량 확인용 세션(${row.engine}, pid ${row.childPid})을 종료함`);
         }
@@ -1980,9 +2346,10 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
   /**
    * [RESUMED] 를 먼저, 그 뒤에 queued task 를 id 순으로(원래 `instruct` 와 같은 모양이라 flush 시 assigned 가 된다).
    * 발행자가 팀장인 task(위임, T25)는 `[TASK#n from <팀장>(팀장)]` 봉투로 들어간다.
+   * `resumedText` 가 비어 있으면 **아무것도 타이핑하지 않는다**(T46-1 말없이 앉히기).
    */
   private enqueueResumed(rt: MemberRuntime, resumedText: string, queued: Task[]): void {
-    rt.queue.enqueue({ kind: 'system', text: resumedText });
+    if (resumedText !== '') rt.queue.enqueue({ kind: 'system', text: resumedText });
     for (const task of [...queued].sort((a, b) => a.id - b.id)) this.enqueueTask(rt, task);
   }
 
@@ -2040,6 +2407,7 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
 
   private onPtyExit(memberId: string, info: ExitInfo): void {
     this.releaseShellLocks(memberId); // T27 후처리(퇴근·재시작·크래시 공통)
+    this.releaseBootSlot(memberId); // T46-1: 복구 중 죽은 멤버가 "기동 중" 자리를 붙잡고 있으면 줄이 막힌다
     const rt = this.runtimes.get(memberId);
     if (rt) {
       rt.queue.stop();
@@ -2341,6 +2709,8 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
     const derived = this.derived(memberId, status);
     this.lastDerived.set(memberId, derived);
     this.emit('status', memberId, status, derived);
+    // T46-1: 복구 중이던 멤버가 `starting` 을 벗어났다 = CLI 가 떴다 → 다음 사람을 띄운다(한꺼번에 최대 3개).
+    if (status !== 'starting') this.releaseBootSlot(memberId);
     // T25 유휴 감시: 유휴가 되는 순간 밀려 있던 위임(queued)을 전달한다. 게이트는 dispatchTask 가 다시 본다.
     if (status === 'idle') this.dispatchQueuedTasks(memberId);
   }
@@ -2372,10 +2742,11 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
     this.emit('event', ev);
   }
 
-  private notice(level: NoticeLevel, message: string): void {
+  /** `extra` 는 기계가 읽는 꼬리표(T46-1 — `parent-gone`·`recovering`). 없으면 예전 모양 그대로다. */
+  private notice(level: NoticeLevel, message: string, extra?: NoticeExtra): void {
     const log = level === 'error' ? console.error : level === 'warn' ? console.warn : console.log;
     log(`[office] ${message}`);
-    this.emit('notice', level, message);
+    this.emit('notice', level, message, extra);
   }
 
   private member(memberId: string): Member {

@@ -112,13 +112,61 @@ describe('재시작 복구의 트리 순서 (T36)', () => {
     newOffice();
     await office.start();
 
+    // T46-1: 한꺼번에 띄우는 CLI 는 **최대 3개**(§5 기동 부하) — 네 번째(하루)는 앞의 하나가 기동을 마칠 때까지 기다린다.
+    assert.deepEqual(
+      pty.spawns.map((o) => o.memberId),
+      [s.head.id, s.lead.id, s.w1.id],
+      '부모가 먼저 떠 있어야 자식 보고를 받는다 + 동시에 3개까지',
+    );
+    // 부장이 `starting` 을 벗어나면(SessionStart) 자리가 하나 나고 네 번째가 뜬다.
+    await letQueuesFlow(s.head);
     assert.deepEqual(
       pty.spawns.map((o) => o.memberId),
       [s.head.id, s.lead.id, s.w1.id, s.w2.id],
-      '부모가 먼저 떠 있어야 자식 보고를 받는다',
+      '자리가 나면 줄이 이어진다',
     );
+    await office.recoveryDone;
     assert.deepEqual(office.recoveryResult!.failed, []);
     assert.equal(office.recoveryResult!.resumed.length, 4);
+  });
+
+  test('T46-1: 동시 상한을 넘겨도 순서는 그대로 — 자리가 날 때마다 한 명씩', async () => {
+    const s = seedTree(store, dataDir);
+    office = new Office({
+      config: { dataDir, hookPort: 0, wsPort: 0, mcpPort: 0 },
+      store,
+      pty,
+      receiver,
+      version: 't46',
+      recovery: { orphanOps: noOrphans, maxInFlight: 1 },
+    });
+    await office.start();
+    assert.deepEqual(pty.spawns.map((o) => o.memberId), [s.head.id], '한 번에 하나만');
+    await letQueuesFlow(s.head);
+    assert.deepEqual(pty.spawns.map((o) => o.memberId), [s.head.id, s.lead.id]);
+    await letQueuesFlow(s.lead);
+    assert.deepEqual(pty.spawns.map((o) => o.memberId), [s.head.id, s.lead.id, s.w1.id]);
+    await letQueuesFlow(s.w1);
+    assert.deepEqual(pty.spawns.map((o) => o.memberId), [s.head.id, s.lead.id, s.w1.id, s.w2.id]);
+    await office.recoveryDone;
+    assert.equal(office.recoveryResult!.resumed.length, 4);
+  });
+
+  test('T46-1: 말없이 앉히기 — 하던 일이 없는 부장·팀원에게는 [RESUMED] 를 타이핑하지 않는다', async () => {
+    const s = seedTree(store, dataDir);
+    newOffice();
+    await office.start();
+    await letQueuesFlow(s.head, s.lead, s.w1);
+    await letQueuesFlow(s.w2);
+
+    // 부장: 맡긴 일이 있다(toLead) → 말을 건다. 팀장·이음: 배정 task 가 있다 → 말을 건다.
+    assert.equal(pastedTo(s.lead).length, 1, '진행 중 task 가 있으면 [RESUMED]');
+    assert.equal(pastedTo(s.w1).length, 1);
+    // 하루: 배정 task 도 열린 질문도 없다 → **아무것도 타이핑하지 않는다**(토큰 0).
+    assert.deepEqual(pastedTo(s.w2), [], '쉬고 있던 캐릭터는 말없이 앉힌다');
+    const r = office.recoveryResult!;
+    assert.deepEqual(r.silent, [s.w2.id], `silent: ${JSON.stringify(r.silent)}`);
+    assert.equal(r.total, 4);
   });
 
   test('[RESUMED]: 상위는 "맡긴 일 + 직속 부하", 잎은 배정 task 만', async () => {

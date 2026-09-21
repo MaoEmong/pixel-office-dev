@@ -14,12 +14,20 @@ export const CHILD_RANK: Readonly<Record<MemberRank, MemberRank | undefined>> = 
 };
 /** 누가 출근시켰나. `'leader'` 는 "상위 멤버가 고용" 이라는 뜻(v1 값을 그대로 쓴다 — 마이그레이션 최소화). */
 export type HiredBy = 'user' | 'leader';
+/**
+ * 멤버(캐릭터)의 raw 상태 = "CLI 프로세스가 지금 어떤가".
+ *
+ * `suspended`(잠시 닫힘, T46-1 · D-47)는 **데몬이 정상 종료하면서 접어 둔 세션**이다. 사용자 퇴근·상사 dismiss 의
+ * `exited` 나 사고의 `error` 와 달리 **다음 기동에 말없이 되살린다**(수명주기.md §5) — 그래서 값이 따로 있다.
+ * 되살아나는 동안만 잠깐 보이는 상태라 앱은 회색 + `(잠시 닫힘)` 로 그린다.
+ */
 export type MemberStatus =
   | 'starting'
   | 'idle'
   | 'working'
   | 'waiting_approval'
   | 'waiting_answer'
+  | 'suspended'
   | 'exited'
   | 'error';
 

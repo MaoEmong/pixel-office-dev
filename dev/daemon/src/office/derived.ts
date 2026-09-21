@@ -11,9 +11,10 @@
 //   waiting_reports   raw idle 인데 자기가 발행한 미종료 task 가 있다(T25 — 부하 보고를 기다리는 중).
 //                     T34 부터 **직급을 가리지 않는다** — 부장도 팀장도 자식이 있으면 같은 상태다(D-32 "자식이 있는 모든 직급에").
 //   free              raw idle + 열린 pending 없음 + 배정·발행 미종료 task 없음(= 잎이 한가함)
-//   그 외              raw 그대로(starting / working / idle / exited / error)
+//   그 외              raw 그대로(starting / working / idle / suspended / exited / error)
 //
-// exited·error 는 어떤 경우에도 덮지 않는다 — 나간 멤버의 pending 이 정리 전이라도 "질문 대기" 로 보이면 안 된다.
+// exited·error·suspended 는 어떤 경우에도 덮지 않는다 — 나가거나 잠시 닫힌 멤버의 pending 이 정리 전이라도
+// "질문 대기" 로 보이면 안 된다(T46-1: `suspended` 는 열린 `ask_*` 질문을 **일부러 남긴 채** 접힌다).
 import type { Member, MemberStatus, Pending, Task, TaskStatus } from '../store/types.js';
 import type { DerivedStatus } from './types.js';
 
@@ -22,6 +23,14 @@ export const OPEN_TASKS: readonly TaskStatus[] = ['queued', 'assigned'];
 
 /** 종료된 것으로 보는 raw status. 파생이 덮지 않는다. */
 export const GONE_STATUSES: ReadonlySet<MemberStatus> = new Set<MemberStatus>(['exited', 'error']);
+
+/**
+ * 파생이 **덮지 않는** raw status(T46-1). 나간 멤버(`exited`/`error`)에 더해 `suspended` 가 들어간다 —
+ * 잠시 닫힌 세션은 프로세스가 없으므로 "질문 대기"·"보고 대기" 로 보이면 안 된다(열린 `ask_*` 질문은 그대로
+ * 살아 있고 스냅샷 `pending` 에 남지만, 그 캐릭터는 지금 아무것도 기다리는 중이 아니다 — 자고 있다).
+ * `GONE_STATUSES` 와 갈라 둔 이유: 고용 규칙·`rehire` 게이트는 여전히 `suspended` 를 "나간 것" 으로 보지 않는다.
+ */
+export const RAW_ONLY_STATUSES: ReadonlySet<MemberStatus> = new Set<MemberStatus>([...GONE_STATUSES, 'suspended']);
 
 /**
  * 턴을 끝내고도 열려 있는 질문의 출처(MCP 도구). 부장은 `ask_user` 로 사용자에게, 팀장·팀원은 `ask_parent` 로
@@ -51,7 +60,7 @@ export interface DerivedStore {
  * 멤버 하나의 파생 상태. `status` 를 주면 그 값을 raw 로 본다(어댑터가 store 에 쓰기 직전/직후 같은 값으로 부를 수 있게).
  */
 export function derivedStatus(member: Member, store: DerivedStore, status: MemberStatus = member.status): DerivedStatus {
-  if (GONE_STATUSES.has(status)) return status;
+  if (RAW_ONLY_STATUSES.has(status)) return status;
   const open = store.listOpenPending(member.id);
   if (open.some((p) => p.type === 'approval')) return 'waiting_approval';
   // 질문은 종류를 가리지 않는다: TUI `AskUserQuestion` 도, 턴 종료 질문(`ask_user`/`ask_parent`)도 답을 기다리는 중이다.
