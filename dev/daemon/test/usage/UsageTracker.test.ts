@@ -8,6 +8,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Store } from '../../src/store/Store.js';
 import { UsageTracker } from '../../src/usage/UsageTracker.js';
+import type { ClaudeTranscriptState } from '../../src/usage/ClaudeTranscriptUsage.js';
 import type { EngineConnection, EngineUsage, MemberUsage } from '../../src/usage/types.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -36,7 +37,7 @@ interface Harness {
   now(): number;
 }
 
-function harness(opts: Partial<{ store: Store; probeClaude: () => Promise<EngineConnection>; probeCodex: () => Promise<EngineConnection>; readTail: (f: string) => Promise<string>; refreshMs: number }> = {}): Harness {
+function harness(opts: Partial<{ store: Store; probeClaude: () => Promise<EngineConnection>; probeCodex: () => Promise<EngineConnection>; readTail: (f: string) => Promise<string>; readClaudeTranscript: (f: string, prev?: ClaudeTranscriptState) => Promise<ClaudeTranscriptState | null>; refreshMs: number }> = {}): Harness {
   let clock = Date.parse('2026-09-21T10:00:00.000Z');
   const store = opts.store ?? memStore();
   const engines: EngineUsage[] = [];
@@ -49,6 +50,7 @@ function harness(opts: Partial<{ store: Store; probeClaude: () => Promise<Engine
     probeClaude: opts.probeClaude ?? (async () => ({ connected: true, plan: 'max', reason: null })),
     probeCodex: opts.probeCodex ?? (async () => ({ connected: true, plan: null, reason: null })),
     ...(opts.readTail ? { readTail: opts.readTail } : {}),
+    ...(opts.readClaudeTranscript ? { readClaudeTranscript: opts.readClaudeTranscript } : {}),
   });
   tracker.on('engine', (u) => engines.push(u));
   tracker.on('member', (u) => members.push(u));
@@ -461,5 +463,157 @@ describe('UsageTracker — 요금제 대소문자', () => {
     assert.equal(tracker.engineUsage('claude').plan, null);
     store.close();
     h = harness();
+  });
+});
+
+// ---- T43-5: Claude 캐릭터의 누적 토큰 -------------------------------------------------------
+//
+// `cost-state` 는 **CLI 가 끝날 때만** 적힌다 — 살아 있는 멤버에게는 0개다(실측). 그래서 살아 있는 동안에는
+// transcript 의 assistant 줄을 증분으로 더하고, `cost-state` 가 나타나면 그쪽이 최종값으로 이긴다.
+// 여기서는 **진짜 파일**을 쓴다(꼬리 읽기·증분 읽기를 둘 다 실제로 태운다).
+
+describe('UsageTracker — Claude 누적 토큰(T43-5)', () => {
+  let dir: string;
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pixel-usage-tx-'));
+  });
+  afterEach(() => {
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  /** 실측 픽스처에서 `cost-state` 줄만 뺀 것 = "아직 살아 있는 세션" 의 모양. */
+  const live = (name: string): string =>
+    read(name)
+      .split('\n')
+      .filter((l) => l !== '' && !l.includes('"cost-state"'))
+      .join('\n') + '\n';
+
+  const file = (name: string, text: string): string => {
+    const p = path.join(dir, name);
+    fs.writeFileSync(p, text);
+    return p;
+  };
+
+  test('살아 있는 세션(cost-state 0개)에서도 토큰이 들어온다 — 이게 T43-5 의 결함이었다', async () => {
+    h = harness();
+    const p = file('t.jsonl', live('claude-transcript-ended-a.jsonl'));
+    await h.tracker.applyTurnEnd(CLAUDE, p);
+    const m = h.tracker.memberUsage(CLAUDE.id)!;
+    // 실측 assistant 줄 하나(in 2 · out 3 · cacheRead 29413 · cacheCreate 14495).
+    assert.deepEqual(m.tokens, { input: 2, output: 3, cacheRead: 29413, cacheCreate: 14495, total: 43913 });
+    assert.equal(m.costUsd, null, '비용은 statusLine 몫 — 여기서 만들어 내지 않는다');
+  });
+
+  test('턴이 이어지면 증분으로 늘어난다(같은 파일을 다시 처음부터 읽지 않는다)', async () => {
+    const full = live('claude-transcript-ended-b.jsonl');
+    const cut = full.lastIndexOf('\n', Math.floor(full.length / 2)) + 1;
+    h = harness();
+    const p = file('t.jsonl', full.slice(0, cut));
+    await h.tracker.applyTurnEnd(CLAUDE, p);
+    const first = h.tracker.memberUsage(CLAUDE.id)!.tokens!;
+    assert.ok((first.total ?? 0) > 0);
+
+    fs.appendFileSync(p, full.slice(cut));
+    h.tick(60_000);
+    await h.tracker.applyTurnEnd(CLAUDE, p);
+    const second = h.tracker.memberUsage(CLAUDE.id)!.tokens!;
+    assert.deepEqual(second, { input: 8, output: 670, cacheRead: 186663, cacheCreate: 12536, total: 199877 });
+    assert.ok((second.total ?? 0) > (first.total ?? 0), '늘어났다');
+  });
+
+  test('세션이 끝나 cost-state 가 생기면 **그쪽이 이긴다**(배경 haiku 까지 들어간 CLI 자신의 값)', async () => {
+    h = harness();
+    const p = file('t.jsonl', live('claude-transcript-ended-a.jsonl'));
+    await h.tracker.applyTurnEnd(CLAUDE, p);
+    assert.equal(h.tracker.memberUsage(CLAUDE.id)!.tokens!.total, 43913, '줄 합');
+
+    fs.writeFileSync(p, read('claude-transcript-ended-a.jsonl')); // 같은 파일 + cost-state
+    h.tick(60_000);
+    await h.tracker.applyTurnEnd(CLAUDE, p);
+    const m = h.tracker.memberUsage(CLAUDE.id)!;
+    assert.deepEqual(m.tokens, { input: 912, output: 17, cacheRead: 29413, cacheCreate: 14495, total: 44837 });
+    assert.equal(m.costUsd, 0.16072150000000002, 'cost-state 의 totalCostUSD 가 최종 비용');
+  });
+
+  test('statusLine 비용은 살아 있는 동안 유지되고, cost-state 가 오면 덮인다', async () => {
+    h = harness();
+    h.tracker.applyStatusLine(CLAUDE, statusLine(1)); // cost.total_cost_usd
+    const p = file('t.jsonl', live('claude-transcript-ended-b.jsonl'));
+    await h.tracker.applyTurnEnd(CLAUDE, p);
+    assert.equal(h.tracker.memberUsage(CLAUDE.id)!.costUsd, 0.16072150000000002, 'statusLine 값 그대로');
+
+    fs.writeFileSync(p, read('claude-transcript-ended-b.jsonl'));
+    h.tick(60_000);
+    await h.tracker.applyTurnEnd(CLAUDE, p);
+    assert.equal(h.tracker.memberUsage(CLAUDE.id)!.costUsd, 0.23663849999999997, 'cost-state 가 최종값');
+  });
+
+  test('`--resume` 이 새 transcript 를 파면 리셋한다(CLI 의 /cost 와 같게)', async () => {
+    h = harness();
+    const a = file('a.jsonl', live('claude-transcript-ended-b.jsonl'));
+    await h.tracker.applyTurnEnd(CLAUDE, a);
+    assert.equal(h.tracker.memberUsage(CLAUDE.id)!.tokens!.total, 199877);
+
+    const b = file('b.jsonl', live('claude-transcript-ended-a.jsonl'));
+    h.tick(60_000);
+    await h.tracker.applyTurnEnd(CLAUDE, b);
+    assert.equal(h.tracker.memberUsage(CLAUDE.id)!.tokens!.total, 43913, '더하지 않고 새로 센다');
+  });
+
+  test('데몬을 재시작해도 0 이 되지 않는다 — DB 값으로 살아 있다가 첫 Stop 에 다시 훑는다', async () => {
+    const store = memStore();
+    h = harness({ store });
+    const p = file('t.jsonl', live('claude-transcript-ended-b.jsonl'));
+    await h.tracker.applyTurnEnd(CLAUDE, p);
+    assert.equal(h.tracker.memberUsage(CLAUDE.id)!.tokens!.total, 199877);
+    h.tracker.stop();
+
+    // 같은 DB 로 새 tracker = 재기동. 오프셋 기억은 사라졌지만 합계는 남아 있다.
+    const restarted = new UsageTracker({ store, pollIntervalMs: 0, now: h.now });
+    assert.equal(restarted.memberUsage(CLAUDE.id)!.tokens!.total, 199877, '재기동 직후에도 화면이 비지 않는다');
+    // 첫 Stop 에 파일을 0 부터 한 번 다시 훑어 같은 값을 되찾는다(이중 계산 없음).
+    await restarted.applyTurnEnd(CLAUDE, p);
+    assert.equal(restarted.memberUsage(CLAUDE.id)!.tokens!.total, 199877);
+    restarted.stop();
+    store.close();
+    h = harness();
+  });
+
+  test('멤버가 사라지면 누적 상태도 같이 버린다(다음 멤버가 남의 숫자를 물려받지 않게)', async () => {
+    h = harness();
+    const p = file('t.jsonl', live('claude-transcript-ended-b.jsonl'));
+    await h.tracker.applyTurnEnd(CLAUDE, p);
+    assert.ok(h.tracker.memberUsage(CLAUDE.id)!.tokens);
+    h.tracker.removeMember(CLAUDE.id);
+    assert.equal(h.tracker.memberUsage(CLAUDE.id), undefined);
+
+    // 같은 id 가 다시 생겨 같은 파일을 봐도 0 부터 센다(값은 같지만 오프셋이 리셋됐다는 뜻).
+    await h.tracker.applyTurnEnd(CLAUDE, p);
+    assert.equal(h.tracker.memberUsage(CLAUDE.id)!.tokens!.total, 199877);
+  });
+
+  test('증분 읽기가 던져도 삼키고, 꼬리의 cost-state 만으로도 값이 들어온다', async () => {
+    h = harness({
+      readTail: async () => read('claude-transcript-tail.jsonl'),
+      readClaudeTranscript: async () => {
+        throw new Error('locked');
+      },
+    });
+    await assert.doesNotReject(() => h.tracker.applyTurnEnd(CLAUDE, 'C:/x/t.jsonl'));
+    assert.equal(h.tracker.memberUsage(CLAUDE.id)!.tokens!.total, 44837);
+  });
+
+  test('Codex 는 이 길을 타지 않는다(rollout 에 assistant 줄이 없다)', async () => {
+    let called = 0;
+    h = harness({
+      readTail: async () => read('codex-rollout-tail.jsonl'),
+      readClaudeTranscript: async () => {
+        called++;
+        return null;
+      },
+    });
+    await h.tracker.applyTurnEnd(CODEX, 'C:/x/rollout.jsonl');
+    assert.equal(called, 0);
+    assert.equal(h.tracker.memberUsage(CODEX.id)!.tokens!.total, 43726);
   });
 });

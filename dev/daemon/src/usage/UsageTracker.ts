@@ -4,8 +4,8 @@
 // 입력은 세 갈래다:
 //   1. **statusLine**(Claude) — `HookReceiver` 의 `POST /status/<memberToken>` 으로 들어온다. 턴이 끝날 때와
 //      화면을 다시 그릴 때마다 오는 **이벤트 채널**이라(폴링이 아니다) 마지막 값만 들고 있으면 된다.
-//   2. **턴 종료**(`Stop`, Codex 는 화면 idle 폴백 포함) — Claude 는 transcript 의 `cost-state` 꼬리,
-//      Codex 는 rollout 의 `token_count` 꼬리를 읽는다.
+//   2. **턴 종료**(`Stop`, Codex 는 화면 idle 폴백 포함) — Claude 는 transcript 의 assistant 줄을 **증분 누적**
+//      하고(T43-5, 세션이 끝난 뒤에는 `cost-state` 가 이긴다), Codex 는 rollout 의 `token_count` 꼬리를 읽는다.
 //   3. **연결 폴링**(기동 시 + 60초) — `claude auth status` / `codex login status`.
 //
 // 규칙:
@@ -18,6 +18,8 @@
 import { EventEmitter } from 'node:events';
 import type { Store } from '../store/Store.js';
 import type { Engine } from '../store/types.js';
+import { claudeTranscriptTotals, type ClaudeTranscriptState } from './ClaudeTranscriptUsage.js';
+import { readClaudeTranscriptUsage as defaultReadClaudeTranscript } from './claudeTranscriptReader.js';
 import { probeClaudeConnection, probeCodexConnection } from './connection.js';
 import { parseClaudeCostState } from './parse/claudeCostState.js';
 import { parseClaudeStatusLine } from './parse/claudeStatusLine.js';
@@ -61,6 +63,8 @@ export interface UsageTrackerOptions {
   probeCodex?: () => Promise<EngineConnection>;
   /** 기록 파일 꼬리 읽기(테스트 대체용). */
   readTail?: (file: string) => Promise<string>;
+  /** Claude transcript 증분 읽기(테스트 대체용, T43-5). */
+  readClaudeTranscript?: (file: string, prev?: ClaudeTranscriptState) => Promise<ClaudeTranscriptState | null>;
 }
 
 /** `applyStatusLine` · 턴 종료가 받는 멤버 최소 정보. */
@@ -132,9 +136,16 @@ export class UsageTracker extends EventEmitter<UsageTrackerEvents> {
   private readonly probeClaude: () => Promise<EngineConnection>;
   private readonly probeCodex: () => Promise<EngineConnection>;
   private readonly readTail: (file: string) => Promise<string>;
+  private readonly readClaudeTranscript: (file: string, prev?: ClaudeTranscriptState) => Promise<ClaudeTranscriptState | null>;
   private readonly engines = new Map<Engine, EngineUsage>();
   private readonly stamps = new Map<Engine, LimitStamps>();
   private readonly members = new Map<string, MemberUsage>();
+  /**
+   * 멤버별 transcript 누적 상태(T43-5). **메모리에만 있다** — 데몬을 재시작하면 비어 있고, 그 멤버의 첫
+   * 턴 종료 때 파일을 0 부터 한 번 다시 훑어 복구한다(합계 자체는 `member_usage` 에 남아 있으므로 그동안에도
+   * 화면이 비지 않는다).
+   */
+  private readonly transcripts = new Map<string, ClaudeTranscriptState>();
   private timer?: NodeJS.Timeout;
   private polling?: Promise<void>;
 
@@ -147,6 +158,7 @@ export class UsageTracker extends EventEmitter<UsageTrackerEvents> {
     this.probeClaude = opts.probeClaude ?? (() => probeClaudeConnection());
     this.probeCodex = opts.probeCodex ?? (() => probeCodexConnection());
     this.readTail = opts.readTail ?? ((file) => defaultReadTail(file));
+    this.readClaudeTranscript = opts.readClaudeTranscript ?? ((file, prev) => defaultReadClaudeTranscript(file, prev));
     this.load();
   }
 
@@ -209,13 +221,41 @@ export class UsageTracker extends EventEmitter<UsageTrackerEvents> {
     return this.applyClaudeTurnEnd(member, transcriptPath);
   }
 
-  /** Claude: transcript 꼬리의 마지막 `cost-state` → 누적 토큰·비용. */
+  /**
+   * Claude: 누적 토큰 + 비용.
+   *
+   * 두 출처를 쓴다(T43-5):
+   *   - **살아 있는 동안** — transcript 의 `type:"assistant"` 줄을 **증분으로 더한다**. `cost-state` 줄은
+   *     **CLI 가 끝날 때만** 적히므로(실측: 살아 있는 세션에 0개) 이게 유일한 토큰 출처다. 예전에는 이게 없어
+   *     Claude 캐릭터의 토큰 칸이 계속 "—" 였다.
+   *   - **세션이 끝난 뒤** — `cost-state` 가 나타나면 **그쪽이 이긴다.** CLI 자신의 계산이고, 우리 합에는
+   *     transcript 에 줄로 남지 않는 배경 호출(제목 생성 haiku 등)이 빠져 있다.
+   *
+   * 비용은 평소 statusLine 의 `cost.total_cost_usd` 가 대고, `cost-state.totalCostUSD` 가 최종값이다.
+   * 둘 다 못 읽으면 **아무것도 지우지 않는다**(이전 값 유지).
+   */
   async applyClaudeTurnEnd(member: UsageMemberRef, transcriptPath: string): Promise<void> {
+    // ① 증분 누적 — 실패하면(파일 없음·잠김) 이전 상태를 그대로 둔다.
+    const prev = this.transcripts.get(member.id);
+    let scanned: UsageTokens | null = prev ? claudeTranscriptTotals(prev) : null;
+    try {
+      const next = await this.readClaudeTranscript(transcriptPath, prev);
+      if (next) {
+        this.transcripts.set(member.id, next);
+        scanned = claudeTranscriptTotals(next);
+      }
+    } catch (err) {
+      console.warn(`[usage] transcript 증분 읽기 실패(${transcriptPath}):`, err);
+    }
+
+    // ② cost-state(세션 종료 뒤에만 있다) — 있으면 최종값.
     const tail = await this.readTailSafe(transcriptPath);
-    if (tail === '') return;
-    const cs = parseClaudeCostState(tail);
-    if (!cs.tokens && cs.costUsd === null) return;
-    this.recordMemberUsage(member, { tokens: cs.tokens, costUsd: cs.costUsd });
+    const cs = tail === '' ? null : parseClaudeCostState(tail);
+
+    const tokens = cs?.tokens ?? scanned;
+    const costUsd = cs?.costUsd ?? null;
+    if (!tokens && costUsd === null) return;
+    this.recordMemberUsage(member, { tokens, costUsd });
   }
 
   /** Codex: rollout 꼬리의 마지막 `token_count` → 엔진 한도 + 멤버 컨텍스트·누적 토큰(비용은 없다). */
@@ -302,6 +342,7 @@ export class UsageTracker extends EventEmitter<UsageTrackerEvents> {
   /** 멤버가 사라졌다(부서·팀 삭제). 행은 FK cascade 로도 지워지지만 메모리 상태는 여기서 비운다. */
   removeMember(memberId: string): void {
     this.members.delete(memberId);
+    this.transcripts.delete(memberId);
     try {
       this.store.deleteMemberUsage(memberId);
     } catch (err) {
@@ -312,7 +353,10 @@ export class UsageTracker extends EventEmitter<UsageTrackerEvents> {
   /** 지금 DB 에 없는 멤버의 사용량 행을 메모리에서 지운다(기동 복구용). */
   pruneMissingMembers(): void {
     for (const memberId of [...this.members.keys()]) {
-      if (!this.store.getMember(memberId)) this.members.delete(memberId);
+      if (!this.store.getMember(memberId)) {
+        this.members.delete(memberId);
+        this.transcripts.delete(memberId);
+      }
     }
   }
 
