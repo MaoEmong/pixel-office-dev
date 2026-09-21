@@ -12,6 +12,7 @@ import {
   buildClaudeSessionSettings,
   buildCodexHooksFile,
   buildHookCommand,
+  buildStatusLineCommand,
   claudeSettingsPath,
   codexHooksPath,
   ensureCodexHooksFile,
@@ -21,6 +22,8 @@ import {
 } from '../../src/pty/hookSettings.js';
 
 const HOOK = 'D:\\myproject\\pixel-office\\dev\\daemon\\src\\hooks\\hook.js';
+/** T43: 같은 폴더의 statusLine 스크립트. */
+const STATUSLINE = 'D:\\myproject\\pixel-office\\dev\\daemon\\src\\hooks\\statusline.js';
 const PORT = 7421;
 
 describe('buildHookCommand', () => {
@@ -67,6 +70,28 @@ describe('buildClaudeSessionSettings', () => {
   test('has no marker key at top level (only hooks) and round-trips through JSON', () => {
     assert.deepEqual(Object.keys(settings), ['hooks']);
     assert.deepEqual(JSON.parse(JSON.stringify(settings)), settings);
+  });
+
+  // ---- T43: statusLine 주입 ------------------------------------------------------
+  test('statusLine 경로를 주지 않으면 statusLine 키가 없다(예전 그대로)', () => {
+    assert.equal('statusLine' in settings, false);
+  });
+
+  test('statusLine 경로를 주면 `node <경로> <port>` 명령이 붙는다 (hooks 는 그대로)', () => {
+    const withLine = buildClaudeSessionSettings(HOOK, PORT, STATUSLINE);
+    assert.deepEqual(Object.keys(withLine), ['hooks', 'statusLine']);
+    assert.deepEqual(withLine.hooks, settings.hooks, 'hooks 는 손대지 않는다');
+    assert.deepEqual(withLine.statusLine, {
+      type: 'command',
+      command: `node D:/myproject/pixel-office/dev/daemon/src/hooks/statusline.js ${PORT}`,
+      padding: 0,
+    });
+    assert.ok(!withLine.statusLine!.command.includes('\\'), 'no backslashes');
+  });
+
+  test('buildStatusLineCommand: 공백 있는 경로만 큰따옴표(hook 명령과 같은 규칙)', () => {
+    assert.equal(buildStatusLineCommand('C:\\Program Files\\x\\statusline.js', 1), 'node "C:/Program Files/x/statusline.js" 1');
+    assert.equal(buildStatusLineCommand('/c/x/statusline.js', 1), 'node /c/x/statusline.js 1');
   });
 });
 
@@ -122,6 +147,15 @@ describe('file writers (temp dir, no spawn)', () => {
     assert.equal(file, claudeSettingsPath(tmp, 'member-a'));
     const parsed = JSON.parse(fs.readFileSync(file, 'utf8'));
     assert.deepEqual(parsed, buildClaudeSessionSettings(HOOK, PORT));
+  });
+
+  // T43: 같은 파일에 statusLine 도 같이 들어간다(실측에서 hooks 와 충돌 없음).
+  test('writeClaudeSessionSettings writes statusLine when a script path is given', () => {
+    const file = writeClaudeSessionSettings(tmp, 'member-line', HOOK, PORT, STATUSLINE);
+    const parsed = JSON.parse(fs.readFileSync(file, 'utf8'));
+    assert.deepEqual(parsed, buildClaudeSessionSettings(HOOK, PORT, STATUSLINE));
+    assert.equal((parsed as { statusLine: { command: string } }).statusLine.command, `node D:/myproject/pixel-office/dev/daemon/src/hooks/statusline.js ${PORT}`);
+    assert.equal(Object.keys(parsed.hooks).length, CLAUDE_HOOK_EVENTS.length);
   });
 
   test('ensureCodexHooksFile writes when absent, overwrites its own file, refuses a foreign file', () => {

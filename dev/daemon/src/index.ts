@@ -50,6 +50,10 @@ if (!claude.found) {
   console.warn(`[daemon] 경로를 직접 주려면 PIXEL_CLAUDE_EXE=<claude.exe 경로>`);
 }
 console.log(`[daemon] codex     : ${config.codexExe}`);
+// T43: 엔진 연결 확인(claude auth status / codex login status)을 지금 한 번 하고 주기 타이머를 건다.
+// Office.start() 가 아니라 여기서 켠다 — Office 는 멤버 CLI 말고 다른 프로세스를 스스로 띄우지 않는다.
+office.usage.start();
+console.log(`[daemon] usage     : 연결 확인 ${config.usagePollSec > 0 ? `${config.usagePollSec}초마다` : '기동 시 한 번만'} (PIXEL_USAGE_POLL_SEC)`);
 console.log(`[daemon] listening`);
 
 office.once('shutdown', async () => {

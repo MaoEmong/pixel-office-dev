@@ -1,5 +1,6 @@
-// 콘솔 출력 포맷 (T08). ANSI 제거·이벤트 한 줄 요약·멤버/팀/pending 표.
+// 콘솔 출력 포맷 (T08). ANSI 제거·이벤트 한 줄 요약·멤버/팀/pending/사용량 표.
 import type { Department, EventDetail, Member, OfficeEvent, Pending, Task, Team } from '../store/types.js';
+import type { EngineUsage, MemberUsage } from '../usage/types.js';
 
 // CSI / OSC / DCS / 2-byte ESC 시퀀스 / 나머지 C0 제어문자(\t \n \r 제외).
 const ANSI_RE =
@@ -181,4 +182,74 @@ export function formatPending(p: LocalPending, nameOf: NameOf): string {
 
 function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null && !Array.isArray(v);
+}
+
+// ---- 사용량 (T43) ---------------------------------------------------------------
+
+/** `connected:false` 일 때 사람이 읽는 이유. 모르는 값이 와도 그대로 찍는다(CLI 가 바뀌어도 안 깨지게). */
+export const NOT_CONNECTED_REASON: Record<string, string> = {
+  'not-installed': '설치 안 됨',
+  'logged-out': '로그인 필요',
+  unknown: '확인 안 됨',
+};
+
+/** 토큰 수 표기: `358k` · `1.2M`. 앱의 단위 규칙(설계 §4)과 같은 말. */
+export function formatTokens(n: number | null | undefined): string {
+  if (typeof n !== 'number' || !Number.isFinite(n)) return '-';
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000) return `${Math.round(n / 1_000)}k`;
+  return String(n);
+}
+
+/** 한도 창 한 칸: `주간 46% 남음 (리셋 2026-09-23T03:00:00.000Z)`. 모르면 `주간 -`. */
+function windowText(label: string, w: { usedPercent: number | null; resetsAt: string | null } | null): string {
+  if (!w || w.usedPercent === null) return `${label} -`;
+  const resets = w.resetsAt ? ` (리셋 ${w.resetsAt})` : '';
+  return `${label} ${100 - w.usedPercent}% 남음${resets}`;
+}
+
+/**
+ * 콘솔 `usage` 의 엔진 한 줄.
+ *   `claude  연결됨(max)  주간 46% 남음 (리셋 …)  5시간 83% 남음  측정 2026-09-21T10:00:00.000Z`
+ *   `codex   연결 안 됨(설치 안 됨)`
+ */
+export function formatEngineUsage(u: EngineUsage): string {
+  const head = u.connected ? `연결됨(${u.plan ?? '요금제 ?'})` : `연결 안 됨(${NOT_CONNECTED_REASON[u.reason ?? 'unknown'] ?? u.reason})`;
+  const parts = [u.engine.padEnd(6), head];
+  if (u.updatedAt || u.weekly || u.session) {
+    // 마지막으로 확인한 값은 연결이 끊겨도 보여 준다(엔진 행을 남기는 이유 — D-45).
+    parts.push(windowText('주간', u.weekly), windowText('5시간', u.session), `측정 ${u.updatedAt ?? '-'}`);
+  } else if (u.connected) {
+    // 붙어는 있는데 한도를 한 번도 못 봤다 = Claude 는 첫 턴 뒤에나 온다.
+    parts.push('한도 미확인 — 첫 작업 후 표시');
+  }
+  return parts.join('  ');
+}
+
+/**
+ * 콘솔 `usage` 의 멤버 한 줄.
+ *   `반장 [claude]  컨텍스트 4% (44k/1.0M)  토큰 45k  $0.1607  2026-09-21T10:00:00.000Z`
+ * Codex 는 비용 칸이 없다(`-`).
+ */
+export function formatMemberUsage(u: MemberUsage, nameOf: NameOf): string {
+  const ctx = u.context;
+  const ctxText =
+    ctx && ctx.percent !== null
+      ? `컨텍스트 ${ctx.percent}% (${formatTokens(ctx.used)}/${formatTokens(ctx.window)})`
+      : '컨텍스트 -';
+  const cost = typeof u.costUsd === 'number' ? `$${u.costUsd.toFixed(4)}` : '-';
+  return `${nameOf(u.memberId)} [${u.engine}]  ${ctxText}  토큰 ${formatTokens(u.tokens?.total ?? null)}  ${cost}  ${u.updatedAt}`;
+}
+
+/** 콘솔 `usage` 전체 출력(엔진 → 멤버, 컨텍스트 큰 순). */
+export function usageLines(
+  usage: { engines: EngineUsage[]; members: MemberUsage[] } | undefined,
+  nameOf: NameOf,
+): string[] {
+  if (!usage) return ['(사용량 정보 없음 — 스냅샷에 usage 가 없습니다)'];
+  const out = usage.engines.map(formatEngineUsage);
+  const members = [...usage.members].sort((a, b) => (b.context?.percent ?? -1) - (a.context?.percent ?? -1));
+  if (members.length === 0) out.push('(멤버 사용량 없음 — 첫 턴 뒤에 들어옵니다)');
+  else for (const m of members) out.push('  ' + formatMemberUsage(m, nameOf));
+  return out;
 }

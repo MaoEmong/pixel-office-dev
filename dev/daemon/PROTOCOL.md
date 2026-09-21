@@ -11,7 +11,7 @@
 |---|---|---|
 | `hello` | `{ token, since?: number, client: { name, version } }` | `{ daemon: { version, pid }, snapshot }` 후 `seq > since` 인 `event` 알림 replay(응답이 먼저, replay 는 오름차순). `since` 없으면 스냅샷만. |
 | `events.query` | `{ departmentId?, teamId?, memberId?, beforeSeq?, limit? }` | `{ events: OfficeEvent[] }` (seq 내림차순 아님 — 오름차순 반환. `beforeSeq` 미만 중 최신 `limit`(기본 200)건; 다음 페이지는 첫 건 seq 를 `beforeSeq` 로) |
-| `department.create` | `{ name, cwd, headEngine: 'claude'\|'codex', headName? }` | `{ department, head: Member }` — **사용자가 하는 유일한 생성**(T34, D-32). 부서 행 → 부장 멤버(`rank:'head'`, `parentId:null`, `teamId:null`, `hiredBy:'user'`, 이름 `headName ?? '부장'`, 엔진 `headEngine`) → CLI 스폰 → `department.headId` 기록. 부장 출근은 보통 멤버와 같은 경로라 `member.status{starting}` 알림이 다른 클라이언트에도 나간다. `headEngine:'codex'` 도 허용하지만 `daemon.notice{warn}` 로 "v1 권장은 claude". 오류: `cwd` 가 폴더가 아님·모르는 엔진·빈 이름 → -32602. 부장 스폰이 실패하면 부서 행도 되돌린다. 성공하면 전 클라이언트에 `snapshot` 알림을 민다(T38). |
+| `department.create` | `{ name, cwd, headEngine: 'claude'\|'codex', headName? }` | `{ department, head: Member }` — **사용자가 하는 유일한 생성**(T34, D-32). 부서 행 → 부장 멤버(`rank:'head'`, `parentId:null`, `teamId:null`, `hiredBy:'user'`, 이름 `headName ?? '부장'`, 엔진 `headEngine`) → CLI 스폰 → `department.headId` 기록. 부장 출근은 보통 멤버와 같은 경로라 `member.status{starting}` 알림이 다른 클라이언트에도 나간다. `headEngine:'codex'` 도 그대로 허용한다(**T43 에서 "v1 권장은 claude" 경고를 지웠다** — T42 실기에서 Codex 부장이 오케스트레이션 도구를 전부 통과해 근거가 사라졌다, D-46). 오류: `cwd` 가 폴더가 아님·모르는 엔진·빈 이름 → -32602. 부장 스폰이 실패하면 부서 행도 되돌린다. 성공하면 전 클라이언트에 `snapshot` 알림을 민다(T38). |
 | `department.delete` | `{ departmentId }` | `{}` — 하위 트리 전체(팀원 → 팀장 → 부장, **잎부터**)를 후처리·퇴근시키고 부서·팀·멤버·task 행을 지운다. events 는 남는다. 없는 부서 -32002. 삭제 후 전 클라이언트에 `snapshot` 알림(T38) — 다른 클라이언트의 부서 탭·책상이 그때 사라진다. |
 | `department.tree` | `{}` | `{ departments: [{ department, head?, teams: [{ team, lead?, members: [] }], orphans: [] }] }` — 읽기 전용 트리. 멤버 행에는 스냅샷과 같은 `derived` 가 붙는다. `orphans` 는 어느 팀에도 안 붙은(부장 이외) 멤버 — 디버그 경로로만 생긴다. 콘솔 `tree`. |
 | `team.create` | `{ departmentId, name, leadEngine?, leadName?, maxMembers?, allowedEngines?, force: true }` | `{ team, lead: Member }` — **T34 부터 디버그 전용**: `force:true` 가 없으면 -32004(정식 경로는 부장의 `create_team` 도구, T35). 팀은 부서 안에서만 만들어지고 **cwd 는 부서 cwd** 다(D-32 "한 부서 안의 팀들은 같은 cwd"). 팀장 멤버(`rank:'lead'`, `parentId` = 그 부서의 살아 있는 부장, `hiredBy:'leader'`, 이름 `leadName ?? '팀장'`, 엔진 `leadEngine ?? 부장 엔진`)가 자동 출근하고 `team.leaderId` 가 채워진다. 팀장도 정원(`maxMembers`, 기본 4)의 한 자리다. 오류: 없는 부서 -32002, 살아 있는 부장 없음 -32003, 모르는 엔진·`allowedEngines` 밖·`maxMembers < 1` -32602. 팀장 스폰이 실패하면 팀 행도 되돌린다. 성공하면 `snapshot` 알림(T38). |
@@ -40,9 +40,11 @@
 | method | params |
 |---|---|
 | `event` | `OfficeEvent` — `{ seq, ts, departmentId, teamId, memberId, kind, detail, ref }` (영속, 전역 단조 seq). `departmentId` 는 T34 부터, `teamId` 는 팀이 없는 부장의 이벤트에서 `''`. |
-| `snapshot` | `{ seq, departments, teams, members, pending, tasks }` — `hello` 응답에 포함되지만 데몬이 필요 시 재전송한다. `pending` 은 `status:'open'` 만, `tasks` 는 `queued|assigned` 만. **`members[]` 의 각 행에는 Member 칼럼 + `derived`(그 시점의 파생 상태, 아래 표)가 같이 온다(T28)** — 클라이언트가 파생 규칙을 다시 구현하지 않아도 재접속 직후 화면이 맞는다. **데몬이 미는 때(T38): 트리 모양이 바뀔 때마다 — `department.create` · `department.delete` · `team.create` · 부장의 `create_team` · `team.delete` · 부장의 `dismiss_team`.** 멤버 행의 생멸은 `member.status` 가 알리지만 **부서·팀 행의 생멸을 알리는 알림은 이것뿐이다** — 이 알림이 없으면 다른 클라이언트는 재접속할 때까지 지워진 부서 탭·책상을 그대로 그린다(T37 함정 ①). 요청한 클라이언트에게도 함께 가며(응답 **뒤**에 도착한다) `hello` 스냅샷과 **똑같이** 적용하면 된다 — departments/teams/members/pending/tasks 를 통째로 **교체**(없어진 행 삭제). 이벤트 링버퍼·말풍선 같은 클라이언트 로컬 상태는 유지한다. |
+| `snapshot` | `{ seq, departments, teams, members, pending, tasks, usage }` — `hello` 응답에 포함되지만 데몬이 필요 시 재전송한다. `pending` 은 `status:'open'` 만, `tasks` 는 `queued|assigned` 만. **`members[]` 의 각 행에는 Member 칼럼 + `derived`(그 시점의 파생 상태, 아래 표)가 같이 온다(T28)** — 클라이언트가 파생 규칙을 다시 구현하지 않아도 재접속 직후 화면이 맞는다. **데몬이 미는 때(T38): 트리 모양이 바뀔 때마다 — `department.create` · `department.delete` · `team.create` · 부장의 `create_team` · `team.delete` · 부장의 `dismiss_team`.** 멤버 행의 생멸은 `member.status` 가 알리지만 **부서·팀 행의 생멸을 알리는 알림은 이것뿐이다** — 이 알림이 없으면 다른 클라이언트는 재접속할 때까지 지워진 부서 탭·책상을 그대로 그린다(T37 함정 ①). 요청한 클라이언트에게도 함께 가며(응답 **뒤**에 도착한다) `hello` 스냅샷과 **똑같이** 적용하면 된다 — departments/teams/members/pending/tasks/**usage** 를 통째로 **교체**(없어진 행 삭제). 이벤트 링버퍼·말풍선 같은 클라이언트 로컬 상태는 유지한다. `usage` 는 아래 "사용량" 절. |
 | `term` | `{ memberId, data }` — attach한 클라이언트에만, 비영속 |
 | `member.status` | `{ memberId, status, derived, member? }` — `status` 는 raw(`starting\|idle\|working\|waiting_approval\|waiting_answer\|exited\|error`), `derived` 는 **파생 상태**(아래 표). `member` 는 그 시점의 Member 행(새 멤버 출근을 다른 클라이언트가 알 수 있게; 행이 삭제됐으면 생략). **status 값이 바뀔 때 + `derived` 만 바뀔 때** 온다(T28 — 예: 팀장이 raw `idle` 인 채로 `delegate` 하면 `free → waiting_reports`). 둘 다 그대로면 오지 않는다. |
+| `usage.engine` | `EngineUsage` — 엔진(구독) 하나의 사용량. **비영속·seq 없음·값이 바뀔 때만.** 아래 "사용량" 절. |
+| `usage.member` | `MemberUsage` — 멤버(캐릭터 세션) 하나의 사용량. 같은 규칙. |
 | `daemon.notice` | `{ level: 'info'\|'warn'\|'error', message }` — 예: hook 보류 타임아웃, 알 수 없는 멤버 토큰, 첫 실행 다이얼로그 자동 통과, 자동 allow, 데몬 종료. **자동 통과할 수 없는 다이얼로그**(CLI 자체 허가 프롬프트 `approval-prompt`, D-23/D-26)는 `{level:'warn', message:'<이름>: CLI 허가 프롬프트가 떠 있음 — 카드로 답하거나 터미널에서 직접 답하세요'}` 로 **한 번만** 나온다(그 다이얼로그가 사라졌다 다시 뜨면 다시 한 번). 데몬은 이때 키를 보내지 않는다 — 사용자가 "재지시 필요" 카드나 터미널 탭에서 답해야 한다. |
 
 ## 멤버 파생 상태 `derived` (T28, 01 §2 "멤버 표시 상태(파생)")
@@ -58,6 +60,65 @@ raw `status` 는 "CLI 프로세스가 어떤 상태인가" 일 뿐이다 — `id
 | `waiting_reports` | raw `idle` + 자기가 낸(발행한) 미종료 task 가 있다 — **직급 무관**(T34: 부장도 팀장도 부하 보고를 기다리면 같은 상태) |
 | `free` | raw `idle` + 열린 pending 없음 + 자기에게 배정된 미종료 task 없음 + 발행한 미종료 task 도 없을 때(= 잎이 한가함) |
 | `idle` | 그 외(= raw `idle` 인데 아직 `queued\|assigned` task 를 들고 있다) |
+
+## 사용량 (T43, D-45 · 설계 전문 `docs/design/사용량-표시.md`)
+
+엔진(= 구독)별 남은 한도와 캐릭터별 컨텍스트·누적 토큰·비용. **스냅샷의 `usage` 와 `usage.engine`/`usage.member` 알림이 같은 모양의 데이터**이고, 계산은 데몬의 `src/usage/UsageTracker.ts` 한 곳에서만 한다 — 클라이언트는 받은 값을 그대로 그린다(T28 `derived` 와 같은 원칙).
+
+```jsonc
+// snapshot.usage
+{
+  "engines": [
+    { "engine": "claude",            // 'claude' | 'codex' — 엔진은 **항상 둘 다** 실린다
+      "connected": true,
+      "plan": "max",                 // 요금제 이름. **이메일·계정 식별자는 절대 오지 않는다**(D-45 ②)
+      "weekly":  { "usedPercent": 54, "resetsAt": "2026-09-23T03:00:00.000Z" },
+      "session": { "usedPercent": 17, "resetsAt": "2026-09-21T12:00:00.000Z" },  // 5시간 한도. 없으면 null
+      "updatedAt": "2026-09-21T10:00:00.000Z",   // 이 **한도 숫자**를 마지막으로 확인한 시각. 한 번도 못 봤으면 null
+      "reason": null }               // connected:false 일 때만 값이 있다
+  ],
+  "members": [
+    { "memberId": "m_…", "engine": "claude",
+      "context": { "used": 43910, "window": 1000000, "percent": 4 },
+      "tokens":  { "input": 912, "output": 17, "cacheRead": 29413, "cacheCreate": 14495, "total": 44837 },
+      "costUsd": 0.1607,             // **Codex 는 언제나 null**(토큰만 준다)
+      "updatedAt": "2026-09-21T10:00:00.000Z" }
+  ]
+}
+
+// 알림 — 스냅샷 배열의 **원소 하나**가 그대로 온다
+{ "method": "usage.engine", "params": { …engines[] 한 원소… } }
+{ "method": "usage.member", "params": { …members[] 한 원소… } }
+```
+
+- **퍼센트는 전부 `usedPercent`(쓴 비율 0~100 정수)** 다. 앱은 `100 - usedPercent` 로 "남음 N%" 를 그린다(사용자 표현). Codex 화면이 말하는 `% left` 는 데몬이 뒤집어서 넣는다.
+- **시각은 전부 ISO 8601(UTC) 문자열**이다. CLI 가 주는 유닉스 초는 데몬이 바꾼다. "3일 뒤" 같은 사람 표기는 앱이 `resetsAt - now` 로 만든다 — 화면의 사람 표기를 파싱해 날짜로 되돌리지 않는다(연말에 깨진다).
+- **값이 없는 것과 연결이 안 된 것은 다른 상태다.** 숫자를 모르면 그 칸만 `null` 이고, 안 붙어 있으면 `connected:false` + `reason`.
+- `reason` 은 셋뿐이다: `not-installed`(실행 파일을 못 찾았다) · `logged-out`(CLI 가 로그인 안 됐다고 한다) · `unknown`(명령이 실패·타임아웃했거나 출력 모양이 바뀌었다). `connected:true` 면 항상 `null`.
+
+**신선도(staleness).** `updatedAt` 은 **그 한도 숫자를 마지막으로 확인한 시각**이다. 연결 폴링은 이 값을 건드리지 않는다(연결을 확인한 것이지 한도를 다시 본 것이 아니다). 값이 그대로여도 마지막 확인이 60초를 넘겼으면 데몬이 `updatedAt` 만 올려 한 번 더 민다 — 그래야 앱의 "N분 전 기준" 이 거짓말을 하지 않는다. 그래서 **값이 안 변해도 분당 한 번까지는 알림이 올 수 있다**(그보다 잦지는 않다).
+
+**"Claude 한도는 첫 턴 뒤에 온다."** Claude 는 **그 엔진의 멤버가 한 턴이라도 돌아야** `weekly`/`session` 을 준다 — 세션을 막 띄웠거나 `--resume` 한 직후에는 statusLine 페이로드에 `rate_limits` 키 자체가 없다(실측 T43-0 Q2). 그래서:
+
+- 한 번도 못 봤으면 `weekly:null, session:null, updatedAt:null` 이다 → 앱은 `Claude · 첫 작업 후 표시`.
+- 한 번 본 값은 **DB(`engine_usage`)에 남는다.** 멤버가 전부 퇴근해도, 데몬을 재시작해도 마지막 값 + `updatedAt` 이 그대로 온다. 멤버 사용량(`member_usage`)은 반대로 **멤버 행과 함께 사라진다**(부서 삭제·팀 삭제).
+- Codex 는 rollout 의 `token_count` 가 턴마다 오므로 같은 제약을 받지만, 요금제에 따라 `session`(5시간)이 **아예 없을 수 있다**(Pro 실측 전수 `null`) — `session:null` 을 정상으로 다뤄야 한다.
+
+**어디서 오는가**(D-45 ①: 자격 증명 파일을 읽지 않고 벤더 API 를 직접 부르지 않는다. CLI 가 스스로 내주는 것만 쓴다):
+
+| 값 | 출처 | 갱신 |
+|---|---|---|
+| Claude `weekly`/`session`, 멤버 `context`·`costUsd` | 세션 `--settings` 에 주입한 **statusLine 명령**의 페이로드 | 턴 종료·화면 다시 그릴 때(이벤트) |
+| Claude 멤버 `tokens`·`costUsd` | transcript 의 마지막 `type:"cost-state"` 줄(모델별 합산) | `Stop` 직후 |
+| Codex `weekly`/`session`/`plan`, 멤버 `context`·`tokens` | rollout 의 마지막 `token_count`(`limit_id==="codex"` ∧ `primary!=null`) | `Stop`·화면 idle 폴백 |
+| `connected`/`reason`, Claude `plan` | `claude auth status` · `codex login status` | 기동 시 + 60초(`PIXEL_USAGE_POLL_SEC`) |
+| Codex `costUsd` | **없다** — Codex 는 토큰만 준다 | — |
+
+기록 파일은 **끝에서 64KB 만** 비동기로 읽고, 못 읽으면(파일 없음·잠김) **이전 값을 그대로 둔다**(지우지 않는다). CLI 업데이트로 필드 이름이 바뀌면 그 값만 `null` 로 떨어지고 나머지는 계속 돈다.
+
+**statusLine 주입.** Claude 세션 설정에 `statusLine{type:'command', command:'node <…>/statusline.js <hookPort>'}` 가 들어간다. 그 스크립트는 `POST /status/<memberToken>` 으로 페이로드를 보내고 **응답 한 줄**(`컨텍스트 37% · 주간 45% 남음`, 모르는 칸은 뺀다)을 터미널 하단에 찍는다. 실패하면 빈 줄을 찍고 즉시 끝난다 — 상태줄 때문에 TUI 가 멈추면 안 된다. **Codex 에는 statusLine 이 없다.** 사용자의 전역 statusLine 설정은 이 툴이 띄운 세션에서만 덮인다(데몬 소유 세션이라 수용).
+
+**멤버 세션에 `/usage`·`/status` 를 밀어 넣지 않는다**(D-45 ⑦) — 일하는 AI 의 화면을 건드리지 않는다. 턴 없이 한도를 갱신하는 "숨은 유틸리티 세션" 과 모델별 주간 한도는 v1 범위 밖이다.
 
 ## 부서·팀·직급 트리 (T34, D-32 "직무 체계 rev 3")
 

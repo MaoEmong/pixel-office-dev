@@ -63,6 +63,12 @@ export interface HooksAdapterEvents {
   /** answered 또는 expired 로 닫힘(최종 행). */
   pendingSettled: [pending: Pending];
   toolDone: [memberId: string, info: ToolDoneInfo];
+  /**
+   * 턴이 끝났다(`Stop`, Codex 는 `Interrupt` 도) — 사용량 꼬리 읽기 신호(T43). `transcriptPath` 는 그 페이로드가
+   * 준 기록 파일(Claude transcript / Codex rollout) 경로이고 없으면 null(그때는 Office 가 마지막으로 본 경로를 쓴다).
+   * hook 페이로드에는 토큰·비용 숫자가 하나도 없다(실측 T43-0 Q4) — 이 이벤트는 "지금 값을 다시 읽어라" 는 신호다.
+   */
+  turnEnd: [memberId: string, transcriptPath: string | null];
   /** handleHook 안에서 throw — 삼키고 여기로 낸다(응답은 '{}'). */
   'handler-error': [err: unknown, memberId: string, event: string];
 }

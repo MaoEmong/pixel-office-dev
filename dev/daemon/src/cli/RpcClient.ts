@@ -11,6 +11,7 @@ import path from 'node:path';
 import WebSocket from 'ws';
 import { config } from '../config.js';
 import type { OfficeEvent, Snapshot } from '../store/types.js';
+import type { EngineUsage, MemberUsage, UsageSnapshot } from '../usage/types.js';
 
 export interface DaemonInfo {
   wsPort: number;
@@ -71,9 +72,17 @@ export interface HelloParams {
   since?: number;
   client?: ClientInfo;
 }
+/**
+ * 데몬이 주는 스냅샷 = store 의 Snapshot + Office 가 얹는 것들(멤버 행의 `derived`, T43 의 `usage`).
+ * 옛 데몬에 붙을 수도 있으니 `usage` 는 선택으로 둔다.
+ */
+export interface ClientSnapshot extends Snapshot {
+  usage?: UsageSnapshot;
+}
+
 export interface HelloResult {
   daemon: { version: string; pid: number };
-  snapshot: Snapshot;
+  snapshot: ClientSnapshot;
 }
 export interface TermChunk {
   memberId: string;
@@ -98,7 +107,10 @@ export interface RpcClientEvents {
   notification: [Notification];
   /** seq > lastSeq 인 event 만. */
   event: [OfficeEvent];
-  snapshot: [Snapshot];
+  snapshot: [ClientSnapshot];
+  /** T43: 사용량 알림(비영속·seq 없음·바뀔 때만). */
+  'usage.engine': [EngineUsage];
+  'usage.member': [MemberUsage];
   term: [TermChunk];
   'member.status': [MemberStatusNotice];
   'daemon.notice': [DaemonNotice];
@@ -371,7 +383,7 @@ export class RpcClient extends EventEmitter<RpcClientEvents> {
       case 'snapshot': {
         if (!isRecord(params)) return;
         if (typeof params.seq === 'number') this.lastSeq = params.seq;
-        this.emit('snapshot', params as unknown as Snapshot);
+        this.emit('snapshot', params as unknown as ClientSnapshot);
         return;
       }
       case 'term':
@@ -382,6 +394,13 @@ export class RpcClient extends EventEmitter<RpcClientEvents> {
         return;
       case 'daemon.notice':
         if (isRecord(params)) this.emit('daemon.notice', params as unknown as DaemonNotice);
+        return;
+      // T43: 사용량은 비영속·seq 없음 — 받은 원소로 로컬 상태를 갈아 끼우면 된다.
+      case 'usage.engine':
+        if (isRecord(params)) this.emit('usage.engine', params as unknown as EngineUsage);
+        return;
+      case 'usage.member':
+        if (isRecord(params)) this.emit('usage.member', params as unknown as MemberUsage);
         return;
       default:
         return;

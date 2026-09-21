@@ -31,6 +31,7 @@ import { ClaudeHooksAdapter } from '../adapters/ClaudeHooksAdapter.js';
 import { CodexHooksAdapter } from '../adapters/CodexHooksAdapter.js';
 import { ScreenModel } from '../screen/ScreenModel.js';
 import { InputQueue } from '../input/InputQueue.js';
+import { UsageTracker } from '../usage/UsageTracker.js';
 import { ALL_TEAM_TOOLS, TeamToolsServer, TEAM_MCP_NAME, canUseTool, rankToolMessage, type TeamToolName } from '../mcp/TeamToolsServer.js';
 import { CHILD_RANK, USER_ACTOR } from '../store/types.js';
 import type {
@@ -167,6 +168,10 @@ export interface OfficeOptions {
   mcp?: TeamToolsServerLike;
   /** hook.js 절대 경로. 기본 src/hooks/hook.js. */
   hookScriptPath?: string;
+  /** statusline.js 절대 경로(T43). 기본 src/hooks/statusline.js. */
+  statusLineScriptPath?: string;
+  /** 사용량 추적기(T43). 생략 시 store 를 물린 UsageTracker 를 만든다. */
+  usage?: UsageTracker;
   version?: string;
   /** "데몬은 하나만" 가드(T30)의 pid·포트 확인 연산. 테스트가 가짜로 바꿔 끼운다. */
   singletonProbe?: SingletonProbe;
@@ -220,6 +225,11 @@ interface MemberRuntime {
   /** 이 멤버의 마지막 hook 도착 시각(화면 기반 idle 폴백의 "그 사이 새 hook 없음" 판정). */
   lastHookAt?: number;
   /**
+   * 이 멤버 세션의 기록 파일 경로(Claude transcript / Codex rollout). 모든 hook 페이로드와 statusLine 이
+   * 같이 주므로 조립하지 않고 받아 둔다 — 턴 종료 때 꼬리를 읽어 사용량을 갱신한다(T43).
+   */
+  transcriptPath?: string;
+  /**
    * 재시작 복구로 `--resume` 한 세션. 이 창 안에 0 이 아닌 코드로 죽으면(세션 파일 없음 증상) 새 세션으로 한 번 폴백하고
    * 같은 [RESUMED]·queued task 를 다시 큐에 넣는다.
    */
@@ -232,6 +242,10 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
   readonly pid = process.pid;
   readonly token: string = randomBytes(32).toString('hex');
   readonly hookScriptPath: string;
+  /** Claude 세션 설정에 넣는 statusLine 스크립트(T43). 사용량이 이 경로로 들어온다. */
+  readonly statusLineScriptPath: string;
+  /** 엔진·멤버 사용량(T43, D-45). 스냅샷 `usage` 와 `usage.*` 알림의 출처. */
+  readonly usage: UsageTracker;
 
   readonly store: Store;
   readonly pty: PtyManagerLike;
@@ -286,7 +300,12 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
     this.retentionIntervalMs = opts.retentionIntervalMs ?? RETENTION_INTERVAL_MS;
     this.version = opts.version ?? (pkg as { version?: string }).version ?? '0.0.0';
     this.hookScriptPath = toForwardSlashes(opts.hookScriptPath ?? path.resolve(import.meta.dirname, '..', 'hooks', 'hook.js'));
+    this.statusLineScriptPath = toForwardSlashes(
+      opts.statusLineScriptPath ?? path.resolve(import.meta.dirname, '..', 'hooks', 'statusline.js'),
+    );
     this.store = opts.store ?? new Store(path.join(this.cfg.dataDir, 'pixel-office.db'));
+    this.usage =
+      opts.usage ?? new UsageTracker({ store: this.store, pollIntervalMs: Math.max(0, this.cfg.usagePollSec) * 1000 });
     this.pty =
       opts.pty ??
       new PtyManager({
@@ -404,6 +423,11 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
     console.log(`[office] mcp       : http://127.0.0.1:${mcpPort}/mcp/<memberToken> (TeamTools: ${ALL_TEAM_TOOLS.join(', ')})`);
     this.runRetention();
     this.startRetentionTimer();
+    // T43: DB 에 남아 있던 사용량 중 멤버 행이 사라진 것을 메모리에서 정리한다.
+    // **연결 폴링(`claude auth status`/`codex login status`)은 여기서 시작하지 않는다** — Office 는 멤버 CLI 말고
+    // 다른 프로세스를 스스로 띄우지 않는다(단위 테스트가 Office 를 그냥 만들어 쓴다). 실제 데몬은 index.ts 가
+    // `office.usage.start()` 로 켠다. 끄는 것은 shutdown() 이 같이 한다.
+    this.usage.pruneMissingMembers();
     // 재시작 복구(T09): RPC 클라이언트가 붙기 전에 이전 기동의 멤버를 되살린다. 절대 throw 하지 않는다.
     this.recovery = this.recover();
     return this.info;
@@ -486,6 +510,7 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
     for (const rt of this.runtimes.values()) rt.screen.dispose();
     this.runtimes.clear();
     this.shell.clear(); // T27: 남은 보류·타이머 정리
+    this.usage.stop(); // T43: 연결 폴링 타이머
     if (this.retentionTimer) {
       clearInterval(this.retentionTimer);
       this.retentionTimer = undefined;
@@ -509,7 +534,12 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
    */
   snapshot(): OfficeSnapshot {
     const snap = this.store.snapshot();
-    return { ...snap, members: snap.members.map((m) => ({ ...m, derived: derivedStatus(m, this.store) })) };
+    return {
+      ...snap,
+      members: snap.members.map((m) => ({ ...m, derived: derivedStatus(m, this.store) })),
+      // T43: 재접속 직후에도 칩·패널이 맞도록 사용량을 같이 싣는다(클라이언트가 다시 계산하지 않는다).
+      usage: this.usage.snapshotUsage(),
+    };
   }
 
   getMember(memberId: string): Member | undefined {
@@ -554,9 +584,8 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
       this.store.deleteDepartment(department.id);
       throw e;
     }
-    if (params.headEngine === 'codex') {
-      this.notice('warn', `${department.name}: 부장 엔진이 codex 입니다 — v1 권장은 claude(오케스트레이션 도구 실측이 Claude 기준)`);
-    }
+    // (T42/D-46) 예전에는 여기서 "부장 엔진이 codex 입니다 — v1 권장은 claude" 경고를 냈다. **사실이 아니어서 지웠다**:
+    // T42 실기에서 Codex 부장이 create_team·delegate·report·ask_user·reply 를 전부 통과했다.
     const created = this.store.updateDepartment(department.id, { headId: head.id })!;
     this.emit('tree', 'department.create');
     return { department: created, head };
@@ -575,6 +604,7 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
       else this.settle(m.id, 'departmentDelete');
       this.disposeRuntime(m.id);
       this.lastDerived.delete(m.id);
+      this.usage.removeMember(m.id); // T43: 멤버 행과 함께 사용량도 사라진다(DB 쪽은 FK cascade)
     }
     await this.drainChildExits();
     this.store.deleteDepartment(departmentId);
@@ -672,6 +702,7 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
       else this.settle(m.id, 'teamDelete');
       this.disposeRuntime(m.id);
       this.lastDerived.delete(m.id);
+      this.usage.removeMember(m.id); // T43: 멤버 행과 함께 사용량도 사라진다(DB 쪽은 FK cascade)
     }
     await this.drainChildExits();
     this.store.deleteTeam(teamId);
@@ -1655,6 +1686,8 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
       rows,
       hookScriptPath: this.hookScriptPath,
       hookPort: this.info?.hookPort ?? this.cfg.hookPort,
+      // T43: Claude 세션에만 statusLine 을 넣는다(Codex 에는 그런 설정이 없다).
+      statusLineScriptPath: member.engine === 'claude' ? this.statusLineScriptPath : undefined,
       // TeamTools MCP: Claude 는 mcp.json + `--mcp-config`(T17), Codex 는 `-c mcp_servers.team.url=…`(T22).
       mcpConfigPath: member.engine === 'claude' ? this.writeMcpConfig(member) : undefined,
       mcpUrl: member.engine === 'codex' ? this.mcpUrl(member) : undefined,
@@ -1761,6 +1794,8 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
       rt.screenIdleSince = undefined;
       this.appendEvent(member, 'idle', { summary: SCREEN_IDLE_SUMMARY });
       this.setStatus(member.id, 'idle');
+      // T43: Stop 없이 끝난 턴에서도 사용량은 갱신돼야 한다(Codex 한도가 이 경로로 들어오는 일이 있다).
+      this.refreshMemberUsage(member.id, null);
     }, IDLE_SCREEN_STEP_MS);
     timer.unref();
     rt.idleWatch = timer;
@@ -2068,6 +2103,25 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
     return this.store.getMember(memberId)?.name ?? memberId;
   }
 
+  // ---- 내부: 사용량 (T43, D-45) -----------------------------------------------------------
+
+  /**
+   * 그 멤버의 기록 파일 꼬리를 다시 읽어 사용량을 갱신한다(턴 종료 · 화면 idle 폴백).
+   * `transcriptPath` 가 없으면 마지막으로 본 경로를 쓴다. **비동기이고 절대 던지지 않는다** — 사용량은
+   * 참고 정보라 실패하면 이전 값을 그대로 두는 게 맞다(설계 §알려진 한계).
+   */
+  private refreshMemberUsage(memberId: string, transcriptPath: string | null): void {
+    const member = this.store.getMember(memberId);
+    if (!member) return;
+    const rt = this.runtimes.get(memberId);
+    if (transcriptPath && rt) rt.transcriptPath = transcriptPath;
+    const file = transcriptPath ?? rt?.transcriptPath ?? null;
+    if (!file) return;
+    void this.usage.applyTurnEnd({ id: member.id, engine: member.engine }, file).catch((err) => {
+      console.warn(`[office] 사용량 갱신 실패(${memberId}):`, err);
+    });
+  }
+
   // ---- 내부: 배선 -------------------------------------------------------------------------
 
   private wire(): void {
@@ -2081,8 +2135,14 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
       adapter.on('pendingCreated', (p) => this.maybeAutoAllow(p));
       // T27: 도구 완료(PostToolUse / PostToolUseFailure) = 셸 락 해제 조건 1번(01 §해제 표).
       adapter.on('toolDone', (memberId, info) => this.releaseShellLock(memberId, info.toolUseId));
+      // T43: 턴 종료 → 기록 파일 꼬리 읽기(비동기, 실패해도 조용히 이전 값 유지).
+      adapter.on('turnEnd', (memberId, transcriptPath) => this.refreshMemberUsage(memberId, transcriptPath));
       adapter.on('handler-error', (err, memberId, event) => this.notice('error', `hook ${event} handler failed for ${memberId}: ${errMsg(err)}`));
     }
+
+    // T43: 사용량이 **바뀔 때만** 알림으로 흘린다(비영속·seq 없음). 계산은 UsageTracker 한 곳에서만 한다.
+    this.usage.on('engine', (u) => this.emit('usage.engine', u));
+    this.usage.on('member', (u) => this.emit('usage.member', u));
 
     // T27: 대기·강제 해제는 사용자에게 보여야 한다(대기는 이벤트, 강제 해제는 알림).
     this.shell.on('waiting', (info, holder) => this.noticeShellWait(info, holder));
@@ -2097,9 +2157,32 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
       }
       // 화면 기반 idle 폴백(D-25)의 "그 사이 새 hook 없음" 판정용 — 어댑터가 status 를 어떻게 바꾸든 도착 자체를 기록한다.
       const rt = this.runtimes.get(member.id);
-      if (rt) rt.lastHookAt = Date.now();
+      if (rt) {
+        rt.lastHookAt = Date.now();
+        // T43: 사용량 꼬리 읽기는 이 경로를 쓴다. 모든 hook 이 transcript_path 를 들고 온다(실측 T43-0 Q1/Q6)
+        // — 화면 idle 폴백처럼 hook 이 없는 턴 종료에서도 마지막 경로가 필요하다.
+        if (typeof req.payload.transcript_path === 'string' && req.payload.transcript_path) {
+          rt.transcriptPath = req.payload.transcript_path;
+        }
+      }
       // T20: 멤버의 engine 으로 어댑터를 고른다(Codex 는 명령 휴리스틱 매핑 + Interrupt hook).
       this.adapterFor(member.engine).handleHook(req, member);
+    });
+    // T43: statusLine 스크립트가 보낸 사용량 → UsageTracker, 응답은 터미널 하단에 찍을 한 줄.
+    this.receiver.on('status-line', (req) => {
+      const member = this.store.getMemberByToken(req.memberToken);
+      if (!member) return; // receiver 가 404 로 닫는다(isKnownMember 가 먼저 거른다)
+      const rt = this.runtimes.get(member.id);
+      if (rt && typeof req.payload.transcript_path === 'string' && req.payload.transcript_path) {
+        rt.transcriptPath = req.payload.transcript_path;
+      }
+      try {
+        req.respond(this.usage.applyStatusLine({ id: member.id, engine: member.engine }, req.payload));
+      } catch (err) {
+        // 상태 줄 하나 때문에 TUI 가 멈추면 안 된다 — 빈 줄로 닫고 로그만 남긴다.
+        console.warn(`[office] statusLine 처리 실패(${member.id}):`, err);
+        req.respond('');
+      }
     });
     this.receiver.on('hold-timeout', (h) => {
       this.adapterForToken(h.memberToken).onHoldTimeout(h.memberToken, h.event);

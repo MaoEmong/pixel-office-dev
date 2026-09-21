@@ -1,0 +1,53 @@
+{
+ "session_id": "50cc7bea-750f-4e3f-8492-4c4595194b6d",
+ "transcript_path": "C:\\Users\\User\\.claude\\projects\\D--myproject-pixel-office-dev-spike-0-sandbox\\50cc7bea-750f-4e3f-8492-4c4595194b6d.jsonl",
+ "cwd": "D:\\myproject\\pixel-office\\dev\\spike-0\\sandbox",
+ "scratchpad_dir": "C:\\Users\\User\\AppData\\Local\\Temp\\claude\\D--myproject-pixel-office-dev-spike-0-sandbox\\50cc7bea-750f-4e3f-8492-4c4595194b6d\\scratchpad",
+ "effort": {
+  "level": "high"
+ },
+ "session_name": "1+1 계산",
+ "model": {
+  "id": "claude-opus-5[1m]",
+  "display_name": "Opus 5 (1M context)"
+ },
+ "workspace": {
+  "current_dir": "D:\\myproject\\pixel-office\\dev\\spike-0\\sandbox",
+  "project_dir": "D:\\myproject\\pixel-office\\dev\\spike-0\\sandbox",
+  "added_dirs": [],
+  "repo": {
+   "host": "github.com",
+   "owner": "MaoEmong",
+   "name": "pixel-office-dev"
+  }
+ },
+ "version": "2.1.275",
+ "output_style": {
+  "name": "default"
+ },
+ "cost": {
+  "total_cost_usd": 0.16072150000000002,
+  "total_duration_ms": 134221,
+  "total_api_duration_ms": 2133,
+  "total_lines_added": 0,
+  "total_lines_removed": 0
+ },
+ "context_window": {
+  "total_input_tokens": 43910,
+  "total_output_tokens": 3,
+  "context_window_size": 1000000,
+  "current_usage": {
+   "input_tokens": 2,
+   "output_tokens": 3,
+   "cache_creation_input_tokens": 14495,
+   "cache_read_input_tokens": 29413
+  },
+  "used_percentage": 4,
+  "remaining_percentage": 96
+ },
+ "exceeds_200k_tokens": false,
+ "fast_mode": false,
+ "thinking": {
+  "enabled": true
+ }
+}

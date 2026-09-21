@@ -60,7 +60,7 @@ describe('콘솔 도움말 (T38 rev 3)', () => {
     }
     // 첫 토큰이 실제 명령어 집합과 맞는다(오타 방지).
     for (const cmd of helpCommands()) {
-      assert.match(cmd, /^(depts|dept|tree|teams|team|members|hire|fire|rehire|restart|say|say!|type|attach|detach|int|resize|pending|allow|deny|answer|events|query|tasks|instr|refresh|reconnect|help|quit|shutdown)$/);
+      assert.match(cmd, /^(depts|dept|tree|teams|team|members|hire|fire|rehire|restart|say|say!|type|attach|detach|int|resize|pending|allow|deny|answer|events|query|tasks|usage|instr|refresh|reconnect|help|quit|shutdown)$/);
     }
   });
 

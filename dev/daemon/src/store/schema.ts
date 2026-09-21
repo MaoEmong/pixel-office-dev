@@ -10,8 +10,15 @@
 //   events.department_id 이벤트도 부서 범위를 같이 싣는다. team_id 는 그대로 두되 팀 없는 멤버는 ''.
 //
 // v1 → v2 마이그레이션은 Store.migrate() 가 한다(기존 팀 하나 = 부서 하나). 표는 worklog/T34-TreeModel.md.
+//
+// v3(T43, D-45 사용량 표시): **추가만** 한다 — 기존 테이블은 하나도 건드리지 않는다.
+//   engine_usage(engine PK, json, updated_at)      엔진(=구독) 단위 마지막 사용량. **멤버가 다 나가도 남긴다**
+//                                                  (Claude 한도는 첫 턴 뒤에나 오므로 마지막으로 본 값을 보여 준다).
+//   member_usage(member_id PK, json, updated_at)   멤버 세션의 컨텍스트·누적 토큰·비용. 멤버 행과 함께 사라진다
+//                                                  (FK ON DELETE CASCADE — 부서·팀 삭제 경로가 그대로 탄다).
+// v2 → v3 은 `CREATE TABLE IF NOT EXISTS` 두 개라 별도 스텝이 없다: SCHEMA_SQL 을 그대로 실행하고 버전만 올린다.
 
-export const SCHEMA_VERSION = 2;
+export const SCHEMA_VERSION = 3;
 
 export const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -107,6 +114,21 @@ CREATE TABLE IF NOT EXISTS tasks (
 CREATE INDEX IF NOT EXISTS idx_tasks_department_status ON tasks(department_id, status);
 CREATE INDEX IF NOT EXISTS idx_tasks_to_status ON tasks(to_member, status);
 CREATE INDEX IF NOT EXISTS idx_tasks_from_status ON tasks(from_member, status);
+
+-- v3(T43): 사용량. json 은 와이어 객체 그대로(src/usage/types.ts EngineUsage / MemberUsage).
+-- 엔진 행은 남긴다 — 마지막으로 확인한 한도를 "N분 전 기준" 으로 보여 주기 위해서다(D-45).
+CREATE TABLE IF NOT EXISTS engine_usage (
+  engine     TEXT PRIMARY KEY,
+  json       TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+-- 멤버 행은 멤버와 함께 사라진다(부서 삭제·팀 삭제 경로가 members 를 지우면 여기도 cascade).
+CREATE TABLE IF NOT EXISTS member_usage (
+  member_id  TEXT PRIMARY KEY REFERENCES members(id) ON DELETE CASCADE,
+  json       TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
 `;
 
 /**

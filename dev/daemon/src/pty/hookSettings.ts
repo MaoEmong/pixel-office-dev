@@ -54,8 +54,17 @@ export interface HookMatcherGroup {
 
 export type HooksMap = Record<string, HookMatcherGroup[]>;
 
+/** Claude 세션 설정의 statusLine 항목(T43). Codex 에는 statusLine 이 없다 — 주입하지 않는다. */
+export interface StatusLineSetting {
+  type: 'command';
+  command: string;
+  padding: number;
+}
+
 export interface ClaudeSessionSettings {
   hooks: HooksMap;
+  /** `statusLineScriptPath` 를 준 세션에만 붙는다. */
+  statusLine?: StatusLineSetting;
 }
 
 export interface CodexHooksFile {
@@ -88,9 +97,29 @@ export function buildHooksMap(events: readonly string[], hookScriptPath: string,
   return hooks;
 }
 
-/** `claude --settings` 에 넘길 세션 설정 객체. */
-export function buildClaudeSessionSettings(hookScriptPath: string, hookPort: number): ClaudeSessionSettings {
-  return { hooks: buildHooksMap(CLAUDE_HOOK_EVENTS, hookScriptPath, hookPort) };
+/**
+ * statusLine 명령 한 줄: `node <슬래시경로>/statusline.js <port>`(T43). hook 명령과 규칙이 같다
+ * (공백 있는 경로만 큰따옴표). 이벤트 인자는 없다 — 경로가 곧 종류다.
+ */
+export function buildStatusLineCommand(statusLineScriptPath: string, hookPort: number): string {
+  const script = toForwardSlashes(statusLineScriptPath);
+  const quoted = /\s/.test(script) ? `"${script}"` : script;
+  return `node ${quoted} ${hookPort}`;
+}
+
+/**
+ * `claude --settings` 에 넘길 세션 설정 객체.
+ * `statusLineScriptPath` 를 주면 `statusLine` 도 같이 넣는다 — 실측(T43-0 Q2)에서 hooks 와 충돌 없이 함께 동작했다.
+ * **사용자 전역 statusLine 은 이 세션에서만 덮인다**(데몬이 띄운 세션이라 수용, D-45 한계 절).
+ */
+export function buildClaudeSessionSettings(
+  hookScriptPath: string,
+  hookPort: number,
+  statusLineScriptPath?: string,
+): ClaudeSessionSettings {
+  const settings: ClaudeSessionSettings = { hooks: buildHooksMap(CLAUDE_HOOK_EVENTS, hookScriptPath, hookPort) };
+  if (statusLineScriptPath) settings.statusLine = { type: 'command', command: buildStatusLineCommand(statusLineScriptPath, hookPort), padding: 0 };
+  return settings;
 }
 
 /** `<cwd>/.codex/hooks.json` 내용. description 마커로 우리 파일임을 표시. */
@@ -124,10 +153,16 @@ export function codexHooksPath(cwd: string): string {
 }
 
 /** Claude 세션 설정 파일을 쓰고 경로를 돌려준다. 폴더는 만들어 준다. 항상 덮어쓴다. */
-export function writeClaudeSessionSettings(dataDir: string, memberId: string, hookScriptPath: string, hookPort: number): string {
+export function writeClaudeSessionSettings(
+  dataDir: string,
+  memberId: string,
+  hookScriptPath: string,
+  hookPort: number,
+  statusLineScriptPath?: string,
+): string {
   const file = claudeSettingsPath(dataDir, memberId);
   fs.mkdirSync(path.dirname(file), { recursive: true });
-  fs.writeFileSync(file, JSON.stringify(buildClaudeSessionSettings(hookScriptPath, hookPort), null, 2));
+  fs.writeFileSync(file, JSON.stringify(buildClaudeSessionSettings(hookScriptPath, hookPort, statusLineScriptPath), null, 2));
   return file;
 }
 

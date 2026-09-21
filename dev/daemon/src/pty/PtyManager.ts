@@ -256,14 +256,15 @@ export interface SpawnCommand {
 
 /**
  * 엔진별 실행 파일·인자 + hook 설정 파일 준비(부작용: 설정 파일 쓰기). spawn 없이 검증할 수 있게 밖으로 뺐다.
- *   claude: `<dataDir>/sessions/<memberId>/claude-settings.json` 을 쓰고 `--settings …`(+ --resume, --mcp-config)
+ *   claude: `<dataDir>/sessions/<memberId>/claude-settings.json` 을 쓰고 `--settings …`(+ --resume, --mcp-config).
+ *           `statusLineScriptPath` 가 있으면 그 파일에 `statusLine` 도 같이 들어간다(T43 사용량).
  *   codex : `<cwd>/.codex/hooks.json`(pixel-office 마커, 남의 파일이면 건드리지 않고 warn) +
  *           `[resume <id>] --dangerously-bypass-hook-trust -c approval_policy="on-request" -c sandbox_mode="workspace-write"` (실측 ④)
  *           + `-c mcp_servers.team.url="<mcpUrl>"` (T22, mcpUrl 이 있을 때)
  */
 export function prepareSpawnCommand(cfg: Pick<PtyManagerConfig, 'claudeExe' | 'codexExe' | 'dataDir'>, opts: SpawnOptions): SpawnCommand {
   if (opts.engine === 'claude') {
-    const settingsPath = writeClaudeSessionSettings(cfg.dataDir, opts.memberId, opts.hookScriptPath, opts.hookPort);
+    const settingsPath = writeClaudeSessionSettings(cfg.dataDir, opts.memberId, opts.hookScriptPath, opts.hookPort, opts.statusLineScriptPath);
     return {
       file: cfg.claudeExe,
       args: buildClaudeArgs(settingsPath, opts.resumeSessionId, opts.extraArgs, { mcpConfigPath: opts.mcpConfigPath }),
