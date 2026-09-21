@@ -307,9 +307,10 @@ $ PIXEL_IT=1 npx tsx --test test/office/codex.integration.test.ts
 
 ## 남은 것
 
-- **다른 통합 테스트 3개(`askuser`·`teamtools`·`restart`)도 rev 3 이전 RPC 를 쓴다** — `team.create{force,departmentId}`,
-  `member.clockIn{force}`, `snapshot` RPC 없음. 이번 범위 밖이라 그대로 뒀다. 별도 태스크에서 한 번에.
-- 함정 2(자동 paste 중 사용자 입력으로 지시가 증발) — src/input 후속.
+- ~~**다른 통합 테스트 3개(`askuser`·`teamtools`·`restart`)도 rev 3 이전 RPC 를 쓴다**~~ — **T44 에서 닫았다**
+  (덤으로 T07 `integration.test.ts` 까지 넷. 넷 다 실기 통과 — `docs/worklog/T44-ITandPasteRace.md`).
+- ~~함정 2(자동 paste 중 사용자 입력으로 지시가 증발)~~ — **T44 에서 닫았다**: paste~제출 확정을 임계 구간으로 묶어
+  그 사이 사용자 키를 모았다가 재생한다(Ctrl+C 만 즉시).
 - 함정 2(T23)의 `approval-prompt` 에서 `dialogPassed` 대신 `blocked` — **이미 고쳐져 있다**(D-26, T23b). 이번 실기에서
   Codex 허가는 전부 hook 으로 처리돼 그 화면이 뜨지 않았다.
 - 목록 I(화면 기반 idle 폴백 발화) — 조건 미발생. 실사용 로그에서 `idle{summary:'screen-idle'}` 이 뜨는지 관찰.

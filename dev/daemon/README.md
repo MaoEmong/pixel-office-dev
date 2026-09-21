@@ -15,7 +15,7 @@ npm start                 # 데몬 1회 실행 (ws://127.0.0.1:7420, hook 7421, 
 npm run dev               # tsx watch
 npm run cli               # 콘솔 클라이언트 REPL (help 로 명령 목록)
 npm run cli -- --exec "dept create demo D:/proj claude 부장" --exec "say 부장 안녕" --wait-idle 부장   # 비대화형
-npm test                  # node:test 전체 518건 (PIXEL_IT=1 이면 실제 CLI 통합 테스트 포함 — 그때는 자기 PIXEL_DATA_DIR 을 줄 것)
+npm test                  # node:test 전체 539건 (통합 테스트는 PIXEL_IT=1 없으면 skip — 아래 "테스트" 절)
 npm run typecheck
 ```
 
@@ -31,6 +31,39 @@ npm run typecheck
 | 멤버 | `members` · `fire <member>`(비상 퇴근, 확인 `y`) · `rehire` · `restart` |
 | 디버그 | `teams` · `team create <dept> <name> …` · `team delete` · `hire <parent> <engine> <name>` · `say!` — 전부 `force:true`(D-34) |
 | 연결 | `refresh` · `shutdown` · `quit` |
+
+## 테스트
+
+`npm test` = `node --import tsx --test test/**/*.test.ts`. **단위 스위트는 CLI 를 안 띄운다**(539건, 통합 6건은 skip).
+
+**통합 테스트(opt-in, `PIXEL_IT=1`)** 는 진짜 데몬을 자식 프로세스로 띄우고 **진짜 `claude`/`codex`** 를 출근시킨다 —
+모델 턴을 쓰고 몇 십 초가 걸리므로 하나씩 돌린다(전제: `dev/spike-0/sandbox` 가 그 CLI 에서 신뢰된 폴더이고 로그인이 끝나 있을 것).
+
+| 파일 | 무엇을 보나 | 엔진 | 실측 시간 |
+|---|---|---|---|
+| `test/office/integration.test.ts` (T07) | 부서 생성 → 지시 → 허가 → 파일 → 퇴근 → shutdown | claude | ~14초 |
+| `test/office/askuser.integration.test.ts` (T17) | `ask_user` → `question.respond` → `[ANSWER q#…]` → 모델이 답을 말한다 | claude | ~17초 |
+| `test/office/restart.integration.test.ts` (T09) | 데몬 하드 킬 → 재기동 → `--resume` 복구 → 이전 대화 회상 | claude | ~30초 |
+| `test/office/teamtools.integration.test.ts` (T25) | 팀장의 `hire` → `delegate` → 팀원 작업 → `[REPORTS]` → `report` | claude | ~39초 |
+| `test/office/ranktools.integration.test.ts` (T35) | 부장의 `create_team` → 팀장 `hire` → 보고 4단 상승 | claude | 수 분 |
+| `test/office/codex.integration.test.ts` (T20·T42) | Codex 부장: 지시 → 허가 → 파일 → 보고 폴백 → Ctrl+C 퇴근 | codex | ~24초 |
+
+```bash
+PIXEL_IT=1 npx tsx --test test/office/askuser.integration.test.ts
+PIXEL_IT=1 PIXEL_IT_SANDBOX=D:/myproject/pixel-office/dev/spike-0/sandbox \
+  npx tsx --test test/office/restart.integration.test.ts     # sandbox 가 없는 체크아웃(worktree)에서
+```
+
+- **격리는 테스트가 알아서 한다**(`test/office/it-helpers.ts` 의 `itEnv()`): 매 실행마다 **임시 `PIXEL_DATA_DIR`**
+  (`%TEMP%\pixel-office-<t..>-it-*`)과 **빈 포트 3개**(`PIXEL_WS_PORT`/`PIXEL_HOOK_PORT`/`PIXEL_MCP_PORT`)를 잡는다.
+  기본 7420-7422 에 진짜 데몬이 떠 있어도 부딪히지 않는다 — **`PIXEL_FORCE_START` 는 쓰지 않는다**(D-40).
+  포트를 손으로 줄 일은 없다(주고 싶으면 그 세 환경변수 그대로).
+- **`PIXEL_IT_SANDBOX`** 는 멤버의 cwd(기본 `dev/spike-0/sandbox`)를 갈아끼우는 **테스트 전용** 변수다.
+  `dev/spike-0/sandbox/` 는 gitignore 대상이라 worktree 체크아웃에는 없다(같은 이유로 `MixedTeam.test.ts` 의 픽스처
+  `dev/spike-0/hooklog-*.json` 도 없다 — 단위 스위트를 그린으로 돌리려면 저장소 본체에서 복사해 온다).
+- 끝나면 테스트가 스스로 치운다: 부서 삭제/퇴근 → `daemon.shutdown` → 자기 dataDir 로 스폰된 `claude.exe` 만 골라
+  정리(`sweepClaudeByDataDir`) → 임시 폴더 삭제. 이 기계의 다른 CLI 프로세스는 건드리지 않는다.
+- 실측 로그는 태스크 기록에: T42(codex) `docs/worklog/T42-CodexLive.md`, T44(나머지 넷) `docs/worklog/T44-ITandPasteRace.md`.
 
 ## 환경변수
 
@@ -184,10 +217,11 @@ src/
   adapters/       BaseHooksAdapter(공통 뼈대) + ClaudeHooksAdapter(T04) / CodexHooksAdapter·codexMapping(T20) — hook 이벤트 → 오피스 이벤트·pending
   mcp/            TeamToolsServer — Streamable HTTP MCP `/mcp/<memberToken>`. **직급별 도구 표 `RANK_TOOLS`**(T35)가 여기 하나뿐. 두 엔진 공통
   input/          InputQueue — 타이핑 직렬화, prompt-ready 게이팅, 다이얼로그 통과(T05)
+                  + 제출 확인·Enter 재전송(T42) + paste~제출 임계 구간(T44: 그 사이 사용자 키는 모았다가 재생, Ctrl+C 만 즉시)
   store/          node:sqlite 저장소 — departments/teams/members(parent_id·rank)/events(seq)/pending/tasks(T06, 스키마 v2 = T34)
   cli/            콘솔 클라이언트(T08, rev 3 = T38) — RpcClient + REPL/--exec, parse.ts(순수 파싱)·format.ts(출력·tree)·help.ts(도움말 절)
   tui-maps/       CLI 버전별 화면 패턴 JSON (verified 플래그)
-test/             node:test (모듈별 폴더; *.integration.test.ts 는 PIXEL_IT=1)
+test/             node:test (모듈별 폴더; 통합 테스트 6건은 PIXEL_IT=1 — 위 "테스트" 절)
 ```
 
 ## 데이터 흐름 (한 멤버)
