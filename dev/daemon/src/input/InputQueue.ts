@@ -89,6 +89,22 @@ export const TIMING = {
   dialogRepeatGuardMs: 2000,
   /** 같은 이유의 blocked 이벤트 최소 간격. */
   blockedEmitIntervalMs: 5000,
+  /**
+   * 통과할 수 없는 다이얼로그(`approval-prompt` 등)가 **이만큼 계속 떠 있어야** `dialogBlocked` 를 낸다(T45, D-26).
+   *
+   * 왜 필요한가(실측, `docs/worklog/T45-UsageAndNotice.md`): MCP 도구(`mcp__team__*`)를 부를 때 CLI 는 자기
+   * 허가 프롬프트를 **먼저 그리고**, 곧이어 도착한 `PermissionRequest` hook 의 allow 로 그 화면을 지운다
+   * (화면 이력에 `⎿ Allowed by PermissionRequest hook` 가 남는다). 우리 판정은 **틀리지 않았다** — 진짜
+   * 허가 프롬프트가 한 프레임 떠 있었다. 다만 **아무도 답할 필요가 없는** 프롬프트라 경고가 거짓이었다.
+   *
+   * 실측 지속 시간은 **502ms**(폴링 한 판)였고, 두 번 모두 같았다. 진짜 허가 프롬프트(hook 이 없거나 만료된
+   * D-16 폴백)는 사람이 답할 때까지 **무한히** 떠 있으므로, "계속 떠 있는가" 하나로 둘이 갈린다.
+   * 3초는 그 502ms 에 6배 여유를 둔 값이다(화면 기반 idle 판정의 안정 창과 같은 크기).
+   *
+   * **큐를 막는 것은 지연되지 않는다** — 다이얼로그를 보는 즉시 `blocked('dialog')` 이고 키도 안 나간다.
+   * 늦춰지는 것은 사람에게 보내는 **알림 한 줄**뿐이다.
+   */
+  dialogBlockedNoticeMs: 3000,
 } as const;
 
 /**
@@ -121,8 +137,12 @@ export class InputQueue extends EventEmitter<InputQueueEvents> {
   /** 다이얼로그 kind → 마지막으로 보낸 키와 시각. 같은 키를 가드 안에 또 보내지 않기 위한 것(T36). */
   private readonly lastDialogAt = new Map<string, { at: number; keys: DialogKey[] }>();
   private readonly lastBlockedAt = new Map<BlockReason, number>();
-  /** dialogBlocked 를 이미 낸 다이얼로그 kind. 그 다이얼로그가 사라지거나 다른 kind 로 바뀌면 지운다. */
+  /** 지금 막고 있는(통과 키가 없는) 다이얼로그 kind. 그 다이얼로그가 사라지거나 다른 kind 로 바뀌면 지운다. */
   private blockedDialogKind: string | undefined;
+  /** 그 다이얼로그를 **연속으로** 보기 시작한 시각. `dialogBlockedNoticeMs` 를 재는 기준(T45). */
+  private blockedDialogSince = Number.POSITIVE_INFINITY;
+  /** 그 구간에 `dialogBlocked` 를 이미 냈는가. 다이얼로그가 사라지면 false 로 돌아간다. */
+  private blockedDialogNoticed = false;
   /** Enter 를 보내고 "프롬프트가 실제로 들어갔는지" 를 확인하는 중인 항목(T42). 들어가면(= idle 이 풀리면) 지운다. */
   private awaitingSubmit: { item: TextItem; enterAt: number; attempt: number } | undefined;
   /**
@@ -238,18 +258,25 @@ export class InputQueue extends EventEmitter<InputQueueEvents> {
 
     const dialog = this.deps.screen.detectDialog();
     this.checkSubmit(now, dialog.kind !== 'none');
-    if (dialog.kind === 'none') this.blockedDialogKind = undefined;
+    if (dialog.kind === 'none') this.forgetBlockedDialog();
     if (dialog.kind !== 'none') {
       // 권장 키가 없는 다이얼로그(= CLI 자체 허가 프롬프트, D-23)는 통과 대상이 아니다. 키도 안 보내고 "통과했다"고도 하지 않는다.
       // 큐가 막힌 이유(blocked)는 다른 이유와 같은 계량으로, 어떤 다이얼로그인지(dialogBlocked)는 사라질 때까지 한 번만 알린다(D-26).
       if (dialog.suggestedKeys.length === 0) {
         if (this.blockedDialogKind !== dialog.kind) {
           this.blockedDialogKind = dialog.kind;
+          this.blockedDialogSince = now;
+          this.blockedDialogNoticed = false;
+        }
+        // **계속 떠 있을 때만** 알린다(T45). MCP 도구 구간에 한 프레임 스쳐 가는 프롬프트(hook 이 곧 allow 로
+        // 지운다)를 사람에게 알리지 않기 위한 것이고, 큐를 막는 것은 아래에서 **지금 당장** 한다.
+        if (!this.blockedDialogNoticed && now - this.blockedDialogSince >= TIMING.dialogBlockedNoticeMs) {
+          this.blockedDialogNoticed = true;
           this.emit('dialogBlocked', dialog.kind);
         }
         return this.block('dialog', now);
       }
-      this.blockedDialogKind = undefined;
+      this.forgetBlockedDialog();
       // 사용자가 터미널 탭에서 직접 다이얼로그를 다루는 중일 수 있다 — 그 위에 키를 얹지 않는다.
       if (this.userTyping(now)) return this.block('user-typing', now);
       // 강조로 키가 갈리는 다이얼로그(신뢰 폴더)는 **이동 키와 확인 키를 나눠** 보낸다. T36 실측: Claude 2.1 신뢰
@@ -278,6 +305,13 @@ export class InputQueue extends EventEmitter<InputQueueEvents> {
 
   private userTyping(now: number): boolean {
     return now - this.lastUserTypingAt <= this.graceMs;
+  }
+
+  /** 막고 있던 다이얼로그가 사라졌다(또는 통과 가능한 것으로 바뀌었다) — 다시 뜨면 새 사건으로 센다. */
+  private forgetBlockedDialog(): void {
+    this.blockedDialogKind = undefined;
+    this.blockedDialogSince = Number.POSITIVE_INFINITY;
+    this.blockedDialogNoticed = false;
   }
 
   /** 큐에 기다리는 항목이 있을 때만 의미가 있으므로 큐가 비었으면 조용히 넘어간다. */

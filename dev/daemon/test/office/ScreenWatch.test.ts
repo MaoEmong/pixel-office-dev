@@ -10,6 +10,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { Office, SCREEN_IDLE_SUMMARY } from '../../src/office/Office.js';
+import { TIMING } from '../../src/input/InputQueue.js';
 import { Store } from '../../src/store/Store.js';
 import type { Engine, Member, OfficeEvent, Team } from '../../src/store/types.js';
 import type { HookEvent, HookPayload } from '../../src/hooks/types.js';
@@ -26,6 +27,8 @@ const screenOf = (fixture: string) => '\x1b[2J\x1b[H' + loadFixture(fixture).joi
 /** 화면 감시 창(IDLE_SCREEN_STABLE_MS 3000 + 폴링 500). 발화를 기다릴 때 / 발화하지 않음을 볼 때. */
 const FIRE_WAIT = 4500;
 const NO_FIRE_WAIT = 3800;
+/** 막힌 다이얼로그 알림 창(InputQueue TIMING.dialogBlockedNoticeMs 3000 + 폴링 500, T45). */
+const NOTICE_WAIT = TIMING.dialogBlockedNoticeMs + 1000;
 
 describe('화면 기반 감시 (T23b)', () => {
   let dataDir: string;
@@ -162,25 +165,43 @@ describe('화면 기반 감시 (T23b)', () => {
 
   // ---- ② 자동 통과할 수 없는 다이얼로그 (D-26) ------------------------------------------
 
-  test('CLI 허가 프롬프트: 키를 보내지 않고 "통과했다" 알림도 없다 — 경고 알림 한 번(다이얼로그가 사라졌다 다시 뜨면 또 한 번)', async () => {
+  test('CLI 허가 프롬프트: 키를 보내지 않고 "통과했다" 알림도 없다 — 계속 떠 있으면 경고 한 번(사라졌다 다시 뜨면 또 한 번)', async () => {
     const m = hire('하루');
     send(m, 'SessionStart', { ...base('SessionStart'), source: 'startup' });
     await paint(m, 'claude/approval-prompt.txt');
 
-    // InputQueue 폴링 500ms · 예전 재전송 가드 2000ms 를 넉넉히 넘겨도 알림은 한 번뿐이다(T23 함정 2: 2초마다 반복).
-    await sleep(2600);
+    // T45: 알림은 `dialogBlockedNoticeMs`(3초) 동안 계속 떠 있어야 나온다. 그 전에는 조용하다.
+    await sleep(2000);
+    assert.deepEqual(notices.filter((n) => n.includes('CLI 허가 프롬프트가 떠 있음')), [], '아직 창 안이다');
+
+    // 계속 떠 있으면 한 번 알린다. 그 뒤로는 예전 재전송 가드(2초)·blocked 계량(5초)을 넘겨도 한 번뿐이다.
+    await sleep(NOTICE_WAIT);
     const warns = notices.filter((n) => n.includes('CLI 허가 프롬프트가 떠 있음'));
     assert.deepEqual(warns, ['warn: 하루: CLI 허가 프롬프트가 떠 있음 — 카드로 답하거나 터미널에서 직접 답하세요']);
     assert.deepEqual(notices.filter((n) => n.includes('passed first-run dialog')), [], '허가 프롬프트는 "통과" 가 아니다');
     assert.deepEqual(pty.session(m.id).keys, [], '키는 한 개도 나가지 않는다');
 
-    // 다이얼로그가 사라졌다가 다시 뜨면 새 사건이므로 다시 한 번 알린다.
+    // 다이얼로그가 사라졌다가 다시 뜨면 새 사건이므로 다시 한 번 알린다(역시 계속 떠 있어야 한다).
     await paint(m, 'claude-ready.txt');
     await sleep(700);
     await paint(m, 'claude/approval-prompt.txt');
-    await sleep(700);
+    await sleep(NOTICE_WAIT);
     assert.equal(notices.filter((n) => n.includes('CLI 허가 프롬프트가 떠 있음')).length, 2);
     assert.deepEqual(pty.session(m.id).keys, []);
+  });
+
+  // T45 (D-26 오탐 회귀): MCP 도구 구간에 CLI 가 진짜 허가 프롬프트를 한 프레임 그렸다가 `PermissionRequest`
+  // hook 의 allow 로 지운다(실기 실측 502ms = 폴링 한 판). 화면은 **실제 캡처**(approval-prompt-mcp.txt)다.
+  // 흐름이 그대로 이어졌는데 경고가 떴다 — 그게 D-26 오탐이었다.
+  test('MCP 도구 프롬프트가 hook 으로 곧 사라지면 경고하지 않는다 (T45 — D-26 오탐)', async () => {
+    const m = hire('부장');
+    send(m, 'SessionStart', { ...base('SessionStart'), source: 'startup' });
+    await paint(m, 'claude/approval-prompt-mcp.txt');
+    await sleep(700); // 폴링 한 판 — 프롬프트를 확실히 한 번 본다
+    await paint(m, 'claude-ready.txt'); // hook allow 가 화면을 지웠다
+    await sleep(NOTICE_WAIT);
+    assert.deepEqual(notices.filter((n) => n.includes('CLI 허가 프롬프트가 떠 있음')), []);
+    assert.deepEqual(pty.session(m.id).keys, [], '키는 한 개도 나가지 않는다');
   });
 
   test('통과할 수 있는 첫 실행 다이얼로그는 그대로 통과한다 (폴더 신뢰 — 회귀 방지)', async () => {

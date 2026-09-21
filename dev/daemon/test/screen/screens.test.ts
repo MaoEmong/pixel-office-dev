@@ -406,6 +406,47 @@ test('claude(T21): Bash permission prompt "Do you want to proceed?" → approval
   sm.dispose();
 });
 
+// T45 (D-26 오탐): MCP 도구에도 **진짜** 허가 프롬프트가 뜬다. 제목도 항목 수도 Bash 와 다르므로
+// 판정은 'Do you want to proceed?' 줄 + '1. Yes' 줄 둘로만 한다. 이 화면은 실기 캡처 그대로다
+// (teamtools IT, mcp__team__hire, 2.1.275 — `PIXEL_SCREEN_DEBUG=1` 덤프).
+//
+// **이것은 오탐이 아니다** — 화면에는 정말 허가 프롬프트가 떠 있었다. 다만 우리 PermissionRequest hook 이
+// 곧 allow 로 지우므로(실측 502ms) 사람에게 알릴 일이 아니었다. 그 판단은 InputQueue 가 한다(T45).
+test('claude(T45): MCP tool permission prompt (3 items, "Tool use" title) is also a real approval-prompt', async () => {
+  const sm = await screenFrom('claude', 'claude/approval-prompt-mcp.txt');
+  assert.deepEqual(sm.detectDialog(), { kind: 'approval-prompt', suggestedKeys: [], highlightDriven: false });
+  assert.deepEqual(sm.approvalPrompt(), { visible: true, id: 'permission-prompt', allowKeys: ['enter'], denyKeys: ['down', 'down', 'down', 'enter'] });
+  assert.equal(sm.promptReady(), false);
+  assert.equal(sm.busyIndicator(), false);
+  // Bash 프롬프트와 다른 점: 제목이 'Tool use', 항목이 3개, 'Bash command' 블록이 없다.
+  assert.match(sm.text(), /^ Tool use$/m);
+  assert.doesNotMatch(sm.text(), /^ Bash command$/m);
+  assert.match(sm.text(), /^ Do you want to proceed\?$/m);
+  assert.match(sm.text(), /^ ❯ 1\. Yes$/m);
+  assert.match(sm.text(), /^   3\. No$/m);
+  assert.doesNotMatch(sm.text(), /^   4\. /m);
+  sm.dispose();
+});
+
+// 모델이 화면에 'Do you want to proceed?' 를 **글로** 쓴 경우 — 선택지 줄이 없으므로 다이얼로그가 아니다.
+// (T45 에서 패턴을 줄 단위로 못 박은 이유. 실기에서 본 적은 없고, 느슨한 패턴이 남겨 둔 구멍이었다.)
+test('claude(T45): the same sentence inside model prose is NOT an approval-prompt', async () => {
+  const sm = new ScreenModel({ engine: 'claude', cols: 120, rows: 40 });
+  await sm.feed(
+    [
+      '❯ 무엇을 할까요?',
+      '',
+      '  I have finished the migration plan.',
+      '  Do you want to proceed?',
+      '',
+      '  ⏸ manual mode on · ? for shortcuts · ← for agents',
+    ].join('\r\n'),
+  );
+  assert.deepEqual(sm.detectDialog(), { kind: 'none', suggestedKeys: [], highlightDriven: false });
+  assert.equal(sm.approvalPrompt().visible, false);
+  sm.dispose();
+});
+
 test('claude(T21): after ↓×3 the highlight is on "4. No" and it is still the same approval-prompt', async () => {
   const sm = await screenFrom('claude', 'claude/approval-prompt-no-highlighted.txt');
   assert.match(sm.text(), /^ ❯ 4\. No$/m);

@@ -230,48 +230,96 @@ describe('dialog pass-through', () => {
     assert.deepEqual(h.blocked, []);
   });
 
-  test('empty suggestedKeys (CLI approval prompt): no keys, no dialogPassed — blocked(dialog) + one dialogBlocked(kind) (D-26)', () => {
+  /** 다이얼로그가 떠 있는 채로 `ms` 만큼 폴링을 돌린다(500ms 간격 — 실제 pollMs 기본값). */
+  const poll = (h: Harness, ms: number): void => {
+    for (let left = ms; left > 0; left -= 500) {
+      h.advance(500);
+      h.q.tick();
+    }
+  };
+
+  test('empty suggestedKeys (CLI approval prompt): no keys, no dialogPassed — blocked(dialog) now, one dialogBlocked after it persists (D-26 · T45)', () => {
     const h = harness();
     h.state.dialog = { kind: 'approval-prompt', suggestedKeys: [] };
     h.q.enqueue(instruct('나중에'));
     assert.deepEqual(h.calls, [], '키도 paste 도 나가지 않는다');
     assert.deepEqual(h.dialogs, [], '"통과했다" 가 아니다');
-    assert.deepEqual(h.blockedDialogs, ['approval-prompt']);
-    assert.deepEqual(h.blocked, ['dialog']);
+    assert.deepEqual(h.blocked, ['dialog'], '큐를 막는 것은 즉시다');
+    assert.deepEqual(h.blockedDialogs, [], '알림은 아직 — 스쳐 가는 프롬프트일 수 있다(T45)');
     assert.equal(h.q.size(), 1);
     assert.equal(h.q.pendingActions(), 0);
 
-    // 2초(기존 재전송 가드)·5초(blocked 계량)를 넘겨도 dialogBlocked 는 그대로 한 번뿐이다(T23 함정 2 의 2초 스팸 방지).
-    for (let i = 0; i < 24; i++) {
-      h.advance(500);
-      h.q.tick();
-    }
+    // 계속 떠 있으면 그때 한 번 알린다.
+    poll(h, TIMING.dialogBlockedNoticeMs);
+    assert.deepEqual(h.blockedDialogs, ['approval-prompt']);
+
+    // 2초(기존 재전송 가드)·5초(blocked 계량)를 더 넘겨도 dialogBlocked 는 그대로 한 번뿐이다(T23 함정 2 의 2초 스팸 방지).
+    poll(h, 12_000);
     assert.deepEqual(h.calls, []);
     assert.deepEqual(h.dialogs, []);
     assert.deepEqual(h.blockedDialogs, ['approval-prompt']);
-    assert.deepEqual(h.blocked, ['dialog', 'dialog', 'dialog'], 'blocked 는 이유별 5초 계량 그대로');
+    assert.deepEqual(h.blocked, ['dialog', 'dialog', 'dialog', 'dialog'], 'blocked 는 이유별 5초 계량 그대로');
+  });
+
+  // T45 (D-26 오탐): MCP 도구 구간에 CLI 가 허가 프롬프트를 한 프레임 그렸다가 `PermissionRequest` hook 의
+  // allow 로 지운다(실측 502ms — 폴링 한 판). 그 사이 키가 나가서는 안 되지만 **사람에게 알릴 일도 아니다**.
+  test('a prompt that the hook clears within one poll produces NO notice (T45 — the D-26 false alarm)', () => {
+    const h = harness();
+    h.q.enqueue(instruct('MCP 도구 구간'));
+    h.state.dialog = { kind: 'approval-prompt', suggestedKeys: [] };
+    h.advance(500);
+    h.q.tick(); // 프롬프트가 보이는 유일한 판
+    h.state.dialog = { kind: 'none', suggestedKeys: [] };
+    h.advance(502); // 실측 지속 시간
+    h.q.tick();
+
+    assert.deepEqual(h.blockedDialogs, [], '스쳐 간 프롬프트로는 경고하지 않는다');
+    assert.deepEqual(h.dialogs, [], '키를 보내 통과시키지도 않았다');
+    assert.deepEqual(h.calls, ['paste:MCP 도구 구간', 'key:enter'], '프롬프트가 사라지자 큐가 그대로 흐른다');
+
+    // 그리고 같은 일이 여러 번 반복돼도(도구 호출마다) 경고는 없다.
+    for (let i = 0; i < 5; i++) {
+      h.state.dialog = { kind: 'approval-prompt', suggestedKeys: [] };
+      h.advance(500);
+      h.q.tick();
+      h.state.dialog = { kind: 'none', suggestedKeys: [] };
+      h.advance(500);
+      h.q.tick();
+    }
+    assert.deepEqual(h.blockedDialogs, []);
+  });
+
+  // 참 양성은 그대로 경고한다 — hook 이 없거나 만료되면(D-16) 프롬프트가 사람이 답할 때까지 남는다.
+  test('a real prompt nobody answers still warns (true positive kept)', () => {
+    const h = harness();
+    h.state.dialog = { kind: 'approval-prompt', suggestedKeys: [] };
+    h.q.tick();
+    poll(h, TIMING.dialogBlockedNoticeMs);
+    assert.deepEqual(h.blockedDialogs, ['approval-prompt']);
+    assert.deepEqual(h.blocked, [], '큐가 비어 있으면 blocked 는 내지 않는다(기존 규칙)');
+    assert.deepEqual(h.calls, [], '키는 한 개도 나가지 않는다');
   });
 
   test('dialogBlocked repeats only after the dialog clears (or a different kind shows up)', () => {
     const h = harness();
     h.state.dialog = { kind: 'approval-prompt', suggestedKeys: [] };
-    h.q.tick();
+    poll(h, TIMING.dialogBlockedNoticeMs + 500);
     assert.deepEqual(h.blockedDialogs, ['approval-prompt']);
-    assert.deepEqual(h.blocked, [], '큐가 비어 있으면 blocked 는 내지 않는다(기존 규칙)');
 
-    // 다른 kind 로 바뀌면 그건 새 사건이다
+    // 다른 kind 로 바뀌면 그건 새 사건이다 — 그쪽도 계속 떠 있어야 알린다.
     h.state.dialog = { kind: 'approval-exec', suggestedKeys: [] };
     h.advance(500);
     h.q.tick();
+    assert.deepEqual(h.blockedDialogs, ['approval-prompt'], '바뀐 직후에는 아직 아니다');
+    poll(h, TIMING.dialogBlockedNoticeMs);
     assert.deepEqual(h.blockedDialogs, ['approval-prompt', 'approval-exec']);
 
-    // 사라졌다가 다시 뜨면 다시 한 번
+    // 사라졌다가 다시 뜨면 다시 한 번(다시 계속 떠 있어야 한다)
     h.state.dialog = { kind: 'none', suggestedKeys: [] };
     h.advance(500);
     h.q.tick();
     h.state.dialog = { kind: 'approval-exec', suggestedKeys: [] };
-    h.advance(500);
-    h.q.tick();
+    poll(h, TIMING.dialogBlockedNoticeMs + 500);
     assert.deepEqual(h.blockedDialogs, ['approval-prompt', 'approval-exec', 'approval-exec']);
     assert.deepEqual(h.calls, []);
     assert.deepEqual(h.dialogs, []);
@@ -283,6 +331,22 @@ describe('dialog pass-through', () => {
     assert.deepEqual(h.calls, ['key:enter']);
     assert.deepEqual(h.dialogs, ['trust-folder-claude']);
     assert.deepEqual(h.blockedDialogs, ['approval-prompt', 'approval-exec', 'approval-exec']);
+  });
+
+  // 깜빡임(프롬프트 → 잠깐 사라짐 → 다시)에도 시계가 다시 0 부터 간다 — "연속으로" 떠 있어야 한다는 뜻.
+  test('the persistence window restarts when the dialog blinks away', () => {
+    const h = harness();
+    h.state.dialog = { kind: 'approval-prompt', suggestedKeys: [] };
+    poll(h, TIMING.dialogBlockedNoticeMs - 500);
+    assert.deepEqual(h.blockedDialogs, []);
+    h.state.dialog = { kind: 'none', suggestedKeys: [] };
+    h.advance(500);
+    h.q.tick();
+    h.state.dialog = { kind: 'approval-prompt', suggestedKeys: [] };
+    poll(h, TIMING.dialogBlockedNoticeMs - 500);
+    assert.deepEqual(h.blockedDialogs, [], '창이 다시 열렸다');
+    poll(h, 1000);
+    assert.deepEqual(h.blockedDialogs, ['approval-prompt']);
   });
 
   test('a blocked dialog keeps the queue intact — it flushes as soon as the prompt returns', () => {

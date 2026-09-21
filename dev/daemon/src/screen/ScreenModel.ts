@@ -2,6 +2,9 @@
 // pty 출력을 전부 feed() 하면 (a) attach 용 직렬화 화면, (b) 책상 모니터의 마지막 줄,
 // (c) 첫 실행 다이얼로그 감지 + 권장 키, (d) prompt ready 판정의 단일 소스가 된다.
 // 화면 문구·키 시퀀스는 src/tui-maps/<engine>-<version>.json 에만 둔다(tuiMap.ts 가 로드).
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import xterm from '@xterm/headless';
 import serialize from '@xterm/addon-serialize';
 import type { Terminal as TerminalType } from '@xterm/headless';
@@ -49,11 +52,27 @@ export interface ApprovalPromptDetection {
   denyKeys: Key[];
 }
 
+/**
+ * `PIXEL_SCREEN_DEBUG=1` 일 때 `approval-prompt` 판정이 날 때마다 화면을 적어 두는 곳(T45).
+ * `PIXEL_SCREEN_DEBUG_FILE` 로 바꿀 수 있다.
+ */
+function screenDebugFile(): string {
+  return process.env.PIXEL_SCREEN_DEBUG_FILE || path.join(os.tmpdir(), 'pixel-screen-debug.log');
+}
+
+/** 한 ScreenModel 이 남길 덤프 상한. 프롬프트가 오래 떠 있어도 로그가 터지지 않게. */
+const SCREEN_DEBUG_MAX_DUMPS = 200;
+
 export class ScreenModel {
   readonly engine: Engine;
   readonly tuiMap: TuiMap;
   private readonly term: TerminalType;
   private readonly ser: SerializeAddonType;
+  /** `PIXEL_SCREEN_DEBUG` 전용 — 마지막으로 적은 화면(같은 화면을 연달아 적지 않는다)과 적은 횟수. */
+  private lastDebugDump?: string;
+  private debugDumps = 0;
+  /** `approval-prompt` 를 처음 본 시각(연속 구간의 시작). 사라지면 undefined. */
+  private approvalSeenAt?: number;
 
   constructor(opts: ScreenModelOptions) {
     this.engine = opts.engine;
@@ -195,9 +214,49 @@ export class ScreenModel {
           if (c) keys = c.keys;
         }
       }
+      if (d.kind === 'approval-prompt') this.debugDumpApproval(d.id, ls);
+      else this.debugNoteGone(d.kind);
       return { kind: d.kind, suggestedKeys: d.kind === 'approval-prompt' ? [] : [...keys], highlightDriven: d.highlight !== undefined };
     }
+    this.debugNoteGone('none');
     return { kind: 'none', suggestedKeys: [], highlightDriven: false };
+  }
+
+  /**
+   * **옵트인 디버그**(T45): `PIXEL_SCREEN_DEBUG=1` 일 때만, `approval-prompt` 로 판정한 화면을 통째로 적는다.
+   *
+   * D-26 오탐("CLI 허가 프롬프트가 떠 있음" 이 MCP 도구 구간에 뜬다)을 잡을 때 쓴 도구다 — 판정은 화면
+   * 한 장에서 나므로 **그 화면을 그대로 손에 넣는 것**이 유일한 증거다. 변수가 없으면 아무 일도 하지 않고,
+   * 실패해도 절대 던지지 않는다(디버그가 데몬을 죽이면 안 된다).
+   */
+  private debugDumpApproval(id: string, ls: string[]): void {
+    if (!process.env.PIXEL_SCREEN_DEBUG || this.debugDumps >= SCREEN_DEBUG_MAX_DUMPS) return;
+    const first = this.approvalSeenAt === undefined;
+    if (first) this.approvalSeenAt = Date.now();
+    const text = ls.join('\n');
+    if (!first && text === this.lastDebugDump) return; // 같은 화면을 tick 마다 다시 적지 않는다
+    this.lastDebugDump = text;
+    this.debugDumps++;
+    this.debugWrite(
+      `\n=== approval-prompt #${this.debugDumps} engine=${this.engine} dialog=${id} at=${new Date().toISOString()}` +
+        ` held=${Date.now() - this.approvalSeenAt!}ms ===\n${text}\n=== end ===\n`,
+    );
+  }
+
+  /** 허가 프롬프트가 **사라진** 순간을 적는다 — 몇 ms 떠 있었는지가 오탐 판정의 핵심 숫자다. */
+  private debugNoteGone(kind: string): void {
+    const since = this.approvalSeenAt;
+    this.approvalSeenAt = undefined;
+    if (since === undefined || !process.env.PIXEL_SCREEN_DEBUG) return;
+    this.debugWrite(`--- approval-prompt gone after ${Date.now() - since}ms (now kind=${kind}) at=${new Date().toISOString()}\n`);
+  }
+
+  private debugWrite(text: string): void {
+    try {
+      fs.appendFileSync(screenDebugFile(), text);
+    } catch {
+      // 디버그 로그일 뿐이다
+    }
   }
 
   /**
