@@ -347,7 +347,7 @@ describe('Office restart recovery (T09)', () => {
   test('fresh daemon (no rows): no notice, no spawn', async () => {
     newOffice();
     await office.start();
-    assert.deepEqual(office.recoveryResult, { resumed: [], failed: [], expired: [], requeued: [], orphansKilled: [] });
+    assert.deepEqual(office.recoveryResult, { resumed: [], failed: [], expired: [], requeued: [], orphansKilled: [], silent: [], total: 0 });
     assert.equal(notices.length, 0);
     assert.equal(pty.spawns.length, 0);
   });

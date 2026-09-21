@@ -74,6 +74,8 @@ class FakeOffice extends EventEmitter<OfficeEvents> implements OfficeApi {
     ['dead', member('dead', 'exited')],
   ]);
   shutdownCalls = 0;
+  /** T46-1: `daemon.shutdown` 응답의 `{closing}` 으로 그대로 나가는 수. */
+  closing = 2;
 
   private rec(method: string, ...args: unknown[]): void {
     this.calls.push({ method, args });
@@ -210,6 +212,19 @@ class FakeOffice extends EventEmitter<OfficeEvents> implements OfficeApi {
   }
   respondQuestion(pendingId: string, answers: Record<string, string>): void {
     this.rec('respondQuestion', pendingId, answers);
+  }
+  // ---- 수명 주기(T46-1) ----
+  watchParent(parentPid: number): void {
+    this.rec('watchParent', parentPid);
+  }
+  prioritizeRecovery(departmentId: string): void {
+    this.rec('prioritizeRecovery', departmentId);
+  }
+  closingSessions(): number {
+    return this.closing;
+  }
+  get isClosing(): boolean {
+    return this.shutdownCalls > 0;
   }
   async shutdown(): Promise<void> {
     this.shutdownCalls++;
@@ -624,14 +639,47 @@ describe('RpcServer', () => {
     assert.equal(server.clientCount, before - 1);
   });
 
-  test('daemon.shutdown → {} reply first, then daemon.notice and Office.shutdown()', async () => {
+  test('daemon.shutdown → {closing} reply first, then daemon.notice and Office.shutdown()', async () => {
     const c = await connect();
     await c.hello();
     assert.equal(office.shutdownCalls, 0);
-    assert.deepEqual(await c.call('daemon.shutdown', {}), {});
+    // T46-1: 응답에 "지금 닫는 AI 세션 수" 가 실린다 — 앱이 "정리하는 중…" 을 그릴 때 쓴다.
+    assert.deepEqual(await c.call('daemon.shutdown', {}), { closing: 2 });
     const n = await c.waitNotification((x) => x.method === 'daemon.notice');
     assert.deepEqual(n.params, { level: 'info', message: 'daemon shutting down' });
     await tick();
     assert.equal(office.shutdownCalls, 1);
+  });
+
+  test('T46-1: 닫는 중에 온 두 번째 daemon.shutdown 은 같은 {closing} 을 돌려주고 아무것도 다시 하지 않는다', async () => {
+    const c = await connect();
+    await c.hello();
+    assert.deepEqual(await c.call('daemon.shutdown', {}), { closing: 2 });
+    await tick();
+    assert.equal(office.shutdownCalls, 1);
+    assert.deepEqual(await c.call('daemon.shutdown', {}), { closing: 2 });
+    await tick();
+    assert.equal(office.shutdownCalls, 1, '두 번째는 shutdown() 을 다시 부르지 않는다');
+  });
+
+  test('T46-1: hello{parentPid, activeDepartmentId} 는 부모 감시·복구 우선순위로 내려간다', async () => {
+    const c = await connect();
+    const r = (await c.call('hello', { token: TOKEN, parentPid: 31337, activeDepartmentId: 'd1', client: { name: 'app' } })) as {
+      daemon: unknown;
+    };
+    assert.ok(r.daemon, 'hello 는 평소대로 응답한다');
+    assert.deepEqual(
+      office.calls.filter((x) => x.method === 'watchParent' || x.method === 'prioritizeRecovery'),
+      [
+        { method: 'watchParent', args: [31337] },
+        { method: 'prioritizeRecovery', args: ['d1'] },
+      ],
+    );
+  });
+
+  test('T46-1: parentPid 가 없거나 이상하면 감시를 건드리지 않는다', async () => {
+    const c = await connect();
+    await c.call('hello', { token: TOKEN, parentPid: -1, activeDepartmentId: '', client: { name: 'app' } });
+    assert.deepEqual(office.calls.filter((x) => x.method === 'watchParent' || x.method === 'prioritizeRecovery'), []);
   });
 });

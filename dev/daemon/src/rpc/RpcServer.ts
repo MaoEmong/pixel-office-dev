@@ -171,6 +171,23 @@ export class RpcServer {
     client.authed = true;
     client.name = typeof info.name === 'string' ? info.name : undefined;
 
+    // T46-1(§3): 앱이 자기 pid 를 주면 데몬이 그 프로세스를 지켜본다(앱만 다시 뜬 경우 대상이 바뀐다).
+    if (typeof params.parentPid === 'number' && Number.isInteger(params.parentPid) && params.parentPid > 0) {
+      try {
+        this.office.watchParent(params.parentPid);
+      } catch (err) {
+        console.warn('[rpc] watchParent failed:', err);
+      }
+    }
+    // T46-1(§5): 앱이 보고 있는 부서를 아직 안 깨운 복구 줄의 맨 앞으로. 복구가 끝난 뒤면 아무 일도 안 한다.
+    if (typeof params.activeDepartmentId === 'string' && params.activeDepartmentId !== '') {
+      try {
+        this.office.prioritizeRecovery(params.activeDepartmentId);
+      } catch (err) {
+        console.warn('[rpc] prioritizeRecovery failed:', err);
+      }
+    }
+
     const snapshot = this.office.snapshot();
     this.send(client, {
       jsonrpc: '2.0',
@@ -306,11 +323,15 @@ export class RpcServer {
 
       'daemon.shutdown': () => {
         // 응답을 먼저 보내고 다음 매크로태스크에서 종료 절차. 서버 자체는 Office 'shutdown' 을 받은 index.ts 가 닫는다.
+        // T46-1: `{closing}` 은 **지금 닫는 AI 세션 수**(멤버 + 확인용). 앱은 이 수로 "정리하는 중…" 을 그린다.
+        // 종료가 이미 돌고 있으면(두 번째 요청) 같은 수를 돌려주고 아무것도 다시 하지 않는다 — 멱등.
+        const closing = this.office.closingSessions();
+        if (this.office.isClosing) return { closing };
         setImmediate(() => {
           this.broadcast('daemon.notice', { level: 'info', message: 'daemon shutting down' });
           this.office.shutdown().catch((err) => console.error('[rpc] shutdown failed:', err));
         });
-        return {};
+        return { closing };
       },
     };
   }
@@ -329,7 +350,8 @@ export class RpcServer {
     on('term', (memberId, data) => {
       for (const c of this.clients.values()) if (c.authed && c.attached.has(memberId)) this.notify(c, 'term', { memberId, data });
     });
-    on('notice', (level, message) => this.broadcast('daemon.notice', { level, message }));
+    // T46-1: 꼬리표(`kind`)가 붙은 알림은 그 필드를 params 에 그대로 펼친다. 없으면 예전 모양 그대로.
+    on('notice', (level, message, extra) => this.broadcast('daemon.notice', { level, message, ...(extra ?? {}) }));
     // T43: 사용량은 **바뀔 때만** 온다. 비영속·seq 없음 — 스냅샷의 `usage` 와 같은 모양의 원소 하나다.
     on('usage.engine', (usage) => this.broadcast('usage.engine', usage));
     on('usage.member', (usage) => this.broadcast('usage.member', usage));
