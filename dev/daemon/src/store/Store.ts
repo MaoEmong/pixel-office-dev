@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import { randomUUID, randomBytes } from 'node:crypto';
 import { DatabaseSync, type SQLInputValue } from 'node:sqlite';
 import { config } from '../config.js';
-import { PENDING_FK_REPAIR_SQL, SCHEMA_SQL, SCHEMA_VERSION, V1_DROP_SQL, V1_RENAME_SQL } from './schema.js';
+import { MEMBERS_V5_SQL, PENDING_FK_REPAIR_SQL, SCHEMA_SQL, SCHEMA_VERSION, V1_DROP_SQL, V1_RENAME_SQL } from './schema.js';
 import type {
   AppendEventInput,
   CreateDepartmentInput,
@@ -257,7 +257,26 @@ export class Store {
       this.db.exec(SCHEMA_SQL);
     }
     this.repairPendingFk();
+    this.addSuspendedStatus();
     this.writeVersion(SCHEMA_VERSION);
+  }
+
+  /**
+   * **v4 → v5(T46-1)** — `members.status` CHECK 에 `suspended` 를 더한다(schema.ts `MEMBERS_V5_SQL` 주석).
+   * 버전 번호가 아니라 **실제 표 정의**를 보고 판단한다 — 버전만 보면 손으로 만든 DB·중간에 끼어든 마이그레이션에서
+   * 어긋나고, 이 검사는 `sqlite_master` 한 줄 읽기라 열 때마다 해도 공짜다. 멱등.
+   */
+  private addSuspendedStatus(): void {
+    const row = this.db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='members'").get() as Row | undefined;
+    const sql = typeof row?.sql === 'string' ? row.sql : '';
+    if (sql === '' || sql.includes('suspended')) return;
+    this.db.exec('PRAGMA foreign_keys = OFF');
+    try {
+      this.transaction(() => this.db.exec(MEMBERS_V5_SQL));
+    } finally {
+      this.db.exec('PRAGMA foreign_keys = ON');
+    }
+    console.log('[store] members.status 에 suspended 추가 (schema v5, T46-1)');
   }
 
   /**

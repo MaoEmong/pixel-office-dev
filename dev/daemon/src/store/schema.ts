@@ -23,8 +23,14 @@
 //                                                   데몬이 하드 킬되면 이 프로세스도 살아남는다(D-17 과 같은 이유) —
 //                                                   멤버가 아니라 `members.child_pid` 에 자리가 없어 따로 적는다.
 // v3 → v4 도 `CREATE TABLE IF NOT EXISTS` 하나라 별도 스텝이 없다.
+//
+// v5(T46-1, D-47 수명 주기): `members.status` 에 **`suspended`(잠시 닫힘)** 추가. **값 하나만 는다** —
+//   칼럼도 테이블도 늘지 않는다. 그런데 status 는 `CHECK (status IN (...))` 로 묶여 있고 SQLite 는 CHECK 를
+//   ALTER 로 못 고치므로 `members` 표만 통째로 다시 만든다(MEMBERS_V5_SQL, 행은 그대로 옮긴다).
+//   `suspended` 는 "데몬이 정상 종료하면서 잠시 닫아 둔 세션" 이다 — 사용자 퇴근(`exited`)·상사 dismiss(`exited`)·
+//   오류(`error`) 와 달리 **다음 기동에 말없이 되살린다**(수명주기.md §5).
 
-export const SCHEMA_VERSION = 4;
+export const SCHEMA_VERSION = 5;
 
 export const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -65,7 +71,7 @@ CREATE TABLE IF NOT EXISTS members (
   child_pid         INTEGER,
   cwd               TEXT NOT NULL,
   status            TEXT NOT NULL CHECK (status IN
-                      ('starting','idle','working','waiting_approval','waiting_answer','exited','error')),
+                      ('starting','idle','working','waiting_approval','waiting_answer','suspended','exited','error')),
   hired_by          TEXT NOT NULL CHECK (hired_by IN ('user','leader')),
   member_token      TEXT NOT NULL UNIQUE,
   instructions_path TEXT,
@@ -143,6 +149,46 @@ CREATE TABLE IF NOT EXISTS usage_probe (
   child_pid  INTEGER,
   updated_at TEXT NOT NULL
 );
+`;
+
+/**
+ * **v4 → v5(T46-1)** — `members.status` CHECK 에 `suspended` 를 더한다.
+ *
+ * SQLite 는 CHECK 제약을 ALTER 로 못 고치므로 표를 다시 만들고 행을 옮긴다. `PENDING_FK_REPAIR_SQL` 과 같은 모양이다:
+ * 새 표를 만들고 → 복사하고 → 옛 표를 지우고 → 이름을 바꾼다. `DROP TABLE members` 다음에 `members_v5` 를
+ * `members` 로 rename 하는 순서라, **다른 표의 `REFERENCES members(id)` 는 건드려지지 않는다**(rename 이 따라가는
+ * 것은 `members_v5` 를 가리키는 참조뿐인데 그런 표가 없다 — T39 가 물린 함정의 반대쪽).
+ * FK 를 끈 상태에서 트랜잭션으로 부른다. 인덱스는 표와 함께 사라지므로 다시 만든다.
+ */
+export const MEMBERS_V5_SQL = `
+CREATE TABLE members_v5 (
+  id                TEXT PRIMARY KEY,
+  department_id     TEXT NOT NULL REFERENCES departments(id) ON DELETE CASCADE,
+  team_id           TEXT REFERENCES teams(id) ON DELETE CASCADE,
+  parent_id         TEXT REFERENCES members(id) ON DELETE SET NULL,
+  name              TEXT NOT NULL,
+  rank              TEXT NOT NULL CHECK (rank IN ('head','lead','member')),
+  engine            TEXT NOT NULL CHECK (engine IN ('claude','codex')),
+  session_id        TEXT,
+  child_pid         INTEGER,
+  cwd               TEXT NOT NULL,
+  status            TEXT NOT NULL CHECK (status IN
+                      ('starting','idle','working','waiting_approval','waiting_answer','suspended','exited','error')),
+  hired_by          TEXT NOT NULL CHECK (hired_by IN ('user','leader')),
+  member_token      TEXT NOT NULL UNIQUE,
+  instructions_path TEXT,
+  created_at        TEXT NOT NULL,
+  updated_at        TEXT NOT NULL
+);
+INSERT INTO members_v5(id, department_id, team_id, parent_id, name, rank, engine, session_id, child_pid, cwd,
+                       status, hired_by, member_token, instructions_path, created_at, updated_at)
+  SELECT id, department_id, team_id, parent_id, name, rank, engine, session_id, child_pid, cwd,
+         status, hired_by, member_token, instructions_path, created_at, updated_at FROM members;
+DROP TABLE members;
+ALTER TABLE members_v5 RENAME TO members;
+CREATE INDEX IF NOT EXISTS idx_members_team ON members(team_id);
+CREATE INDEX IF NOT EXISTS idx_members_department ON members(department_id);
+CREATE INDEX IF NOT EXISTS idx_members_parent ON members(parent_id);
 `;
 
 /**

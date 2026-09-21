@@ -92,9 +92,16 @@ describe('스키마 v3 → v4 마이그레이션 (T43-4 확인용 세션 pid)', 
 
     const raw = new DatabaseSync(dbPath);
     assert.equal((raw.prepare('SELECT version FROM schema_version').get() as { version: number }).version, SCHEMA_VERSION);
-    assert.equal(SCHEMA_VERSION, 4);
+    assert.equal(SCHEMA_VERSION, 5, 'T46-1 에서 members.status 에 suspended 가 붙으며 v5 가 됐다');
     const tables = (raw.prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name").all() as Array<{ name: string }>).map((r) => r.name);
     assert.ok(tables.includes('usage_probe'), tables.join(','));
+    // v5(T46-1): 같은 열기에서 members 표가 다시 만들어지고 CHECK 에 suspended 가 들어간다.
+    const membersSql = (raw.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='members'").get() as { sql: string }).sql;
+    assert.ok(membersSql.includes('suspended'), membersSql);
+    assert.ok(!tables.includes('members_v5'), '임시 표는 남지 않는다');
+    // 인덱스도 다시 만들어진다(표와 함께 사라지므로).
+    const idx = (raw.prepare("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='members'").all() as Array<{ name: string }>).map((r) => r.name);
+    for (const want of ['idx_members_team', 'idx_members_department', 'idx_members_parent']) assert.ok(idx.includes(want), idx.join(','));
     raw.close();
   });
 
