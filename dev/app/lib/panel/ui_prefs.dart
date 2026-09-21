@@ -224,3 +224,57 @@ class LastDepartmentDirNotifier extends Notifier<String?> {
 
 final lastDepartmentDirProvider =
     NotifierProvider<LastDepartmentDirNotifier, String?>(LastDepartmentDirNotifier.new);
+
+// ---- 앱을 닫아도 계속 일하기(T46-2, 수명주기 §2) ----------------------------------------
+
+/// 앱 로컬 prefs 의 키. **기본 꺼짐** — D-47 의 기본은 "앱·데몬·세션은 한 몸" 이다.
+const String keepDaemonKey = 'keepDaemonOnExit';
+
+/// 설정 이름·설명(상단 바 `⋮` 메뉴).
+const String keepDaemonLabel = '앱을 닫아도 계속 일하기';
+const String keepDaemonHint = '끄면(기본) 앱을 닫을 때 데몬과 AI 세션이 같이 꺼집니다. 켜면 그대로 남아 계속 일합니다.';
+
+/// 개발용 환경변수 — `1` 이면 설정과 무관하게 켜진 것으로 본다(수명주기 §2).
+const String keepDaemonEnvVar = 'PIXEL_KEEP_DAEMON';
+
+bool keepDaemonFromEnv([Map<String, String>? env]) => (env ?? Platform.environment)[keepDaemonEnvVar] == '1';
+
+/// 저장된 값 한 번 읽기(`main()` 이 감시자를 만들기 **전에** 쓴다 — 부모 감시 여부가 여기서 갈린다).
+Future<bool> readKeepDaemon(UiPrefsStore store, {Map<String, String>? env}) async {
+  if (keepDaemonFromEnv(env)) return true;
+  final stored = await store.read();
+  return stored[keepDaemonKey] == true;
+}
+
+/// `⋮` 메뉴의 토글. 환경변수가 켜져 있으면 **끌 수 없다**(그 세션 내내 켜진 것으로 본다).
+class KeepDaemonNotifier extends Notifier<bool> {
+  @override
+  bool build() {
+    if (ref.watch(keepDaemonEnvProvider)) return true;
+    unawaited(_load());
+    return false;
+  }
+
+  Future<void> _load() async {
+    final stored = await ref.read(uiPrefsStoreProvider).read();
+    if (stored[keepDaemonKey] == true) state = true;
+  }
+
+  /// 값을 바꾸고 바로 저장한다. 환경변수로 켜져 있으면 무시.
+  Future<void> set(bool value) async {
+    if (ref.read(keepDaemonEnvProvider)) return;
+    if (state == value) return;
+    state = value;
+    final store = ref.read(uiPrefsStoreProvider);
+    final current = await store.read();
+    await store.write({...current, keepDaemonKey: value});
+  }
+
+  Future<void> toggle() => set(!state);
+}
+
+/// `PIXEL_KEEP_DAEMON=1` 인가(테스트가 덮어쓴다).
+final keepDaemonEnvProvider = Provider<bool>((_) => keepDaemonFromEnv());
+
+/// 지금 "앱을 닫아도 계속 일하기" 인가(설정 또는 환경변수).
+final keepDaemonProvider = NotifierProvider<KeepDaemonNotifier, bool>(KeepDaemonNotifier.new);

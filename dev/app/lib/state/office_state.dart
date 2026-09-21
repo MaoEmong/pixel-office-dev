@@ -51,9 +51,14 @@ class DaemonConnector {
 
 final daemonConnectorProvider = Provider<DaemonConnector>((ref) => DaemonConnector.fromDaemonJson());
 
+/// `hello` 에 실어 보낼 앱 pid(T46 · 수명주기 §3). 기본은 null(= 안 보낸다) — `main()` 이 덮어쓴다.
+/// "앱을 닫아도 계속 일하기" 면 `main()` 이 null 그대로 둬 데몬의 부모 감시를 끈다.
+final helloParentPidProvider = Provider<int?>((_) => null);
+
 final rpcClientProvider = Provider<RpcClient>((ref) {
   // 못 붙을 때의 문구에 **찾아본 daemon.json 경로**와 환경변수 유무를 싣는다(T41 실기 사고).
   final client = RpcClient(noDaemonInfoMessage: daemonJsonMissingMessage());
+  client.parentPid = ref.watch(helloParentPidProvider);
   ref.onDispose(() => client.close());
   return client;
 });
@@ -78,6 +83,7 @@ class OfficeState {
     this.memberEvents = const {},
     this.latestEvent = const {},
     this.notices = const [],
+    this.recovery,
     this.engineUsage = const {},
     this.memberUsage = const {},
   });
@@ -121,6 +127,10 @@ class OfficeState {
   /// daemon.notice 최근 [noticeCapacity]건.
   final List<DaemonNotice> notices;
 
+  /// 진행 중인 세션 복구(T46, `daemon.notice{kind:'recovering', total, done}`). 끝났거나 없으면 null.
+  /// 오버레이가 `복구 2 / 5` 로 쓴다. 새 hello(= 새 연결) 때 지운다.
+  final DaemonNotice? recovery;
+
   /// 엔진 → 한도·연결 상태(T43). 스냅샷 `usage.engines` + `usage.engine` 알림.
   /// **엔진 행은 멤버가 사라져도 남는다**(마지막 값 표시용 — 설계문서 스키마 v3).
   final Map<Engine, EngineUsage> engineUsage;
@@ -155,6 +165,8 @@ class OfficeState {
     Map<String, List<OfficeEvent>>? memberEvents,
     Map<String, OfficeEvent>? latestEvent,
     List<DaemonNotice>? notices,
+    DaemonNotice? recovery,
+    bool clearRecovery = false,
     Map<Engine, EngineUsage>? engineUsage,
     Map<String, MemberUsage>? memberUsage,
   }) =>
@@ -175,6 +187,7 @@ class OfficeState {
         memberEvents: memberEvents ?? this.memberEvents,
         latestEvent: latestEvent ?? this.latestEvent,
         notices: notices ?? this.notices,
+        recovery: clearRecovery ? null : (recovery ?? this.recovery),
         engineUsage: engineUsage ?? this.engineUsage,
         memberUsage: memberUsage ?? this.memberUsage,
       );
@@ -332,6 +345,8 @@ class OfficeNotifier extends Notifier<OfficeState> {
       lastSeq: client.lastSeq,
       reconnectAttempts: 0,
       clearError: true,
+      // 새 연결 = 새 복구 주기. 지난 진행 표시를 물고 있지 않는다(T46).
+      clearRecovery: true,
     );
   }
 
@@ -394,7 +409,13 @@ class OfficeNotifier extends Notifier<OfficeState> {
         state = _applySnapshot(state, Snapshot.fromJson(n.params)).copyWith(lastSeq: client.lastSeq);
       case 'daemon.notice':
         final notice = DaemonNotice.fromJson(n.params);
-        state = state.copyWith(notices: _push(state.notices, notice, noticeCapacity));
+        // 복구 진행은 오버레이가 쓴다 — 다 끝났으면(done >= total) 표시를 내린다.
+        final recovering = notice.hasProgress && (notice.done ?? 0) < notice.total!;
+        state = state.copyWith(
+          notices: _push(state.notices, notice, noticeCapacity),
+          recovery: recovering ? notice : null,
+          clearRecovery: notice.kind == DaemonNoticeKind.recovering && !recovering,
+        );
       // 사용량 알림(T43) — 비영속 · seq 없음 · 바뀔 때만 온다.
       case 'usage.engine':
         applyEngineUsage(n.params);
@@ -642,6 +663,9 @@ final latestEventProvider = Provider.family<OfficeEvent?, String>(
   (ref, id) => ref.watch(officeProvider.select((s) => s.latestEvent[id])),
 );
 final noticesProvider = Provider<List<DaemonNotice>>((ref) => ref.watch(officeProvider.select((s) => s.notices)));
+
+/// 진행 중인 세션 복구(없으면 null) — 오버레이의 `복구 2 / 5`(T46 · 수명주기 §4).
+final recoveryProgressProvider = Provider<DaemonNotice?>((ref) => ref.watch(officeProvider.select((s) => s.recovery)));
 
 // ---- 사용량(T43, D-45) -------------------------------------------------------------
 

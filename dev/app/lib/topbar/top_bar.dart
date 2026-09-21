@@ -24,7 +24,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../model/models.dart';
 import '../panel/inbox.dart' show inboxCountProvider;
-import '../panel/ui_prefs.dart' show lastDepartmentDirProvider;
+import '../panel/ui_prefs.dart'
+    show keepDaemonEnvProvider, keepDaemonEnvVar, keepDaemonHint, keepDaemonLabel, keepDaemonProvider, lastDepartmentDirProvider;
 import '../panel/panel_tabs.dart' show RightPanelTab, panelTabRequestProvider;
 import '../panel/report_tab.dart' show reportUnreadProvider;
 import '../rpc/rpc_client.dart';
@@ -267,19 +268,51 @@ class _DepartmentMenu extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final dept = ref.watch(departmentProvider(departmentId));
+    final keepDaemon = ref.watch(keepDaemonProvider);
+    final envForced = ref.watch(keepDaemonEnvProvider);
     return PopupMenuButton<String>(
       key: const Key('topbar.departmentMenu'),
-      tooltip: '부서',
-      enabled: enabled && dept != null,
+      tooltip: '메뉴',
+      // 부서가 없어도 열린다 — 수명 주기 설정이 여기 있다(T46-2).
+      enabled: true,
       iconSize: 18,
       onSelected: (v) {
         if (v == 'delete' && dept != null) confirmDeleteDepartment(context, ref, dept);
+        if (v == 'keepDaemon') ref.read(keepDaemonProvider.notifier).toggle();
       },
       itemBuilder: (_) => [
         PopupMenuItem(
           key: const Key('topbar.deleteDepartment'),
           value: 'delete',
+          enabled: enabled && dept != null,
           child: Text('부서 삭제${dept == null ? '' : ' — ${dept.name}'}'),
+        ),
+        const PopupMenuDivider(),
+        // 앱·데몬·세션은 한 몸이 기본(D-47). 이 토글이 옛 D-02 동작으로 되돌린다.
+        PopupMenuItem(
+          key: const Key('topbar.keepDaemon'),
+          value: 'keepDaemon',
+          // 환경변수 PIXEL_KEEP_DAEMON=1 이면 그 세션 내내 켜져 있고 끌 수 없다.
+          enabled: !envForced,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Icon(keepDaemon ? Icons.check_box : Icons.check_box_outline_blank, size: 16),
+                  const SizedBox(width: 8),
+                  const Text(keepDaemonLabel),
+                ],
+              ),
+              const SizedBox(height: 2),
+              Text(
+                envForced ? '$keepDaemonHint ($keepDaemonEnvVar=1 로 켜져 있습니다)' : keepDaemonHint,
+                key: const Key('topbar.keepDaemon.hint'),
+                style: const TextStyle(fontSize: 11, color: Colors.white54),
+              ),
+            ],
+          ),
         ),
       ],
     );

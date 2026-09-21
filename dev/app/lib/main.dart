@@ -13,24 +13,64 @@
 //  - `OfficeView.onCreateDepartment` → 상단 바와 **같은** `showCreateDepartmentDialog`(부서 0 개 빈 상태).
 //  접점 회귀는 `test/app_shell_test.dart` 가 본다.
 
+import 'dart:async';
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'command/command_bar.dart';
 import 'command/shortcuts.dart';
+import 'lifecycle/already_running_app.dart';
+import 'lifecycle/app_lock.dart';
+import 'lifecycle/daemon_process.dart';
+import 'lifecycle/daemon_supervisor.dart';
+import 'lifecycle/lifecycle_gate.dart';
+import 'lifecycle/lifecycle_providers.dart';
 import 'office/office_view.dart';
 import 'panel/right_panel.dart';
-import 'rpc/rpc_client.dart';
 import 'state/office_state.dart';
 import 'state/selection.dart';
 
+import 'topbar/daemon_launcher.dart' show findDaemonDir;
 import 'topbar/notices.dart';
 import 'topbar/top_bar.dart';
 
 export 'topbar/disconnected_overlay.dart' show DisconnectedOverlay;
 
-void main() {
-  runApp(const ProviderScope(child: PixelOfficeApp()));
+/// 기동 순서(T46-2 · D-47 · 수명주기 §1):
+///   1. `app.lock` — 이미 켜져 있으면 안내만 하고 끝낸다(창이 둘이면 §2 의 종료 규칙이 깨진다).
+///   2. 설정 "앱을 닫아도 계속 일하기" 를 읽는다 — 부모 감시(`PIXEL_PARENT_PID`·`hello{parentPid}`) 여부가 갈린다.
+///   3. 감시자를 띄운다: 2초 안에 붙을 데몬이 없으면 **콘솔 창 없이** 직접 띄운다.
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+
+  final lock = await AppLock.acquire();
+  if (lock == null) {
+    runApp(AlreadyRunningApp(onClose: () => exit(0), theme: pixelOfficeTheme()));
+    return;
+  }
+
+  const prefs = FileUiPrefsStore();
+  final keepDaemon = await readKeepDaemon(prefs);
+  final daemonDir = await findDaemonDir();
+  final supervisor = daemonDir == null
+      ? null
+      : DaemonSupervisor(
+          spawn: (env) => spawnDaemon(daemonDir: daemonDir, extraEnv: env),
+          probe: daemonReachable,
+          // 계속 일하기면 부모 pid 를 안 넘긴다 — 데몬이 앱을 지켜보지 않는다(§2·§3).
+          parentPid: keepDaemon ? null : selfPid,
+        );
+  unawaited(supervisor?.start());
+
+  runApp(ProviderScope(
+    overrides: [
+      if (supervisor != null) daemonSupervisorProvider.overrideWithValue(supervisor),
+      if (!keepDaemon) helloParentPidProvider.overrideWithValue(selfPid),
+    ],
+    child: PixelOfficeApp(appLock: lock),
+  ));
 }
 
 // 선택 멤버 provider(`selectedMemberIdProvider`)는 T24b 에서 `lib/state/selection.dart` 로 옮겼다 —
@@ -70,14 +110,21 @@ ThemeData pixelOfficeTheme() {
 }
 
 class PixelOfficeApp extends StatelessWidget {
-  const PixelOfficeApp({super.key});
+  const PixelOfficeApp({super.key, this.appLock});
+
+  /// 잡아 둔 단일 실행 잠금(정상 종료 때 지운다). 테스트에서는 null.
+  final AppLock? appLock;
 
   @override
   Widget build(BuildContext context) => MaterialApp(
         title: '픽셀 오피스',
         debugShowCheckedModeBanner: false,
         theme: pixelOfficeTheme(),
-        home: const OfficeShell(),
+        // 창 닫기를 가로채 데몬·세션을 같이 끈다(§2). 감시자가 없으면 아무것도 하지 않는다.
+        home: LifecycleGate(
+          onExited: (_) async => appLock?.release(),
+          child: const OfficeShell(),
+        ),
       );
 }
 
@@ -87,7 +134,8 @@ class OfficeShell extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final connection = ref.watch(connectionStateProvider);
+    // 오버레이는 끊겼을 때만이 아니라 **다시 띄우는 중 · 복구 중 · 정리하는 중**에도 덮는다(T46-2 §4).
+    final overlay = ref.watch(overlayVisibleProvider);
     final selected = ref.watch(selectedMemberIdProvider);
     final departmentId = ref.watch(activeDepartmentIdProvider);
     return Scaffold(
@@ -118,7 +166,7 @@ class OfficeShell extends ConsumerWidget {
                       CommandBar(selectedMemberId: selected),
                     ],
                   ),
-                  if (connection != RpcConnectionState.connected) const DisconnectedOverlay(),
+                  if (overlay) const DisconnectedOverlay(),
                   const NoticeBanner(),
                 ],
               ),

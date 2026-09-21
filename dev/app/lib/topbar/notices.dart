@@ -56,6 +56,8 @@ class _NoticeBannerState extends ConsumerState<NoticeBanner> {
       if (next.isEmpty) return;
       final last = next.last;
       if (prev != null && prev.isNotEmpty && identical(prev.last, last)) return;
+      // 수명 주기 알림(kind 만 있고 message 가 빈 것)은 오버레이가 말한다 — 토스트를 겹쳐 띄우지 않는다.
+      if (last.message.isEmpty) return;
       _show(last);
     });
     final n = _current;

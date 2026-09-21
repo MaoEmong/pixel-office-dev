@@ -385,7 +385,8 @@ class OfficePainter extends CustomPainter {
     final d = layout.deskRect(m.deskIndex);
     final fs = layout.fontScale;
     final s = layout.scale;
-    final exited = m.status == MemberStatus.exited;
+    // 퇴근 · 잠시 닫힘(T46) 둘 다 회색 책상 + 의자만.
+    final exited = m.isSeatEmpty;
     final rr = RRect.fromRectAndRadius(d, const Radius.circular(officeRadius));
     canvas.drawRRect(rr, Paint()..color = exited ? OfficeColors.charGone.withValues(alpha: 0.35) : OfficeColors.deskFill);
     if (m.isError) {
@@ -633,7 +634,7 @@ class OfficePainter extends CustomPainter {
 
   void _paintCharacter(Canvas canvas, OfficeLayout layout, SceneMember m, CharacterPlacement p) {
     // 퇴근한 책상에는 **의자만** 남는다(패스 2 매핑표 "퇴근") — 의자는 [_paintDesk] 가 그린다.
-    if (m.status == MemberStatus.exited) return;
+    if (m.isSeatEmpty) return;
     final r = layout.charRadius;
     final c = p.center + Offset(0, bob[m.id] ?? 0);
     final ring = ringCenter(layout, c);
@@ -699,7 +700,7 @@ class OfficePainter extends CustomPainter {
 
   /// 말풍선을 지금 보여 주는가(패스 4): alert(내 차례·대기·오류·보고 방문)는 항상, 작업 말풍선은 선택·호버일 때만.
   bool showsBubble(SceneMember m) {
-    if (m.status == MemberStatus.exited) return false;
+    if (m.isSeatEmpty) return false;
     if (bubbleOverrides.containsKey(m.id) || m.isAlert || m.isError) return true;
     return m.id == selectedMemberId || m.id == hoveredMemberId;
   }
