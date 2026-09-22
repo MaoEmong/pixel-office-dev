@@ -44,7 +44,7 @@ pixel-office/
       PROTOCOL.md         WS JSON-RPC·이벤트·후처리 계약 — 앱과 데몬의 유일한 기준
       src/                office · rpc · pty · screen · hooks · adapters · mcp · input · store · cli
       src/tui-maps/       CLI 버전별 화면 패턴 JSON
-      test/               node:test (817건)
+      test/               node:test (818건)
     app/                Flutter 데스크탑 앱 (Windows)  → dev/app/README.md
       lib/                rpc · model · state · topbar · office · panel · command
       test/               위젯·상태 테스트 (659건)
@@ -55,6 +55,11 @@ pixel-office/
 ## 실행
 
 사전 조건: **Node 24+**(데몬이 `node:sqlite` 를 쓴다), **Flutter**(Windows 데스크탑), `claude` 실행 파일 + 로그인, (선택) `codex` + 로그인.
+
+`claude` 는 `npm install -g @anthropic-ai/claude-code` 로 설치하고 한 번 실행해 로그인해 둔다. 데몬은 실행 파일을
+`PIXEL_CLAUDE_EXE` → PATH 의 `claude.exe` → **npm 전역의 `bin/claude.exe`**(PATH 에는 `.cmd` 셰임만 오른다) → Claude
+데스크탑 앱 번들 순으로 찾는다. Claude 데스크탑 앱의 번들만 있는 컴퓨터에서는 그 앱의 가상화된 환경 밖(탐색기 더블클릭)에서
+`claude.exe` 가 보이지 않으므로 반드시 npm 으로 따로 설치한다(2026-09-22 실측).
 
 **앱만 켜면 된다.** 데몬은 앱이 **콘솔 창 없이** 같이 띄우고, 앱을 닫으면 AI 세션까지 같이 꺼진다
 (D-47 이 D-02 의 기본 동작을 뒤집었다 — 전문 `docs/design/수명주기.md`, 실기 `docs/worklog/T46-3-LifecycleLive.md`).
@@ -86,7 +91,7 @@ cd dev/daemon && npm run cli      # help 로 명령 목록
 ## 검증
 
 ```bash
-cd dev/daemon && npx tsc --noEmit && npm test     # 817건 (PIXEL_IT=1 이면 실제 CLI 통합 테스트 포함)
+cd dev/daemon && npx tsc --noEmit && npm test     # 818건 (PIXEL_IT=1 이면 실제 CLI 통합 테스트 포함)
 cd dev/app    && flutter analyze && flutter test  # 659건
 ```
 
