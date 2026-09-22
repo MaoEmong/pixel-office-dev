@@ -73,11 +73,25 @@ describe('resolveClaudeExe (T41)', () => {
     assert.equal(resolveClaudeExe(env(), 'win32'), real);
   });
 
+  test('npm 전역 설치의 bin/claude.exe 를 찾는다 — PATH 에는 .cmd 셰임뿐인 실제 설치 모양(2.1.278)', () => {
+    const bundle = makeBundle('2.1.270');
+    fs.writeFileSync(path.join(pathDir, 'claude.cmd'), '@echo off');
+    const npmExe = path.join(appData, 'npm', 'node_modules', '@anthropic-ai', 'claude-code', 'bin', 'claude.exe');
+    fs.mkdirSync(path.dirname(npmExe), { recursive: true });
+    fs.writeFileSync(npmExe, 'MZ');
+    const r = resolveClaudeExeDetailed(env(), 'win32');
+    assert.equal(r.exe, npmExe, 'npm 전역이 번들보다 먼저다(사용자가 직접 설치한 쪽)');
+    assert.equal(r.found, true);
+    assert.ok(r.tried.at(-1)?.startsWith('npm 전역:'));
+    fs.rmSync(npmExe);
+    assert.equal(resolveClaudeExe(env(), 'win32'), bundle, 'npm 전역이 없으면 번들로 간다');
+  });
+
   test('아무것도 못 찾으면 "claude" 폴백 + 찾아본 곳을 남긴다', () => {
     const r = resolveClaudeExeDetailed(env(), 'win32');
     assert.equal(r.exe, 'claude');
     assert.equal(r.found, false);
-    assert.equal(r.tried.length, 3);
+    assert.equal(r.tried.length, 4);
     assert.match(r.tried[0]!, /PIXEL_CLAUDE_EXE/);
     assert.match(r.tried[1]!, /PATH/);
     assert.match(r.tried[2]!, /claude-code/, '어느 폴더를 봤는지가 있어야 사용자가 고칠 수 있다');

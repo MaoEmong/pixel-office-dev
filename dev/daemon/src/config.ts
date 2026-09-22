@@ -59,17 +59,22 @@ function onPath(exeName: string, pathVar: string | undefined): string | undefine
  *   3. PATH 에 있는 진짜 `codex.exe`(셰임 제외)
  *   4. 못 찾으면 `'codex'` — 스폰이 실패하면서 오류로 드러난다(조용히 다른 것을 띄우지 않는다)
  */
-export function resolveCodexExe(env: NodeJS.ProcessEnv = process.env, platform: NodeJS.Platform = process.platform): string {
-  if (env.PIXEL_CODEX_EXE) return env.PIXEL_CODEX_EXE;
-  const win = platform === 'win32';
-  const exeName = win ? 'codex.exe' : 'codex';
-  const roots = win
+/** npm 전역 패키지가 놓이는 뿌리 폴더들(플랫폼별). claude · codex 실행 파일 탐색이 같이 쓴다. */
+function npmGlobalRoots(env: NodeJS.ProcessEnv, platform: NodeJS.Platform): string[] {
+  return platform === 'win32'
     ? [
         path.join(env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming'), 'npm'),
         path.join(env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local'), 'npm'),
         path.join(env.ProgramFiles || 'C:\\Program Files', 'nodejs'),
       ]
     : ['/usr/local', '/usr/local/lib', path.join(os.homedir(), '.npm-global'), path.join(os.homedir(), '.local')];
+}
+
+export function resolveCodexExe(env: NodeJS.ProcessEnv = process.env, platform: NodeJS.Platform = process.platform): string {
+  if (env.PIXEL_CODEX_EXE) return env.PIXEL_CODEX_EXE;
+  const win = platform === 'win32';
+  const exeName = win ? 'codex.exe' : 'codex';
+  const roots = npmGlobalRoots(env, platform);
   for (const root of roots) {
     const found = codexVendorExe(root, exeName);
     if (found) return found;
@@ -136,6 +141,14 @@ export function resolveClaudeExeDetailed(
   const onPathExe = onPath(exeName, env.PATH ?? env.Path);
   if (onPathExe) return { exe: onPathExe, found: true, tried: [...tried, `PATH: ${onPathExe}`] };
   tried.push(`PATH 에 ${exeName} 없음(.cmd/.ps1 셰임은 세지 않는다)`);
+
+  // npm 전역 설치(`npm i -g @anthropic-ai/claude-code`): PATH 에는 `claude.cmd` 셰임만 오르고 실제 exe 는
+  // `<npmRoot>/node_modules/@anthropic-ai/claude-code/bin/` 에 있다(실측 2.1.278). codex 와 같은 뿌리를 뒤진다.
+  for (const root of npmGlobalRoots(env, platform)) {
+    const exe = path.join(root, 'node_modules', '@anthropic-ai', 'claude-code', 'bin', exeName);
+    if (isFile(exe)) return { exe, found: true, tried: [...tried, `npm 전역: ${exe}`] };
+  }
+  tried.push(`npm 전역에 @anthropic-ai/claude-code/bin/${exeName} 없음`);
 
   if (win) {
     const appData = env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming');
