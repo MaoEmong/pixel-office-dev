@@ -88,20 +88,23 @@ cd dev/daemon && npm run cli      # help 로 명령 목록
 
 첫 화면에서 **"부서 만들기"** → 이름 · 작업 폴더(cwd) · 부장 엔진 · 부장 이름 → 부장이 출근한다. 그다음은 아래 지시 바로 **부장에게만** 말하면 된다.
 
-### 맥에서 실행 (T48 · D-48 — 코드는 들어갔고 **실기는 아직**)
+### 맥에서 실행 (T48 · D-48 — 데몬·앱 테스트는 **맥에서 통과**, 앱 빌드부터는 아직)
 
-운영체제에 닿는 코드는 데몬 `src/platform.ts` · 앱 `lib/platform/platform.dart` 한 곳에 모아 두었고 맥 분기는 이 저장소 안의 단위 테스트로만 검증했다.
-**맥에서 실제로 돌려 본 적은 없다** — 확인 순서는 [docs/design/맥-지원.md](docs/design/맥-지원.md) 의 "2단계 대본" M1~M17 이고, 결과는 `docs/worklog/T48-3-MacLive.md` 에 적는다.
+운영체제에 닿는 코드는 데몬 `src/platform.ts` · 앱 `lib/platform/platform.dart` 한 곳에 모아 두었다.
+확인 순서는 [docs/design/맥-지원.md](docs/design/맥-지원.md) 의 "2단계 대본" M1~M17 이고, 실기 결과는
+[docs/worklog/T48-3-MacLive.md](docs/worklog/T48-3-MacLive.md) 에 있다 — **M1(데몬 884건)·M7 의 analyze·test(722건)
+까지 macOS 26.6 / arm64 에서 통과**했고, `flutter build macos` 부터(M8~M17)는 그 맥의 Xcode 라이선스와
+`claude` 로그인이 남아 아직이다.
 
 ```bash
-# 사전: Xcode 명령줄 도구, Node 24+, Flutter(맥 데스크탑 켜기), claude 설치 + 로그인
-xcode-select --install
+# 사전: Xcode(앱 빌드에는 명령줄 도구만으로는 안 된다), Node 24+, Flutter(맥 데스크탑 켜기), claude 설치 + 로그인
+sudo xcodebuild -license accept && sudo xcodebuild -runFirstLaunch   # 동의 전에는 git·flutter 까지 거부한다
 flutter config --enable-macos-desktop
 npm install -g @anthropic-ai/claude-code && claude      # 한 번 실행해 로그인
 
 git clone https://github.com/MaoEmong/pixel-office-dev.git && cd pixel-office-dev
-cd dev/daemon && npm install && npx tsc --noEmit && npm test     # 윈도우와 같은 수(884)가 나와야 한다
-cd ../app && flutter pub get && flutter analyze && flutter test  # 721
+cd dev/daemon && npm install && npx tsc --noEmit && npm test     # 874건 + 스킵된 MixedTeam 10건 = 윈도우의 884
+cd ../app && flutter pub get && flutter analyze && flutter test  # 720 통과 · 2 스킵
 flutter build macos --release
 open build/macos/Build/Products/Release/pixel_office.app         # Finder 더블클릭과 같다
 ```
@@ -110,13 +113,16 @@ open build/macos/Build/Products/Release/pixel_office.app         # Finder 더블
 - 맥 GUI 앱은 터미널의 PATH 를 물려받지 않아 앱이 `node` 를 절대 경로로 찾는다(`PIXEL_NODE` → PATH → Homebrew → nvm → volta). 못 찾으면 화면에 `node 를 찾지 못했습니다` — `PIXEL_NODE=/opt/homebrew/bin/node` 처럼 지정.
 - 앱은 **샌드박스를 끄고** 빌드한다(데몬을 띄우고 홈 폴더를 읽어야 한다 — 개인 툴, 앱스토어 배포는 범위 밖). 서명 없는 로컬 빌드라 첫 실행에 Gatekeeper 가 막으면 시스템 설정 → 개인정보 보호 및 보안 → "그래도 열기".
 - 단축키는 `Cmd+K/L/T/I/R`, 인박스 허가·거부는 `Cmd+Shift+Y` / `Cmd+Shift+N`.
-- 가장 큰 미지수 둘: npm 이 설치한 `claude` 가 맥에서는 실행 파일이 아니라 스크립트(셰뱅)인데 가짜 터미널로 그대로 띄워지는지, 터미널을 닫았을 때(SIGHUP) 정리가 끝까지 도는지.
+- **`npm install` 뒤 pty 가 `posix_spawnp failed` 로 죽으면** npm 11.16+ 가 node-pty 의 설치 스크립트를 막아 `prebuilds/darwin-*/spawn-helper` 에 실행 권한이 없는 것이다 — `dev/daemon` 에서 `npm approve-scripts --allow-scripts-pending`(또는 그 파일에 `chmod +x`). 윈도우에는 없는 문제다(T48-3 M1 함정 ①).
+- **저장소를 경로에 한글·비ASCII 가 없는 곳에 두라.** 있으면 `flutter analyze` 의 analysis server 가 LSP 메시지를 잘라 `FormatException` 으로 죽는다(툴체인 쪽 문제, `flutter test`·`pub get` 은 무관). T48-3 M7 함정 ②.
+- 가장 큰 미지수였던 둘은 T48-3 에서 확인됐다: 셰뱅 스크립트(`#!/usr/bin/env node`)는 심볼릭 링크를 거쳐서도 node-pty 가 진짜 TTY 로 띄운다. SIGHUP 은 정상 종료 경로를 그대로 타고 `daemon.json` 까지 치운다.
 
 ## 검증
 
 ```bash
 cd dev/daemon && npx tsc --noEmit && npm test     # 884건 (PIXEL_IT=1 이면 실제 CLI 통합 테스트 포함)
 cd dev/app    && flutter analyze && flutter test  # 721건
+# 새로 클론한 곳에서는 MixedTeam 스위트(10건)가 스킵된다 — 실측 hook 로그가 .gitignore 되어 있다(dev/spike-0/*.json).
 ```
 
 ## 더 읽을 것
