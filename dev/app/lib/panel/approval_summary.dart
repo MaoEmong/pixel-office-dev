@@ -11,7 +11,8 @@
 //           마지막 조각. 둘 다 없으면 생략한다(`❗ Bash · 삭제`).
 //           토큰은 따옴표를 아는 쪼개기(`shellTokens`)로 끊고 감싼 따옴표·괄호·꼬리 구두점을 벗긴다
 //           (T40d ③ — `t40-a.txt") 실행` 처럼 꼬리가 붙어 나오던 자리).
-//  위험 패턴(`rm -rf` · `Remove-Item -Recurse` · `git push --force` · `del /s` · 줄 첫머리 `format`)이면
+//  위험 패턴(`rm -rf` · `Remove-Item -Recurse` · `git push --force` · `del /s` · 줄 첫머리 `format` ·
+//     유닉스 `sudo` · `chmod -R` · `git reset --hard` · `git clean -fd` · `>` 리다이렉션 · `dd` · `mkfs`)이면
 //     첫 줄 배경에 빨강 틴트(#FF6B6B 알파 0.15) + 태그 `위험`.
 //  메타(오른쪽 위) `요청 2분 전 · 내일 10:32 만료` — 만료 = createdAt + 86400초(hook 보류 상한, D10).
 //     남은 1시간부터 주황, 지나면 회색 "만료 — 재지시" 카드.
@@ -29,6 +30,9 @@ const String approvalDangerTag = '위험';
 
 // ---- 위험 패턴 ---------------------------------------------------------------------
 
+// 판별은 **플랫폼 무관**이다(D-48 ④): 맥에서 PowerShell 을 쓸 수도, 윈도우에서 bash·git-bash 를 쓸 수도 있다.
+// 위험 = "되돌릴 수 없다". 되돌릴 수 있는 것(`git commit`·`npm install`)은 넣지 않는다 — 다 위험하면 아무것도
+// 위험하지 않다.
 final List<RegExp> _dangerPatterns = [
   // rm -rf / rm -fr / rm -Rf …
   RegExp(r'\brm\s+(-\w+\s+)*-\w*r\w*f\w*\b'),
@@ -38,6 +42,26 @@ final List<RegExp> _dangerPatterns = [
   RegExp(r'\bdel\s+/s\b'),
   // 디스크 포맷만 — `dart format` 같은 하위 명령은 아니다(문장 첫머리나 구분자 뒤에 올 때만).
   RegExp(r'(^|[;&|]\s*)format\b'),
+  // ---- 유닉스 계열(T48-2) ----
+  // 권한 상승 — 무엇을 하든 되돌릴 수 없는 범위로 넓어진다.
+  RegExp(r'(^|[;&|]\s*)sudo\s'),
+  // 되돌릴 수 없는 재귀 권한·소유자 변경.
+  RegExp(r'\bchmod\s+(-\w+\s+)*-\w*r\b'),
+  RegExp(r'\bchmod\s+(-\w+\s+)*--recursive\b'),
+  RegExp(r'\bchown\s+(-\w+\s+)*-\w*r\b'),
+  // 작업 내용을 통째로 버리는 git 명령.
+  RegExp(r'\bgit\s+reset\b[\s\S]*--hard\b'),
+  RegExp(r'\bgit\s+clean\b[\s\S]*-\w*f\w*d\w*\b'),
+  RegExp(r'\bgit\s+clean\b[\s\S]*-\w*d\w*f\w*\b'),
+  RegExp(r'\bgit\s+checkout\b[\s\S]*\s--\s+\S'),
+  // 파일 덮어쓰기 리다이렉션(`> file` · `>> file`). `2>&1` 같은 fd 복제는 뺀다.
+  RegExp(r'(^|[^0-9&>])>>?\s*[^&\s]'),
+  // 블록 장치에 직접 쓰기 · 파일 시스템 생성.
+  RegExp(r'(^|[;&|]\s*)dd\s+'),
+  RegExp(r'\bof=/dev/'),
+  RegExp(r'(^|[;&|]\s*)mkfs(\.\w+)?\b'),
+  // 디스크 정리·해제.
+  RegExp(r'(^|[;&|]\s*)diskutil\s+(erase|reformat)'),
 ];
 
 /// 명령이 되돌릴 수 없는 위험 패턴을 담고 있는가(대소문자 무시).
