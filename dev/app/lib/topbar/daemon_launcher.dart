@@ -1,4 +1,5 @@
-// 데몬 시작(T14). 앱이 데몬과 끊겨 있을 때 `dev/daemon` 에서 `npm start` 를 분리 프로세스로 띄운다.
+// 데몬 시작(T14). 앱이 데몬과 끊겨 있을 때 `dev/daemon` 의 데몬을 띄운다 — 윈도우는 보이는 콘솔 창
+// (`cmd /c start "" npm start`), 맥·리눅스는 창 없이 감시자와 **같은 스포너**(T48-2 · D-48).
 // 데몬 폴더는 실행 파일 위치와 현재 디렉토리에서 위로 올라가며 `dev/daemon/package.json` 을 찾는다
 // (개발 중 `dev/app`, 릴리즈 exe `dev/app/build/windows/x64/runner/Release` 둘 다 저장소 루트에 닿는다).
 
@@ -8,6 +9,8 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../lifecycle/daemon_process.dart' show spawnDaemon;
+import '../platform/platform.dart' as plat;
 import '../rpc/daemon_info.dart';
 import '../rpc/rpc_client.dart';
 import '../state/office_state.dart';
@@ -21,8 +24,8 @@ class DaemonLaunchException implements Exception {
 }
 
 /// `startPaths` (기본: 현재 디렉토리, 실행 파일 폴더) 각각에서 위로 올라가며 `dev/daemon/package.json` 을 찾는다.
-Future<Directory?> findDaemonDir({Iterable<String>? startPaths}) async {
-  final sep = Platform.pathSeparator;
+Future<Directory?> findDaemonDir({Iterable<String>? startPaths, plat.AppPlatform? platform}) async {
+  final sep = (platform ?? plat.currentPlatform).pathSeparator;
   final starts = startPaths ?? [Directory.current.path, File(Platform.resolvedExecutable).parent.path];
   for (final start in starts) {
     var dir = Directory(start).absolute;
@@ -37,18 +40,32 @@ Future<Directory?> findDaemonDir({Iterable<String>? startPaths}) async {
   return null;
 }
 
-/// 데몬을 새 콘솔 창에서 분리 실행한다(`cmd /c start "" npm start`). 폴더를 못 찾으면 [DaemonLaunchException].
-Future<void> launchDaemon({Iterable<String>? startPaths}) async {
-  final dir = await findDaemonDir(startPaths: startPaths);
+/// 폴백 스포너(테스트 주입용) — 맥·리눅스에서 데몬을 띄우는 길.
+typedef FallbackSpawn = Future<void> Function(Directory daemonDir);
+
+Future<void> _spawnPipeMode(Directory daemonDir) async {
+  // 감시자와 **같은 스포너**다(`node --import tsx …`, 파이프 모드). node 를 못 찾으면
+  // [DaemonNodeNotFoundException] 이 그대로 올라가 버튼 아래 문구로 보인다.
+  await spawnDaemon(daemonDir: daemonDir);
+}
+
+/// 데몬을 띄운다. 폴더를 못 찾으면 [DaemonLaunchException].
+///
+/// - 윈도우: 새 **콘솔 창**에서 분리 실행(`cmd /c start "" npm start`) — 실패 화면에서 원인을 눈으로 보는 용도.
+/// - 맥·리눅스: `open -a Terminal` 같은 것을 쓰지 않는다. 창 없이 **감시자와 같은 스포너**로 띄운다
+///   (D-48: 폴백 경로가 다른 길을 타면 맥에서 이 버튼만 따로 고장난다). 로그는 `daemon.log` 에 남는다.
+Future<void> launchDaemon({Iterable<String>? startPaths, plat.AppPlatform? platform, FallbackSpawn? spawn}) async {
+  final p = platform ?? plat.currentPlatform;
+  final dir = await findDaemonDir(startPaths: startPaths, platform: p);
   if (dir == null) {
     throw const DaemonLaunchException('dev/daemon 폴더를 찾지 못했습니다 — 저장소 안에서 앱을 실행하거나 데몬을 직접 시작하세요(dev/daemon 에서 npm start).');
   }
   try {
-    if (Platform.isWindows) {
+    if (p.isWindows) {
       await Process.start('cmd', ['/c', 'start', '', 'npm', 'start'], workingDirectory: dir.path, mode: ProcessStartMode.detached);
-    } else {
-      await Process.start('npm', ['start'], workingDirectory: dir.path, mode: ProcessStartMode.detached);
+      return;
     }
+    await (spawn ?? _spawnPipeMode)(dir);
   } on ProcessException catch (e) {
     throw DaemonLaunchException('데몬 실행 실패: ${e.message}');
   }
