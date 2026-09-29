@@ -25,8 +25,11 @@ void main() {
     });
 
     test('모르는 모양이면 npm 으로 떨어진다 — 윈도우는 npm.cmd', () {
-      expect(daemonCommandFor('foo --bar'), const DaemonCommand('npm.cmd', ['start']));
-      expect(daemonCommandFor(null), const DaemonCommand('npm.cmd', ['start']));
+      // 어느 이름이 나오는지는 **플랫폼**이 정한다 — 호스트에 맡기면 맥에서 `npm` 이 나와 이 검사가 깨진다
+      // (T48-3 M7). 두 갈래를 다 못 박는다.
+      expect(daemonCommandFor('foo --bar', windows: true), const DaemonCommand('npm.cmd', ['start']));
+      expect(daemonCommandFor(null, windows: true), const DaemonCommand('npm.cmd', ['start']));
+      expect(daemonCommandFor('foo --bar', windows: false), const DaemonCommand('npm', ['start']));
       expect(daemonCommandFor('', windows: false), const DaemonCommand('npm', ['start']));
     });
 

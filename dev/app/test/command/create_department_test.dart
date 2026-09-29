@@ -7,6 +7,8 @@
 //  - 기본값: 부서 이름 = 폴더 이름(사용자가 고치기 전까지), 부장 이름 = "부장", 엔진 = claude.
 //    → **폴더만 고르면 한 글자도 안 치고 만들 수 있다.**
 //  - 마지막으로 고른 폴더의 **부모**는 앱 로컬 prefs 에 남아 다음 선택기의 시작 폴더가 된다.
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -17,6 +19,13 @@ import 'fake_rpc_client.dart';
 
 const String pickedFolder = r'D:\myproject\pixel-office';
 const String otherFolder = r'D:\myproject\hanul';
+
+// `parentDirOf` 는 dart:io(`Directory.parent`)라 **호스트 경로 모양**으로만 답한다 — 윈도우 경로를 맥에
+// 먹이면 구분자가 하나도 없어 부모가 `'.'` 이 된다(T48-3 M7 에서 드러났다). 위 두 상수는 다이얼로그를
+// 그냥 통과하는 문자열이라 그대로 두고, **부모를 계산하는 검사에만** 호스트 모양 픽스처를 쓴다.
+final String hostProjects = Platform.isWindows ? r'D:\myproject' : '/myproject';
+final String hostPicked = '$hostProjects${Platform.pathSeparator}pixel-office';
+final String hostRoot = Platform.isWindows ? r'D:\' : '/';
 
 /// 가짜 폴더 선택기 — 호출 인자를 기록하고 [result] 를 돌려준다(null = 취소).
 class FakePicker {
@@ -83,9 +92,9 @@ void main() {
   });
 
   test('parentDirOf: 고른 폴더의 부모를 다음 시작 폴더로, 루트면 null', () {
-    expect(parentDirOf(pickedFolder), r'D:\myproject');
+    expect(parentDirOf(hostPicked), hostProjects);
     expect(parentDirOf(''), isNull);
-    expect(parentDirOf(r'D:\'), isNull, reason: '루트는 부모가 자기 자신');
+    expect(parentDirOf(hostRoot), isNull, reason: '루트는 부모가 자기 자신');
   });
 
   testWidgets('폴더를 고르면 이름·부장 이름·엔진이 기본값으로 차고, 한 글자도 안 치고 만들 수 있다', (tester) async {
@@ -177,13 +186,13 @@ void main() {
   testWidgets('고른 폴더의 부모를 앱 로컬 prefs 에 남기고 다음 선택기의 시작 폴더로 준다', (tester) async {
     final fake = FakeRpcClient();
     addTearDown(fake.close);
-    final picker = FakePicker(pickedFolder);
+    final picker = FakePicker(hostPicked); // 부모를 계산하므로 호스트 경로 모양이어야 한다
     final prefs = MemoryUiPrefsStore();
-    await openDialog(tester, fake: fake, picker: picker, prefs: prefs);
+    await openDialog(tester, fake: fake, picker: picker, prefs: prefs, existing: {hostPicked});
 
     await tapPick(tester);
     expect(picker.initialDirectories, [null], reason: '첫 번째는 기억한 폴더가 없다');
-    expect(prefs.value[lastDepartmentDirKey], r'D:\myproject');
+    expect(prefs.value[lastDepartmentDirKey], hostProjects);
 
     // 같은 앱(같은 ProviderScope)에서 다시 열면 그 폴더에서 시작한다.
     await tester.tap(find.text('취소'));
@@ -191,7 +200,7 @@ void main() {
     await tester.tap(find.text('열기'));
     await tester.pumpAndSettle();
     await tapPick(tester);
-    expect(picker.initialDirectories.last, r'D:\myproject');
+    expect(picker.initialDirectories.last, hostProjects);
   });
 
   testWidgets('저장된 폴더가 있으면 앱 시작 직후에도 그 폴더에서 연다', (tester) async {
