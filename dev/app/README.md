@@ -1,4 +1,4 @@
-# pixel-office 데스크탑 앱 (Flutter, Windows)
+# pixel-office 데스크탑 앱 (Flutter, Windows · macOS)
 
 데몬(`dev/daemon`)에 WebSocket 으로 붙어 사무실을 그리는 클라이언트. 와이어 계약은 `dev/daemon/PROTOCOL.md` 가 유일한 기준이다.
 
@@ -7,6 +7,89 @@
 여기에 **M5(T30·T31) 의 오류 표시**가 붙었다 — 세션이 죽으면 캐릭터가 **붉은 링 + `⚠ 오류` 말풍선**(퇴근은 여전히 회색·말풍선 없음)이 되고,
 그 캐릭터를 누르면 오른쪽 패널 머리에 `⚠ 오류로 종료됨 (code N)` + **`재고용`** 배너가 뜬다. 누르면 `member.rehire` → `--resume` 으로
 같은 문맥을 물고 되살아난다(T31 실기: 클릭 → `text: resumed` → 다음 지시 정상, `docs/worklog/T31-M5정리.md`).
+
+## 플랫폼 · 맥 (T48-2, D-48 · `docs/design/맥-지원.md`)
+
+운영체제에 닿는 코드는 **`lib/platform/platform.dart` 한 파일**에 모여 있다. 나머지 코드는 여기 함수만 부른다
+(`dataDir` · `dataFilePath` · `findNode` · `npmExecutable` · `isProcessAlive` · `processImageName` · `killTree` ·
+`isMetaShortcuts`). 분기가 흩어져 있으면 맥에서 하나씩 터지고, 터지는 자리를 윈도우에서는 볼 수가 없다.
+모든 함수가 `AppPlatform` 을 주입받으므로 **맥 분기를 윈도우에서 단위 테스트로 고정**한다(`test/platform/`).
+
+| 항목 | 윈도우 | 맥 | 리눅스(덤) |
+|---|---|---|---|
+| 데이터 폴더 | `%LOCALAPPDATA%\pixel-office` | `~/Library/Application Support/pixel-office` | `$XDG_DATA_HOME/pixel-office` 또는 `~/.local/share/pixel-office` |
+| 데이터 폴더 덮어쓰기 | `PIXEL_DATA_DIR` | 같음 | 같음 |
+| 데몬 띄우기 | `node --import tsx src/index.ts`(파이프 모드) | 같은 명령, **node 는 절대 경로** | 같음 |
+| `node` 탐색 | `node`(PATH 에 맡긴다) | `PIXEL_NODE` → PATH → `/opt/homebrew/bin/node` → `/usr/local/bin/node` → `~/.nvm/versions/node/*/bin/node`(최신) → `~/.volta/bin/node` | 같음 |
+| npm | `npm.cmd` | `npm` | `npm` |
+| 프로세스 생존 | `tasklist /FI "PID eq N"` | `kill -0 <pid>`(EPERM 도 살아 있음) | 같음 |
+| 이미지 이름(pid 재사용 가드) | `tasklist` CSV 첫 칸 | `ps -p <pid> -o comm=` 의 basename | 같음 |
+| 트리 강제 종료 | `taskkill /PID <pid> /T /F` | `ps -axo pid=,ppid=` 로 트리를 만들어 **자식부터** `kill -9` | 같음 |
+| "데몬 시작" 폴백 | 보이는 콘솔 창(`cmd /c start "" npm start`) | 창 없이 **감시자와 같은 스포너** | 같음 |
+| 폴더 선택 대화상자 | `file_selector_windows` | `file_selector_macos`(`file_selector` 가 자동으로 끌어온다) | `file_selector_linux` |
+| 데이터 폴더 진단 문구의 환경변수 | `LOCALAPPDATA` | `HOME` | `HOME` |
+
+데몬(`dev/daemon/src/platform.ts`)과 **같은 규칙·같은 폴더·같은 환경변수 이름**이다. 어긋나면 앱이 데몬의
+`daemon.json` 을 못 찾는다(T41 사고).
+
+### node 를 못 찾으면
+
+맥 GUI 앱은 **터미널의 PATH 를 물려받지 않는다**(Finder 에서 띄운 앱은 launchd 의 최소 PATH
+`/usr/bin:/bin:/usr/sbin:/sbin` 만 본다 — Homebrew·nvm·volta 의 node 는 거기 없다). 그래서 띄우기 직전에
+절대 경로를 정하고, 못 찾으면 감시자가 **재시작 일정을 돌지 않고** 바로 실패 화면으로 간다(기다려도 node 는
+생기지 않는다):
+
+> node 를 찾지 못했습니다 — Homebrew 로 설치하거나 PIXEL_NODE 로 경로를 지정하세요
+
+`brew install node` 또는 `PIXEL_NODE=/path/to/node` 로 고친다. GUI 앱에 환경변수를 주려면
+`launchctl setenv PIXEL_NODE /opt/homebrew/bin/node` 를 쓰거나 터미널에서 앱을 띄운다.
+
+### 단축키
+
+| | 윈도우·리눅스 | 맥 |
+|---|---|---|
+| 지시 바 포커스 | `Ctrl+K` | `Cmd+K` |
+| 로그 탭 | `Ctrl+L` | `Cmd+L` |
+| 터미널 전체 폭 오버레이 | `Ctrl+T` | `Cmd+T` |
+| 지시문 탭 | `Ctrl+I` | `Cmd+I` |
+| 보고서 탭 | `Ctrl+R` | `Cmd+R` |
+| 오버레이 닫기 → 부장 선택 | `Esc` | `Esc` |
+| 인박스 맨 위 카드 허가 | `Alt+Y` | `Cmd+Shift+Y` |
+| 인박스 맨 위 카드 거부 | `Alt+N` | `Cmd+Shift+N` |
+
+맥에서 `Alt+Y` 는 특수문자 입력이 되고 `Cmd+N` 은 새 창이라 인박스만 `Cmd+Shift` 를 쓴다. 화면에 쓰는 힌트
+문구(카드 아래 한 줄 · 터미널 오버레이 안내 · 전송 툴팁)도 플랫폼을 따른다 — 글로 쓴 키와 실제 키가 어긋나면 안 된다.
+기준은 Flutter 의 `defaultTargetPlatform`(= `isMetaShortcuts`)이다.
+
+### 엔타이틀먼트 — 앱 샌드박스를 왜 끄나 (D-48 ⑥)
+
+`macos/Runner/{DebugProfile,Release}.entitlements`:
+
+| 키 | 값 | 이유 |
+|---|---|---|
+| `com.apple.security.app-sandbox` | **false** | 앱이 ① node 데몬을 **자식 프로세스로 띄우고** ② 사용자가 고른 프로젝트 폴더 아래를 읽고 ③ 데이터 폴더에 쓴다. 샌드박스 안에서는 셋 다 막힌다. 개인 도구라 수용한다 — 앱스토어 배포·공증(notarization)은 범위 밖이다. |
+| `com.apple.security.files.user-selected.read-write` | true | 부서 만들기의 폴더 선택 대화상자. 샌드박스를 다시 켤 때를 위해 남겨 둔다. |
+| `com.apple.security.network.client` | true | 로컬 웹소켓(127.0.0.1). 샌드박스가 꺼져 있으면 무해하게 무시된다. |
+| `com.apple.security.cs.allow-jit` · `network.server` | true(Debug 만) | Dart VM 서비스·핫 리로드. |
+
+### 맥에서 빌드하기
+
+```bash
+flutter config --enable-macos-desktop
+cd dev/app
+flutter pub get
+flutter analyze && flutter test
+flutter build macos --release
+# → build/macos/Build/Products/Release/pixel_office.app
+```
+
+- 창은 초기 **1280×720**, 최소 **1100×640**(윈도우 러너와 같은 초기 크기 · 레이아웃 v2 의 하한).
+  메뉴 막대·Dock 이름은 `픽셀 오피스`(`Info.plist` 의 `CFBundleName`/`CFBundleDisplayName`), 번들 이름은 `pixel_office`.
+- 서명이 없는 로컬 빌드는 **첫 실행에서 Gatekeeper 가 막는다**. Finder 에서 `pixel_office.app` 을
+  **우클릭 → 열기 → 열기**(또는 시스템 설정 → 개인정보 보호 및 보안 → "확인 없이 열기")로 한 번 허용하면 그 뒤로는 그냥 열린다.
+  서명 오류가 나면 Xcode 에서 Runner 타깃에 개인 팀(Personal Team)으로 자동 서명을 켠다.
+- `flutter build macos` 는 **맥에서만** 된다(윈도우에서는 Xcode 가 없다). 그래서 1단계(윈도우)는 단위 테스트로 맥 분기를
+  고정하고, 실기는 `docs/design/맥-지원.md` 의 2단계 대본(M1~M17)과 `docs/worklog/T48-2-MacApp.md` 의 "맥에서 확인" 목록으로 한다.
 
 ## 실행 · 수명 주기 (T46-2, D-47 · `docs/design/수명주기.md`)
 
@@ -219,8 +302,9 @@ Codex 팀원이 각자 책상·배지·터미널 탭(실제 Codex TUI)으로 보
 - 카드 **2장까지 펼치고**(`inboxExpandedCards`) 3장째부터 `+N` 줄로 접는다(클릭 = 펼침, "접기" 로 되돌림).
 - 복구로 만료된 요청(`error{pendingId}`)은 회색 **"만료 — 재지시"** 카드(`RedoCard(expired: true)`)로 같은 목록에 섞인다.
   출처는 전역 이벤트 링 + **선택 멤버의 백필**(`PendingInbox(backfillMemberId:)` — 백필은 고른 멤버 것만 있으므로).
-- 맨 위 카드에 **`Alt+Y` 허가 / `Alt+N` 거부**(카드에 힌트 글자). 인박스가 `HardwareKeyboard` 핸들러로 직접 듣는다
-  — 목록 순서를 아는 쪽이 처리해야 해서. 맨 위가 질문 카드면 아무 일도 하지 않는다.
+- 맨 위 카드에 **`Alt+Y` 허가 / `Alt+N` 거부**(맥은 `Cmd+Shift+Y`/`Cmd+Shift+N` — 위 "플랫폼 · 맥" 절, 카드에 힌트 글자).
+  인박스가 `HardwareKeyboard` 핸들러로 직접 듣는다 — 목록 순서를 아는 쪽이 처리해야 해서.
+  맨 위가 질문 카드면 아무 일도 하지 않는다.
 - `inboxFocusProvider.focus(pendingId)` → 그 카드로 스크롤(접혀 있으면 펼친다). 사무실 슬롯 클릭이 이걸 부른다
   (`main.dart` 의 `selectPendingFromOffice`).
 - `PendingCards(memberId)` 에 남는 것은 이제 **그 멤버 몫이 아닌 카드**뿐이다 = `ask_parent` 안내("대신 답하기").
@@ -237,7 +321,7 @@ Codex 팀원이 각자 책상·배지·터미널 탭(실제 Codex TUI)으로 보
 클린 빌드가 필요해요                                  ← CLI description, 가변폭 13px
 Set-Content demo39-c.txt -Value …                    ← 고정폭 12px, 3줄 클램프 + "전체 보기"
 [ 허가 ]  [ 거부 ]              이번 세션 항상 허가 · 수정해서 허가
-Alt+Y 허가 · Alt+N 거부                               ← 인박스 맨 위 카드에만
+Alt+Y 허가 · Alt+N 거부                               ← 인박스 맨 위 카드에만(맥은 Cmd+Shift+Y/N)
 ```
 
 - **동사 추출**(`approvalVerb`): Write → 쓰기 / Edit·MultiEdit·NotebookEdit → 수정 /
@@ -250,8 +334,12 @@ Alt+Y 허가 · Alt+N 거부                               ← 인박스 맨 위
 - **T40d ①**: 첫 줄은 **한 줄 고정**(`maxLines: 1`, 메타는 `Expanded` 뒤 — 전에는 `Spacer` 가 폭을 반 먹어
   `쓰 / 기` 로 접혔다). 폭이 모자라면 `fitApprovalHeadline(panelWidth:)` 가 **대상만 가운데 말줄임**하고
   (`t40-…txt`) 동사는 그대로 둔다. 글자 폭은 한글·이모지 2칸의 반각 칸(`displayColumns`)으로 센다.
-- **위험 패턴**(`isDangerousCommand`): `rm -rf`(`-fr` 포함) · `Remove-Item -Recurse` · `git push --force|-f` · `del /s` ·
-  줄 첫머리 `format` → 첫 줄 배경 `#FF6B6B` 알파 0.15 + `위험` 태그. `dart format` 은 오탐이 아니다.
+- **위험 패턴**(`isDangerousCommand`) → 첫 줄 배경 `#FF6B6B` 알파 0.15 + `위험` 태그. **플랫폼 무관**으로 둘 다 본다
+  (맥에서 PowerShell 을, 윈도우에서 bash 를 쓸 수도 있다 — T48-2 · D-48 ④):
+  - 윈도우 계열: `rm -rf`(`-fr` 포함) · `Remove-Item -Recurse` · `git push --force|-f` · `del /s` · 줄 첫머리 `format`
+  - 유닉스 계열: `sudo` · `chmod -R`/`chown -R` · `git reset --hard` · `git clean -fd` · `git checkout -- <경로>` ·
+    `>`/`>>` 덮어쓰기 · `dd`/`of=/dev/` · `mkfs` · `diskutil erase`
+  `dart format`·`git commit`·`chmod 644`·`2>&1` 은 오탐이 아니다 — 다 위험하면 아무것도 위험하지 않다.
 - **만료**: `createdAt + 86400초`(hook 보류 상한). 메타는 `요청 N분 전 · <오늘 10:32 | 내일 10:32 | 9/19 10:32> 만료`,
   남은 1시간부터 주황, 지나면 카드 전체가 회색 "만료 — 재지시".
 - 질문 카드도 같은 골격 — 옵션 버튼이 주(채움), 자유 입력이 보조.
@@ -324,8 +412,9 @@ Alt+Y 허가 · Alt+N 거부                               ← 인박스 맨 위
   `-32004` 처리(데몬 문구 그대로 + `data.headId` 로 대상 복구, `force` 안 씀)는 그대로다.
 - **단축키**(`command/shortcuts.dart`, `AppShortcuts` 가 앱 전체를 감싼다):
   `Ctrl+K` 지시 바 포커스 · `Ctrl+L` 로그 · `Ctrl+T` 터미널 오버레이 토글 · `Ctrl+I` 지시문 · `Ctrl+R` 보고서 ·
-  `Esc`(오버레이가 열려 있으면 닫고, 아니면 부장 선택으로 복귀). 단축키는 **포커스된 노드에서 위로** 올라오므로
-  터미널·입력란이 먼저 먹은 키는 여기까지 오지 않는다. 인박스의 `Alt+Y`/`Alt+N` 은 인박스가 직접 듣는다.
+  `Esc`(오버레이가 열려 있으면 닫고, 아니면 부장 선택으로 복귀). **맥은 Cmd 조합**이다(위 "플랫폼 · 맥" 절).
+  단축키는 **포커스된 노드에서 위로** 올라오므로 터미널·입력란이 먼저 먹은 키는 여기까지 오지 않는다.
+  인박스의 `Alt+Y`/`Alt+N`(맥 `Cmd+Shift+Y`/`Cmd+Shift+N`)은 인박스가 직접 듣는다.
 - **포커스 링·스크롤바**: `pixelOfficeTheme()` 이 포커스 링 2px `#FFFFFF` 알파 0.8(`panelFocusRing`)과
   6px 팔레트 스크롤바(`panelScrollbarThickness`/`panelScrollbarThumb`)를 심는다.
 
@@ -409,6 +498,9 @@ Alt+Y 허가 · Alt+N 거부                               ← 인박스 맨 위
 powershell -NoProfile -ExecutionPolicy Bypass -File tool\capture-window.ps1 -Out shot.png [-ProcessName pixel_office]
 ```
 
+맥에는 아직 없다 — `tool/capture-window.sh`(`osascript` 로 창 id → `screencapture -l <windowid>`)는 2단계(맥북)에서
+실기 증거를 찍을 때 만든다(`docs/design/맥-지원.md` M17).
+
 `PrintWindow(PW_RENDERFULLCONTENT)` 로 **그 창 하나만** 찍는다(전체 화면 캡처 금지 — 문서화 규칙 5). `-Out` 은 **현재 폴더 기준 상대 경로**로 줄 것
 (절대 경로를 주면 `Join-Path` 에서 깨진다). 시연에서 앱 버튼을 눌러야 하면 합성 메시지(`PostMessage WM_LBUTTONDOWN`)는 Flutter 에 먹지 않는다 —
 `SetForegroundWindow` → 위젯 안으로 몇 픽셀씩 **이동(hover)** → `mouse_event` 다운/업 순서여야 하고, 작은 위젯은 누르기 직전에 다시 캡처해
@@ -420,15 +512,19 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tool\capture-window.ps1 -Out
 lib/
   main.dart                 app.lock → "계속 일하기" 설정 → DaemonSupervisor.start() → MaterialApp(dark, pixelOfficeTheme)
                             + LifecycleGate + AppShortcuts + TopBar / PanelSplitter(OfficeView · RightPanel) / CommandBar / 오버레이
+  platform/
+    platform.dart           **운영체제에 닿는 코드 한곳**(T48-2, D-48 · 위 "플랫폼 · 맥" 절): 데이터 폴더 · node 탐색 ·
+                            npm 이름 · 프로세스 생존/이미지 이름/트리 종료 · 단축키 조합키. `AppPlatform` 주입 가능
   lifecycle/                수명 주기(T46-2, D-47 · 위 "실행 · 수명 주기" 절):
-    daemon_process.dart       데몬 띄우기(콘솔 창 없이) · daemon.log 1MB · tasklist 생존 확인 · taskkill /T /F
+    daemon_process.dart       데몬 띄우기(콘솔 창 없이) · daemon.log 1MB · 생존 확인 · 트리 종료(분기는 platform.dart)
+                              — 맥에서는 `node` 를 절대 경로로 바꿔 띄운다(못 찾으면 실패 화면 `node-not-found`)
     daemon_supervisor.dart    attaching → starting → running → restarting → failed | stopped (시계·스폰 주입 = 단위 테스트 가능)
     exit_flow.dart            확인 → daemon.shutdown → 8초 → 트리 강제 종료(위젯을 모른다)
     lifecycle_gate.dart       AppLifecycleListener(onExitRequested) 배선 + 끊김을 감시자에게 알림
     lifecycle_providers.dart  감시자 상태 · 일하는 중 인원 · 오버레이 표시 조건 · daemon.log 꼬리
     app_lock.dart already_running_app.dart   앱 하나만(pid + 이미지 이름 가드)
   rpc/
-    daemon_info.dart        %LOCALAPPDATA%\pixel-office\daemon.json 읽기 (wsPort, token, pid, version …)
+    daemon_info.dart        데이터 폴더의 daemon.json 읽기 (wsPort, token, pid, version …) — 경로 규칙은 platform.dart
     rpc_client.dart         JSON-RPC 2.0 over WebSocket: connect / hello / call / 알림 스트림 / lastSeq / 자동 재접속
   model/
     department.dart team.dart member.dart office_event.dart pending.dart task.dart snapshot.dart   (store/types.ts 와 1:1, fromJson)
@@ -456,7 +552,7 @@ tool/
   capture-window.ps1        창 단위 캡처(worklog 증거용)
   panel/                    오른쪽 패널(T13·T15·T18·T26a·T37·T40-4):
     right_panel.dart          헤더(상태 점 = 범례 7칸) + 인박스 + 탭 4종(보고서 탭에 미확인 배지)
-    inbox.dart                전역 인박스 "내 책상 · 대기 N"(2장 펼침 + "+N", Alt+Y/N, 스크롤 포커스)
+    inbox.dart                전역 인박스 "내 책상 · 대기 N"(2장 펼침 + "+N", Alt+Y/N · 맥 Cmd+Shift+Y/N, 스크롤 포커스)
     approval_summary.dart     허가 카드 첫 줄·동사·위험 패턴·만료 메타(순수 함수)
     pending_card.dart         허가/질문 카드, AskParentCard
     report_tab.dart           보고서 문서 흐름 + 미확인 배지 프로바이더
@@ -465,7 +561,7 @@ tool/
                               "앱을 닫아도 계속 일하기" T46-2)
   command/
     command_bar.dart          지시 바 — 대상은 그 부서의 살아 있는 부장 하나로 고정, 정적 칩(T37·T40-5)
-    shortcuts.dart            앱 전역 단축키 Ctrl+K/L/T/I/R · Esc(T40-5)
+    shortcuts.dart            앱 전역 단축키 Ctrl+K/L/T/I/R · Esc(T40-5) — 맥은 Cmd(T48-2)
 test/
   fake_daemon.dart          dart:io HttpServer + WebSocketTransformer 로 만든 가짜 데몬(hello/replay/echo/fail/hang/push)
   rpc_client_test.dart      상관·에러 매핑·replay 중복 제거·재접속(since)·backoff
@@ -479,18 +575,26 @@ test/
                             usage_format(단위·문구·색) · usage_chips(칩 5종·축약·팝오버) · usage_panel · usage_canvas
   lifecycle/                수명 주기(T46-2): daemon_supervisor(가짜 시계로 재시작 일정·crash-loop) ·
                             daemon_process(node 로 진짜 자식을 띄워 로그·환경변수·트리 kill 확인) · app_lock ·
-                            exit_flow · keep_daemon · overlay_lifecycle · hello_params · recovery_notice
-windows/runner/main.cpp     창 제목 "픽셀 오피스"
+                            exit_flow · keep_daemon · overlay_lifecycle · hello_params · recovery_notice ·
+                            mac_spawn(맥 스폰 명령·node-not-found·폴백 버튼, T48-2)
+  platform/                 플랫폼(T48-2): fake_platform(주입용 가짜 — 가짜 `ps`/`kill`/`tasklist` 출력 + 가짜 파일 시스템) ·
+                            platform_test(데이터 폴더 3종·node 탐색 순서·npm·생존/이미지/트리 종료)
+                            + command/mac_shortcuts · panel/mac_inbox(`debugDefaultTargetPlatformOverride` 로 맥 흉내)
+windows/runner/main.cpp     창 제목 "픽셀 오피스" · 초기 크기 1280×720
+macos/Runner/               맥 러너(T48-2): MainFlutterWindow.swift(1280×720 · 최소 1100×640 · 제목) ·
+                            {DebugProfile,Release}.entitlements(샌드박스 off + 파일 선택 + 네트워크) · Info.plist(CFBundleName)
 ```
 
 의존성: `flutter_riverpod`(상태), `web_socket_channel`(WS), `xterm`(터미널 탭, T13),
-`file_selector`(부서 작업 폴더 선택 — Windows 는 `file_selector_windows`, T41).
+`file_selector`(부서 작업 폴더 선택 — Windows 는 `file_selector_windows`, 맥은 `file_selector_macos`, T41·T48-2).
 
 ## daemon.json 은 어디서 읽나
 
-`DaemonInfo.defaultPath()`:
-1. 환경변수 `PIXEL_DATA_DIR` 이 있으면 `${PIXEL_DATA_DIR}\daemon.json`
-2. 아니면 `%LOCALAPPDATA%\pixel-office\daemon.json` (`Platform.environment['LOCALAPPDATA']`)
+`DaemonInfo.defaultPath()` = `platform.dart` 의 `dataFilePath('daemon.json')`:
+1. 환경변수 `PIXEL_DATA_DIR` 이 있으면 `${PIXEL_DATA_DIR}/daemon.json`
+2. 아니면 플랫폼의 데이터 폴더 — 윈도우 `%LOCALAPPDATA%\pixel-office\daemon.json` ·
+   맥 `$HOME/Library/Application Support/pixel-office/daemon.json` ·
+   리눅스 `$XDG_DATA_HOME`(없으면 `~/.local/share`)`/pixel-office/daemon.json`
 
 데몬은 기동마다 token 을 새로 만들고 정상 종료 시 파일을 지우므로, `DaemonConnector.fromDaemonJson()` 은 **재접속 시도마다** 파일을 다시 읽는다. 파일이 없으면 그 시도는 "daemon.json 없음(데몬 미기동)" 으로 실패 처리되고 backoff 후 다시 본다.
 
@@ -501,12 +605,14 @@ windows/runner/main.cpp     창 제목 "픽셀 오피스"
 **어디를 봤는지**까지 말한다.
 
 - 오류 문구(`daemonJsonMissingMessage()`, `rpc/daemon_info.dart`):
-  `daemon.json 없음(데몬 미기동) — 찾은 곳: <경로> · PIXEL_DATA_DIR 없음 · LOCALAPPDATA 있음`.
+  `daemon.json 없음(데몬 미기동) — 찾은 곳: <경로> · PIXEL_DATA_DIR 없음 · LOCALAPPDATA 있음`
+  (맥·리눅스에서는 `LOCALAPPDATA` 자리에 `HOME` 이 온다 — 그 플랫폼에서 폴더를 정하는 환경변수가 그것이다).
   `RpcClient(noDaemonInfoMessage:)` 로 주입한다(rpc 층은 파일 경로를 모른다).
 - 끊김 오버레이의 `자세히`: 오류가 없을 때도 열리고 안에 `daemon.json: <경로>` + 한 줄
   "데몬을 아직 안 띄웠으면 '데몬 시작' — 다른 환경(샌드박스·다른 사용자)에서 띄운 데몬은 이 경로에 파일을
   쓰지 않습니다". 접혀 있을 때는 예전처럼 아무것도 안 뿌린다.
-- `데몬 시작` 은 `cmd /c start` 분리 실행이라 **종료 코드를 못 본다** → 6초(`daemonStartTimeout`) 뒤
+- `데몬 시작` 은 윈도우에서 `cmd /c start` 분리 실행이라 **종료 코드를 못 본다**(맥·리눅스에서는 창 없이
+  감시자와 같은 스포너로 띄운다) → 6초(`daemonStartTimeout`) 뒤
   daemon.json 이 안 생겼으면 "데몬이 뜨지 않았습니다 — dev/daemon 콘솔 창의 오류를 확인하세요
   (포트 7420~7422 를 다른 데몬이 쓰고 있을 수 있음)".
 - 확인 순서: ① 오버레이 `자세히` 의 경로에 파일이 있나 ② 없으면 `dev/daemon` 콘솔 창에 `이미 데몬이 돌고

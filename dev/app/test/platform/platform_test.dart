@@ -254,15 +254,30 @@ void main() {
     });
   });
 
+  // 여기만 **진짜** 운영체제를 본다. 윈도우에서도 맥에서도 돌아야 하므로(2단계에서 맥이 이 파일을 그대로 돌린다)
+  // "윈도우다" 를 단정하지 않고 **한 플랫폼 안에서 앞뒤가 맞는지**만 본다.
   group('진짜 플랫폼(HostPlatform)', () {
-    test('이 PC 는 윈도우이고 데이터 폴더·npm 이 그에 맞다', () {
+    test('플랫폼 판정이 하나뿐이고 npm·node·구분자가 그것과 맞는다', () {
       const host = HostPlatform();
-      expect(host.isWindows, isTrue, reason: '이 저장소의 1단계는 윈도우에서 돈다');
-      expect(host.isMacOS, isFalse);
-      expect(host.pathSeparator, r'\');
-      expect(npmExecutable(platform: host), 'npm.cmd');
-      expect(findNode(platform: host), 'node');
-      expect(currentPlatform.isWindows, isTrue);
+      final flags = [host.isWindows, host.isMacOS, host.isLinux].where((b) => b).length;
+      expect(flags, lessThanOrEqualTo(1), reason: '윈도우이면서 맥일 수는 없다');
+      expect(host.pathSeparator, host.isWindows ? r'\' : '/');
+      expect(npmExecutable(platform: host), host.isWindows ? 'npm.cmd' : 'npm');
+      if (host.isWindows) {
+        expect(findNode(platform: host), 'node', reason: '윈도우는 PATH 에 맡긴다');
+      }
+      expect(currentPlatform.isWindows, host.isWindows, reason: '기본값은 진짜 플랫폼이다');
+    });
+
+    test('데이터 폴더는 이 플랫폼의 규칙을 따른다', () {
+      const host = HostPlatform();
+      // 이 컴퓨터에 `PIXEL_DATA_DIR` 이 있어도 결과가 흔들리지 않게 빼고 본다(그 규칙은 위에서 따로 본다).
+      final env = Map<String, String>.from(host.env)..remove(dataDirEnvVar);
+      final dir = dataDir(platform: host, env: env);
+      if (dir == null) return; // LOCALAPPDATA·HOME 이 없는 환경(CI 등)에서는 정할 수 없다 — 그것도 규칙이다
+      expect(dir, endsWith(dataFolderName));
+      if (host.isMacOS) expect(dir, contains('/Library/Application Support/'));
+      if (host.isWindows) expect(dir, contains(r'\'));
     });
 
     test('없는 실행 파일을 불러도 던지지 않는다(-1 로 돌아온다)', () async {
