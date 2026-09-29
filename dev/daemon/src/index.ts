@@ -4,7 +4,7 @@
 import { installFileLog } from './log.js';
 import { config, resolveClaudeExeDetailed } from './config.js';
 import { Office } from './office/Office.js';
-import { installShutdownSignals } from './platform.js';
+import { host, installShutdownSignals } from './platform.js';
 import { bindOrRefuse, DaemonStartRefusedError } from './office/singleton.js';
 import { RpcServer } from './rpc/RpcServer.js';
 
@@ -54,7 +54,8 @@ const claude = resolveClaudeExeDetailed();
 console.log(`[daemon] claude    : ${claude.exe}`);
 if (!claude.found) {
   console.warn(`[daemon] claude 실행 파일을 못 찾았습니다 — 찾아본 곳: ${claude.tried.join(' · ')}`);
-  console.warn(`[daemon] 경로를 직접 주려면 PIXEL_CLAUDE_EXE=<claude.exe 경로>`);
+  // 예시 파일 이름도 플랫폼에 맞춰야 한다 — 맥·리눅스에 `claude.exe` 를 알려 주면 없는 파일을 찾게 된다(T48-3 M2).
+  console.warn(`[daemon] 경로를 직접 주려면 PIXEL_CLAUDE_EXE=<${host.isWindows ? 'claude.exe' : 'claude'} 경로>`);
 }
 console.log(`[daemon] codex     : ${config.codexExe}`);
 // T43: 엔진 연결 확인(claude auth status / codex login status)을 지금 한 번 하고 주기 타이머를 건다.
