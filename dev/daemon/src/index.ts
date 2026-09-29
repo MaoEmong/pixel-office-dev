@@ -1,8 +1,10 @@
-// pixel-office daemon 진입점 (T07). Office(오케스트레이터) + RpcServer(WS JSON-RPC) 를 띄우고 SIGINT/SIGTERM 에 정중히 내린다.
+// pixel-office daemon 진입점 (T07). Office(오케스트레이터) + RpcServer(WS JSON-RPC) 를 띄우고 SIGINT/SIGTERM
+// (유닉스는 SIGHUP 까지, T48-1) 에 정중히 내린다.
 // node:sqlite ExperimentalWarning 은 Store 모듈이 로드 시 거른다.
 import { installFileLog } from './log.js';
 import { config, resolveClaudeExeDetailed } from './config.js';
 import { Office } from './office/Office.js';
+import { installShutdownSignals } from './platform.js';
 import { bindOrRefuse, DaemonStartRefusedError } from './office/singleton.js';
 import { RpcServer } from './rpc/RpcServer.js';
 
@@ -90,7 +92,9 @@ const onSignal = (sig: string) => {
     process.exit(1);
   });
 };
-process.on('SIGINT', () => onSignal('SIGINT'));
-process.on('SIGTERM', () => onSignal('SIGTERM'));
+// 어떤 신호를 정중히 받을지는 운영체제가 정한다(T48-1 §4): 윈도우는 예전 그대로 `SIGINT`/`SIGTERM`,
+// 유닉스는 여기에 **`SIGHUP`**(터미널이 닫힐 때)이 더해진다 — 맥에서 `npm start` 한 터미널을 닫으면
+// 세션이 주인 없이 남지 않게(D-47 원칙 2).
+installShutdownSignals(onSignal);
 process.on('uncaughtException', (err) => console.error('[daemon] uncaughtException:', err));
 process.on('unhandledRejection', (err) => console.error('[daemon] unhandledRejection:', err));

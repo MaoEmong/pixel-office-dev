@@ -7,11 +7,14 @@
 // 탈출구: `PIXEL_FORCE_START=1`. 통합 테스트는 그 대신 **각자의 `PIXEL_DATA_DIR`** 을 쓴다(그게 원래 규칙이다).
 //
 // T41(실기): daemon.json 이 **안 보이는데 포트만 잡혀 있는** 경우가 있다 — 다른 환경(샌드박스·다른 사용자)에서
-// 띄운 데몬은 자기 `%LOCALAPPDATA%` 에 daemon.json 을 쓰므로 이쪽 pid 검사는 통과해 버리고, 그다음 hook/mcp/ws
-// 바인딩이 EADDRINUSE 로 터진다. 예전에는 그게 **잡히지 않은 스택 트레이스**로 나왔다. 이제는 pid 검사와 **같은
-// 문구·같은 exit 3** 으로 거부한다(`bindOrRefuse`).
+// 띄운 데몬은 자기 데이터 폴더(윈도우 `%LOCALAPPDATA%`)에 daemon.json 을 쓰므로 이쪽 pid 검사는 통과해 버리고,
+// 그다음 hook/mcp/ws 바인딩이 EADDRINUSE 로 터진다. 예전에는 그게 **잡히지 않은 스택 트레이스**로 나왔다.
+// 이제는 pid 검사와 **같은 문구·같은 exit 3** 으로 거부한다(`bindOrRefuse`).
+//
+// 안내 문구의 명령(`taskkill` vs `kill`, `netstat|findstr` vs `lsof`)과 데이터 폴더 표기는 `platform.ts` 가 준다(T48-1).
 import fs from 'node:fs';
 import net from 'node:net';
+import { host } from '../platform.js';
 
 /** 기동 거부 시의 프로세스 종료 코드. */
 export const DAEMON_BUSY_EXIT_CODE = 3;
@@ -42,7 +45,7 @@ export class DaemonAlreadyRunningError extends DaemonStartRefusedError {
     super(
       `이미 데몬이 돌고 있습니다 — pid ${pid} (ws 127.0.0.1:${wsPort}).\n` +
         `  같은 데이터 폴더를 두 데몬이 열면 DB 가 깨집니다(T38 함정 ⑤). 먼저 끄세요:\n` +
-        `    콘솔에서 \`shutdown\`  또는  taskkill /F /PID ${pid}\n` +
+        `    콘솔에서 \`shutdown\`  또는  ${host.hintForKillingPid(pid)}\n` +
         `  일부러 둘을 띄우려면 ${FORCE_START_ENV}=1 (테스트는 그 대신 PIXEL_DATA_DIR 을 따로 주세요).\n` +
         `  daemon.json: ${daemonJsonPath}`,
     );
@@ -84,8 +87,8 @@ export class DaemonPortInUseError extends DaemonStartRefusedError {
     super(
       `이미 데몬이 돌고 있습니다 — ${PORT_ROLE[role].label} 포트 127.0.0.1:${port} 를 다른 프로세스가 쓰고 있습니다(EADDRINUSE).\n` +
         `  daemon.json 은 안 보이는데 포트만 잡혀 있으면 **다른 환경(샌드박스·다른 사용자)에서 띄운 데몬**입니다 —\n` +
-        `  그 데몬은 자기 %LOCALAPPDATA% 에 daemon.json 을 씁니다. 범인을 찾으려면:\n` +
-        `    netstat -ano | findstr :${port}   →   taskkill /F /PID <pid>\n` +
+        `  그 데몬은 자기 데이터 폴더(${host.dataDirLabel()})에 daemon.json 을 씁니다. 범인을 찾으려면:\n` +
+        `    ${host.hintForFindingPortOwner(port)}\n` +
         `  포트를 바꾸려면 ${PORT_ROLE[role].env} (테스트는 PIXEL_DATA_DIR 과 포트 0 을 함께 쓰세요).\n` +
         `  daemon.json: ${daemonJsonPath}`,
       options,
@@ -110,15 +113,10 @@ export async function bindOrRefuse<T>(
 }
 
 export const defaultSingletonProbe: SingletonProbe = {
+  /** 나 자신은 "다른 데몬" 이 아니다. 나머지 판정은 `platform.ts`(EPERM = 내 것이 아니지만 살아 있다, D-40 ①). */
   isPidAlive(pid) {
-    if (!Number.isInteger(pid) || pid <= 0 || pid === process.pid) return false;
-    try {
-      process.kill(pid, 0); // 신호 0 = 존재 확인만
-      return true;
-    } catch (err) {
-      // EPERM = 내 것이 아니지만 살아 있다.
-      return (err as NodeJS.ErrnoException)?.code === 'EPERM';
-    }
+    if (pid === process.pid) return false;
+    return host.isProcessAlive(pid);
   },
   isPortOpen(port) {
     if (!Number.isInteger(port) || port <= 0) return Promise.resolve(false);

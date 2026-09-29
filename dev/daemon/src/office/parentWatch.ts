@@ -12,7 +12,9 @@
 //   ② **느린 조회.** 윈도우에서 `wmic`/`Get-Process` 를 2초마다 돌리면 데몬이 계속 프로세스를 띄운다.
 //      → 폴링은 `process.kill(pid, 0)`(시스템 콜 하나) 로만 하고, 비싼 `Get-CimInstance Win32_Process` 는
 //      **기동 때 한 번**(그리고 `hello{parentPid}` 로 대상이 바뀔 때 한 번) 만 부른다.
-import { spawnSync } from 'node:child_process';
+//
+// 운영체제에 닿는 두 연산은 `platform.ts` 로 모았다(T48-1 · D-48 원칙 2) — 맥은 `ps -p <pid> -o lstart=`.
+import { host } from '../platform.js';
 
 /** 2초마다(수명주기.md §3). */
 export const PARENT_WATCH_INTERVAL_MS = 2000;
@@ -160,38 +162,11 @@ const globalTimer: WatchTimer = {
 };
 
 /**
- * 실제 OS 연산. `alive` 는 시스템 콜 하나(`kill(pid,0)`) — `EPERM` 은 "살아 있음" 이다(D-40 의 단일 데몬 가드와 같은 규칙).
- * `startedAt` 은 win32 에서 PowerShell `Get-CimInstance Win32_Process` 한 번(수백 ms) — **폴링에 쓰지 않는다.**
+ * 실제 OS 연산 — `platform.ts` 를 통해서만. `alive` 는 시스템 콜 하나(`kill(pid,0)`) — `EPERM` 은 "살아 있음" 이다
+ * (D-40 의 단일 데몬 가드와 같은 규칙). `startedAt` 은 win32 에서 PowerShell `Get-CimInstance Win32_Process`,
+ * 유닉스에서 `LC_ALL=C ps -p <pid> -o lstart=` 한 번(수백 ms) — **폴링에 쓰지 않는다.**
  */
 export const defaultProcessProbe: ProcessProbe = {
-  alive(pid) {
-    if (!Number.isInteger(pid) || pid <= 0) return false;
-    try {
-      process.kill(pid, 0);
-      return true;
-    } catch (err) {
-      return (err as NodeJS.ErrnoException).code === 'EPERM';
-    }
-  },
-  startedAt(pid) {
-    if (!Number.isInteger(pid) || pid <= 0) return undefined;
-    try {
-      if (process.platform === 'win32') {
-        const script = `(Get-CimInstance Win32_Process -Filter "ProcessId=${pid}").CreationDate.ToUniversalTime().ToString("o")`;
-        const out = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], {
-          encoding: 'utf8',
-          windowsHide: true,
-          timeout: 5000,
-        });
-        const ms = Date.parse((out.stdout ?? '').trim());
-        return Number.isFinite(ms) ? ms : undefined;
-      }
-      // POSIX: `ps -o lstart=` 는 사람이 읽는 표기지만 초 단위로 안정적이다.
-      const out = spawnSync('ps', ['-o', 'lstart=', '-p', String(pid)], { encoding: 'utf8', timeout: 5000 });
-      const ms = Date.parse((out.stdout ?? '').trim());
-      return Number.isFinite(ms) ? ms : undefined;
-    } catch {
-      return undefined;
-    }
-  },
+  alive: (pid) => host.isProcessAlive(pid),
+  startedAt: (pid) => host.processStartTime(pid),
 };
