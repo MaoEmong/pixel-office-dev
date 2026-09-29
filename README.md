@@ -88,13 +88,15 @@ cd dev/daemon && npm run cli      # help 로 명령 목록
 
 첫 화면에서 **"부서 만들기"** → 이름 · 작업 폴더(cwd) · 부장 엔진 · 부장 이름 → 부장이 출근한다. 그다음은 아래 지시 바로 **부장에게만** 말하면 된다.
 
-### 맥에서 실행 (T48 · D-48 — 데몬·앱 테스트는 **맥에서 통과**, 앱 빌드부터는 아직)
+### 맥에서 실행 (T48 · D-48 — **macOS 26.6 / arm64 에서 실기 확인**)
 
 운영체제에 닿는 코드는 데몬 `src/platform.ts` · 앱 `lib/platform/platform.dart` 한 곳에 모아 두었다.
 확인 순서는 [docs/design/맥-지원.md](docs/design/맥-지원.md) 의 "2단계 대본" M1~M17 이고, 실기 결과는
-[docs/worklog/T48-3-MacLive.md](docs/worklog/T48-3-MacLive.md) 에 있다 — **M1(데몬 884건)·M7 의 analyze·test(722건)
-까지 macOS 26.6 / arm64 에서 통과**했고, `flutter build macos` 부터(M8~M17)는 그 맥의 Xcode 라이선스와
-`claude` 로그인이 남아 아직이다.
+[docs/worklog/T48-3-MacLive.md](docs/worklog/T48-3-MacLive.md) 에 있다.
+
+**M1~M8 · M10~M14 · M17 을 맥에서 확인했다** — 단위·통합 테스트, 부서 만들기부터 허가·보고까지 한 바퀴,
+앱 빌드와 Finder 실행, 데몬·앱 강제 종료 후의 자동 재시작·유령 정리·부모 감시. 앱 창을 직접 눌러야 하는
+M9(폴더 선택 대화상자)·M15(단축키)·M16(레티나 픽셀 서체)와 M10 의 확인 대화상자 갈래만 남았다.
 
 ```bash
 # 사전: Xcode(앱 빌드에는 명령줄 도구만으로는 안 된다), Node 24+, Flutter(맥 데스크탑 켜기), claude 설치 + 로그인
@@ -115,7 +117,10 @@ open build/macos/Build/Products/Release/pixel_office.app         # Finder 더블
 - 단축키는 `Cmd+K/L/T/I/R`, 인박스 허가·거부는 `Cmd+Shift+Y` / `Cmd+Shift+N`.
 - **`npm install` 뒤 pty 가 `posix_spawnp failed` 로 죽으면** npm 11.16+ 가 node-pty 의 설치 스크립트를 막아 `prebuilds/darwin-*/spawn-helper` 에 실행 권한이 없는 것이다 — `dev/daemon` 에서 `npm approve-scripts --allow-scripts-pending`(또는 그 파일에 `chmod +x`). 윈도우에는 없는 문제다(T48-3 M1 함정 ①).
 - **저장소를 경로에 한글·비ASCII 가 없는 곳에 두라.** 있으면 `flutter analyze` 의 analysis server 가 LSP 메시지를 잘라 `FormatException` 으로 죽는다(툴체인 쪽 문제, `flutter test`·`pub get` 은 무관). T48-3 M7 함정 ②.
-- 가장 큰 미지수였던 둘은 T48-3 에서 확인됐다: 셰뱅 스크립트(`#!/usr/bin/env node`)는 심볼릭 링크를 거쳐서도 node-pty 가 진짜 TTY 로 띄운다. SIGHUP 은 정상 종료 경로를 그대로 타고 `daemon.json` 까지 치운다.
+- **`flutter build macos` 가 Xcode 27 에서 그냥은 안 된다.** 이 저장소는 `macos/Runner/Configs/Release.xcconfig` 에 `ARCHS = arm64` 을 박고 배포 대상을 12.0 으로 올려 두었다(T48-3 M7 함정 ③④). 인텔 맥에서 빌드하려면 그 줄을 `x86_64` 로 바꾼다 — 유니버설 바이너리는 Xcode 27 의 `lipo` 가 `-verify_arch` 에 arch 를 둘 받지 않아 못 만든다.
+- **통합 테스트(`PIXEL_IT=1`)는 파일 하나씩 돌린다.** `node --test` 는 파일을 병렬로 돌리는데, 실기 CLI·포트·셸 락을 공유해 여러 파일이 동시에 뜨면 엉킨다(T48-3 M6 함정).
+- 가장 큰 미지수였던 둘은 T48-3 에서 확인됐다: 셰뱅 스크립트(`#!/usr/bin/env node`)는 심볼릭 링크를 거쳐서도 node-pty 가 진짜 TTY 로 띄운다(다만 npm 이 설치한 `claude` 2.1.284 는 **셰뱅 스크립트가 아니라 Mach-O arm64 네이티브**이고 맥에서도 이름이 `claude.exe` 다). SIGHUP 은 정상 종료 경로를 그대로 타고 `daemon.json` 까지 치운다.
+- 창 캡처는 `dev/app/tool/capture-window.sh`(창 단위). 처음 실행에 macOS 가 "화면 기록" 권한을 물어본다.
 
 ## 검증
 

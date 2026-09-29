@@ -3,10 +3,11 @@
 - 날짜: 2026-09-29
 - 마일스톤: M6
 - 관련 설계: `docs/design/맥-지원.md` "2단계 대본" M1~M17 / D-48 / 짝 T48-1(데몬)·T48-2(앱)
-- 커밋: `9dfe30d`(데몬 소스) `75e8ec6`(데몬 테스트) `c5a4010`(앱 테스트) + 이 문서
+- 커밋: `9dfe30d`(데몬 소스) `75e8ec6`(데몬 테스트) `c5a4010`(앱 테스트) `9ddcfd6`·`f603fcd`(macOS 빌드)
+  `7a7ace4`(창 캡처 도구) `be1fc21`(통합 테스트 필터) + 이 문서
 - 브랜치: `T48-3` (아직 푸시하지 않았다)
 - 실기 환경: **macOS 26.6.2 (25G83) · arm64** / Node v24.18.0 · npm 11.16.0 / Flutter 3.44.7 · Dart 3.12.2 /
-  CocoaPods 1.17.0 / Xcode 27.0 **설치돼 있으나 라이선스 미동의**
+  CocoaPods 1.17.0 / **Xcode 27.0** / claude 2.1.284
 - 저장소 위치: `~/Desktop/포트폴리오/pixel-office-dev` (경로에 **한글**이 들어 있다 — M7 함정 ②)
 
 ## 목표
@@ -18,17 +19,26 @@ T48-1·T48-2 가 윈도우에서 "플랫폼을 주입해" 고정해 둔 맥 분�
 
 | # | 확인 | 결과 |
 |---|---|---|
-| M1 | 데몬 `npm install` → `tsc --noEmit` → `npm test` | **통과** (함정 4개를 고친 뒤 — 아래) |
-| M2 | `npm start` 로그의 실행 파일 탐색 | **부분** — 탐색 뿌리·데이터 폴더·기동·종료는 확인, `claude` 자체는 미설치 |
-| M3 | `dept create` → 신뢰 다이얼로그 → idle | **막힘** (`claude` 미설치·미로그인) |
-| M4 | `say` 한 턴의 이벤트 순서 | **막힘** (동일) |
-| M5 | 쓰기 명령 허가 → `approve` | **막힘** (동일) |
-| M6 | `PIXEL_IT=1` 통합 테스트 4종 | **막힘** (동일) |
-| M7 | 앱 `pub get` · `analyze` · `test` · `build macos --release` | **부분** — 앞 셋 통과(함정 2개 고침), 빌드는 **막힘**(Xcode 라이선스) |
-| M8~M17 | Finder 실행·폴더 선택·Cmd+Q·재기동·kill -9·사용량·단축키·레티나·창 캡처 | **막힘** (M7 빌드 산출물이 없다) |
+| M1 | 데몬 `npm install` → `tsc --noEmit` → `npm test` | **통과** — 874건 + 스킵된 MixedTeam 10건 = 윈도우의 884 (함정 ①~⑤ 를 고친 뒤) |
+| M2 | `npm start` 로그의 실행 파일 탐색 | **통과** — `claude : /Users/hjkim/.nvm/versions/node/v24.18.0/bin/claude`(실제 파일), 데이터 폴더 `~/Library/Application Support/pixel-office` |
+| M3 | `dept create` → 첫 실행 신뢰 다이얼로그 → idle | **통과** — `passed first-run dialog (trust-folder-claude / onboarding-enter)` → `idle`. darwin 전용 tui-map 불필요 |
+| M4 | `say 부장` 한 턴 → 이벤트 표 · `report` | **통과** — thinking → ToolSearch → create_team → delegate → 팀장 thinking → text → idle, 보고 승격까지 |
+| M5 | 쓰기 명령 허가 → 콘솔 `allow` | **통과** — 유닉스 리다이렉션(`printf … > mac-live.txt`)이 허가 카드로 뜨고, 승인 후 실행·파일 생성(한글 내용 그대로) |
+| M6 | `PIXEL_IT=1` 통합 테스트 4종 | **통과** — pty · office · askuser · teamtools 전부. 단 **파일 하나씩** 돌려야 하고(함정), teamtools 는 CLI 버전 변화 때문에 필터를 고쳐야 했다(함정) |
+| M7 | 앱 `pub get`·`analyze`·`test`·`build macos --release` | **통과** — 720 통과·2 스킵, `✓ Built pixel_office.app (36.0MB)`. 툴체인 함정 둘을 고쳐야 했다(③④) |
+| M8 | Finder 더블클릭(데몬 없이) | **통과** — 앱이 **nvm 의 node 를 절대 경로로** 찾아 데몬을 띄웠다. `daemon.log`·`app.lock` 이 데이터 폴더에, ws ESTABLISHED, 창 1280×752 |
+| M9 | 부서 만들기 → 폴더 선택 대화상자 | **못 함** — 앱 제어 권한이 없다(GUI 클릭 필요). 엔타이틀먼트는 바이너리에서 확인 |
+| M10 | Cmd+Q → 프로세스 0 | **부분** — Cmd+Q 와 같은 경로(Apple Event quit)가 `onExitRequested` 에 **도달했다**. 확인 대화상자를 사람이 눌러야 하는 갈래만 남았다 |
+| M11 | 앱 다시 켜기 → 조직 그대로 출근(말없이) | **통과** — `recover 부장: --resume <id>, assigned 1` / `실기팀장: …, 말없이` → `복구: 2명 재개, 0건 만료, 말없이 1명` |
+| M12 | 일하는 중 `kill -9 <데몬 pid>` → 자동 재시작·복구 | **통과** — 2초 안에 새 데몬, **유령 정리가 맥에서 동작**(옛 CLI 3개 종료), 앱은 살아 있고 ws 재연결 |
+| M13 | 앱 `kill -9` → 데몬이 부모 사라짐 감지 → 정리 | **통과** — 5초 안에 `부모 앱이 사라졌다 (pid …)` → `세션 3개 닫음, 2명 잠시 닫힘` → `bye`, CLI 전부 종료 |
+| M14 | 사용량 칩·팝오버·터미널 하단 상태 줄 | **부분** — 데몬 쪽 사용량은 전부 들어온다(주간 94% / 5시간 55% / 모델 Fable 93% / 멤버별 컨텍스트·토큰·비용). `/usage`·`/status` 화면 줄바꿈 차이 없음 → darwin 패턴 불필요. 앱 칩·팝오버는 GUI |
+| M15 | 단축키 `Cmd+K/L/T/I/R`, `Cmd+Shift+Y/N` | **못 함** — GUI 입력 필요 |
+| M16 | 픽셀 서체·스프라이트가 레티나에서 흐리지 않음 | **못 함** — 눈으로 봐야 한다. 창 크기만 확인(`setContentSize(1280×720)` → 관측 1280×752 = 콘텐츠 720 + 타이틀바 32) |
+| M17 | 창 캡처 스크립트로 증거 저장 | **부분** — `tool/capture-window.sh` 를 만들고 창 id 조회까지 확인(id=2753). `screencapture` 호출은 화면 기록 권한 프롬프트가 떠 실행하지 않았다 |
 
-막힌 것의 원인은 코드가 아니라 **이 맥의 사전 준비 두 가지**다 → "남은 것" 에 정확한 명령을 적어 뒀다.
-대본이 "가장 큰 미지수" 로 꼽은 둘은 준비 없이도 확인할 길이 있어 **먼저 확인했다**(아래 "미지수 둘").
+M9·M15·M16 과 M10 의 나머지는 **앱 창을 직접 클릭·타이핑해야** 한다. 이 세션에서는 앱 제어 권한이
+승인되지 않아 못 했다(코드 문제가 아니다) — "남은 것" 에 사람이 할 순서를 적어 뒀다.
 
 ## 한 것
 
@@ -173,6 +183,115 @@ T48-2 는 앱의 플랫폼 의존을 `platform.dart` 로 모으고 `FakePlatform
 
 플랫폼에 맞췄다 → 맥·리눅스는 `PIXEL_CLAUDE_EXE=<claude 경로>`. `dev/daemon/src/index.ts`
 
+### 8. M7 함정 ③ — Xcode 27 의 `lipo` 가 유니버설 빌드를 막는다
+
+`flutter build macos --release` 가 이렇게 죽었다:
+
+```
+Target release_unpack_macos failed: Exception: Binary …/FlutterMacOS does not contain architectures "arm64 x86_64".
+
+lipo -info:
+Architectures in the fat file: …/FlutterMacOS are: x86_64 arm64      ← 두 arch 가 다 들어 있다
+```
+
+메시지가 자기 모순이다. Flutter 의 `thinFramework`(`flutter_tools/lib/src/build_system/targets/darwin.dart`)는
+Xcode 의 `ARCHS` 를 그대로 넘겨 `lipo <파일> -verify_arch arm64 x86_64` 를 부르는데, **Xcode 27 의 lipo 는
+두 번째 arch 를 입력 파일로 세고 거부한다**:
+
+```
+$ lipo <FlutterMacOS> -verify_arch arm64 x86_64
+lipo: -verify_arch requires exactly one input file        ← exit 1
+$ lipo <FlutterMacOS> -verify_arch arm64
+                                                          ← exit 0
+$ lipo <FlutterMacOS> -verify_arch x86_64
+                                                          ← exit 0
+```
+
+**한글 경로 탓이 아니다** — 프레임워크를 ASCII 경로로 복사해 같은 명령을 돌려도 똑같이 거부한다(확인함).
+인자 순서를 바꿔도 같다. `lipo` 의 usage 는 `-verify_arch <arch> ...` 로 여러 개를 받는다고 적혀 있는데
+실제로는 안 받는다.
+
+`macos/Runner/Configs/Release.xcconfig` 에 `ARCHS = arm64` 을 박아 arch 를 하나로 줄였다. 유니버설 바이너리는
+포기한다(개인 도구 · 앱스토어 배포는 D-48 범위 밖). Flutter 가 저 arg 순서를 고치면 그 줄을 지우면 된다.
+
+`$(NATIVE_ARCH_ACTUAL)`·`$(NATIVE_ARCH_64_BIT)` 로 "빌드하는 맥의 arch" 를 쓰려 했지만 **둘 다 빌드 시점에
+`arm64e` 로 풀려** 프레임워크에 없는 arch 를 요구했다(`does not contain architectures "arm64e"`). 그래서
+리터럴로 적었다 — 인텔 맥에서 빌드하려면 그 줄을 `x86_64` 로 바꾼다. xcconfig 주석에 적어 뒀다.
+
+### 9. M7 함정 ④ — Xcode 27 은 배포 대상 10.15 를 받지 않는다
+
+③ 을 고치자 다음 오류가 나왔다:
+
+```
+error: The macOS deployment target 'MACOSX_DEPLOYMENT_TARGET' is set to 10.15,
+       but the range of supported deployment target versions is 12.0 to 27.0.x.
+```
+
+**Flutter 3.44.7 의 macOS 템플릿 자체가 아직 10.15 다**(`templates/app/macos.tmpl/…/project.pbxproj.tmpl`
+세 곳 확인) — T48-2 가 `flutter create --platforms=macos` 로 만든 러너도 그래서 10.15 였다. 즉 Xcode 27 에서는
+이 프로젝트만의 문제가 아니라 **모든 Flutter macOS 프로젝트**가 그대로는 안 빌드된다.
+`project.pbxproj` 의 세 곳을 12.0 으로 올렸다.
+
+이 둘을 고친 뒤: `✓ Built build/macos/Build/Products/Release/pixel_office.app (36.0MB)`.
+
+빌드 중에 Flutter 가 Runner 스킴에 `PreActions`(`macos_assemble.sh prepare`)를 하나 넣었다 — 도구가 한
+마이그레이션이라 빌드가 성공한 상태 그대로 커밋했다.
+
+### 10. M17 — 맥용 창 캡처 스크립트 `dev/app/tool/capture-window.sh`
+
+`capture-window.ps1`(윈도우, PrintWindow)의 맥판. 전체 화면은 찍지 않는다. 설계는
+"`screencapture -l <windowid>` + `osascript` 로 창 id" 였는데 **`osascript` 로는 CGWindowID 를 못 얻는다**
+(`id of window 1` 은 Cocoa 앱에서 CGWindowID 가 아니고, 맥 기본 python3 에는 Quartz/pyobjc 가 없다).
+그래서 두 갈래로 만들었다.
+
+| 순위 | 방법 | 비고 |
+|---|---|---|
+| 1 | `swift` 로 `CGWindowListCopyWindowInfo` → 창 id → `screencapture -x -o -l <id>` | 진짜 창 단위(그림자 제외). Xcode 필요 |
+| 2 | System Events 로 창 위치·크기 → `screencapture -x -R <rect>` | 겹친 창이 같이 찍힐 수 있다. 손쉬운 사용 권한 필요 |
+
+이름이 두 곳에서 다른 것도 걸렸다 — CGWindowList 의 소유자 이름은 **번들 표시 이름**(`픽셀 오피스`,
+Info.plist `CFBundleDisplayName`)이고 System Events 의 프로세스 이름은 **실행 파일 이름**(`pixel_office`)이다.
+둘 다 기본 후보로 넣어 `-p` 없이 쓰게 했다.
+
+### 11. M6 — claude 2.1.284 가 긴 주입 텍스트를 `<pasted_content>` 로 감싼다
+
+통합 테스트 4종 중 `teamtools` 가 **480초 타임아웃**으로 실패했다:
+
+```
+✖ real daemon + real Claude leader: hire → delegate → member works → [ALL_REPORTS_IN] → leader report (489760ms)
+  Error: timeout waiting for event thinking after #5
+```
+
+멈춘 곳은 "팀장이 `[REPORTS …]` 를 받았는지" 기다리는 줄이다. 그런데 로그를 보면 팀장은 **분명히 받았다**:
+
+```
+[IT:c] event #18 thinking {"text":"\n\n<pasted_content id=\"6a84\">\n[REPORTS task#2 보조 status=done]\n…"}
+                                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^  이 봉투 때문에
+```
+
+**claude 2.1.284 는 프롬프트로 밀어 넣은 텍스트가 길면 화면에 `\n\n<pasted_content id="…">\n` 으로 감싸
+찍는다.** 데몬은 화면에 찍힌 그대로를 `thinking.text` 에 담으므로 주입 머리말이 문자열 맨 앞에 오지 않고,
+`startsWith('[REPORTS ')` 필터가 영원히 안 맞는다. 길이에 따라 감싸기도 하고 안 하기도 한다 — 같은 실행에서
+짧은 `[TASK#2 from 반장(팀장)]` 은 **감싸이지 않아** 그 앞 단계는 8.9초에 통과했다.
+
+**플랫폼과 무관한 CLI 버전 변화다.** 이 프로젝트가 맞춰 둔 버전은 2.1.270(D-24 기록)이고 지금은 2.1.284다 —
+같은 CLI 를 쓰는 윈도우에서도 똑같이 깨진다.
+
+`it-helpers.ts` 에 `unwrapPasted()` 를 넣어 봉투를 벗기고, 주입 텍스트를 읽는 세 통합 테스트
+(`teamtools` 2곳 + assert 2곳, `ranktools` 3곳, `askuser` 1곳)가 그것을 거치게 했다. 두 모양 다 통과한다:
+
+```
+감싼 것   → "[REPORTS task#2 보조 status=done]\n내용"
+안 감싼 것 → "[TASK#2 from 반장(팀장)]\n작업 폴더…"
+```
+
+고친 뒤 teamtools 가 **24초에 통과**했다(`leader got reports (14879ms)`, `hello25.txt: "hi"`, 유령 0).
+
+**고치지 않고 남긴 것**: 같은 봉투가 **사용자에게 보이는 로그·말풍선에도 그대로 찍힌다**(M4 에서
+`#17 thinking 부장 ⏎ ⏎ <pasted_content id="8321"> ⏎ [REPORTS task#2 …` 로 관측). `thinking.text` 는 200자로
+잘리므로 그 200자 중 앞자리를 봉투가 먹는다. 데몬이 저장할 때 벗길 것인가 앱이 그릴 때 벗길 것인가는
+설계 결정이 필요하고 T48-3(맥 지원) 범위가 아니라 "남은 것" 으로 넘겼다.
+
 ## 검증
 
 ### M1 — 데몬
@@ -204,7 +323,31 @@ $ npm test
 **윈도우 884 와 맞는다**: 874(등록된 것) + MixedTeam 스위트의 10건(픽스처가 없어 스킵, 등록조차 안 됨) = 884.
 스킵 9건은 win32 전용 + 원래 스킵 8건이다(따옴표 수정으로 `log.test.ts` 의 win32 전용 1건이 새로 합류).
 
-### M2 — 실행 파일 탐색·기동·종료 (claude 없이 확인한 것)
+### M2 — 실행 파일 탐색·기동
+
+`claude` 2.1.284 를 npm 전역으로 깔고 보니 **설계의 가정이 틀렸다** — 맥에서도 셰뱅 스크립트가 아니다:
+
+```
+$ ls -l $(which claude)
+… bin/claude -> ../lib/node_modules/@anthropic-ai/claude-code/bin/claude.exe
+$ file …/bin/claude.exe
+Mach-O 64-bit executable arm64          ← 네이티브 실행 파일. 이름만 `.exe` 다(맥에서도)
+```
+
+탐색은 그대로 잘 됐다(심볼릭 링크를 따라가 실제 파일을 확인하는 규칙이 이 모양도 통과시킨다):
+
+```
+$ npm start
+[daemon] data dir : /Users/hjkim/Library/Application Support/pixel-office      ← 설계 표대로
+[daemon] db        : …/pixel-office.db
+[daemon] claude    : /Users/hjkim/.nvm/versions/node/v24.18.0/bin/claude        ← 실제 파일 절대 경로
+[daemon] listening
+```
+
+`npmGlobalRoots` 도 이 맥의 nvm 뿌리까지 잡았다 — Homebrew, `/usr/local`, `~/.npm-global`,
+`~/.nvm/versions/node/v24.18.0/lib/node_modules`.
+
+### M2 보충 — claude 없을 때의 진단 (설치 전에 확인한 것)
 
 ```
 dataDir       : /Users/hjkim/Library/Application Support/pixel-office     ← 설계 표대로
@@ -280,9 +423,193 @@ $ flutter test
 
 `flutter build macos --release` 는 **못 돌렸다** — 아래.
 
+### M3~M5 — 실기 한 바퀴 (부서 만들기 → 지시 → 허가 → 보고)
+
+M3: 첫 실행 신뢰 다이얼로그를 **darwin 전용 tui-map 없이** 그대로 통과했다.
+
+```
+$ npm run cli -- --exec "dept create 맥테스트 <sandbox> claude 부장" --wait-idle 부장
+부서 생성: d_b7cded758e25  맥테스트  …/dev/spike-0/sandbox  head=m_935a0ab8ebe3
+[daemon:info] 부장: passed first-run dialog (trust-folder-claude)
+[daemon:info] 부장: passed first-run dialog (trust-folder-claude)
+status 부장 → idle (free)
+[daemon:info] 부장: passed first-run dialog (onboarding-enter)
+```
+
+M4: 지시 한 턴의 이벤트 표가 윈도우와 같은 순서로 흘렀다. 부장이 직접 쓰지 않고 팀을 만들어 위임했다
+(D-32 대로).
+
+```
+$ npm run cli -- --exec "say 부장 sandbox 폴더에 mac-live.txt 를 만들고 …" --wait-idle 부장
+task#1 → 부장
+status 부장 → working (working)
+#1 thinking 부장 [TASK#1 from user] ⏎ sandbox 폴더에 mac-live.txt 를 …
+#2 running 부장 ToolSearch
+#3 running 부장 mcp__team__create_team
+status 실기팀장 → idle (free)
+#4 running 부장 mcp__team__delegate
+#5 delegating 부장 delegate — …  task#2
+#6 thinking 실기팀장 [TASK#2 from 부장(부장)] ⏎ …
+#8 idle 부장
+```
+
+M5: 허가 카드가 **유닉스 리다이렉션 쓰기**로 떴다(설계가 유닉스 패턴에 추가한 `> file` 그대로).
+
+```
+$ npm run cli -- --exec "pending"
+a_acf48a4ffeec  approval  실기팀장  Bash printf '맥 실기 T48-3\n' > mac-live.txt && cat … && xxd …
+
+$ npm run cli -- --exec "allow a_acf48a4ffeec" --wait-idle 실기팀장
+#15 running 실기팀장 mcp__team__report
+#16 reporting 실기팀장 파일 생성 완료. 경로: …/sandbox/mac-live.txt / 내용: '맥…  task#2
+#17 thinking 부장 ⏎ [REPORTS task#2 실기팀장 status=done] …
+
+$ cat dev/spike-0/sandbox/mac-live.txt
+맥 실기 T48-3                                    ← 한글 내용 그대로
+```
+
+파생 상태도 맞았다 — `tree` 가 부장 `waiting_reports`, 팀장 `waiting_approval` 로 찍혔다.
+
+### M14(데몬 쪽) — 사용량
+
+`/usage`·`/status` 화면 파싱이 맥에서 그대로 됐다. **줄바꿈 차이가 없어 darwin 전용 tui-map 이 필요 없다.**
+
+```
+$ npm run cli -- --exec "usage"
+claude  연결됨(max)  주간 94% 남음 (리셋 2026-09-30T03:00:00.000Z)  5시간 55% 남음 …  측정 …(turn)
+    모델 Fable 93% 남음 (리셋 2026-09-30T03:00:00.000Z)
+codex   연결 안 됨(설치 안 됨)
+  부장 [claude]  컨텍스트 4% (44k/1.0M)  토큰 170k  $0.2592  …
+  실기팀장 [claude]  컨텍스트 4% (41k/1.0M)  토큰 80k  $0.1535  …
+```
+
+### M7 — 빌드 산출물
+
+```
+$ flutter build macos --release
+✓ Built build/macos/Build/Products/Release/pixel_office.app (36.0MB)
+
+$ lipo -info …/pixel_office.app/Contents/MacOS/pixel_office
+Non-fat file: … is architecture: arm64
+
+$ codesign -d --entitlements - …/pixel_office.app
+  com.apple.security.app-sandbox                 false      ← D-48 ⑥ 대로 꺼져 있다
+  com.apple.security.files.user-selected.read-write  true
+  com.apple.security.network.client               true
+```
+
+### M8 · M11 — Finder 더블클릭(데몬 없이) → 데몬 자동 기동 → 조직 복귀
+
+데몬을 끄고 `open <app>`(Finder 더블클릭과 같은 경로)만 했다. 앱이 데몬을 스스로 띄웠다:
+
+```
+$ cat "~/Library/Application Support/pixel-office/daemon.log"
+[app] --- 2026-09-29T16:05:13 앱이 데몬을 띄움:
+      /Users/hjkim/.nvm/versions/node/v24.18.0/bin/node --import tsx src/index.ts
+      (cwd …/dev/daemon) ---                     ← nvm 의 node 를 절대 경로로 찾았다(D-48 ③ 핵심)
+[office] recover 부장(m_935a0ab8ebe3): --resume 86c409d2-…, assigned 1, requeued 0, expired 0
+[office] recover 실기팀장(m_3142e993ca52): --resume 35f9cfa0-…, assigned 0, …, 말없이
+[office] 복구: 2명 재개, 0건 만료, 말없이 1명                    ← M11: 조직이 그대로, 말없이
+[office] 부모 감시  : pid 73703 (시작 시각까지 확인, …)          ← ps -o lstart 경로
+[daemon] listening
+```
+
+앱 GUI 를 클릭할 권한은 없었지만 창은 확실히 열렸다 — 데이터 폴더·잠금 파일·ws·창 크기가 다 맞는다:
+
+```
+$ cat …/app.lock
+{"pid":73703,"startedAt":"2026-09-29T16:04:45","image":"pixel_office"}   ← pid 재사용 가드(D-17)
+
+$ lsof -nP -iTCP:7420 | grep ESTABLISHED
+pixel_off 73703 … TCP 127.0.0.1:55986->127.0.0.1:7420 (ESTABLISHED)
+node      73770 … TCP 127.0.0.1:7420->127.0.0.1:55986 (ESTABLISHED)
+
+# CGWindowList 로 본 창
+owner=픽셀 오피스 id=2753 1280x752      ← MainFlutterWindow.swift 의 setContentSize(1280×720) + 타이틀바 32
+```
+
+### M12 — 일하는 중 데몬 `kill -9` → 자동 재시작 + 유령 정리
+
+```
+$ kill -9 75770                                   (앱은 그대로 둔다)
+→ 2초 안에 새 데몬 pid=75579
+
+[app] --- 16:11:13 앱이 데몬을 띄움: …/bin/node --import tsx src/index.ts ---
+[office] 복구: 이전 기동의 사용량 확인용 세션(claude, pid 73798)을 종료함
+[office] 복구: 부장 의 이전 프로세스(pid 73779)가 살아 있어 종료함
+[office] 복구: 실기팀장 의 이전 프로세스(pid 73780)가 살아 있어 종료함
+[office] 복구: 2명 재개, 1건 만료, 말없이 1명, 유령 2개 정리
+[office] 부모 감시  : pid 73703 …
+[daemon] listening
+```
+
+**설계 표의 맥 행이 실제로 동작한 지점이다** — 프로세스 생존(`kill -0`), 이미지 이름(`ps -p <pid> -o comm=`),
+트리 강제 종료(`ps -axo pid=,ppid=` → 자식부터 `kill -9`). 옛 pid 셋(73779·73780·73798)이 전부 죽은 것과
+ws 가 새 데몬으로 다시 붙은 것을 확인했다.
+
+### M13 — 앱 `kill -9` → 데몬이 부모 사라짐을 보고 스스로 정리
+
+```
+$ kill -9 73703                                   (16:11:37)
+→ 5초 안에 데몬 종료 (16:11:41)
+
+[office] 부모 앱이 사라졌다 (pid 73703) — 사무실을 정리하고 데몬을 종료합니다
+[office] 종료: 세션 3개 닫음, 2명 잠시 닫힘(suspended)
+[daemon] bye
+```
+
+claude CLI 3개 전부 종료, `daemon.json` 삭제. `app.lock` 은 남는다 — 앱이 강제로 죽어 못 치운 것이고,
+다음 기동 때 pid + 이미지 이름으로 걸러내는 게 원래 설계다(D-17).
+
+### M10 — Cmd+Q 와 같은 종료 경로가 `onExitRequested` 에 도달하는가
+
+설계가 "맥은 Cmd+Q·Dock 종료도 같은 경로로 오는지 확인 목록에" 로 남겨 둔 미지수다. GUI 를 못 눌러
+**Apple Event `quit`** 으로 확인했다 — NSApplication 의 종료 경로라 Cmd+Q·Dock 종료와 같은 길이다.
+
+```
+$ osascript -e 'tell application "픽셀 오피스" to quit'
+execution error: pixel_office에 오류 발생: 사용자가 취소함. (-128)
+```
+
+**`-128`(userCancelled)이 답이다.** 그 값이 나오려면 앱이 이벤트에 "취소" 로 답해야 하고, 앱이 그렇게
+답하는 곳은 `ExitFlow.onExitRequested` 의 `working > 0 → confirm(working)` → `AppExitResponse.cancel`
+한 곳뿐이다(`lib/lifecycle/exit_flow.dart:150`). 즉 **종료 가로채기가 이 이벤트를 받는다** — 미지수 해소.
+멤버가 일하는 중이었으므로 비상 퇴근 확인 대화상자가 떴고, 누를 사람이 없어 취소로 답한 것이다.
+
+그 뒤 앱은 3초 안에 종료되고 데몬도 깨끗이 닫혔다(`종료: 세션 3개 닫음, 2명 잠시 닫힘(suspended)` → `bye`,
+`daemon.json` 삭제). **다만 취소로 답한 뒤 왜 종료까지 갔는지는 확정하지 못했다** — 대화상자를 아무도
+누르지 않은 상태라 "대화상자가 저절로 닫혔다" 와 "macOS 가 그래도 종료시켰다" 를 가릴 수 없다.
+사람이 Cmd+Q 를 누르고 대화상자에서 "퇴근" 을 고르는 갈래가 M10 에 남아 있다.
+
+### M17 — 창 캡처 스크립트
+
+```
+$ bash -n dev/app/tool/capture-window.sh            → OK
+$ (스크립트에 든 swift 조각) "픽셀 오피스" "pixel_office"
+2753                                                 → 창 id 조회 동작
+```
+
+`screencapture` 자체는 호출하지 않았다 — 화면 기록 권한 프롬프트가 뜨는 동작이라 사용자가 한 번
+허용한 뒤부터 된다.
+
+### M6 — 통합 테스트 4종
+
+**파일 하나씩** 돌렸다(아래 함정 참고).
+
+```
+$ PIXEL_IT=1 node --import tsx --test --test-concurrency=1 <파일>
+
+pty-integration              → exit=0  pass 1  fail 0     (진짜 claude 를 pty 로 띄워 프롬프트까지)
+office-integration           → exit=0  pass 1  fail 0     (부서 생성 → 지시 → 허가 → 파일 → 퇴근 → shutdown)
+office-askuser.integration   → exit=0  pass 1  fail 0     (ask_user → question.respond → [ANSWER] → 모델이 답을 말한다)
+office-teamtools.integration → exit=0  pass 1  fail 0     (hire → delegate → 팀원 작업 → 보고 → 팀장 보고)
+```
+
+teamtools 는 처음에 실패했고 원인이 플랫폼이 아니라 CLI 버전이었다 — 위 "한 것" 11 번.
+
 ## 발견한 함정
 
-M1 ①~⑤, M7 ①은 위 "한 것" 에 있다. 코드와 무관한 환경 함정 둘을 더 적는다.
+M1 ①~⑤, M7 ①③④ 와 M2 의 문구는 위 "한 것" 에 있다. 저장소가 고칠 것이 없는 환경·도구 함정을 여기 적는다.
 
 ### M7 함정 ② — 경로에 한글이 있으면 `flutter analyze` 가 크래시한다
 
@@ -320,40 +647,80 @@ Please run 'sudo xcodebuild -license' from within a Terminal window …
 git 과 flutter 는 `DEVELOPER_DIR=/Library/Developer/CommandLineTools` 로 우회해 M1·M7 을 끝냈다.
 `flutter build macos` 는 진짜 Xcode 가 필요해 우회가 안 된다(아래).
 
+### M6 함정 — 통합 테스트를 여러 파일 한 번에 돌리면 엉킨다
+
+처음에 `node --test` 에 통합 테스트 파일 6개를 한 번에 줬다. node 의 테스트 러너는 **파일을 병렬로**
+돌리므로 실기 CLI 세션이 여러 벌 동시에 떴다(임시 폴더 `pixel-office-t25-it-…` 와 `…-t35-it-…` 가 같은
+시각에 살아 있는 것을 확인). 두 파일이 각자 끝까지 갔는데도 진행이 5분 넘게 멈췄다.
+
+파일 하나씩(`--test-concurrency=1`, 파일도 한 번에 하나) 돌리면 멀쩡하다. 플랫폼과 무관한 성질이고
+(윈도우에서도 같을 것이다) 실기 테스트는 원래 한 번에 하나 돌리는 것이 맞다 — 진짜 CLI·포트·셸 락을
+공유하기 때문이다. 대본을 따를 때는 **파일 단위로 순차 실행**할 것.
+
+### 앱 GUI 를 직접 누르지 못했다
+
+M9·M15·M16 과 M10 의 마지막 갈래는 앱 창을 클릭·타이핑해야 한다. 이 세션에서는 앱 제어 권한이 승인되지
+않아 하지 못했다. 코드 문제가 아니고, 대신 확인할 수 있는 것은 전부 다른 경로로 확인했다(엔타이틀먼트는
+`codesign -d --entitlements`, 창 크기는 CGWindowList, Cmd+Q 경로는 Apple Event).
+
 ## 결정
 
-새 결정 없음. 고친 것은 전부 D-48 원칙 3("윈도우 동작은 1비트도 바뀌지 않는다")과
-원칙 4("맥 분기는 플랫폼을 주입해 검증한다") 안에서의 수정이다 — 원칙 4 를 **지키지 못하고 있던 테스트
-여섯 건**(데몬 2 · 앱 5 중 겹침 제외)을 원칙대로 되돌린 것이다.
+새 결정 없음 — 04 에 D-## 로 올릴 것은 없다. 고친 것은 두 갈래다.
 
-M1 함정 ①②⑤ 는 플랫폼 분기가 아니라 **새 클론·새 npm 에서의 재현성** 문제라 D-48 과 무관하다.
+**D-48 원칙 4 로 되돌린 것**(테스트 일곱 건: 데몬 2 · 앱 5). T48-1·T48-2 가 "맥 분기는 플랫폼을 주입해
+검증한다" 를 세웠는데 이 일곱 건은 주입 없이 호스트에 물어 윈도우에서만 우연히 맞고 있었다. 구현은 전부
+맞았다 — 맥 문구·맥 경로 규칙·`npm` 이름이 정확히 나왔고 테스트가 옛 윈도우 문자열을 들고 있었을 뿐이다.
+
+**저장소 바깥 사정에 맞춘 것**(D-48 과 무관). M1 함정 ①②⑤ 는 새 클론·새 npm 에서의 재현성 문제이고,
+M7 함정 ③④ 는 Xcode 27 × Flutter 3.44.7 비호환이다. 후자는 `macos/` 만 건드려 윈도우 동작은 그대로다
+(D-48 원칙 3). 유니버설 바이너리를 포기한 것만 제품이 눈에 보이게 달라진 점인데, 개인 도구이고
+배포·공증이 D-48 범위 밖이라 받아들였다 — Flutter 가 `lipo` arg 순서를 고치면 xcconfig 한 줄을 지우면
+원래대로 돌아간다.
+
+**설계 문서에서 틀렸던 것 하나**: "npm 이 설치한 `claude` 는 맥에서 셰뱅 스크립트" 는 사실이 아니다
+(2.1.284 는 `bin/claude` → `bin/claude.exe` 심볼릭 링크이고 그 파일이 **Mach-O arm64 네이티브**다 —
+맥에서도 이름이 `.exe`). 탐색 규칙은 그 모양도 통과시키므로 코드는 고칠 것이 없다. 셰뱅 스크립트를
+node-pty 로 띄울 수 있다는 가정 자체는 따로 확인해 뒀다(위 "미지수 둘" ①) — 언젠가 배포 형태가 바뀌어도
+버티는지 본 셈이다.
 
 ## 남은 것
 
-M3~M6 · M8~M17 은 **코드 문제로 막힌 것이 아니다.** 이 맥에 사전 준비 두 가지가 빠져 있다.
+**사람이 앱 창을 눌러야 하는 넷.** 앱은 빌드돼 있고(`dev/app/build/macos/Build/Products/Release/pixel_office.app`)
+그냥 열면 된다. 순서대로:
 
-**① Xcode 라이선스 동의** — M7 의 `flutter build macos --release` 와 그 뒤 M8~M17 전부가 여기 걸려 있다.
-Xcode 27.0 은 이미 설치돼 있고 `xcode-select -p` 도 Xcode.app 을 가리킨다. 비밀번호가 필요해 내가 못 돌린다:
+1. **M9** — 앱에서 부서 만들기 → "폴더 선택…" 이 네이티브 대화상자로 뜨는지, 고른 폴더로 부장이 출근하는지.
+   (엔타이틀먼트는 바이너리에서 확인해 뒀으니 막힐 이유는 없다.)
+2. **M15** — `Cmd+K/L/T/I/R` 로 지시 바·로그·터미널·지시문·보고서가 열리는지, 인박스 맨 위 카드가
+   `Cmd+Shift+Y` / `Cmd+Shift+N` 으로 허가·거부되는지.
+3. **M16** — 레티나(devicePixelRatio 2)에서 픽셀 서체(Galmuri11)와 스프라이트가 흐리지 않은지.
+   `spriteScale` 이 정수로 떨어지는지가 핵심이다.
+4. **M10 의 마지막 갈래** — 멤버가 일하는 중에 **Cmd+Q** → 비상 퇴근 확인 대화상자에서 "퇴근" 을 고르고
+   `ps aux | grep -E "claude|pixel_office"` 가 비는지. (이벤트가 가로채기에 도달하는 것은 확인했다.)
 
-```bash
-sudo xcodebuild -license accept && sudo xcodebuild -runFirstLaunch
-```
-
-**② `claude` 설치 + 로그인** — M2 의 나머지와 M3~M6 이 여기 걸려 있다. 로그인은 대화형이라 내가 못 한다:
-
-```bash
-npm install -g @anthropic-ai/claude-code && claude
-```
-
-설치 직후 **함정 ①** 이 다시 나올 수 있다(npm 11.16+). `claude` 가 pty 에서 안 뜨면:
+**M17 캡처** — 위 넷을 하면서 증거를 남기려면 한 번 권한을 허용해야 한다. 처음 실행 때 macOS 가
+"화면 기록" 을 물어본다:
 
 ```bash
-npm approve-scripts --allow-scripts-pending    # dev/daemon 에서
+dev/app/tool/capture-window.sh -o docs/worklog/img/T48-3-office.png
 ```
 
-(선택) M4~M6 의 Codex 갈래를 보려면 `codex` 도 설치·로그인. 지금은 없어서
-`resolveCodexExe()` 가 `'codex'` 를 그대로 돌려준다 — `claude` 쪽처럼 "못 찾았다" 를 말하지 않는다.
-윈도우도 같은 동작이라 맥 회귀는 아니지만, 실패가 spawn 시점까지 미뤄진다는 점은 적어 둔다.
+**`<pasted_content>` 봉투가 사용자 로그에 그대로 찍힌다** (T48-3 범위 밖, 플랫폼 무관). claude 2.1.284 가
+긴 주입 텍스트를 감싸는 봉투가 `thinking.text` 에 그대로 들어가 사무실 로그·말풍선에 보인다:
 
-준비가 끝나면 M2 의 나머지부터 M17 까지 이어서 돌리고 이 문서에 표를 채운다.
-`tool/capture-window.sh`(M17) 는 아직 안 만들었다 — M8 이 열리는 시점에 만든다.
+```
+#17 thinking 부장 ⏎  ⏎ <pasted_content id="8321"> ⏎ [REPORTS task#2 실기팀장 status=done] ⏎ …
+```
+
+`thinking.text` 는 200자로 잘리므로 그 앞자리를 봉투가 먹는다. 데몬이 저장할 때 벗길지(모든 소비자가
+깨끗해진다) 앱이 그릴 때 벗길지(원문은 보존된다)는 결정이 필요하고, 저장 데이터가 바뀌면 04 에 D-## 로
+적어야 한다. 테스트 쪽은 `unwrapPasted()` 로 막아 뒀으니 급하지는 않다.
+
+**선택 — Codex 갈래.** `codex` 가 없어 M4~M6 의 Codex 쪽은 못 봤다. 보려면 설치·로그인해야 한다.
+지금은 `resolveCodexExe()` 가 못 찾아도 `'codex'` 를 그대로 돌려준다 — `claude` 쪽처럼 "못 찾았다" 를
+말하지 않아 실패가 spawn 시점까지 미뤄진다. 윈도우도 같은 동작이라 맥 회귀는 아니지만 적어 둔다
+(사용량 표시는 `codex 연결 안 됨(설치 안 됨)` 으로 제대로 말한다).
+
+**남긴 상태.** `dev/spike-0/sandbox/`(gitignore 대상)에 실기 산출물 `mac-live.txt`·`hello35.txt` 와
+`README.txt` 가 있고, `~/Library/Application Support/pixel-office/` 에 실기로 만든 부서 `맥테스트`
+(부장 + 실기팀장)가 DB 에 남아 있다. 앱을 다시 열면 그 조직이 복귀한다(M11 이 그걸 본 것이다).
+지우려면 앱에서 부서를 삭제하거나 데이터 폴더를 비우면 된다.
