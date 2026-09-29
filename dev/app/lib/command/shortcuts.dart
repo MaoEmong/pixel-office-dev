@@ -3,7 +3,11 @@
 //   Ctrl+K  지시 바 포커스          Ctrl+L  로그 탭        Ctrl+T  터미널 전체 폭 오버레이 토글
 //   Ctrl+I  지시문 탭               Ctrl+R  보고서 탭      Esc     (오버레이가 열려 있으면 닫기) → 부장 선택으로 복귀
 //
-// 인박스 맨 위 카드의 `Alt+Y`/`Alt+N` 은 인박스가 직접 듣는다(panel/inbox.dart) — 목록을 아는 쪽이 처리해야 해서.
+// **맥은 Cmd**(D-48 ⑤ · `platform/platform.dart` 의 `isMetaShortcuts`): `Cmd+K/L/T/I/R`. 맥에서 Ctrl 조합은
+// 관례가 아니고(Ctrl+K 는 터미널의 "줄 끝까지 지우기" 다) 시스템이 먼저 먹는 것도 있다.
+//
+// 인박스 맨 위 카드의 `Alt+Y`/`Alt+N`(맥 `Cmd+Shift+Y`/`Cmd+Shift+N`)은 인박스가 직접 듣는다
+// (panel/inbox.dart) — 목록을 아는 쪽이 처리해야 해서.
 // Enter 전송 · Shift+Enter 줄바꿈은 지시 바 자신의 FocusNode 가 본다(T14).
 //
 // 이 위젯은 포커스 subtree 위에 얹는다. 단축키는 **포커스된 노드에서 위로** 올라오므로 터미널·입력란이
@@ -21,13 +25,20 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../panel/panel_tabs.dart';
 import '../panel/ui_prefs.dart';
+import '../platform/platform.dart' show isMetaShortcuts;
 import '../state/office_state.dart';
 import '../state/selection.dart';
 import '../topbar/selected_department.dart';
 import 'command_bar.dart' show commandBarFocusProvider;
 
-/// 화면 아래 힌트 줄에 쓰는 요약(변형 A 의 "맨 아래 단축키 힌트 줄").
+/// 화면 아래 힌트 줄에 쓰는 요약(변형 A 의 "맨 아래 단축키 힌트 줄") — 윈도우·리눅스.
 const String shortcutHintLine = 'Ctrl+K 지시 · Ctrl+L 로그 · Ctrl+T 터미널 · Ctrl+I 지시문 · Ctrl+R 보고서 · Esc 부장';
+
+/// 같은 줄의 맥 판(Cmd).
+const String macShortcutHintLine = 'Cmd+K 지시 · Cmd+L 로그 · Cmd+T 터미널 · Cmd+I 지시문 · Cmd+R 보고서 · Esc 부장';
+
+/// 지금 플랫폼의 힌트 줄 — 화면에 쓰는 것은 언제나 이쪽이다(글로 쓴 단축키와 실제 키가 어긋나면 안 된다).
+String get platformShortcutHintLine => isMetaShortcuts ? macShortcutHintLine : shortcutHintLine;
 
 class AppShortcuts extends ConsumerStatefulWidget {
   const AppShortcuts({super.key, required this.child});
@@ -78,16 +89,17 @@ class _AppShortcutsState extends ConsumerState<AppShortcuts> {
   Widget build(BuildContext context) {
     final child = widget.child;
     void tab(RightPanelTab t) => ref.read(panelTabRequestProvider.notifier).request(t);
+    // 맥은 Cmd(meta), 그 밖에는 Ctrl — 한 줄에서 갈린다.
+    final meta = isMetaShortcuts;
+    SingleActivator combo(LogicalKeyboardKey key) => SingleActivator(key, control: !meta, meta: meta);
 
     return CallbackShortcuts(
       bindings: {
-        const SingleActivator(LogicalKeyboardKey.keyK, control: true): () =>
-            ref.read(commandBarFocusProvider.notifier).request(),
-        const SingleActivator(LogicalKeyboardKey.keyL, control: true): () => tab(RightPanelTab.log),
-        const SingleActivator(LogicalKeyboardKey.keyI, control: true): () => tab(RightPanelTab.instructions),
-        const SingleActivator(LogicalKeyboardKey.keyR, control: true): () => tab(RightPanelTab.report),
-        const SingleActivator(LogicalKeyboardKey.keyT, control: true): () =>
-            ref.read(terminalOverlayProvider.notifier).toggle(),
+        combo(LogicalKeyboardKey.keyK): () => ref.read(commandBarFocusProvider.notifier).request(),
+        combo(LogicalKeyboardKey.keyL): () => tab(RightPanelTab.log),
+        combo(LogicalKeyboardKey.keyI): () => tab(RightPanelTab.instructions),
+        combo(LogicalKeyboardKey.keyR): () => tab(RightPanelTab.report),
+        combo(LogicalKeyboardKey.keyT): () => ref.read(terminalOverlayProvider.notifier).toggle(),
         const SingleActivator(LogicalKeyboardKey.escape): () {
           // 오버레이가 열려 있으면 그것부터 닫고, 아니면 선택을 부장으로 되돌린다.
           if (ref.read(terminalOverlayProvider)) {

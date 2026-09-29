@@ -18,6 +18,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../model/models.dart';
+import '../platform/platform.dart' show shortcutModifierLabel;
 import '../rpc/rpc_client.dart';
 import '../state/office_state.dart';
 import '../topbar/selected_department.dart' show activeDepartmentIdProvider;
@@ -268,7 +269,7 @@ class _CommandBarState extends ConsumerState<CommandBar> {
           const SizedBox(width: 4),
           IconButton(
             key: const Key('commandBar.send'),
-            tooltip: '전송 (Enter · Ctrl+K 로 여기 포커스)',
+            tooltip: '전송 (Enter · $shortcutModifierLabel+K 로 여기 포커스)',
             onPressed: enabled ? _send : null,
             icon: _busy
                 ? const SizedBox(

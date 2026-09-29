@@ -7,6 +7,7 @@
 //  - 카드 **2장까지 펼치고** 3장째부터는 접힌 줄 `+N`(클릭하면 펼침).
 //  - 복구로 만료된 허가(`error{pendingId}`)는 회색 **"만료 — 재지시"** 카드로 같은 목록 안에 들어온다(D10).
 //  - 맨 위 카드에 `Alt+Y` 허가 / `Alt+N` 거부(Alt 조합 — 터미널 타이핑과 충돌하지 않게, 패스 6).
+//    맥은 `Cmd+Shift+Y`/`Cmd+Shift+N`(D-48 ⑤ — 맥에서 Alt+Y 는 특수문자, Cmd+N 은 새 창).
 //  - `inboxFocusProvider` 에 pendingId 를 넣으면 그 카드로 스크롤한다(사무실 내 책상 슬롯 클릭 → main.dart 배선).
 
 import 'package:flutter/material.dart';
@@ -16,6 +17,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../model/models.dart';
 import '../office/office_painter.dart' show legendColor;
 import '../office/office_scene.dart' show LegendSlot, myDeskHeaderLabel;
+import '../platform/platform.dart' show isMetaShortcuts;
 import '../rpc/rpc_client.dart';
 import '../state/office_state.dart';
 import 'labels.dart';
@@ -164,11 +166,17 @@ class _PendingInboxState extends ConsumerState<PendingInbox> {
 
   GlobalKey _keyOf(String id) => _itemKeys.putIfAbsent(id, GlobalKey.new);
 
-  // ---- 단축키(Alt+Y / Alt+N) ------------------------------------------------------
+  // ---- 단축키(Alt+Y / Alt+N · 맥 Cmd+Shift+Y / Cmd+Shift+N) --------------------------
 
-  /// 맨 위 카드가 허가 요청이면 `Alt+Y` 허가 / `Alt+N` 거부. 그 밖의 키는 건드리지 않는다.
+  /// 맨 위 카드가 허가 요청이면 허가/거부. 그 밖의 키는 건드리지 않는다.
+  ///
+  /// 조합키는 플랫폼에 따라 다르다(D-48 ⑤): 윈도우·리눅스 `Alt+Y`/`Alt+N`, 맥 `Cmd+Shift+Y`/`Cmd+Shift+N`
+  /// (맥에서 `Alt+Y` 는 특수문자 입력이고 `Cmd+N` 은 새 창이다).
   bool _onKey(KeyEvent e) {
-    if (e is! KeyDownEvent || !HardwareKeyboard.instance.isAltPressed) return false;
+    if (e is! KeyDownEvent) return false;
+    final keys = HardwareKeyboard.instance;
+    final modifiersOk = isMetaShortcuts ? (keys.isMetaPressed && keys.isShiftPressed) : keys.isAltPressed;
+    if (!modifiersOk) return false;
     final allow = e.logicalKey == LogicalKeyboardKey.keyY;
     final deny = e.logicalKey == LogicalKeyboardKey.keyN;
     if (!allow && !deny) return false;
