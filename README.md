@@ -11,7 +11,7 @@ AI 코딩 에이전트(Claude Code, Codex) 팀을 **픽셀아트 사무실**에�
  ◀──── 보고 · ask_user · 셸 허가 ────┘        ◀── 보고 · ask_parent ──┘     ◀── 보고 · ask_parent ──┘
 ```
 
-## 지금 상태 (2026-09-21)
+## 지금 상태 (2026-09-29)
 
 **M0~M6 완료 = v1b + 디자인 완료.** 성공 기준 1~10을 전부 실제 데몬·앱으로 통과했다(기준 표는 [01 §Success Criteria](docs/01-설계문서.md)).
 
@@ -44,10 +44,10 @@ pixel-office/
       PROTOCOL.md         WS JSON-RPC·이벤트·후처리 계약 — 앱과 데몬의 유일한 기준
       src/                office · rpc · pty · screen · hooks · adapters · mcp · input · store · cli
       src/tui-maps/       CLI 버전별 화면 패턴 JSON
-      test/               node:test (818건)
-    app/                Flutter 데스크탑 앱 (Windows)  → dev/app/README.md
+      test/               node:test (884건)
+    app/                Flutter 데스크탑 앱 (Windows · macOS 러너 포함, 맥 실기 전)  → dev/app/README.md
       lib/                rpc · model · state · topbar · office · panel · command
-      test/               위젯·상태 테스트 (659건)
+      test/               위젯·상태 테스트 (721건)
       tool/capture-window.ps1   창 단위 캡처 (worklog 증거용, 전체 화면 캡처 금지)
     spike-0/            0단계 실측 스파이크와 sandbox(실기용 작업 폴더)
 ```
@@ -88,11 +88,35 @@ cd dev/daemon && npm run cli      # help 로 명령 목록
 
 첫 화면에서 **"부서 만들기"** → 이름 · 작업 폴더(cwd) · 부장 엔진 · 부장 이름 → 부장이 출근한다. 그다음은 아래 지시 바로 **부장에게만** 말하면 된다.
 
+### 맥에서 실행 (T48 · D-48 — 코드는 들어갔고 **실기는 아직**)
+
+운영체제에 닿는 코드는 데몬 `src/platform.ts` · 앱 `lib/platform/platform.dart` 한 곳에 모아 두었고 맥 분기는 이 저장소 안의 단위 테스트로만 검증했다.
+**맥에서 실제로 돌려 본 적은 없다** — 확인 순서는 [docs/design/맥-지원.md](docs/design/맥-지원.md) 의 "2단계 대본" M1~M17 이고, 결과는 `docs/worklog/T48-3-MacLive.md` 에 적는다.
+
+```bash
+# 사전: Xcode 명령줄 도구, Node 24+, Flutter(맥 데스크탑 켜기), claude 설치 + 로그인
+xcode-select --install
+flutter config --enable-macos-desktop
+npm install -g @anthropic-ai/claude-code && claude      # 한 번 실행해 로그인
+
+git clone https://github.com/MaoEmong/pixel-office-dev.git && cd pixel-office-dev
+cd dev/daemon && npm install && npx tsc --noEmit && npm test     # 윈도우와 같은 수(884)가 나와야 한다
+cd ../app && flutter pub get && flutter analyze && flutter test  # 721
+flutter build macos --release
+open build/macos/Build/Products/Release/pixel_office.app         # Finder 더블클릭과 같다
+```
+
+- 데이터 폴더는 `~/Library/Application Support/pixel-office`(데몬·앱 같은 규칙, `PIXEL_DATA_DIR` 로 덮어씀). 데몬 로그도 거기 `daemon.log`.
+- 맥 GUI 앱은 터미널의 PATH 를 물려받지 않아 앱이 `node` 를 절대 경로로 찾는다(`PIXEL_NODE` → PATH → Homebrew → nvm → volta). 못 찾으면 화면에 `node 를 찾지 못했습니다` — `PIXEL_NODE=/opt/homebrew/bin/node` 처럼 지정.
+- 앱은 **샌드박스를 끄고** 빌드한다(데몬을 띄우고 홈 폴더를 읽어야 한다 — 개인 툴, 앱스토어 배포는 범위 밖). 서명 없는 로컬 빌드라 첫 실행에 Gatekeeper 가 막으면 시스템 설정 → 개인정보 보호 및 보안 → "그래도 열기".
+- 단축키는 `Cmd+K/L/T/I/R`, 인박스 허가·거부는 `Cmd+Shift+Y` / `Cmd+Shift+N`.
+- 가장 큰 미지수 둘: npm 이 설치한 `claude` 가 맥에서는 실행 파일이 아니라 스크립트(셰뱅)인데 가짜 터미널로 그대로 띄워지는지, 터미널을 닫았을 때(SIGHUP) 정리가 끝까지 도는지.
+
 ## 검증
 
 ```bash
-cd dev/daemon && npx tsc --noEmit && npm test     # 818건 (PIXEL_IT=1 이면 실제 CLI 통합 테스트 포함)
-cd dev/app    && flutter analyze && flutter test  # 659건
+cd dev/daemon && npx tsc --noEmit && npm test     # 884건 (PIXEL_IT=1 이면 실제 CLI 통합 테스트 포함)
+cd dev/app    && flutter analyze && flutter test  # 721건
 ```
 
 ## 더 읽을 것
