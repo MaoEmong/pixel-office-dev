@@ -104,7 +104,7 @@ cd dev/daemon && npm run cli      # help 로 명령 목록
 sudo xcodebuild -license accept && sudo xcodebuild -runFirstLaunch   # 동의 전에는 git·flutter 까지 거부한다
 flutter config --enable-macos-desktop
 npm install -g @anthropic-ai/claude-code && claude       # 한 번 실행해 로그인
-npm install -g @openai/codex@0.154.0 && codex login     # (선택) Codex — 버전 고정이 필요하다, 아래 참고
+npm install -g @openai/codex@0.154.0 && codex login      # (선택) Codex — 최신은 아직 안 된다, 아래 "한계" 참고
 
 git clone https://github.com/MaoEmong/pixel-office-dev.git && cd pixel-office-dev
 cd dev/daemon && npm install && npx tsc --noEmit && npm test     # 874건 + 스킵된 MixedTeam 10건 = 윈도우의 884
@@ -120,7 +120,7 @@ open build/macos/Build/Products/Release/pixel_office.app         # Finder 더블
 - **`npm install` 뒤 pty 가 `posix_spawnp failed` 로 죽으면** npm 11.16+ 가 node-pty 의 설치 스크립트를 막아 `prebuilds/darwin-*/spawn-helper` 에 실행 권한이 없는 것이다 — `dev/daemon` 에서 `npm approve-scripts --allow-scripts-pending`(또는 그 파일에 `chmod +x`). 윈도우에는 없는 문제다(T48-3 M1 함정 ①).
 - **저장소를 경로에 한글·비ASCII 가 없는 곳에 두라.** 있으면 `flutter analyze` 의 analysis server 가 LSP 메시지를 잘라 `FormatException` 으로 죽는다(툴체인 쪽 문제, `flutter test`·`pub get` 은 무관). T48-3 M7 함정 ②.
 - **`flutter build macos` 가 Xcode 27 에서 그냥은 안 된다.** 이 저장소는 `macos/Runner/Configs/Release.xcconfig` 에 `ARCHS = arm64` 을 박고 배포 대상을 12.0 으로 올려 두었다(T48-3 M7 함정 ③④). 인텔 맥에서 빌드하려면 그 줄을 `x86_64` 로 바꾼다 — 유니버설 바이너리는 Xcode 27 의 `lipo` 가 `-verify_arch` 에 arch 를 둘 받지 않아 못 만든다.
-- **CLI 버전을 맞춰야 한다.** 화면 패턴(`tui-maps/`)은 설치된 CLI 버전을 읽지 않고 내장 상수를 쓴다 — **codex 는 `0.154.0`** 이어야 한다(`npm i -g @openai/codex@0.154.0`). 최신 0.159 는 시작 화면이 통째로 달라 **지시가 제출되지 않고** `/status` 도 못 읽는다(T48-3 M4 함정 ⑤). claude 2.1.284 도 긴 주입 텍스트를 `<pasted_content>` 로 감싸는 드리프트가 있다(테스트 쪽은 `unwrapPasted()` 로 막아 뒀다).
+- **아직 CLI 버전을 맞춰야 한다(알려진 한계).** 화면 패턴(`tui-maps/`)은 설치된 CLI 버전을 읽지 않고 내장 상수를 쓴다. 그래서 **최신 codex(0.159)로는 코덱스 멤버에게 지시가 제출되지 않고** `/status` 도 못 읽는다 — 시작 화면이 통째로 바뀌었다(T48-3 M4 함정 ⑤). 지금 쓰려면 `npm i -g @openai/codex@0.154.0` 으로 내려야 하지만 **이건 임시 방편이다**: 최신 CLI 에서 동작하는 것이 맞고, 로더가 설치된 버전을 읽게 고치는 것이 실제 해결이다. claude 도 같은 드리프트가 있다(2.1.284 가 긴 주입 텍스트를 `<pasted_content>` 로 감싼다 — 테스트 쪽은 `unwrapPasted()` 로 막아 뒀다).
 - **통합 테스트(`PIXEL_IT=1`)는 파일 하나씩 돌린다.** `node --test` 는 파일을 병렬로 돌리는데, 실기 CLI·포트·셸 락을 공유해 여러 파일이 동시에 뜨면 엉킨다(T48-3 M6 함정).
 - 가장 큰 미지수였던 둘은 T48-3 에서 확인됐다: 셰뱅 스크립트(`#!/usr/bin/env node`)는 심볼릭 링크를 거쳐서도 node-pty 가 진짜 TTY 로 띄운다(다만 npm 이 설치한 `claude` 2.1.284 는 **셰뱅 스크립트가 아니라 Mach-O arm64 네이티브**이고 맥에서도 이름이 `claude.exe` 다). SIGHUP 은 정상 종료 경로를 그대로 타고 `daemon.json` 까지 치운다.
 - 창 캡처는 `dev/app/tool/capture-window.sh`(창 단위). 처음 실행에 macOS 가 "화면 기록" 권한을 물어본다.
