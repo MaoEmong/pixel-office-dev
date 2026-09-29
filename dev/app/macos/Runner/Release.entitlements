@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- 앱 샌드박스는 **끈다**(T48-2 · D-48 ⑥) — 데몬(node)을 띄우고 사용자가 고른 폴더를 읽으려면
+	     샌드박스 밖이어야 한다. 개인 도구라 수용한다(앱스토어 배포·공증은 범위 밖). -->
+	<key>com.apple.security.app-sandbox</key>
+	<false/>
+	<key>com.apple.security.files.user-selected.read-write</key>
+	<true/>
+	<key>com.apple.security.network.client</key>
+	<true/>
+</dict>
+</plist>

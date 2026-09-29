@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- 앱 샌드박스는 **끈다**(T48-2 · D-48 ⑥). 픽셀 오피스는 node 데몬을 자식 프로세스로 띄우고,
+	     사용자가 고른 프로젝트 폴더 아래를 읽고, 데이터 폴더에 쓴다 — 샌드박스 안에서는 그 셋 다 막힌다.
+	     개인 도구라 수용한다(앱스토어 배포·공증은 범위 밖). 아래 파일/네트워크 권한은 샌드박스를
+	     다시 켤 때를 위해 남겨 둔다(꺼진 상태에서는 무해하게 무시된다). -->
+	<key>com.apple.security.app-sandbox</key>
+	<false/>
+	<key>com.apple.security.files.user-selected.read-write</key>
+	<true/>
+	<key>com.apple.security.network.client</key>
+	<true/>
+	<key>com.apple.security.cs.allow-jit</key>
+	<true/>
+	<!-- 디버그 빌드의 VM 서비스(핫 리로드)가 로컬 포트를 듣는다. -->
+	<key>com.apple.security.network.server</key>
+	<true/>
+</dict>
+</plist>
