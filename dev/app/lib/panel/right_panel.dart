@@ -174,14 +174,14 @@ class RightPanel extends ConsumerWidget {
                     LogTab(memberId: id),
                     // 오버레이(Ctrl+T)가 열려 있으면 여기서는 붙이지 않는다 — attach 는 한 곳만(panel_splitter.dart).
                     ref.watch(terminalOverlayProvider)
-                        ? const Center(
+                        ? Center(
                             child: Padding(
-                              padding: EdgeInsets.all(16),
+                              padding: const EdgeInsets.all(16),
                               child: Text(
                                 terminalMovedToOverlay,
-                                key: Key('panel.terminalMoved'),
+                                key: const Key('panel.terminalMoved'),
                                 textAlign: TextAlign.center,
-                                style: TextStyle(fontSize: 12, color: Colors.white38),
+                                style: const TextStyle(fontSize: 12, color: Colors.white38),
                               ),
                             ),
                           )

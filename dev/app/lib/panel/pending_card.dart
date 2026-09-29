@@ -9,7 +9,8 @@
 //     Edit/Write: 파일 경로 + diff/내용 미리보기(12줄). 그 외: tool_input JSON(12줄 넘으면 접음).
 //     버튼: 허가(채움 초록)·거부(테두리 빨강)를 높이 32 로 크게, "이번 세션 항상 허가"·"수정해서 허가" 는
 //     오른쪽 끝 작은 텍스트 버튼. 거부를 누르면 사유 입력란이 인라인으로 열린다.
-//     키: 카드 자체가 포커스를 가질 때 Enter = 허가, Esc = 포커스 해제. 인박스 맨 위 카드는 `Alt+Y`/`Alt+N`(inbox.dart).
+//     키: 카드 자체가 포커스를 가질 때 Enter = 허가, Esc = 포커스 해제. 인박스 맨 위 카드는 `Alt+Y`/`Alt+N`
+//     (맥 `Cmd+Shift+Y`/`Cmd+Shift+N`, inbox.dart).
 //  QuestionCard(pending)    AskUserQuestion `{questions:[{question, header?, options:[{label, description?}], multiSelect?}]}`
 //     또는 M2 ask_user `{question, options?}`(질문 하나). 옵션 버튼(설명은 툴팁) + "직접 입력" 란.
 //     질문 하나·단일 선택이면 옵션을 누르는 즉시 전송, 그 외(여러 질문·multiSelect·직접 입력)는 확인 버튼.
@@ -25,6 +26,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../model/models.dart';
+import '../platform/platform.dart' show isMetaShortcuts;
 import '../rpc/rpc_client.dart';
 import '../state/office_state.dart';
 import 'approval_summary.dart';
@@ -42,8 +44,14 @@ const String approvalShowAllLabel = '전체 보기';
 /// 주 버튼(허가·거부) 높이(D12 4 · 패스 6 클릭 목표 32px).
 const double approvalPrimaryButtonHeight = 32;
 
-/// 인박스 맨 위 카드에 붙는 단축키 힌트(패스 6 키보드).
+/// 인박스 맨 위 카드에 붙는 단축키 힌트(패스 6 키보드) — 윈도우·리눅스.
 const String approvalShortcutHint = 'Alt+Y 허가 · Alt+N 거부';
+
+/// 같은 힌트의 맥 판(D-48 ⑤): 맥에서 `Alt+Y` 는 특수문자 입력이고 `Cmd+N` 은 새 창이라 **Cmd+Shift** 를 쓴다.
+const String macApprovalShortcutHint = 'Cmd+Shift+Y 허가 · Cmd+Shift+N 거부';
+
+/// 지금 플랫폼의 힌트(카드에 그리는 것은 언제나 이쪽).
+String get platformApprovalShortcutHint => isMetaShortcuts ? macApprovalShortcutHint : approvalShortcutHint;
 
 /// 만료된 카드의 문구(현행 재지시 카드와 같은 말 — 인박스 안에서 회색으로 보인다, D10).
 const String approvalExpiredLabel = '만료 — 재지시';
@@ -473,7 +481,7 @@ class _ApprovalCardState extends ConsumerState<ApprovalCard> {
                     ? _approvalColor
                     : null,
             focused: _focus.hasPrimaryFocus,
-            footer: widget.shortcutHint && !_sent ? approvalShortcutHint : null,
+            footer: widget.shortcutHint && !_sent ? platformApprovalShortcutHint : null,
             children: [
               _body(),
               if (_denying) _denyField(locked),

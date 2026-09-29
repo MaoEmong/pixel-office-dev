@@ -5,6 +5,7 @@
 //   데몬이 멈춰 다시 시작하는 중 · 세션을 복구합니다   죽어서 다시 띄우는 중(§4) + `복구 2 / 5`
 //   데몬을 시작하지 못했습니다                        10초 안에 못 붙음(§1) + daemon.log 마지막 8줄
 //   데몬이 반복해서 종료됩니다                        1분에 3번 죽음(§4) + 같은 로그
+//   node 를 찾지 못했습니다 — …                       맥·리눅스에서 node 탐색 실패(D-48 ③) + 같은 로그
 //   데몬에 연결되어 있지 않습니다                     감시자가 없는 경우(콘솔 실행·테스트) — T40-5 의 화면 그대로
 //
 // 공통 규칙(패스 4 하드리젝션 ②): **예외 문자열은 "자세히" 로 접힌다.** 사무실 전체에 스택 트레이스를
@@ -23,6 +24,7 @@ import '../lifecycle/exit_flow.dart' show exitClosingLabel;
 import '../lifecycle/lifecycle_providers.dart';
 import '../model/models.dart' show DaemonNotice;
 import '../panel/labels.dart' show panelMonoFallback, panelMonoFamily;
+import '../platform/platform.dart' show nodeNotFoundMessage;
 import '../rpc/daemon_info.dart';
 import '../rpc/rpc_client.dart';
 import '../state/office_state.dart';
@@ -46,6 +48,9 @@ const String overlayStartFailedTitle = '데몬을 시작하지 못했습니다';
 
 /// 1분 안에 3번 죽었다(§4) — 원인을 덮지 않는다.
 const String overlayCrashLoopTitle = '데몬이 반복해서 종료됩니다';
+
+/// 맥·리눅스에서 `node` 를 못 찾았다(D-48 ③) — 고칠 방법을 문장 안에 넣는다.
+const String overlayNodeNotFoundTitle = nodeNotFoundMessage;
 
 /// 실패 화면의 주 버튼.
 const String overlayRetryLabel = '다시 시도';
@@ -222,15 +227,25 @@ class _DisconnectedOverlayState extends ConsumerState<DisconnectedOverlay> {
   /// 실패 화면(§1 · §4): 문장 + `daemon.log` 마지막 8줄 + `다시 시도` + `데몬 시작`.
   Widget _failure(SupervisorStatus status) {
     final crashLoop = status.failure == SupervisorFailure.crashLoop;
+    final nodeMissing = status.failure == SupervisorFailure.nodeNotFound;
     final tail = _logTail;
+    final (title, titleKey) = switch (status.failure) {
+      SupervisorFailure.crashLoop => (overlayCrashLoopTitle, 'overlay.crashLoop'),
+      SupervisorFailure.nodeNotFound => (overlayNodeNotFoundTitle, 'overlay.nodeNotFound'),
+      _ => (overlayStartFailedTitle, 'overlay.startFailed'),
+    };
     return Column(
       mainAxisSize: MainAxisSize.min,
       children: [
-        Icon(crashLoop ? Icons.report_gmailerrorred : Icons.power_off, size: 44, color: daemonDownColor),
+        Icon(
+          crashLoop || nodeMissing ? Icons.report_gmailerrorred : Icons.power_off,
+          size: 44,
+          color: daemonDownColor,
+        ),
         const SizedBox(height: 10),
         Text(
-          crashLoop ? overlayCrashLoopTitle : overlayStartFailedTitle,
-          key: Key(crashLoop ? 'overlay.crashLoop' : 'overlay.startFailed'),
+          title,
+          key: Key(titleKey),
           style: const TextStyle(fontSize: 19, color: Colors.white),
           textAlign: TextAlign.center,
         ),

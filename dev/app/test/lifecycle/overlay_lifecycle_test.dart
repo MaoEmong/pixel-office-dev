@@ -149,6 +149,29 @@ void main() {
       expect(find.text(overlayStartFailedTitle), findsNothing);
     });
 
+    // T48-2 · D-48 ③: 맥·리눅스에서 node 를 못 찾았을 때. 고칠 방법이 문장 안에 있어야 한다.
+    testWidgets('nodeNotFound → `node 를 찾지 못했습니다 — Homebrew … PIXEL_NODE …`', (tester) async {
+      await pump(
+        tester,
+        status: const SupervisorStatus(
+          state: SupervisorState.failed,
+          failure: SupervisorFailure.nodeNotFound,
+          lastError: overlayNodeNotFoundTitle,
+        ),
+      );
+      await tester.pump();
+      expect(find.byKey(const Key('overlay.nodeNotFound')), findsOneWidget);
+      expect(
+        find.text('node 를 찾지 못했습니다 — Homebrew 로 설치하거나 PIXEL_NODE 로 경로를 지정하세요'),
+        findsOneWidget,
+      );
+      expect(find.text(overlayStartFailedTitle), findsNothing);
+      expect(find.text(overlayCrashLoopTitle), findsNothing);
+      // 로그 꼬리·다시 시도·데몬 시작은 다른 실패 화면과 같다.
+      expect(find.byKey(const Key('overlay.logTail')), findsOneWidget);
+      expect(find.byKey(const Key('overlay.retryStart')), findsOneWidget);
+    });
+
     testWidgets('로그가 비어 있으면 그렇다고 말한다', (tester) async {
       await pump(
         tester,

@@ -12,6 +12,8 @@
 //
 //   stop() ──▶ stopped (앱 종료 경로가 부른다 — 이 뒤의 죽음은 재시작하지 않는다)
 //
+//   맥·리눅스에서 `node` 를 못 찾으면 ──▶ failed(nodeNotFound) — 재시도로 나아지지 않으므로 바로 간다.
+//
 // 시계·대기·스폰·생존 확인을 전부 주입받는다. 그래서 이 파일은 `dart:io` 를 쓰지 않고 단위 테스트에서
 // 가짜 시계로 재시작 일정(0·2·5·10초)과 1분 3회 규칙을 그대로 볼 수 있다.
 
@@ -46,6 +48,10 @@ enum SupervisorFailure {
 
   /// `데몬이 반복해서 종료됩니다` — 1분 안에 [DaemonSupervisor.crashLimit] 번 죽었다(원인을 덮지 않는다).
   crashLoop,
+
+  /// `node 를 찾지 못했습니다 …`(맥·리눅스, 원인 코드 [nodeNotFoundReason]) — 재시도해도 소용없고
+  /// 고칠 방법이 하나뿐이라(Homebrew 설치 또는 `PIXEL_NODE`) 문구를 따로 둔다.
+  nodeNotFound,
 }
 
 class SupervisorStatus {
@@ -238,7 +244,12 @@ class DaemonSupervisor {
       proc = await spawn(spawnEnv);
     } catch (e) {
       _emit(_status.copyWith(lastError: e.toString()));
-      if (attempt == 0) _fail(SupervisorFailure.startFailed, e.toString());
+      // node 를 못 찾은 것은 재시도로 나아지지 않는다 — 몇 번째 시도든 바로 그 화면으로 간다(D-48 ③).
+      if (e is DaemonNodeNotFoundException) {
+        _fail(SupervisorFailure.nodeNotFound, e.message);
+      } else if (attempt == 0) {
+        _fail(SupervisorFailure.startFailed, e.toString());
+      }
       return false;
     }
     // 스폰하는 사이에 포기가 결정됐으면(다른 죽음이 crash-loop 을 확정) 그 자식을 두고 가지 않는다.

@@ -1,6 +1,6 @@
 // 앱 로컬 UI 설정(T40-4, 레이아웃 v2 §3 패스 6) — 데몬과 무관한 "이 컴퓨터의 창 설정"만 담는다.
 //
-//  패널 폭  드래그 420~720, 기본 480, **앱 로컬 저장**(`%LOCALAPPDATA%\pixel-office\app-ui.json`).
+//  패널 폭  드래그 420~720, 기본 480, **앱 로컬 저장**(데이터 폴더의 `app-ui.json`).
 //           터미널 탭을 열면 660 으로 자동 확장(80열 × D2Coding 13px ≈ 624 + 패딩 24 + 스크롤바 12),
 //           다른 탭으로 가면 사용자가 정해 둔 폭으로 돌아온다.
 //  터미널 오버레이  `Ctrl+T` = 사무실을 덮는 전체 폭 터미널(Esc 로 닫힘). 저장하지 않는다(창을 닫으면 사라짐).
@@ -15,6 +15,8 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+
+import '../platform/platform.dart' as plat;
 
 /// 패널 폭 하한·상한·기본(패스 6 표).
 const double panelWidthMin = 420;
@@ -34,17 +36,18 @@ abstract class UiPrefsStore {
   Future<void> write(Map<String, dynamic> value);
 }
 
-/// `%LOCALAPPDATA%\pixel-office\app-ui.json`(또는 `PIXEL_DATA_DIR`). 데몬이 쓰는 `daemon.json` 과 같은 폴더.
+/// 데이터 폴더의 `app-ui.json`(`%LOCALAPPDATA%\pixel-office` · 맥 `~/Library/Application Support/pixel-office`
+/// · `PIXEL_DATA_DIR`). 데몬이 쓰는 `daemon.json` 과 같은 폴더 — 규칙은 `platform/platform.dart` 한 곳에 있다.
 class FileUiPrefsStore implements UiPrefsStore {
   const FileUiPrefsStore({this.path});
 
   final String? path;
 
-  static String? defaultPath() {
-    final env = Platform.environment;
-    final dir = env['PIXEL_DATA_DIR'] ?? (env['LOCALAPPDATA'] == null ? null : '${env['LOCALAPPDATA']}\\pixel-office');
-    return dir == null ? null : '$dir${Platform.pathSeparator}app-ui.json';
-  }
+  /// 파일 이름(데이터 폴더 안).
+  static const String fileName = 'app-ui.json';
+
+  static String? defaultPath({plat.AppPlatform? platform, Map<String, String>? env}) =>
+      plat.dataFilePath(fileName, platform: platform, env: env);
 
   @override
   Future<Map<String, dynamic>> read() async {

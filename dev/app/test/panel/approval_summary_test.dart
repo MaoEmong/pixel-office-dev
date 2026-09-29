@@ -230,4 +230,56 @@ void main() {
       expect(isApprovalExpirySoon(createdIso, now: base.add(const Duration(hours: 24, minutes: 1))), isFalse);
     });
   });
+
+  // ---- 유닉스 위험 패턴(T48-2 · D-48 ④) -------------------------------------------------
+  //
+  // 판별은 **플랫폼 무관**이다: 맥에서 PowerShell 을 쓸 수도, 윈도우에서 bash 를 쓸 수도 있으니
+  // 두 계열을 언제나 함께 검사한다(문구도 하나다).
+  group('유닉스 위험 패턴', () {
+    test('sudo · chmod -R · chown -R', () {
+      expect(isDangerousCommand('sudo rm build/x'), isTrue);
+      expect(isDangerousCommand('cd /tmp && sudo npm i -g x'), isTrue);
+      expect(isDangerousCommand('chmod -R 777 .'), isTrue);
+      expect(isDangerousCommand('chmod --recursive 700 ~/bin'), isTrue);
+      expect(isDangerousCommand('chown -R me:staff /opt/x'), isTrue);
+      expect(isDangerousCommand('chmod 644 a.txt'), isFalse, reason: '재귀가 아니면 되돌릴 수 있다');
+    });
+
+    test('작업을 버리는 git 명령', () {
+      expect(isDangerousCommand('git reset --hard HEAD~1'), isTrue);
+      expect(isDangerousCommand('git clean -fd'), isTrue);
+      expect(isDangerousCommand('git clean -df .'), isTrue);
+      expect(isDangerousCommand('git checkout -- lib/main.dart'), isTrue);
+      expect(isDangerousCommand('git reset HEAD~1'), isFalse, reason: '--hard 가 아니면 파일은 남는다');
+      expect(isDangerousCommand('git status'), isFalse);
+      expect(isDangerousCommand('git commit -m "x"'), isFalse);
+    });
+
+    test('리다이렉션으로 덮어쓰기 — `2>&1` 은 아니다', () {
+      expect(isDangerousCommand('echo hi > lib/main.dart'), isTrue);
+      expect(isDangerousCommand('cat a >> b.log'), isTrue);
+      expect(isDangerousCommand('flutter test 2>&1'), isFalse);
+      expect(isDangerousCommand('ls -la'), isFalse);
+    });
+
+    test('dd · mkfs · diskutil', () {
+      expect(isDangerousCommand('dd if=/dev/zero of=/dev/disk2 bs=1m'), isTrue);
+      expect(isDangerousCommand('mkfs.ext4 /dev/sda1'), isTrue);
+      expect(isDangerousCommand('diskutil eraseDisk JHFS+ x disk2'), isTrue);
+      expect(isDangerousCommand('ddexpect --help'), isFalse, reason: '단어 시작만 본다');
+    });
+
+    test('윈도우 패턴은 그대로 살아 있다(둘 다 검사한다)', () {
+      expect(isDangerousCommand('Remove-Item -Recurse -Force build'), isTrue);
+      expect(isDangerousCommand('rm -rf build'), isTrue);
+      expect(isDangerousCommand('git push --force'), isTrue);
+      expect(isDangerousCommand('dart format .'), isFalse);
+    });
+
+    test('카드 판정도 같이 간다(isDangerousApproval)', () {
+      expect(isDangerousApproval('Bash', {'command': 'sudo chmod -R 777 /'}), isTrue);
+      expect(isDangerousApproval('Bash', {'command': 'ls'}), isFalse);
+      expect(isDangerousApproval('Write', {'file_path': 'a.txt'}), isFalse, reason: '파일 도구는 위험이 아니다');
+    });
+  });
 }

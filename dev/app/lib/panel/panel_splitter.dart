@@ -13,13 +13,14 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../platform/platform.dart' show shortcutModifierLabel;
 import '../state/office_state.dart';
 import 'labels.dart';
 import 'terminal_tab.dart';
 import 'ui_prefs.dart';
 
-/// 오버레이 안내 문구(패널 쪽 터미널 탭 자리).
-const String terminalMovedToOverlay = '터미널이 전체 화면으로 열려 있습니다 — Esc 또는 Ctrl+T 로 닫기';
+/// 오버레이 안내 문구(패널 쪽 터미널 탭 자리) — 조합키는 플랫폼에 따라 다르다(맥 Cmd).
+String get terminalMovedToOverlay => '터미널이 전체 화면으로 열려 있습니다 — Esc 또는 $shortcutModifierLabel+T 로 닫기';
 
 /// 오버레이 머리글.
 String terminalOverlayTitle(String name) => '터미널 · $name';
