@@ -180,3 +180,74 @@ describe('file writers (temp dir, no spawn)', () => {
     assert.equal(fs.readFileSync(third.path, 'utf8'), foreign);
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// T48-1: 맥의 데이터 폴더는 `~/Library/Application Support/pixel-office` — **경로에 공백이 있다.**
+// 윈도우 `%LOCALAPPDATA%` 에는 공백이 없어 지금까지 드러나지 않던 자리다(설계 표 "세션 설정 파일의 hook 명령").
+// hook 명령은 셸이 한 줄로 받아 단어를 쪼개므로 공백이 든 경로는 **반드시 따옴표** 안에 있어야 한다.
+// ─────────────────────────────────────────────────────────────────────────────
+describe('공백이 든 경로 인용 — 맥 `Application Support` (T48-1)', () => {
+  const MAC_DATA = '/Users/me/Library/Application Support/pixel-office';
+  const MAC_HOOK = `${MAC_DATA}/hooks/hook.js`;
+  const MAC_STATUSLINE = `${MAC_DATA}/hooks/statusline.js`;
+
+  test('hook 명령: 경로만 따옴표 안에 있고 포트·이벤트는 밖에 있다', () => {
+    assert.equal(buildHookCommand(MAC_HOOK, PORT, 'PreToolUse'), `node "${MAC_HOOK}" 7421 PreToolUse`);
+  });
+
+  test('statusLine 명령도 같은 규칙', () => {
+    assert.equal(buildStatusLineCommand(MAC_STATUSLINE, PORT), `node "${MAC_STATUSLINE}" 7421`);
+  });
+
+  test('Claude 세션 설정 JSON: 모든 이벤트 명령이 인용돼 있고 셸이 볼 토큰은 넷이다', () => {
+    const json = JSON.parse(JSON.stringify(buildClaudeSessionSettings(MAC_HOOK, PORT, MAC_STATUSLINE))) as {
+      hooks: Record<string, Array<{ hooks: Array<{ command: string }> }>>;
+      statusLine: { command: string };
+    };
+    for (const event of CLAUDE_HOOK_EVENTS) {
+      const command = json.hooks[event]![0]!.hooks[0]!.command;
+      assert.equal(command, `node "${MAC_HOOK}" ${PORT} ${event}`, event);
+      assert.deepEqual(command.match(/"[^"]*"|\S+/g), ['node', `"${MAC_HOOK}"`, String(PORT), event]);
+    }
+    assert.equal(json.statusLine.command, `node "${MAC_STATUSLINE}" ${PORT}`);
+  });
+
+  test('Codex `.codex/hooks.json` 도 같은 인용을 쓴다', () => {
+    const file = buildCodexHooksFile(MAC_HOOK, PORT);
+    for (const event of CODEX_HOOK_EVENTS) {
+      assert.equal(file.hooks[event]![0]!.hooks[0]!.command, `node "${MAC_HOOK}" ${PORT} ${event}`, event);
+    }
+  });
+
+  test('공백이 든 데이터 폴더·cwd 에 실제로 써 본다(임시 폴더)', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pixel-office-t48-quote-'));
+    try {
+      const dataDir = path.join(root, 'Application Support', 'pixel-office');
+      const file = writeClaudeSessionSettings(dataDir, 'm1', MAC_HOOK, PORT, MAC_STATUSLINE);
+      assert.equal(file, claudeSettingsPath(dataDir, 'm1'));
+      assert.ok(/\s/.test(file), '데이터 폴더에 공백이 있는 상황이 이 테스트의 전제다');
+      const written = JSON.parse(fs.readFileSync(file, 'utf8')) as {
+        hooks: Record<string, Array<{ hooks: Array<{ command: string }> }>>;
+      };
+      assert.equal(written.hooks.SessionStart![0]!.hooks[0]!.command, `node "${MAC_HOOK}" ${PORT} SessionStart`);
+
+      // Codex: cwd 에 공백이 있어도 파일 **경로**는 path.join 이 맡는다(명령 문자열이 아니라 인자다).
+      const cwd = path.join(root, 'my project');
+      fs.mkdirSync(cwd, { recursive: true });
+      const res = ensureCodexHooksFile(cwd, MAC_HOOK, PORT);
+      assert.equal(res.written, true);
+      assert.equal(res.path, path.join(cwd, '.codex', 'hooks.json'));
+      const codexJson = JSON.parse(fs.readFileSync(res.path, 'utf8')) as {
+        hooks: Record<string, Array<{ hooks: Array<{ command: string }> }>>;
+      };
+      assert.equal(codexJson.hooks.SessionStart![0]!.hooks[0]!.command, `node "${MAC_HOOK}" ${PORT} SessionStart`);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test('윈도우 경로는 예전 그대로 — 공백이 없으면 따옴표를 붙이지 않는다', () => {
+    assert.equal(buildHookCommand(HOOK, PORT, 'Stop'), 'node D:/myproject/pixel-office/dev/daemon/src/hooks/hook.js 7421 Stop');
+    assert.equal(buildStatusLineCommand(STATUSLINE, PORT), 'node D:/myproject/pixel-office/dev/daemon/src/hooks/statusline.js 7421');
+  });
+});
