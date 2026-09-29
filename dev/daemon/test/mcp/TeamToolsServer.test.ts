@@ -114,6 +114,24 @@ class FakeHost implements TeamToolsHost {
   }
 }
 
+/**
+ * 전송이 initialize 뒤에 **따로 여는 SSE `GET`** 이 서버에 도착할 때까지 기다린다.
+ *
+ * `handle()` 은 **HTTP 요청마다** `resolveMember` 를 한 번 부른다(POST 든 GET 이든). 아래 "세션 중 직급이
+ * 바뀌면" 검사는 "다음 `resolveMember` 는 내가 부를 callTool 의 것" 이라고 가정하는데, 그 사이 이 GET 이
+ * 끼어들면 가정이 깨진다 — GET 이 `head` 를 먹고 callTool 의 도구 목록은 `lead` 로 만들어져 ask_user 가
+ * 등록조차 안 되고, 기대한 한국어 사유 대신 SDK 의 `-32602 Tool ask_user not found` 가 온다.
+ * 맥에서 이 GET 이 늦게 도착해 드러났다(T48-3 M1). GET 은 SSE 라 응답이 끝나지 않고 **주차**되므로
+ * `liveConnections(token)` 이 1 이 되는 것으로 도착을 확인할 수 있다.
+ */
+async function waitForSseStream(server: TeamToolsServer, token: string): Promise<void> {
+  for (let i = 0; i < 200; i += 1) {
+    if (server.liveConnections(token) >= 1) return;
+    await new Promise((r) => setTimeout(r, 10));
+  }
+  throw new Error(`SSE GET 이 오지 않았다(token=${token})`);
+}
+
 async function connect(port: number, token: string): Promise<{ client: Client; transport: StreamableHTTPClientTransport }> {
   const transport = new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${port}/mcp/${token}`));
   const client = new Client({ name: 't17-test', version: '0' });
@@ -397,6 +415,7 @@ describe('TeamToolsServer (T17)', () => {
     const asHead = await connect(port, HEAD);
     try {
       assert.ok((await asHead.client.listTools()).tools.some((t) => t.name === 'ask_user'));
+      await waitForSseStream(server, HEAD); // 이 GET 이 아래 `first` 를 먹으면 안 된다
       const real = host.resolveMember.bind(host);
       let first = true;
       host.resolveMember = (token: string) => {

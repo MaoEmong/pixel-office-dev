@@ -33,7 +33,22 @@ interface LogEntry {
   payload: HookPayload;
 }
 
+const LOG_FILES = ['hooklog-2.json', 'hooklog-codex.json'] as const;
+
+/**
+ * 실측 hook 로그는 **버전 관리에 없다** — `.gitignore` 의 `dev/spike-0/*.json` 이 스파이크 산출물을 뺀다.
+ * 그래서 새로 클론한 곳(맥에서 처음 받은 저장소)에는 파일이 없고, 예전에는 이 파일이 import 시점에
+ * `ENOENT` 로 던져 **스위트 하나가 통째로 죽었다**(T48-3 M1: 맥 첫 실행에서 드러났지만 플랫폼과 무관하다).
+ * 로그가 있으면 그대로 검증하고, 없으면 이 스위트만 이유를 달고 건너뛴다.
+ */
+const MISSING_LOGS = LOG_FILES.filter((f) => !fs.existsSync(path.join(spikeDir, f)));
+const SKIP_REASON =
+  MISSING_LOGS.length > 0
+    ? `실측 hook 로그가 없다(dev/spike-0/${MISSING_LOGS.join(', ')}) — .gitignore 된 스파이크 산출물이라 새 클론에는 없다`
+    : undefined;
+
 function loadLog(file: string): LogEntry[] {
+  if (SKIP_REASON) return [];
   const raw = JSON.parse(fs.readFileSync(path.join(spikeDir, file), 'utf8')) as Array<{ ev: string; payload: HookPayload }>;
   return raw.map((e) => ({ ev: e.ev as HookEvent, payload: e.payload }));
 }
@@ -43,6 +58,7 @@ const CODEX_LOG = loadLog('hooklog-codex.json');
 
 /** 실측 로그에서 그 이벤트의 첫 페이로드(봉투) — 필드를 갈아 끼울 원본으로 쓴다. */
 function envelope(log: LogEntry[], ev: HookEvent): HookPayload {
+  if (SKIP_REASON) return {} as HookPayload; // 스위트를 건너뛰므로 여기까지 오지 않는다
   const found = log.find((e) => e.ev === ev);
   assert.ok(found, `실측 로그에 ${ev} 가 없다`);
   return found.payload;
@@ -71,7 +87,7 @@ function codexPerm(command: string, description: string): HookPayload {
 
 // ---- 하네스 ---------------------------------------------------------------------
 
-describe('혼합 팀: Claude 1 + Codex 1 (T23)', () => {
+describe('혼합 팀: Claude 1 + Codex 1 (T23)', { skip: SKIP_REASON }, () => {
   let dataDir: string;
   let store: Store;
   let pty: FakePty;

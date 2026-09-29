@@ -20,6 +20,7 @@ import {
   readDaemonJsonHead,
   type SingletonProbe,
 } from '../../src/office/singleton.js';
+import { host } from '../../src/platform.js';
 import { Store } from '../../src/store/Store.js';
 import { FakeMcp, FakePty, FakeReceiver } from './fakes.js';
 
@@ -66,7 +67,9 @@ describe('T30 데몬 단일 기동 가드', () => {
     assert.equal(err.exitCode, 3);
     assert.equal(DAEMON_BUSY_EXIT_CODE, 3);
     assert.match(err.message, /pid 4242/);
-    assert.match(err.message, /taskkill \/F \/PID 4242/);
+    // 끄는 법은 플랫폼이 준다 — 윈도우 `taskkill /F /PID 4242`, 맥·리눅스 `kill 4242`(T48-1).
+    // 문구 자체의 플랫폼별 고정은 test/platform/platform.test.ts 가 본다.
+    assert.ok(err.message.includes(host.hintForKillingPid(4242)), err.message);
     assert.match(err.message, /shutdown/);
     assert.ok(err.message.includes(daemonJsonPath));
   });
@@ -139,7 +142,8 @@ describe('T30 데몬 단일 기동 가드', () => {
     assert.equal(err.role, 'hook');
     assert.match(err.message, /^이미 데몬이 돌고 있습니다/, 'pid 거부와 같은 첫 문장');
     assert.match(err.message, /127\.0\.0\.1:7421/);
-    assert.match(err.message, /netstat -ano \| findstr :7421/);
+    // 찾는 법도 플랫폼이 준다 — 윈도우 `netstat -ano | findstr`, 맥·리눅스 `lsof -i`(T48-1).
+    assert.ok(err.message.includes(host.hintForFindingPortOwner(7421)), err.message);
     assert.match(err.message, /PIXEL_HOOK_PORT/);
     assert.ok(err.message.includes(daemonJsonPath));
     assert.equal(err.cause, inUse);
