@@ -308,8 +308,10 @@ describe('TeamToolsServer (T17)', () => {
       const c = await client.callTool({ name: 'create_team', arguments: { name: '개발', leadName: '팀장A' } });
       assert.equal(c.isError ?? false, false);
       assert.deepEqual(host.createdTeams, [{ memberId: 'm_head', input: { name: '개발', leadName: '팀장A' } }]);
-      assert.equal((c.content as Array<{ text: string }>)[0]!.text, createTeamResultText('개발', '팀장A', 'm_lead2'));
-      assert.equal((c.content as Array<{ text: string }>)[0]!.text, '팀 개발 생성, 팀장 팀장A(m_lead2) 출근.');
+      assert.equal((c.content as Array<{ text: string }>)[0]!.text, createTeamResultText('t_1', '개발', '팀장A', 'm_lead2'));
+      assert.equal((c.content as Array<{ text: string }>)[0]!.text, '팀 개발 (t_1) 생성, 팀장 팀장A(m_lead2) 출근.');
+      // teamId 가 결과에 있어야 다음 줄의 dismiss_team 을 모델이 부를 수 있다(T48-3 M9 실기 결함).
+      assert.match((c.content as Array<{ text: string }>)[0]!.text, /t_1/);
 
       const d = await client.callTool({ name: 'dismiss_team', arguments: { teamId: 't_1' } });
       assert.deepEqual(host.dismissedTeams, [{ memberId: 'm_head', input: { teamId: 't_1' } }]);

@@ -264,8 +264,14 @@ const REPORT_SCHEMA = {
   status: z.enum(['done', 'blocked', 'aborted']).describe('done | blocked(막힘, 즉시 전달) | aborted(중단)'),
 };
 
-export function createTeamResultText(teamName: string, leadName: string, leadMemberId: string): string {
-  return `팀 ${teamName} 생성, 팀장 ${leadName}(${leadMemberId}) 출근.`;
+/**
+ * create_team 결과. **teamId 를 반드시 싣는다** — `dismiss_team` 의 입력이 teamId 이고 스키마 설명이
+ * "create_team 결과에 나온 id" 라고 가리키기 때문이다. 빠져 있으면 모델은 줄 수 있는 게 팀 **이름**뿐이라
+ * `team not found: <이름>` 으로 막히고 팀을 해산할 길이 없다(T48-3 M9 실기에서 부장이 실제로 걸렸다).
+ * `hire` 가 memberId 를 실어 `dismiss` 를 가능하게 하는 것과 같은 규칙이다.
+ */
+export function createTeamResultText(teamId: string, teamName: string, leadName: string, leadMemberId: string): string {
+  return `팀 ${teamName} (${teamId}) 생성, 팀장 ${leadName}(${leadMemberId}) 출근.`;
 }
 
 export function dismissTeamResultText(teamName: string, dismissed: string[]): string {
@@ -447,7 +453,7 @@ export class TeamToolsServer {
           if (denied) return denied;
           try {
             const r = this.host.createTeam(memberId, input);
-            return ok(createTeamResultText(r.teamName, r.leadName, r.leadMemberId));
+            return ok(createTeamResultText(r.teamId, r.teamName, r.leadName, r.leadMemberId));
           } catch (err) {
             return fail('create_team', errText(err));
           }
