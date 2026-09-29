@@ -8,15 +8,40 @@
 // 도구 **이름**만으로는 읽기/쓰기를 못 가르므로 명령 문자열을 본다. 판정이 애매하면 항상 `running`
 // (표시용 이벤트일 뿐이라 과장된 'reading' 보다 'running' 이 안전하다).
 import type { EventDetail, OfficeEventKind } from '../store/types.js';
-import { mapPreToolUse, pathFromInput, shellFromInput, toolDetail, truncate, MAX_PATH_CHARS, type ToolMapping } from './mapping.js';
+import {
+  isDangerousCommand,
+  mapPreToolUse,
+  pathFromInput,
+  shellFromInput,
+  toolDetail,
+  truncate,
+  MAX_PATH_CHARS,
+  type ToolMapping,
+} from './mapping.js';
+
+export { DANGER_PATTERNS, dangerousMatches, dangerousReasons, isDangerousCommand } from './mapping.js';
 
 /** 도구 이름 비교용 정규화: 소문자 + `_`/`-` 제거. `apply_patch`·`ApplyPatch`·`apply-patch` 를 같게 본다. */
 export function normalizeToolName(name: string): string {
   return name.toLowerCase().replace(/[-_\s]/g, '');
 }
 
-/** 셸 실행 도구(정규화된 이름). 실측은 "Bash" 하나지만 버전에 따라 다른 이름이 올 수 있다. */
-export const CODEX_SHELL_TOOLS: ReadonlySet<string> = new Set(['bash', 'shell', 'localshell', 'execcommand', 'exec', 'powershell', 'pwsh', 'container.exec']);
+/**
+ * 셸 실행 도구(정규화된 이름). 실측은 "Bash" 하나지만 버전·플랫폼에 따라 다른 이름이 올 수 있다 —
+ * 맥 기본 셸(`zsh`)·POSIX `sh` 이름도 같이 받는다(T48-1, 플랫폼 무관하게 둘 다 검사한다).
+ */
+export const CODEX_SHELL_TOOLS: ReadonlySet<string> = new Set([
+  'bash',
+  'sh',
+  'zsh',
+  'shell',
+  'localshell',
+  'execcommand',
+  'exec',
+  'powershell',
+  'pwsh',
+  'container.exec',
+]);
 
 /** 파일 편집 도구(정규화된 이름). */
 export const CODEX_EDITING_TOOLS: ReadonlySet<string> = new Set(['applypatch', 'filechange', 'editfile', 'writefile', 'strreplaceeditor', 'edit', 'write']);
@@ -72,6 +97,9 @@ export function parseSegment(segment: string): { name: string; args: string[] } 
  * 셸 래퍼(`bash -lc "..."`)는 안을 파싱하지 않고 false — 모르면 running.
  */
 export function isReadOnlyCommand(cmd: string): boolean {
+  // 안전망(T48-1): 위험 패턴이 걸린 명령은 무슨 일이 있어도 "읽기 전용" 이 아니다. 아래 목록 검사만으로도
+  // 이미 전부 "쓰기" 로 떨어지지만(모르는 명령은 false), 표에 새 읽기 명령을 더할 때 사고가 나지 않도록 못을 박는다.
+  if (isDangerousCommand(cmd)) return false;
   const cleaned = cmd.replace(HARMLESS_REDIRECT_RE, ' ');
   if (cleaned.includes('>')) return false;
   const segments = splitCommand(cleaned);
