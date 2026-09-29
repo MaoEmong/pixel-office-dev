@@ -22,6 +22,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import '../platform/platform.dart' as plat;
 import '../rpc/daemon_info.dart';
 
 /// 데몬 로그 파일 이름(`<데이터 폴더>/daemon.log`).
@@ -50,6 +51,25 @@ class DaemonSpawnException implements Exception {
   @override
   String toString() => message;
 }
+
+/// 맥·리눅스에서 `node` 를 못 찾았을 때(D-48 ③). 감시자가 이것을 보면 실패 화면에
+/// [plat.nodeNotFoundMessage] 를 띄운다 — 실패 원인이 "스폰 실패" 와 다르다(고칠 방법이 다르다).
+class DaemonNodeNotFoundException implements DaemonSpawnException {
+  const DaemonNodeNotFoundException();
+
+  /// 실패 화면·로그에 그대로 나가는 문장.
+  @override
+  String get message => plat.nodeNotFoundMessage;
+
+  /// 원인 코드(로그·테스트용).
+  String get reason => nodeNotFoundReason;
+
+  @override
+  String toString() => message;
+}
+
+/// [DaemonNodeNotFoundException] 의 원인 코드.
+const String nodeNotFoundReason = 'node-not-found';
 
 // ---- 실행 명령 -------------------------------------------------------------------------
 
@@ -80,20 +100,41 @@ class DaemonCommand {
 /// 하고(같은 package.json 의 test 스크립트가 이미 `node --import tsx` 를 쓴다), 이렇게 띄우면
 /// **프로세스가 하나**라 종료·트리 kill 이 단순하다(npm → node 2단이 아니다).
 /// 모양이 다르면 npm 으로 떨어진다 — 윈도우에서는 `npm.cmd`(PATH 의 `npm` 은 셸 스크립트다).
-DaemonCommand daemonCommandFor(String? startScript, {bool windows = true}) {
+///
+/// 여기서 나오는 `node` 는 **이름**이다. 실제로 띄울 때 [resolveDaemonCommand] 가 맥에서 절대 경로로 바꾼다.
+DaemonCommand daemonCommandFor(String? startScript, {bool? windows, plat.AppPlatform? platform}) {
   final script = (startScript ?? '').trim();
   final parts = script.isEmpty ? const <String>[] : script.split(RegExp(r'\s+'));
   if (parts.isNotEmpty) {
     if (parts.first == 'node') return DaemonCommand('node', parts.sublist(1));
     if (parts.first == 'tsx') return DaemonCommand('node', ['--import', 'tsx', ...parts.sublist(1)]);
   }
-  return DaemonCommand(windows ? 'npm.cmd' : 'npm', const ['start']);
+  final win = windows ?? (platform ?? plat.currentPlatform).isWindows;
+  return DaemonCommand(win ? 'npm.cmd' : 'npm', const ['start']);
+}
+
+/// 명령의 실행 파일을 **정말 띄울 수 있는 경로**로 바꾼다.
+///
+/// - `node` → [plat.findNode]. 맥 GUI 앱은 터미널 PATH 를 못 물려받으므로 절대 경로가 필요하다.
+///   못 찾으면 [DaemonNodeNotFoundException] — 윈도우에서는 언제나 `'node'` 라 던지지 않는다.
+/// - `npm`/`npm.cmd` → [plat.npmExecutable](플랫폼에 맞는 이름).
+DaemonCommand resolveDaemonCommand(DaemonCommand cmd, {plat.AppPlatform? platform}) {
+  final p = platform ?? plat.currentPlatform;
+  if (cmd.executable == 'node') {
+    final node = plat.findNode(platform: p);
+    if (node == null) throw const DaemonNodeNotFoundException();
+    return DaemonCommand(node, cmd.arguments);
+  }
+  if (cmd.executable == 'npm' || cmd.executable == 'npm.cmd') {
+    return DaemonCommand(plat.npmExecutable(platform: p), cmd.arguments);
+  }
+  return cmd;
 }
 
 /// `<daemonDir>/package.json` 에서 start 스크립트를 읽는다(없거나 깨졌으면 null).
-Future<String?> readStartScript(Directory daemonDir) async {
+Future<String?> readStartScript(Directory daemonDir, {plat.AppPlatform? platform}) async {
   try {
-    final f = File('${daemonDir.path}${Platform.pathSeparator}package.json');
+    final f = File('${daemonDir.path}${(platform ?? plat.currentPlatform).pathSeparator}package.json');
     if (!await f.exists()) return null;
     final j = jsonDecode(await f.readAsString());
     if (j is! Map) return null;
@@ -115,7 +156,7 @@ abstract class DaemonProcess {
   /// 종료 코드(살아 있는 동안 완료되지 않는다).
   Future<int> get exitCode;
 
-  /// 프로세스 **트리**를 강제 종료한다(`taskkill /PID <pid> /T /F`).
+  /// 프로세스 **트리**를 강제 종료한다(윈도우 `taskkill /T /F` · 유닉스 `ps` 트리 + `kill -9`).
   Future<void> killTree();
 }
 
@@ -156,9 +197,12 @@ Future<DaemonProcess> spawnDaemon({
   required Directory daemonDir,
   Map<String, String> extraEnv = const {},
   String? logPath,
+  plat.AppPlatform? platform,
 }) async {
-  final start = await readStartScript(daemonDir);
-  final cmd = daemonCommandFor(start, windows: Platform.isWindows);
+  final p = platform ?? plat.currentPlatform;
+  final start = await readStartScript(daemonDir, platform: p);
+  // 맥에서는 여기서 `node` 가 절대 경로로 바뀐다 — 못 찾으면 [DaemonNodeNotFoundException].
+  final cmd = resolveDaemonCommand(daemonCommandFor(start, platform: p), platform: p);
   final path = logPath ?? defaultDaemonLogPath();
   IOSink? sink;
   if (path != null) {
@@ -201,10 +245,8 @@ Future<DaemonProcess> spawnDaemon({
 // ---- 로그 -------------------------------------------------------------------------------
 
 /// `<데이터 폴더>/daemon.log`. 데이터 폴더를 못 정하면 null.
-String? defaultDaemonLogPath([Map<String, String>? env]) {
-  final dir = DaemonInfo.dataDir(env);
-  return dir == null ? null : '$dir${Platform.pathSeparator}$daemonLogName';
-}
+String? defaultDaemonLogPath([Map<String, String>? env, plat.AppPlatform? platform]) =>
+    plat.dataFilePath(daemonLogName, platform: platform, env: env);
 
 /// 파일이 [maxBytes] 보다 크면 **뒤쪽 [maxBytes] 만** 남긴다(잘린 첫 줄은 버린다). 폴더가 없으면 만든다.
 Future<void> trimLogFile(File f, int maxBytes) async {
@@ -254,43 +296,14 @@ Future<List<String>> readLogTail(String? path, {int lines = daemonLogTailLines})
 
 // ---- pid 생존 · 트리 종료 ---------------------------------------------------------------
 
-/// pid 가 살아 있는가 — `tasklist /FI "PID eq N" /NH /FO CSV`(실측 ~95ms, 콘솔 창 없음).
+/// pid 가 살아 있는가 — 윈도우 `tasklist /FI "PID eq N"`(실측 ~95ms, 콘솔 창 없음) · 유닉스 `kill -0`.
 /// [imageContains] 를 주면 **이미지 이름까지** 맞아야 참이다(pid 재사용 오판 방지, D-17 과 같은 가드).
-Future<bool> isPidAlive(int pid, {String? imageContains}) async {
-  if (pid <= 0) return false;
-  try {
-    if (!Platform.isWindows) {
-      // 개발용 폴백 — 윈도우 앱이지만 단위 테스트가 다른 OS 에서 돌 수 있다.
-      final r = await Process.run('ps', ['-p', '$pid', '-o', 'comm=']);
-      final out = (r.stdout as String).trim();
-      if (out.isEmpty) return false;
-      return imageContains == null || out.toLowerCase().contains(imageContains.toLowerCase());
-    }
-    final r = await Process.run('tasklist', ['/FI', 'PID eq $pid', '/NH', '/FO', 'CSV']);
-    final out = (r.stdout as String).trim();
-    // 살아 있으면 `"image.exe","1234",...`, 없으면 `INFO: No tasks are running ...`.
-    if (!out.startsWith('"')) return false;
-    if (!out.contains('"$pid"')) return false;
-    if (imageContains == null) return true;
-    return out.toLowerCase().contains(imageContains.toLowerCase());
-  } catch (_) {
-    return false;
-  }
-}
+/// 분기는 `platform/platform.dart` 에 있다 — 여기는 이름만 남긴 통로다.
+Future<bool> isPidAlive(int pid, {String? imageContains, plat.AppPlatform? platform}) =>
+    plat.isProcessAlive(pid, imageContains: imageContains, platform: platform);
 
-/// 프로세스 트리 강제 종료(`taskkill /PID <pid> /T /F` — 실측 ~120ms, 손자까지 간다).
-Future<void> killProcessTree(int pid) async {
-  if (pid <= 0) return;
-  try {
-    if (Platform.isWindows) {
-      await Process.run('taskkill', ['/PID', '$pid', '/T', '/F']);
-    } else {
-      Process.killPid(pid, ProcessSignal.sigkill);
-    }
-  } catch (_) {
-    // 이미 죽었으면 할 일이 없다.
-  }
-}
+/// 프로세스 트리 강제 종료(윈도우 `taskkill /PID <pid> /T /F` · 유닉스 `ps` 트리 + 아래부터 `kill -9`).
+Future<void> killProcessTree(int pid, {plat.AppPlatform? platform}) => plat.killTree(pid, platform: platform);
 
 /// 붙을 수 있는 데몬이 도는가 = `daemon.json` 이 있고 그 pid 가 살아 있다.
 /// 파일만 있고 프로세스가 죽었으면(하드 킬 뒤 남은 파일) **거짓**이다 — 감시자가 죽음을 알아채는 기준이다.

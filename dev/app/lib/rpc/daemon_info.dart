@@ -1,4 +1,5 @@
-// daemon.json 읽기. PROTOCOL: 데몬이 기동 시 `%LOCALAPPDATA%\pixel-office\daemon.json`
+// daemon.json 읽기. PROTOCOL: 데몬이 기동 시 데이터 폴더(`%LOCALAPPDATA%\pixel-office` · 맥
+// `~/Library/Application Support/pixel-office`)의 `daemon.json`
 // (= `${PIXEL_DATA_DIR}/daemon.json`) 에 { wsPort, hookPort, token, pid, startedAt, version } 를 쓰고
 // 정상 종료 시 지운다. token 은 기동마다 바뀌므로 재접속 시도마다 다시 읽는다.
 //
@@ -10,26 +11,37 @@
 import 'dart:convert';
 import 'dart:io';
 
+import '../platform/platform.dart' as plat;
+
 /// 끊김 오버레이의 "자세히" 에 붙는 한 줄(T41). 경로만 보여 주면 "왜 없지?" 에서 멈춘다.
 const String daemonPathHint =
     "데몬을 아직 안 띄웠으면 '데몬 시작' — 다른 환경(샌드박스·다른 사용자)에서 띄운 데몬은 이 경로에 파일을 쓰지 않습니다";
 
-/// 데이터 폴더를 정할 수조차 없을 때(둘 다 없는 환경).
-const String daemonNoDataDir = 'PIXEL_DATA_DIR·LOCALAPPDATA 가 둘 다 없어 daemon.json 경로를 정할 수 없습니다';
+/// 데이터 폴더를 정할 수조차 없을 때(둘 다 없는 환경). 두 번째 환경변수 이름은 플랫폼에 따라 다르다
+/// (윈도우 `LOCALAPPDATA` · 맥·리눅스 `HOME`).
+String daemonNoDataDirMessage({plat.AppPlatform? platform}) =>
+    'PIXEL_DATA_DIR·${plat.dataDirEnvName(platform: platform)} 가 둘 다 없어 daemon.json 경로를 정할 수 없습니다';
+
+/// 지금 플랫폼의 [daemonNoDataDirMessage].
+String get daemonNoDataDir => daemonNoDataDirMessage();
 
 /// daemon.json 을 못 읽었을 때 재접속 루프가 남기는 문구 — **찾아본 경로**와 환경변수 유무까지.
 /// 예: `daemon.json 없음(데몬 미기동) — 찾은 곳: C:\...\pixel-office\daemon.json · PIXEL_DATA_DIR 없음 · LOCALAPPDATA 있음`
-String daemonJsonMissingMessage([Map<String, String>? env]) {
+String daemonJsonMissingMessage([Map<String, String>? env, plat.AppPlatform? platform]) {
   final e = env ?? Platform.environment;
-  final path = DaemonInfo.defaultPath(e);
-  if (path == null) return 'daemon.json 없음(데몬 미기동) — $daemonNoDataDir';
+  final path = DaemonInfo.defaultPath(e, platform);
+  if (path == null) return 'daemon.json 없음(데몬 미기동) — ${daemonNoDataDirMessage(platform: platform)}';
   String mark(String key) {
     final v = e[key];
     return '$key ${v == null || v.isEmpty ? '없음' : '있음'}';
   }
 
-  return 'daemon.json 없음(데몬 미기동) — 찾은 곳: $path · ${mark('PIXEL_DATA_DIR')} · ${mark('LOCALAPPDATA')}';
+  return 'daemon.json 없음(데몬 미기동) — 찾은 곳: $path · '
+      '${mark(plat.dataDirEnvVar)} · ${mark(plat.dataDirEnvName(platform: platform))}';
 }
+
+/// 데이터 폴더 안의 파일 이름.
+const String daemonInfoName = 'daemon.json';
 
 class DaemonInfo {
   const DaemonInfo({
@@ -60,21 +72,13 @@ class DaemonInfo {
         version: j['version'] as String,
       );
 
-  /// 데이터 폴더: `PIXEL_DATA_DIR` 이 있으면 그것, 아니면 `%LOCALAPPDATA%\pixel-office`.
-  /// 둘 다 없으면(LOCALAPPDATA 가 없는 환경) null.
-  static String? dataDir([Map<String, String>? env]) {
-    final e = env ?? Platform.environment;
-    final override = e['PIXEL_DATA_DIR'];
-    if (override != null && override.isNotEmpty) return override;
-    final local = e['LOCALAPPDATA'];
-    if (local == null || local.isEmpty) return null;
-    return '$local${Platform.pathSeparator}pixel-office';
-  }
+  /// 데이터 폴더 — 규칙은 `platform/platform.dart` 한 곳에 있다(데몬과 같은 규칙, 같은 폴더).
+  /// 정할 수 없으면 null.
+  static String? dataDir([Map<String, String>? env, plat.AppPlatform? platform]) =>
+      plat.dataDir(platform: platform, env: env);
 
-  static String? defaultPath([Map<String, String>? env]) {
-    final dir = dataDir(env);
-    return dir == null ? null : '$dir${Platform.pathSeparator}daemon.json';
-  }
+  static String? defaultPath([Map<String, String>? env, plat.AppPlatform? platform]) =>
+      plat.dataFilePath(daemonInfoName, platform: platform, env: env);
 
   /// 파일이 없거나(데몬 미기동) 깨져 있으면 null.
   static Future<DaemonInfo?> read({String? path}) async {

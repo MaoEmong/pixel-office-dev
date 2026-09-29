@@ -11,7 +11,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'daemon_process.dart';
-import '../rpc/daemon_info.dart';
+import '../platform/platform.dart' as plat;
 
 /// 잠금 파일 이름(`<데이터 폴더>/app.lock`).
 const String appLockName = 'app.lock';
@@ -58,10 +58,8 @@ class AppLock {
   }
 
   /// `<데이터 폴더>/app.lock`. 데이터 폴더를 정할 수 없으면 null(그땐 잠그지 않고 그냥 켠다).
-  static String? defaultPath([Map<String, String>? env]) {
-    final dir = DaemonInfo.dataDir(env);
-    return dir == null ? null : '$dir${Platform.pathSeparator}$appLockName';
-  }
+  static String? defaultPath([Map<String, String>? env, plat.AppPlatform? platform]) =>
+      plat.dataFilePath(appLockName, platform: platform, env: env);
 
   /// 지금 잠금을 쥔 쪽(파일이 없거나 깨졌으면 null).
   static Future<AppLock?> read({String? path}) async {
