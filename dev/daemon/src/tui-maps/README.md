@@ -4,24 +4,37 @@
 
 ## 파일 이름 규칙
 
-`<engine>-<major.minor>.json` — 예: `claude-2.1.json`, `codex-0.154.json`.
+`<engine>-<major.minor>[-<platform>].json` — 예: `claude-2.1.json`, `codex-0.154.json`, (필요할 때) `claude-2.1-darwin.json`.
 
 - `engine` 은 `src/pty/types.ts` 의 `Engine`(`claude` | `codex`)과 같아야 한다(파일 안의 `"engine"` 필드도 동일).
 - 파일 이름의 버전은 major.minor 까지만. 안의 `"version"` 필드에는 실측한 정확한 버전(`2.1.270`, `0.154.0`)을 적는다.
 - 패치 버전 안에서 문구가 바뀌면 같은 파일을 고치고 `version` 과 `source` 를 갱신한다. major.minor 가 바뀌어 화면이 달라지면 새 파일을 만든다(아래 "버전 추가").
 
+### 플랫폼 접미사 (T48-1 · D-48 ⑦)
+
+로더는 **플랫폼 접미사가 붙은 파일을 먼저** 찾고, 없으면 접미사 없는 파일로 떨어진다:
+
+```
+claude-2.1-darwin.json   →   claude-2.1.json
+```
+
+접미사는 `process.platform` 값 그대로(`darwin` · `linux` · `win32`)다. **한 플랫폼에서만 화면이 다를 때 쓴다** — 첫 실행 신뢰 다이얼로그·준비 문구·`/usage`·`/status` 는 CLI 가 그리는 것이라 운영체제와 무관할 가능성이 높지만, 맥의 기본 터미널 크기·서체·유니코드 폭 때문에 **줄바꿈 위치**가 달라질 수 있다.
+
+지금 저장소에는 접미사 파일이 **하나도 없다**(모든 플랫폼이 같은 맵을 쓴다). 맥 실기(`docs/design/맥-지원.md` 2단계 M3·M14)에서 화면이 다르면 그때 `PIXEL_SCREEN_DEBUG=1` 로 덤프를 떠서 `claude-2.1-darwin.json` 을 만들고 **바뀐 줄만** 고친다. 덧붙일 때 할 일은 두 줄이다: `tuiMap.ts` 의 import 한 줄 + `BUILTIN_FILES` 표의 한 줄(키가 파일 이름이다).
+
 ## ScreenModel 이 맵을 고르는 방법
 
-`src/screen/tuiMap.ts` 의 `BUILTIN` 표가 엔진 → JSON 을 정적으로 import 한다(`with { type: 'json' }`):
+`src/screen/tuiMap.ts` 의 `BUILTIN_FILES` 표가 **파일 이름 → JSON** 을 정적으로 import 한다(`with { type: 'json' }`), 그리고 `BUILTIN_VERSION` 이 엔진마다 쓸 버전을 정한다:
 
 ```ts
-const BUILTIN: Record<Engine, TuiMapJson> = {
-  claude: claude21,
-  codex: codex0154,
+export const BUILTIN_VERSION: Record<Engine, string> = { claude: '2.1', codex: '0.154' };
+export const BUILTIN_FILES: Record<string, TuiMapJson> = {
+  'claude-2.1.json': claude21,
+  'codex-0.154.json': codex0154,
 };
 ```
 
-`new ScreenModel({ engine })` 은 `loadTuiMap(engine)` 으로 엔진당 하나를 컴파일해 캐시한다. 즉 **엔진당 활성 맵은 한 개**이고, 어떤 버전을 쓸지는 `BUILTIN` 이 정한다. CLI 버전을 자동 감지하지는 않는다 — 데몬이 쓰는 CLI 버전(`docs/02-실측-체크리스트.md`)과 맵을 사람이 맞춘다.
+`new ScreenModel({ engine })` 은 `loadTuiMap(engine)`(= `loadTuiMap(engine, process.platform)`) 으로 엔진·플랫폼당 하나를 컴파일해 캐시한다. 어떤 파일을 쓸지는 `resolveTuiMapFile()` 이 위의 접미사 규칙으로 고른다. 즉 **엔진당 활성 맵은 (플랫폼마다) 한 개**이고, 어떤 버전을 쓸지는 `BUILTIN_VERSION` 이 정한다. CLI 버전을 자동 감지하지는 않는다 — 데몬이 쓰는 CLI 버전(`docs/02-실측-체크리스트.md`)과 맵을 사람이 맞춘다.
 
 테스트나 실험에서는 `new ScreenModel({ engine, tuiMap })` 으로 JSON(또는 `compileTuiMap` 결과)을 직접 주입할 수 있다.
 
@@ -29,7 +42,7 @@ const BUILTIN: Record<Engine, TuiMapJson> = {
 
 1. `src/tui-maps/<engine>-<major.minor>.json` 을 기존 파일을 복사해 만든다.
 2. 실측 픽스처를 뜬다(아래 "픽스처 다시 뜨기") → 바뀐 문구를 맵에 반영하고 `verified`/`source` 를 채운다.
-3. `tuiMap.ts` 의 import 와 `BUILTIN` 을 새 파일로 바꾼다(옛 파일은 지우거나, 롤백용으로 두려면 남겨도 된다 — `BUILTIN` 에 안 걸리면 로드되지 않는다).
+3. `tuiMap.ts` 의 import 를 더하고 `BUILTIN_FILES` 에 **파일 이름 키**로 등록한 뒤 `BUILTIN_VERSION` 을 새 버전으로 바꾼다(옛 파일은 지우거나, 롤백용으로 두려면 남겨도 된다 — `BUILTIN_VERSION` 이 가리키지 않으면 로드되지 않는다). 플랫폼 전용 맵을 더할 때는 `BUILTIN_FILES` 에 한 줄만 더한다(`BUILTIN_VERSION` 은 그대로).
 4. `npx tsx --test "test/screen/*.test.ts"` 로 화면별 판정을 확인한다. 로더는 잘못된 정규식·모르는 `kind`/키·`approval-prompt` 규칙 위반을 **로드 시점에 throw** 하므로 데몬 기동 시 바로 드러난다.
 
 ## 스키마 요약
