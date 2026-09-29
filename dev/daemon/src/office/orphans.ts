@@ -4,7 +4,9 @@
 // node-pty 는 재-attach 를 지원하지 않으니 "종료 후 resume" 뿐이다(설계 §데몬 재시작 복구).
 //
 // 안전장치: pid 가 재사용됐을 수 있으므로 프로세스 이름이 엔진 이름(claude/codex)을 포함할 때만 죽인다.
-import { spawnSync } from 'node:child_process';
+//
+// 운영체제에 닿는 세 연산(생존·이미지 이름·트리 종료)은 `platform.ts` 하나로 모았다(T48-1 · D-48 원칙 2).
+import { host } from '../platform.js';
 import type { Engine } from '../store/types.js';
 
 /** 복구가 유령 자식을 다루는 데 쓰는 최소 연산. 테스트에서 가짜로 대체한다. */
@@ -58,40 +60,15 @@ export function reapOrphan(ops: OrphanOps, pid: number, engine: Engine, opts: { 
   return { action: 'killed' };
 }
 
-/** 실제 OS 연산. win32 는 tasklist/taskkill, 그 외는 ps/kill. */
+/**
+ * 실제 OS 연산 — 전부 `platform.ts` 를 통해서만(윈도우 `tasklist`/`taskkill`, 유닉스 `ps`/`kill`).
+ *
+ * T48-1 에서 `alive` 가 **`EPERM` 을 "살아 있음" 으로** 세게 됐다(D-40 · parentWatch 와 같은 규칙으로 통일).
+ * 예전에는 EPERM 을 "죽음" 으로 봐 남의 계정 프로세스를 못 봤는데, 어차피 [reapOrphan] 은 이미지 이름이
+ * 엔진과 맞을 때만 죽이므로 "살아 있다" 고 보는 편이 안전하다 — 이름을 못 읽으면 그냥 건너뛴다.
+ */
 export const defaultOrphanOps: OrphanOps = {
-  alive(pid) {
-    try {
-      process.kill(pid, 0);
-      return true;
-    } catch {
-      return false;
-    }
-  },
-  name(pid) {
-    try {
-      if (process.platform === 'win32') {
-        const out = spawnSync('tasklist', ['/FI', `PID eq ${pid}`, '/FO', 'CSV', '/NH'], { encoding: 'utf8', windowsHide: true, timeout: 5000 });
-        // "claude.exe","14932","Console","1","265,524 K"
-        const m = /^"([^"]+)","(\d+)"/.exec((out.stdout ?? '').trim());
-        return m && Number(m[2]) === pid ? m[1]!.toLowerCase() : undefined;
-      }
-      const out = spawnSync('ps', ['-o', 'comm=', '-p', String(pid)], { encoding: 'utf8', timeout: 5000 });
-      const comm = (out.stdout ?? '').trim();
-      return comm ? comm.toLowerCase() : undefined;
-    } catch {
-      return undefined;
-    }
-  },
-  kill(pid) {
-    if (process.platform === 'win32') {
-      spawnSync('taskkill', ['/PID', String(pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true, timeout: 10_000 });
-      return;
-    }
-    try {
-      process.kill(pid, 'SIGKILL');
-    } catch {
-      // 이미 죽음
-    }
-  },
+  alive: (pid) => host.isProcessAlive(pid),
+  name: (pid) => host.processImageName(pid),
+  kill: (pid) => host.killTree(pid),
 };

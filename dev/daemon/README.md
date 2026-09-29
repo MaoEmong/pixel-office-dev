@@ -15,7 +15,7 @@ npm start                 # 데몬 1회 실행 (ws://127.0.0.1:7420, hook 7421, 
 npm run dev               # tsx watch
 npm run cli               # 콘솔 클라이언트 REPL (help 로 명령 목록)
 npm run cli -- --exec "dept create demo D:/proj claude 부장" --exec "say 부장 안녕" --wait-idle 부장   # 비대화형
-npm test                  # node:test 전체 771건 (통합 테스트는 PIXEL_IT=1 없으면 skip — 아래 "테스트" 절)
+npm test                  # node:test 전체 884건 (통합 테스트 7건은 PIXEL_IT=1 없으면 skip — 아래 "테스트" 절)
 npm run typecheck
 ```
 
@@ -34,7 +34,7 @@ npm run typecheck
 
 ## 테스트
 
-`npm test` = `node --import tsx --test test/**/*.test.ts`. **단위 스위트는 CLI 를 안 띄운다**(539건, 통합 6건은 skip).
+`npm test` = `node --import tsx --test test/**/*.test.ts`. **단위 스위트는 CLI 를 안 띄운다**(877건 통과, 통합 7건은 skip).
 
 **통합 테스트(opt-in, `PIXEL_IT=1`)** 는 진짜 데몬을 자식 프로세스로 띄우고 **진짜 `claude`/`codex`** 를 출근시킨다 —
 모델 턴을 쓰고 몇 십 초가 걸리므로 하나씩 돌린다(전제: `dev/spike-0/sandbox` 가 그 CLI 에서 신뢰된 폴더이고 로그인이 끝나 있을 것).
@@ -72,9 +72,10 @@ PIXEL_IT=1 PIXEL_IT_SANDBOX=D:/myproject/pixel-office/dev/spike-0/sandbox \
 | `PIXEL_WS_PORT` | 7420 | WebSocket(JSON-RPC) 포트 — 앱·콘솔 클라이언트가 붙는다 |
 | `PIXEL_HOOK_PORT` | 7421 | CLI hooks가 POST하는 HTTP 포트 (`/hook/<memberToken>/<event>`) |
 | `PIXEL_MCP_PORT` | 7422 | TeamTools MCP(Streamable HTTP) 포트 — CLI 세션이 `/mcp/<memberToken>` 으로 붙는다(T17) |
-| `PIXEL_DATA_DIR` | `%LOCALAPPDATA%\pixel-office` | `daemon.json`(토큰·세 포트)·DB·세션 설정·멤버 지시문 |
+| `PIXEL_DATA_DIR` | OS 별 기본(아래 "플랫폼") | `daemon.json`(토큰·세 포트)·DB·세션 설정·멤버 지시문. 윈도우 `%LOCALAPPDATA%\pixel-office` · 맥 `~/Library/Application Support/pixel-office` · 리눅스 `$XDG_DATA_HOME`/`~/.local/share` |
 | `PIXEL_CLAUDE_EXE` | **자동 탐지**(아래) | claude 실행 파일 |
 | `PIXEL_CODEX_EXE` | **자동 탐지**(아래) | codex 실행 파일 |
+| `PIXEL_NPM_PREFIX` | (없음, 유닉스만) | `npm prefix -g` 의 값. 맥·리눅스에서 npm 전역 설치가 잘 알려진 자리에 없을 때 지정한다(아래 "플랫폼") |
 | `PIXEL_HOOK_TIMEOUT_SEC` | 86400 | 세션 hooks timeout(허가·질문 보류 상한, D-16) |
 | `PIXEL_USAGE_POLL_SEC` | 60 | 엔진 연결 확인(`claude auth status`·`codex login status`) 주기. `0` 이면 **기동 시 한 번만**(아래 "사용량") |
 | `PIXEL_USAGE_PROBE` | (켬) | `0` 이면 **확인용 세션을 띄우지 않는다**(턴 종료 출처만 쓴다 — 아래 "확인용 세션") |
@@ -127,25 +128,64 @@ PIXEL_IT=1 PIXEL_IT_SANDBOX=D:/myproject/pixel-office/dev/spike-0/sandbox \
 `src/index.ts` 첫 줄). 덤으로 **앱이 죽은 뒤의 로그도 남는다** — `부모 앱이 사라졌다`·`[office] 종료: …` 가
 그대로 파일에 들어간다(예전에는 죽은 파이프로 흘러가 사고 원인을 볼 길이 없었다).
 
-**`PIXEL_CODEX_EXE` 자동 탐지 (`src/config.ts resolveCodexExe`, T22).** node-pty(ConPTY)는 PATH 의 `codex.cmd`/`codex.ps1`
+**`PIXEL_CODEX_EXE` 자동 탐지 (`src/platform.ts resolveCodexExe`, T22 · T48-1).** node-pty(ConPTY)는 PATH 의 `codex.cmd`/`codex.ps1`
 셰임을 띄우지 못한다(T20 함정 4). 그래서 기본값이 `'codex'` 가 아니라 다음 순서로 **실제 실행 파일**을 찾은 결과다:
 1. `PIXEL_CODEX_EXE` 가 있으면 그대로(존재 검사 안 함 — 사용자가 지정한 경로를 존중),
-2. npm 전역 루트(`%APPDATA%\npm`, `%LOCALAPPDATA%\npm`, `%ProgramFiles%\nodejs`)의
-   `node_modules/@openai/codex/node_modules/@openai/codex-*/vendor/*/bin/codex.exe` 스캔(플랫폼 패키지·타깃 폴더 이름이 버전마다 달라 하드코딩하지 않는다),
-3. PATH 의 **진짜** `codex.exe`(셰임 제외),
+2. npm 전역 모듈 뿌리(아래 "플랫폼" 표)의
+   `@openai/codex/node_modules/@openai/codex-*/vendor/*/bin/codex(.exe)` 스캔(플랫폼 패키지·타깃 폴더 이름이 버전마다 달라 하드코딩하지 않는다 — 맥은 `codex-darwin-arm64` 류가 여기 걸린다),
+3. PATH 의 **진짜** `codex`/`codex.exe`(윈도우는 셰임 제외),
 4. 그래도 없으면 `'codex'` — 스폰이 실패하면서 오류로 드러난다(조용히 다른 것을 띄우지 않는다).
 
-**`PIXEL_CLAUDE_EXE` 자동 탐지 (`src/config.ts resolveClaudeExe`, T41).** 예전에는 데스크탑 앱 번들의 **버전 폴더를
+**`PIXEL_CLAUDE_EXE` 자동 탐지 (`src/platform.ts resolveClaudeExe`, T41 · T48-1).** 예전에는 데스크탑 앱 번들의 **버전 폴더를
 문자열로 박아** 뒀다(`%APPDATA%\Claude\claude-code\2.1.270\claude.exe`) — 앱이 업데이트되면 그 폴더가 사라져
 `dept create` 가 `-32000 File not found: ...\claude.exe` 로 죽었다(실기). 지금 순서:
 1. `PIXEL_CLAUDE_EXE` 가 있으면 그대로(존재 검사 안 함),
-2. PATH 의 **진짜** `claude.exe`(`.cmd`/`.ps1` 셰임은 node-pty 가 못 띄우므로 세지 않는다),
-3. `%APPDATA%\Claude\claude-code\<버전>\claude.exe` 중 **가장 높은 버전**(숫자 비교 — 그 버전에 exe 가 없으면
-   다음 버전으로 내려간다),
-4. 그래도 없으면 `'claude'`. 기동 로그에 `[daemon] claude : <경로>` 가 찍히고, 못 찾았으면 **찾아본 곳**과
+2. PATH 의 **진짜** 실행 파일 — 윈도우는 `claude.exe`(`.cmd`/`.ps1` 셰임은 node-pty 가 못 띄우므로 세지 않는다),
+   맥·리눅스는 `claude`(**셰뱅 스크립트도 실행 파일이다** — 아래 "플랫폼"),
+3. npm 전역 `<모듈 뿌리>/@anthropic-ai/claude-code/bin/claude(.exe)`,
+4. **(윈도우만)** `%APPDATA%\Claude\claude-code\<버전>\claude.exe` 중 **가장 높은 버전**(숫자 비교 — 그 버전에 exe 가
+   없으면 다음 버전으로 내려간다),
+5. 그래도 없으면 `'claude'`. 기동 로그에 `[daemon] claude : <경로>` 가 찍히고, 못 찾았으면 **찾아본 곳**과
    `PIXEL_CLAUDE_EXE` 안내가 같이 나온다.
 
-`claude` 는 npm 전역 설치를 권장한다(그러면 2번에서 잡힌다).
+`claude` 는 npm 전역 설치를 권장한다(그러면 2~3번에서 잡힌다).
+
+## 플랫폼 — 윈도우 · 맥 · 리눅스 (T48-1, D-48)
+
+**운영체제에 닿는 코드는 `src/platform.ts` 한 파일에만 있다.** 나머지 코드는 `host.xxx()` 만 부른다 — 데이터 폴더,
+실행 파일 탐색, 프로세스 생존·이미지 이름·트리 종료, 부모 시작 시각, 안내 문구, 종료 신호가 전부 거기 있다.
+분기를 그 자리에 하나씩 넣으면 맥에서 하나씩 터지기 때문이다(D-48 원칙 2). **윈도우 동작은 바뀌지 않았다**(원칙 3).
+
+| 항목 | 윈도우 | 맥(darwin) | 리눅스 |
+|---|---|---|---|
+| 데이터 폴더 | `%LOCALAPPDATA%\pixel-office` | `~/Library/Application Support/pixel-office` | `$XDG_DATA_HOME/pixel-office` 또는 `~/.local/share/pixel-office` |
+| `claude` | `PIXEL_CLAUDE_EXE` → PATH `claude.exe` → npm 전역 → 앱 번들 최신 버전 | `PIXEL_CLAUDE_EXE` → PATH `claude` → npm 전역 (**앱 번들 탐색 없음**) | 맥과 같다 |
+| `codex` | npm 전역 vendor `codex.exe` → PATH | npm 전역 vendor `codex` → PATH | 맥과 같다 |
+| npm 전역 뿌리 | `%APPDATA%\npm` · `%LOCALAPPDATA%\npm` · `%ProgramFiles%\nodejs` (+`\node_modules`) | `PIXEL_NPM_PREFIX/lib/node_modules`, 없으면 `/opt/homebrew/lib/node_modules` · `/usr/local/lib/node_modules` · `~/.npm-global/lib/node_modules` · `~/.nvm/versions/node/*/lib/node_modules`(최신 먼저) · `~/.volta/tools/image/node/*/lib/node_modules` | 맥과 같다 |
+| 프로세스 생존 | `kill(pid,0)`(노드가 `OpenProcess` 로 바꿔 준다) — `EPERM` 도 살아 있음 | 같음 | 같음 |
+| 이미지 이름 | `tasklist /FI "PID eq <pid>" /FO CSV /NH` | `ps -p <pid> -o comm=` 의 basename | 같음 |
+| 트리 강제 종료 | `taskkill /PID <pid> /T /F` | `ps -axo pid=,ppid=` **한 번**으로 트리를 만들어 **아래부터** `SIGKILL`(맥 `ps` 에는 `--ppid` 가 없다) | 같음 |
+| 부모 시작 시각 | PowerShell `Get-CimInstance Win32_Process` | `LC_ALL=C ps -p <pid> -o lstart=` → `Mon Sep 29 10:11:12 2026` 파싱 | 같음 |
+| 안내 문구 | `taskkill /F /PID <pid>` · `netstat -ano \| findstr :<port>` | `kill <pid>` · `lsof -i :<port>` | 같음 |
+| 종료 신호 | `SIGINT` · `SIGTERM` | **+ `SIGHUP`**(터미널 닫힘도 정중히 종료) | 같음 |
+| hook 명령의 경로 | 공백 없음 | `~/Library/Application Support/…` 처럼 **공백이 있으면 큰따옴표**로 감싼다(생성기가 자동) | 같음 |
+| ConPTY 자원 해제 | 자연 종료 뒤 내부 핸들 해제(T01) | **하지 않는다**(유닉스 node-pty 는 스스로 닫는다) | 같음 |
+| tui-map | `<engine>-<ver>.json` | `<engine>-<ver>-darwin.json` 이 **있으면 그것**, 없으면 위와 같은 파일 | `-linux` 접미사 규칙 동일 |
+
+**유닉스에서 셰뱅 스크립트는 그대로 실행 파일이다.** 윈도우의 "`.cmd`/`.ps1` 셰임은 세지 않는다" 규칙은
+**윈도우 전용**이다 — node-pty 의 유닉스 구현은 `execvp` 로 띄우므로 `#!/usr/bin/env node` 로 시작하는
+`claude` 스크립트(npm 전역 설치가 만드는 모양)를 커널이 알아서 처리한다. 심볼릭 링크도 따라간다.
+
+| 환경변수 | 쓰는 곳 | 의미 |
+|---|---|---|
+| `PIXEL_DATA_DIR` | 데몬·앱 | 데이터 폴더를 직접 지정(위 규칙 전부를 덮는다). **데몬과 앱이 같은 값을 봐야 한다** |
+| `PIXEL_NPM_PREFIX` | 데몬(유닉스만) | `npm prefix -g` 의 값. 주면 `<prefix>/lib/node_modules` 만 본다(`npm prefix -g` 는 프로세스를 띄우는 비싼 호출이라 데몬이 스스로 부르지 않는다) |
+| `PIXEL_NODE` | **앱**(`daemon_process.dart`) | 맥 GUI 앱은 터미널 PATH 를 물려받지 않으므로(launchd 의 최소 PATH) 앱이 `node` 를 절대 경로로 찾는다. 못 찾으면 이 변수로 지정 — 데몬 쪽 코드는 쓰지 않는다 |
+
+**맥에서만 알 수 있는 것**(이 PC 에서는 단위 테스트로만 고정했다 — D-48 원칙 4): node-pty 네이티브 빌드,
+셰뱅 `claude` 를 pty 로 띄웠을 때의 동작, `ps`/`lstart` 실제 출력 형식, 첫 실행 신뢰 다이얼로그·`/usage`·`/status`
+화면의 줄바꿈, `SIGHUP` 으로 정리가 끝까지 도는지, npm 전역이 실제로 어디에 깔리는지.
+확인 목록과 명령은 `docs/worklog/T48-1-MacDaemon.md` 의 "맥에서 확인" 절과 `docs/design/맥-지원.md` 2단계 대본(M1~M17).
 
 ## 직무 체계 rev 3 — 부서 · 부장 · 팀장 · 팀원 (M4b, D-32)
 

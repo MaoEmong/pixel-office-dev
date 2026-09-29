@@ -1,5 +1,8 @@
 // tui-map 로더. CLI 버전별 화면 패턴(준비 문구·다이얼로그·키 시퀀스)은 src/tui-maps/*.json 에만 둔다.
 // 여기서는 JSON 을 읽어 정규식으로 컴파일하고, kind/keys 값이 허용 집합에 있는지 검사한다.
+//
+// 파일 이름은 `<engine>-<major.minor>[-<platform>].json` 이고 **플랫폼 접미사가 먼저**다(T48-1 · D-48 ⑦):
+// `claude-2.1-darwin.json` 이 있으면 맥에서 그것을, 없으면 `claude-2.1.json` 을 쓴다.
 import claude21 from '../tui-maps/claude-2.1.json' with { type: 'json' };
 import codex0154 from '../tui-maps/codex-0.154.json' with { type: 'json' };
 
@@ -273,21 +276,57 @@ function compileUsage(tag: string, u: TuiUsageJson): TuiUsage {
   };
 }
 
-const BUILTIN: Record<Engine, TuiMapJson> = {
-  claude: claude21 as unknown as TuiMapJson,
-  codex: codex0154 as unknown as TuiMapJson,
+/** 엔진별로 쓰는 맵 버전(파일 이름의 `<major.minor>`). 버전을 올릴 때 여기와 아래 표를 같이 고친다. */
+export const BUILTIN_VERSION: Record<Engine, string> = {
+  claude: '2.1',
+  codex: '0.154',
 };
 
-const cache = new Map<Engine, TuiMap>();
+/**
+ * 내장 맵 파일 표 — **키가 파일 이름**이다(`tui-maps/README.md` 의 이름 규칙).
+ * 플랫폼별 맵(`claude-2.1-darwin.json`)이 생기면 import 한 줄과 이 표의 한 줄만 더하면 된다.
+ * 지금은 darwin 파일이 **없다** — 맥 실기(2단계 M3/M14)에서 줄바꿈이 다르면 그때 뜬다(D-48 ⑦).
+ */
+export const BUILTIN_FILES: Record<string, TuiMapJson> = {
+  'claude-2.1.json': claude21 as unknown as TuiMapJson,
+  'codex-0.154.json': codex0154 as unknown as TuiMapJson,
+};
 
-/** 엔진별 내장 tui-map. 한 번 컴파일해 재사용. */
-export function loadTuiMap(engine: Engine): TuiMap {
-  let m = cache.get(engine);
+/**
+ * 찾을 파일 이름을 **우선순위 순으로**: `<engine>-<ver>-<platform>.json` → `<engine>-<ver>.json`.
+ * 맥의 기본 터미널 크기·서체·유니코드 폭 때문에 줄바꿈 위치가 달라질 수 있어 플랫폼 접미사를 먼저 본다(설계 §화면 패턴).
+ */
+export function tuiMapCandidates(engine: Engine, version: string, platform: NodeJS.Platform): string[] {
+  return [`${engine}-${version}-${platform}.json`, `${engine}-${version}.json`];
+}
+
+/**
+ * 그 엔진·플랫폼이 쓸 맵 파일을 고른다(플랫폼 접미사 우선, 없으면 평범한 파일).
+ * `files` 는 테스트가 가짜 표를 넣는 자리다.
+ */
+export function resolveTuiMapFile(
+  engine: Engine,
+  platform: NodeJS.Platform = process.platform,
+  files: Record<string, TuiMapJson> = BUILTIN_FILES,
+): { file: string; json: TuiMapJson } {
+  const version = BUILTIN_VERSION[engine];
+  if (!version) throw new Error(`no tui-map for engine ${JSON.stringify(engine)}`);
+  for (const file of tuiMapCandidates(engine, version, platform)) {
+    const json = files[file];
+    if (json) return { file, json };
+  }
+  throw new Error(`no tui-map file for engine ${JSON.stringify(engine)} on ${platform} (tried ${tuiMapCandidates(engine, version, platform).join(', ')})`);
+}
+
+const cache = new Map<string, TuiMap>();
+
+/** 엔진·플랫폼별 내장 tui-map. 한 번 컴파일해 재사용(캐시 키에 플랫폼이 들어간다). */
+export function loadTuiMap(engine: Engine, platform: NodeJS.Platform = process.platform): TuiMap {
+  const key = `${engine}:${platform}`;
+  let m = cache.get(key);
   if (!m) {
-    const json = BUILTIN[engine];
-    if (!json) throw new Error(`no tui-map for engine ${JSON.stringify(engine)}`);
-    m = compileTuiMap(json);
-    cache.set(engine, m);
+    m = compileTuiMap(resolveTuiMapFile(engine, platform).json);
+    cache.set(key, m);
   }
   return m;
 }

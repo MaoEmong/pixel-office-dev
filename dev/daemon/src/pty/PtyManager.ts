@@ -5,6 +5,7 @@
 import { EventEmitter } from 'node:events';
 import * as pty from 'node-pty';
 import { config as defaultConfig } from '../config.js';
+import { host } from '../platform.js';
 import { buildClaudeArgs, buildCodexArgs } from './args.js';
 import { CHILD_TERM, sanitizeEnv, stripDaemonEnv } from './env.js';
 import { ensureCodexHooksFile, writeClaudeSessionSettings } from './hookSettings.js';
@@ -334,6 +335,9 @@ function withTimeout(p: Promise<void>, ms: number): Promise<boolean> {
  * 그래서 내부 필드를 직접 정리하고, 필드 모양이 다르면(node-pty 버전 변경) proc.kill() 로 폴백한다.
  */
 function releaseConptyResources(proc: pty.IPty): void {
+  // **윈도우 전용 처방이다**(T48-1). 유닉스 node-pty(UnixTerminal)는 자식이 끝나면 fd·소켓을 스스로 닫으므로
+  // 여기서 할 일이 없고, 이미 죽은 프로세스에 `proc.kill()` 을 부르면 ESRCH 만 난다.
+  if (!host.isWindows) return;
   const agent = (proc as unknown as { _agent?: ConptyAgentInternals })._agent;
   try {
     if (agent && agent._conoutSocketWorker && agent._ptyNative && typeof agent._pty === 'number') {
