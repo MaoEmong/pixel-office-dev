@@ -22,7 +22,7 @@ T48-1·T48-2 가 윈도우에서 "플랫폼을 주입해" 고정해 둔 맥 분�
 | M1 | 데몬 `npm install` → `tsc --noEmit` → `npm test` | **통과** — 874건 + 스킵된 MixedTeam 10건 = 윈도우의 884 (함정 ①~⑤ 를 고친 뒤) |
 | M2 | `npm start` 로그의 실행 파일 탐색 | **통과** — `claude : /Users/hjkim/.nvm/versions/node/v24.18.0/bin/claude`(실제 파일), 데이터 폴더 `~/Library/Application Support/pixel-office` |
 | M3 | `dept create` → 첫 실행 신뢰 다이얼로그 → idle | **통과(claude·codex)** — claude 는 `passed first-run dialog (trust-folder-claude / onboarding-enter)` → `idle`, codex 는 `부장 [codex] starting` → `idle`. darwin 전용 tui-map 불필요 |
-| M4 | `say 부장` 한 턴 → 이벤트 표 · `report` | **통과(claude·codex)** — 둘 다 thinking → create_team → delegate → 팀장 thinking → text → idle. codex 는 `reading`·`editing` 같은 전용 이벤트 종류까지 맞다. 단 **codex 0.159 로는 안 된다**(아래 함정 ⑤) |
+| M4 | `say 부장` 한 턴 → 이벤트 표 · `report` | **통과(claude·codex)** — 둘 다 thinking → create_team → delegate → 팀장 thinking → text → idle. codex 는 `reading`·`editing` 같은 전용 이벤트 종류까지 맞다. 단 **codex 0.159 로는 지시가 제출되지 않는다** — 맵 문제는 아니다(아래 함정 ⑤) |
 | M5 | 쓰기 명령 허가 → 콘솔 `allow` | **통과(claude·codex)** — claude 는 유닉스 리다이렉션(`printf … > mac-live.txt`), codex 는 **작업 폴더 밖** `apply_patch`. 둘 다 승인 후 실행·파일 생성(한글 그대로) |
 | M6 | `PIXEL_IT=1` 통합 테스트 | **통과 5종** — pty · office · askuser · teamtools · **codex**. 단 **파일 하나씩** 돌려야 하고(함정), teamtools 는 CLI 버전 변화 때문에 필터를 고쳐야 했다(함정) |
 | M7 | 앱 `pub get`·`analyze`·`test`·`build macos --release` | **통과** — 720 통과·2 스킵, `✓ Built pixel_office.app (36.0MB)`. 툴체인 함정 둘을 고쳐야 했다(③④) |
@@ -292,50 +292,41 @@ Info.plist `CFBundleDisplayName`)이고 System Events 의 프로세스 이름은
 잘리므로 그 200자 중 앞자리를 봉투가 먹는다. 데몬이 저장할 때 벗길 것인가 앱이 그릴 때 벗길 것인가는
 설계 결정이 필요하고 T48-3(맥 지원) 범위가 아니라 "남은 것" 으로 넘겼다.
 
-### 12. M4 함정 ⑤ — codex 0.159 는 프롬프트가 제출되지 않는다 (tui-map 은 0.154 용)
+### 12. M4 함정 ⑤ — codex 0.159 에서는 지시가 제출되지 않는다 (원인 미확정, 맵 문제는 **아니다**)
 
 `codex` 를 설치하고(`npm i -g @openai/codex` → **0.159.0**) codex 부서를 만들었다. 부서 생성·출근·`idle`
 까지는 됐는데 첫 지시가 들어가지 않았다:
 
 ```
 task#1 → 부장
-[daemon:info] 부장: 프롬프트가 안 들어가 Enter 를 다시 보냄 (1)
-[daemon:info] 부장: 프롬프트가 안 들어가 Enter 를 다시 보냄 (2)
-[daemon:info] 부장: 프롬프트가 안 들어가 Enter 를 다시 보냄 (3)
-[daemon:info] 부장: 프롬프트가 안 들어가 Enter 를 다시 보냄 (4)
+[daemon:info] 부장: 프롬프트가 안 들어가 Enter 를 다시 보냄 (1)…(4)
 [daemon:warn] 부장: 지시가 입력 상자에 남아 제출되지 않았습니다 — 터미널 탭에서 Enter 를 쳐 주세요
 ```
 
-데몬이 사용량 쪽에서도 같은 말을 했다:
+사용량 쪽에서도 같은 말이 나왔다: `사용량 확인용 세션(codex): /status 화면이 뜨지 않았습니다 — CLI 문구가
+바뀌었을 수 있습니다`.
 
-```
-[office] 사용량 확인용 세션(codex): /status 화면이 뜨지 않았습니다 — CLI 문구가 바뀌었을 수 있습니다
-         (tui-maps/codex-*.json 의 usage 절)
-```
+**원인 확정을 위해 0.154.0 으로 내려 대조했더니 전부 됐다**(아래 검증) — 그래서 "버전 드리프트" 는 맞다.
+그런데 **어디가 드리프트인지는 처음 짚은 것이 틀렸다.** 되돌린 뒤 0.159 로 따로 재현해 보니:
 
-`attach` 로 화면을 뜨니 **0.159 의 시작 화면이 완전히 다른 것**이었다 — 스플래시 + ASCII 로고, 입력 상자는
-플레이스홀더(`›Ask Codex to do anything` = 우리가 넣은 글자가 들어가지 않았다), 바닥에 새 문구:
+| 시험한 것 | 결과 |
+|---|---|
+| 0.154 맵으로 0.159 화면의 `promptReady` / `busy` 판정 | **맞는다** — `› Ask Codex to do anything` 은 그대로이고 `promptReady()=true`, 작업 중에는 `• Working (2s • esc to interrupt)` 로 `busy=true` |
+| 평범한 타이핑 + Enter | **제출된다** |
+| 데몬과 같은 **괄호 붙여넣기**(`ESC[200~ … ESC[201~`) + Enter | **제출된다** (`◦ Working (3s …)`) |
 
-```
->_ OpenAI Codex (v0.159.0)
-~/…/dev/spike-0/sandbox
-Shall we make the thing that makes the other thing easier?
-  (ASCII 로고 16줄)
-›Ask Codex to do anything
-GPT-5.6-Sol medium · ~/…/sandbox
-?forshortcuts⚠4 warnings·f2toview
-```
+즉 **화면 패턴도, 붙여넣기 방식도 문제가 아니다.** 처음에 `attach` 출력에서 본
+`›Ask Codex to do anything`(공백 없음)·`?forshortcuts` 는 **콘솔 클라이언트의 렌더링 아티팩트**였고 실제
+화면은 `› Ask Codex to do anything`·`← for agents · ? for shortcuts` 다. 그걸 근거로 "시작 화면이 통째로
+달라 패턴이 안 맞는다" 고 적었던 것은 취소한다.
 
-`tui-maps` 에는 `codex-0.154.json` 만 있고 **로더는 내장 버전 상수를 쓴다**(`BUILTIN_VERSION`, 설치된 CLI
-버전을 읽지 않는다). 즉 0.159 의 화면을 0.154 패턴으로 읽으려다 준비 상태를 잘못 판단한 것이다.
+남은 차이는 **데몬이 세션을 세우는 방식**뿐이다 — spawn 인자(`--dangerously-bypass-hook-trust`,
+`-c approval_policy="on-request"`, `-c sandbox_mode="workspace-write"`, `-c mcp_servers.team.url=…`)와
+cwd 에 놓이는 `.codex/hooks.json`(8종 hook). 특히 `UserPromptSubmit` hook 이 제출 경로에 끼어 있으므로
+0.159 가 hook 을 다르게 다루면 지금 증상(글자는 들어갔고 제출만 안 된다)이 그대로 나온다. **거기까지는
+좁혔고 확정은 못 했다** — 한 단계씩 인자를 붙여 가며 재현하는 일이 남았다.
 
-**플랫폼이 아니라 CLI 버전 문제다.** 그래서 T48-3(맥 지원)이 봐야 하는 것 — 맥 분기 — 을 깨끗하게 보려고
-**프로젝트가 맞춰 둔 0.154.0 으로 내려서** 다시 돌렸다(`npm i -g @openai/codex@0.154.0`). 그러니 전부 됐다
-(아래 검증). 대조가 성립하므로 원인이 확정된다.
-
-0.159 지원(새 `tui-maps/codex-0.159.json` + 로더가 설치 버전을 읽게 하기)은 T48-3 범위가 아니다 →
-"남은 것". claude 쪽에서도 같은 성질의 드리프트를 만났다(2.1.270 → 2.1.284, 함정 11) — **tui-map 이 고정
-버전에 묶여 있는 구조 자체가 다음 과제로 보인다.**
+이건 T48-3(맥 지원) 범위가 아니다(플랫폼 무관, 윈도우에서도 같을 것이다) → "남은 것".
 
 ## 검증
 
@@ -850,11 +841,13 @@ dev/app/tool/capture-window.sh -o docs/worklog/img/T48-3-office.png
 | 엔진 | 프로젝트가 맞춘 버전 | 이 맥에 설치된 것 | 증상 |
 |---|---|---|---|
 | claude | 2.1(D-24 는 2.1.270) | 2.1.284 | 긴 주입 텍스트에 `<pasted_content>` 봉투 — 통합 테스트 필터가 깨졌고(고침) 사용자 로그에도 찍힌다(위) |
-| codex | 0.154 | 0.159.0 | **시작 화면이 통째로 다름** — 프롬프트가 제출되지 않고 `/status` 도 못 읽는다. 원인 확정을 위해 0.154.0 으로 내려 대조한 뒤 최신으로 되돌렸다 |
+| codex | 0.154 | 0.159.0 | **지시가 제출되지 않는다** — 단 화면 패턴·붙여넣기는 0.159 에서도 정상이다(함정 ⑤ 표). 원인은 데몬의 세션 설정(spawn 인자·hooks)쪽으로 좁혔고 **미확정** |
 
-할 일은 둘이다 — ① **로더가 설치된 CLI 버전을 읽게** 하고 `tui-maps/codex-0.159.json` 을 새로 뜨는 것(맵을
-추가하는 것보다 **버전을 따라가는 구조**가 본질이다 — 안 그러면 다음 릴리스에 또 깨진다), ② claude 2.1.284 의
-봉투를 어디서 벗길지 정하는 것(위 항목). 둘 다 윈도우에서 해도 된다.
+할 일은 셋이다. ① **codex 0.159 의 제출 실패 원인을 끝까지 좁히기** — 맵이 아니라는 것까지는 확인했으니
+(함정 ⑤) spawn 인자와 `.codex/hooks.json` 을 하나씩 붙여 가며 재현하는 일이 남았다. ② claude 2.1.284 의
+`<pasted_content>` 봉투를 어디서 벗길지 정하기(위 항목). ③ **로더가 설치된 CLI 버전을 읽게** 하기 — ①이
+맵 문제가 아니었으니 급한 수정은 아니지만, 두 엔진 다 버전이 앞서 나가 있는 상태 자체가 위험 신호다
+(내장 상수는 claude 2.1 · codex 0.154, 설치된 것은 2.1.284 · 0.159.0). 셋 다 윈도우에서 해도 된다.
 
 **이 맥에는 최신 codex(0.159.0)가 깔려 있다** — 확인이 끝난 뒤 되돌렸다. 즉 **지금 이 저장소로 코덱스
 멤버를 띄우면 지시가 들어가지 않는다.** 쓰려면 `npm i -g @openai/codex@0.154.0` 으로 내려야 하는데, 그게
