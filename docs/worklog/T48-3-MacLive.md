@@ -7,7 +7,7 @@
   `7a7ace4`(창 캡처 도구) `be1fc21`(통합 테스트 필터) + 이 문서 + 04 의 D-49
 - 브랜치: `T48-3` (아직 푸시하지 않았다)
 - 실기 환경: **macOS 26.6.2 (25G83) · arm64** / Node v24.18.0 · npm 11.16.0 / Flutter 3.44.7 · Dart 3.12.2 /
-  CocoaPods 1.17.0 / **Xcode 27.0** / claude 2.1.284
+  CocoaPods 1.17.0 / **Xcode 27.0** / claude 2.1.284 / codex 0.154.0 (0.159.0 → 내림, 아래 M4 함정)
 - 저장소 위치: `~/Desktop/포트폴리오/pixel-office-dev` (경로에 **한글**이 들어 있다 — M7 함정 ②)
 
 ## 목표
@@ -21,10 +21,10 @@ T48-1·T48-2 가 윈도우에서 "플랫폼을 주입해" 고정해 둔 맥 분�
 |---|---|---|
 | M1 | 데몬 `npm install` → `tsc --noEmit` → `npm test` | **통과** — 874건 + 스킵된 MixedTeam 10건 = 윈도우의 884 (함정 ①~⑤ 를 고친 뒤) |
 | M2 | `npm start` 로그의 실행 파일 탐색 | **통과** — `claude : /Users/hjkim/.nvm/versions/node/v24.18.0/bin/claude`(실제 파일), 데이터 폴더 `~/Library/Application Support/pixel-office` |
-| M3 | `dept create` → 첫 실행 신뢰 다이얼로그 → idle | **통과** — `passed first-run dialog (trust-folder-claude / onboarding-enter)` → `idle`. darwin 전용 tui-map 불필요 |
-| M4 | `say 부장` 한 턴 → 이벤트 표 · `report` | **통과** — thinking → ToolSearch → create_team → delegate → 팀장 thinking → text → idle, 보고 승격까지 |
-| M5 | 쓰기 명령 허가 → 콘솔 `allow` | **통과** — 유닉스 리다이렉션(`printf … > mac-live.txt`)이 허가 카드로 뜨고, 승인 후 실행·파일 생성(한글 내용 그대로) |
-| M6 | `PIXEL_IT=1` 통합 테스트 4종 | **통과** — pty · office · askuser · teamtools 전부. 단 **파일 하나씩** 돌려야 하고(함정), teamtools 는 CLI 버전 변화 때문에 필터를 고쳐야 했다(함정) |
+| M3 | `dept create` → 첫 실행 신뢰 다이얼로그 → idle | **통과(claude·codex)** — claude 는 `passed first-run dialog (trust-folder-claude / onboarding-enter)` → `idle`, codex 는 `부장 [codex] starting` → `idle`. darwin 전용 tui-map 불필요 |
+| M4 | `say 부장` 한 턴 → 이벤트 표 · `report` | **통과(claude·codex)** — 둘 다 thinking → create_team → delegate → 팀장 thinking → text → idle. codex 는 `reading`·`editing` 같은 전용 이벤트 종류까지 맞다. 단 **codex 0.159 로는 안 된다**(아래 함정 ⑤) |
+| M5 | 쓰기 명령 허가 → 콘솔 `allow` | **통과(claude·codex)** — claude 는 유닉스 리다이렉션(`printf … > mac-live.txt`), codex 는 **작업 폴더 밖** `apply_patch`. 둘 다 승인 후 실행·파일 생성(한글 그대로) |
+| M6 | `PIXEL_IT=1` 통합 테스트 | **통과 5종** — pty · office · askuser · teamtools · **codex**. 단 **파일 하나씩** 돌려야 하고(함정), teamtools 는 CLI 버전 변화 때문에 필터를 고쳐야 했다(함정) |
 | M7 | 앱 `pub get`·`analyze`·`test`·`build macos --release` | **통과** — 720 통과·2 스킵, `✓ Built pixel_office.app (36.0MB)`. 툴체인 함정 둘을 고쳐야 했다(③④) |
 | M8 | Finder 더블클릭(데몬 없이) | **통과** — 앱이 **nvm 의 node 를 절대 경로로** 찾아 데몬을 띄웠다. `daemon.log`·`app.lock` 이 데이터 폴더에, ws ESTABLISHED, 창 1280×752 |
 | M9 | 부서 만들기 → 폴더 선택 대화상자 | **못 함** — 앱 제어 권한이 없다(GUI 클릭 필요). 엔타이틀먼트는 바이너리에서 확인 |
@@ -32,7 +32,7 @@ T48-1·T48-2 가 윈도우에서 "플랫폼을 주입해" 고정해 둔 맥 분�
 | M11 | 앱 다시 켜기 → 조직 그대로 출근(말없이) | **통과** — `recover 부장: --resume <id>, assigned 1` / `실기팀장: …, 말없이` → `복구: 2명 재개, 0건 만료, 말없이 1명` |
 | M12 | 일하는 중 `kill -9 <데몬 pid>` → 자동 재시작·복구 | **통과** — 2초 안에 새 데몬, **유령 정리가 맥에서 동작**(옛 CLI 3개 종료), 앱은 살아 있고 ws 재연결 |
 | M13 | 앱 `kill -9` → 데몬이 부모 사라짐 감지 → 정리 | **통과** — 5초 안에 `부모 앱이 사라졌다 (pid …)` → `세션 3개 닫음, 2명 잠시 닫힘` → `bye`, CLI 전부 종료 |
-| M14 | 사용량 칩·팝오버·터미널 하단 상태 줄 | **부분** — 데몬 쪽 사용량은 전부 들어온다(주간 94% / 5시간 55% / 모델 Fable 93% / 멤버별 컨텍스트·토큰·비용). `/usage`·`/status` 화면 줄바꿈 차이 없음 → darwin 패턴 불필요. 앱 칩·팝오버는 GUI |
+| M14 | 사용량 칩·팝오버·터미널 하단 상태 줄 | **부분** — 데몬 쪽은 **두 엔진 다** 들어온다: `claude 연결됨(max) 주간 94% / 5시간 55% / 모델 Fable 93%`, `codex 연결됨(pro) 주간 59%`, 멤버별 컨텍스트·토큰. `/usage`·`/status` 줄바꿈 차이 없음 → darwin 패턴 불필요. 앱 칩·팝오버는 GUI |
 | M15 | 단축키 `Cmd+K/L/T/I/R`, `Cmd+Shift+Y/N` | **못 함** — GUI 입력 필요 |
 | M16 | 픽셀 서체·스프라이트가 레티나에서 흐리지 않음 | **못 함** — 눈으로 봐야 한다. 창 크기만 확인(`setContentSize(1280×720)` → 관측 1280×752 = 콘텐츠 720 + 타이틀바 32) |
 | M17 | 창 캡처 스크립트로 증거 저장 | **부분** — `tool/capture-window.sh` 를 만들고 창 id 조회까지 확인(id=2753). `screencapture` 호출은 화면 기록 권한 프롬프트가 떠 실행하지 않았다 |
@@ -291,6 +291,51 @@ Info.plist `CFBundleDisplayName`)이고 System Events 의 프로세스 이름은
 `#17 thinking 부장 ⏎ ⏎ <pasted_content id="8321"> ⏎ [REPORTS task#2 …` 로 관측). `thinking.text` 는 200자로
 잘리므로 그 200자 중 앞자리를 봉투가 먹는다. 데몬이 저장할 때 벗길 것인가 앱이 그릴 때 벗길 것인가는
 설계 결정이 필요하고 T48-3(맥 지원) 범위가 아니라 "남은 것" 으로 넘겼다.
+
+### 12. M4 함정 ⑤ — codex 0.159 는 프롬프트가 제출되지 않는다 (tui-map 은 0.154 용)
+
+`codex` 를 설치하고(`npm i -g @openai/codex` → **0.159.0**) codex 부서를 만들었다. 부서 생성·출근·`idle`
+까지는 됐는데 첫 지시가 들어가지 않았다:
+
+```
+task#1 → 부장
+[daemon:info] 부장: 프롬프트가 안 들어가 Enter 를 다시 보냄 (1)
+[daemon:info] 부장: 프롬프트가 안 들어가 Enter 를 다시 보냄 (2)
+[daemon:info] 부장: 프롬프트가 안 들어가 Enter 를 다시 보냄 (3)
+[daemon:info] 부장: 프롬프트가 안 들어가 Enter 를 다시 보냄 (4)
+[daemon:warn] 부장: 지시가 입력 상자에 남아 제출되지 않았습니다 — 터미널 탭에서 Enter 를 쳐 주세요
+```
+
+데몬이 사용량 쪽에서도 같은 말을 했다:
+
+```
+[office] 사용량 확인용 세션(codex): /status 화면이 뜨지 않았습니다 — CLI 문구가 바뀌었을 수 있습니다
+         (tui-maps/codex-*.json 의 usage 절)
+```
+
+`attach` 로 화면을 뜨니 **0.159 의 시작 화면이 완전히 다른 것**이었다 — 스플래시 + ASCII 로고, 입력 상자는
+플레이스홀더(`›Ask Codex to do anything` = 우리가 넣은 글자가 들어가지 않았다), 바닥에 새 문구:
+
+```
+>_ OpenAI Codex (v0.159.0)
+~/…/dev/spike-0/sandbox
+Shall we make the thing that makes the other thing easier?
+  (ASCII 로고 16줄)
+›Ask Codex to do anything
+GPT-5.6-Sol medium · ~/…/sandbox
+?forshortcuts⚠4 warnings·f2toview
+```
+
+`tui-maps` 에는 `codex-0.154.json` 만 있고 **로더는 내장 버전 상수를 쓴다**(`BUILTIN_VERSION`, 설치된 CLI
+버전을 읽지 않는다). 즉 0.159 의 화면을 0.154 패턴으로 읽으려다 준비 상태를 잘못 판단한 것이다.
+
+**플랫폼이 아니라 CLI 버전 문제다.** 그래서 T48-3(맥 지원)이 봐야 하는 것 — 맥 분기 — 을 깨끗하게 보려고
+**프로젝트가 맞춰 둔 0.154.0 으로 내려서** 다시 돌렸다(`npm i -g @openai/codex@0.154.0`). 그러니 전부 됐다
+(아래 검증). 대조가 성립하므로 원인이 확정된다.
+
+0.159 지원(새 `tui-maps/codex-0.159.json` + 로더가 설치 버전을 읽게 하기)은 T48-3 범위가 아니다 →
+"남은 것". claude 쪽에서도 같은 성질의 드리프트를 만났다(2.1.270 → 2.1.284, 함정 11) — **tui-map 이 고정
+버전에 묶여 있는 구조 자체가 다음 과제로 보인다.**
 
 ## 검증
 
@@ -607,6 +652,85 @@ office-teamtools.integration → exit=0  pass 1  fail 0     (hire → delegate �
 
 teamtools 는 처음에 실패했고 원인이 플랫폼이 아니라 CLI 버전이었다 — 위 "한 것" 11 번.
 
+### M3~M6 · M14 (codex 0.154) — 코덱스 갈래
+
+실행 파일 탐색이 **설계 표 그대로** 동작했다 — PATH 의 `bin/codex` 는 `bin/codex.js`(노드 shim)를 가리키는
+심볼릭 링크인데, 그걸 건너뛰고 vendor 안의 네이티브 바이너리를 찾는다:
+
+```
+$ ls -l $(which codex)
+… bin/codex -> ../lib/node_modules/@openai/codex/bin/codex.js        ← shim
+$ (데몬의 resolveCodexExe)
+/Users/hjkim/.nvm/…/lib/node_modules/@openai/codex/node_modules/@openai/codex-darwin-arm64/vendor/aarch64-apple-darwin/bin/codex
+$ npm start
+[daemon] codex     : …/codex-darwin-arm64/vendor/aarch64-apple-darwin/bin/codex
+```
+
+M3·M4 — 부서 생성 → 출근 → 지시 한 턴:
+
+```
+부서 생성: d_3f0b6856df26  코덱스테스트  …/dev/spike-0/sandbox  head=m_0d9705c49eb3
+부장: m_0d9705c49eb3  부장 [codex] starting …
+status 부장 → idle (free)
+task#1 → 부장
+#1 thinking 부장 [TASK#1 from user] ⏎ sandbox 폴더에 codex-live.txt 를 만들고 …
+#2 running 부장 mcp__team__create_team
+status 파일팀장 → idle (free)
+#3 running 부장 mcp__team__delegate
+#4 delegating 부장 delegate — 작업 폴더 루트에 codex-live.txt 파일을 만들고 …  task#2
+#5 thinking 파일팀장 [TASK#2 from 부장(부장)] ⏎ …
+#6 text 부장 파일 생성 작업을 팀장에게 위임했습니다. 완료 보고를 기다리고 있습니다.
+#7 idle 부장
+$ cat dev/spike-0/sandbox/codex-live.txt
+코덱스 실기 T48-3                                  ← 한글 그대로
+```
+
+주입 텍스트에 `<pasted_content>` 봉투가 **붙지 않았다** — 그건 claude 쪽 동작이다(함정 11).
+
+M5 — **작업 폴더 안 쓰기는 허가를 묻지 않는다.** `codex-live.txt` 는 카드 없이 만들어졌다(`pending` 0건).
+`.codex/hooks.json` 에는 `PreToolUse`·`PermissionRequest` 까지 8종이 다 등록돼 있으므로 데몬 쪽 준비는
+돼 있고, codex 가 신뢰된 작업 폴더 안의 쓰기를 스스로 허용한 것이다(02 §② · D-27 과 같은 성질).
+허가 경로를 실제로 타게 하려고 **폴더 밖** 쓰기를 시켰더니 카드가 떴다:
+
+```
+#24 reading 부장 Bash ls -ld /private/tmp/…/scratchpad          ← codex 전용 이벤트 종류
+#25 editing 부장 apply_patch /private/tmp/…/codex-outside.txt
+#26 waiting_approval 부장 apply_patch …  approval=a_0a785e34a37d
+$ allow a_0a785e34a37d
+→ 파일 생성됨, 내용 "밖"
+```
+
+`reading`·`editing` 은 codex 명령 휴리스틱(`codexMapping.ts`)이 붙이는 종류다 — 맥에서 그대로 맞았다.
+
+M14 — 두 엔진 사용량이 같이 들어온다. 0.154 에서는 `/status` 경고가 **나지 않는다**:
+
+```
+claude  연결됨(max)  주간 92% 남음  5시간 41% 남음  측정 …(probe)
+    모델 Fable 93% 남음
+codex   연결됨(pro)  주간 59% 남음 (리셋 2026-10-05T12:13:26.000Z)  5시간 -  측정 …(turn)
+  부장 [codex]    컨텍스트 10% (26k/258k)  토큰 342k  -
+  파일팀장 [codex]  컨텍스트 10% (26k/258k)  토큰 186k  -
+```
+
+(codex 는 5시간 한도와 비용을 보고하지 않아 `-` 다.)
+
+M6 — `codex.integration.test.ts`:
+
+```
+$ PIXEL_IT=1 node --import tsx --test --test-concurrency=1 test/office/codex.integration.test.ts
+[IT] allow → a_787537ecbc61 (9700ms)
+[IT] turn ended (12204ms): ["완료했습니다."]
+[IT] …/dev/spike-0/t20.txt = "t20\n"
+[IT] reporting #6 task#1 {"summary":"완료했습니다."}
+[IT] session_id after first turn = 01a0ec5b-d68c-7672-be19-eae5fdf3c71e
+[IT] clockOut done (15903ms); codex pid 85758 alive=false
+[IT] daemon exited=true code=0 (16738ms)
+ℹ pass 1   ℹ fail 0
+```
+
+**혼합 팀(claude 부장 + codex 팀원)은 실기로 보지 않았다** — 대본에 없고, 두 엔진을 따로 끝까지 봤다.
+단위 테스트 `MixedTeam` 은 픽스처가 없어 스킵된다(함정 ⑤).
+
 ## 발견한 함정
 
 M1 ①~⑤, M7 ①③④ 와 M2 의 문구는 위 "한 것" 에 있다. 저장소가 고칠 것이 없는 환경·도구 함정을 여기 적는다.
@@ -719,12 +843,23 @@ dev/app/tool/capture-window.sh -o docs/worklog/img/T48-3-office.png
 깨끗해진다) 앱이 그릴 때 벗길지(원문은 보존된다)는 결정이 필요하고, 저장 데이터가 바뀌면 04 에 D-## 로
 적어야 한다. 테스트 쪽은 `unwrapPasted()` 로 막아 뒀으니 급하지는 않다.
 
-**선택 — Codex 갈래.** `codex` 가 없어 M4~M6 의 Codex 쪽은 못 봤다. 보려면 설치·로그인해야 한다.
-지금은 `resolveCodexExe()` 가 못 찾아도 `'codex'` 를 그대로 돌려준다 — `claude` 쪽처럼 "못 찾았다" 를
-말하지 않아 실패가 spawn 시점까지 미뤄진다. 윈도우도 같은 동작이라 맥 회귀는 아니지만 적어 둔다
-(사용량 표시는 `codex 연결 안 됨(설치 안 됨)` 으로 제대로 말한다).
+**tui-map 이 고정 버전에 묶여 있다** (T48-3 범위 밖, 플랫폼 무관, 다음 과제 후보). 화면 패턴 로더는
+설치된 CLI 버전을 읽지 않고 내장 상수(`BUILTIN_VERSION`)를 쓴다. 이번 실기에서 **두 엔진 다** 그 드리프트에
+걸렸다:
 
-**남긴 상태.** `dev/spike-0/sandbox/`(gitignore 대상)에 실기 산출물 `mac-live.txt`·`hello35.txt` 와
-`README.txt` 가 있고, `~/Library/Application Support/pixel-office/` 에 실기로 만든 부서 `맥테스트`
-(부장 + 실기팀장)가 DB 에 남아 있다. 앱을 다시 열면 그 조직이 복귀한다(M11 이 그걸 본 것이다).
-지우려면 앱에서 부서를 삭제하거나 데이터 폴더를 비우면 된다.
+| 엔진 | 프로젝트가 맞춘 버전 | 이 맥에 설치된 것 | 증상 |
+|---|---|---|---|
+| claude | 2.1(D-24 는 2.1.270) | 2.1.284 | 긴 주입 텍스트에 `<pasted_content>` 봉투 — 통합 테스트 필터가 깨졌고(고침) 사용자 로그에도 찍힌다(위) |
+| codex | 0.154 | 0.159.0 | **시작 화면이 통째로 다름** — 프롬프트가 제출되지 않고 `/status` 도 못 읽는다. 0.154.0 으로 내려서 확인했다 |
+
+할 일은 둘이다 — ① `tui-maps/codex-0.159.json` 을 새로 뜨고(그때 로더가 **설치된 버전**을 읽게 바꾸는 것이
+근본 수정이다), ② claude 2.1.284 의 봉투를 어디서 벗길지 정하는 것(위 항목). 둘 다 윈도우에서 해도 된다.
+
+**이 맥의 codex 는 0.154.0 으로 내려 둔 상태다.** 위 ①을 하기 전까지는 그게 이 프로젝트가 쓸 수 있는
+버전이다. 다른 데서 최신 codex 가 필요하면 `npm i -g @openai/codex` 로 되돌리면 된다(이 저장소에서는 그러면
+지시가 안 들어간다).
+
+**남긴 상태.** 없다 — 사용자 요청으로 실기 데이터를 전부 지웠다. `~/Library/Application Support/pixel-office/`
+는 비어 있고(부서 `맥테스트`·`코덱스테스트` 와 멤버 전부 포함), `dev/spike-0/sandbox/` 에는 `README.txt` 만
+남겼다(통합 테스트가 그 경로를 신뢰된 작업 폴더로 쓴다). 앱 빌드 산출물
+(`dev/app/build/macos/…/pixel_office.app`, 34M)은 M9·M15·M16 을 하려면 필요해서 그대로 뒀다.
