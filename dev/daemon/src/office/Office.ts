@@ -204,7 +204,7 @@ export interface OfficeOptions {
   recovery?: {
     /** `--resume` 실패 판정 창(ms). 기본 RESUME_FALLBACK_WINDOW_MS. */
     fallbackWindowMs?: number;
-    /** 유령 자식(child_pid) 확인·종료 연산. 기본 defaultOrphanOps(tasklist/taskkill). */
+    /** 유령 자식(child_pid) 확인·종료 연산. 기본 defaultOrphanOps(`platform.ts` — 윈도우 tasklist/taskkill, 유닉스 ps/kill). */
     orphanOps?: OrphanOps;
     /** 한꺼번에 띄우는 CLI 수 상한(T46-1). 기본 RECOVER_MAX_IN_FLIGHT(3). */
     maxInFlight?: number;
