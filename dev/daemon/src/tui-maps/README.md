@@ -4,10 +4,10 @@
 
 ## 파일 이름 규칙
 
-`<engine>-<major.minor>[-<platform>].json` — 예: `claude-2.1.json`, `codex-0.154.json`, (필요할 때) `claude-2.1-darwin.json`.
+`<engine>-<major.minor>[-<platform>].json` — 예: `claude-2.1.json`, `codex-0.154.json`, `codex-0.159.json`, (필요할 때) `claude-2.1-darwin.json`.
 
 - `engine` 은 `src/pty/types.ts` 의 `Engine`(`claude` | `codex`)과 같아야 한다(파일 안의 `"engine"` 필드도 동일).
-- 파일 이름의 버전은 major.minor 까지만. 안의 `"version"` 필드에는 실측한 정확한 버전(`2.1.270`, `0.154.0`)을 적는다.
+- 파일 이름의 버전은 major.minor 까지만. 안의 `"version"` 필드에는 실측한 정확한 버전(`2.1.270`, `0.154.0`, `0.159.0`)을 적는다 — 파일 이름과 이 필드가 어긋나면 테스트가 깨진다.
 - 패치 버전 안에서 문구가 바뀌면 같은 파일을 고치고 `version` 과 `source` 를 갱신한다. major.minor 가 바뀌어 화면이 달라지면 새 파일을 만든다(아래 "버전 추가").
 
 ### 플랫폼 접미사 (T48-1 · D-48 ⑦)
@@ -24,17 +24,39 @@ claude-2.1-darwin.json   →   claude-2.1.json
 
 ## ScreenModel 이 맵을 고르는 방법
 
-`src/screen/tuiMap.ts` 의 `BUILTIN_FILES` 표가 **파일 이름 → JSON** 을 정적으로 import 한다(`with { type: 'json' }`), 그리고 `BUILTIN_VERSION` 이 엔진마다 쓸 버전을 정한다:
+`src/screen/tuiMap.ts` 의 `BUILTIN_FILES` 표가 **파일 이름 → JSON** 을 정적으로 import 한다(`with { type: 'json' }`):
 
 ```ts
-export const BUILTIN_VERSION: Record<Engine, string> = { claude: '2.1', codex: '0.154' };
 export const BUILTIN_FILES: Record<string, TuiMapJson> = {
   'claude-2.1.json': claude21,
   'codex-0.154.json': codex0154,
+  'codex-0.159.json': codex0159,
 };
+/** 설치된 CLI 버전을 **못 읽었을 때만** 쓰는 폴백. 값은 우리가 가진 가장 새 맵이다. */
+export const FALLBACK_VERSION: Record<Engine, string> = { claude: '2.1', codex: '0.159' };
 ```
 
-`new ScreenModel({ engine })` 은 `loadTuiMap(engine)`(= `loadTuiMap(engine, process.platform)`) 으로 엔진·플랫폼당 하나를 컴파일해 캐시한다. 어떤 파일을 쓸지는 `resolveTuiMapFile()` 이 위의 접미사 규칙으로 고른다. 즉 **엔진당 활성 맵은 (플랫폼마다) 한 개**이고, 어떤 버전을 쓸지는 `BUILTIN_VERSION` 이 정한다. CLI 버전을 자동 감지하지는 않는다 — 데몬이 쓰는 CLI 버전(`docs/02-실측-체크리스트.md`)과 맵을 사람이 맞춘다.
+**어떤 버전의 맵을 쓸지는 설치된 CLI 에게 물어서 정한다**(T49 · D-49). 데몬은 기동 때 `detectAndApplyCliVersions()`
+(`src/screen/cliVersion.ts`)로 `<exe> --version` 을 한 번 돌려 `major.minor` 를 뽑고 `setInstalledCliVersion()` 으로
+로더에 넣는다. 그 뒤 `chooseMapVersion(engine)` 이 이렇게 고른다:
+
+| 설치된 CLI | 고르는 맵 | 기동 로그 |
+|---|---|---|
+| 맵이 있는 버전(`0.159`) | 그 맵 | `codex codex-cli 0.159.0 → tui-map 0.159` |
+| 맵보다 **새** 버전(`0.170`) | 낮은 중 가장 높은 맵(`0.159`) | `⚠ … 맞는 tui-map 이 없어 0.159 맵을 씁니다` |
+| 맵 **사이**의 버전(`0.156`) | 아래로 내려 잡은 맵(`0.154`) | 위와 같은 경고 |
+| 모든 맵보다 낮은 버전 | 가장 낮은 맵 | 위와 같은 경고 |
+| 버전을 못 읽음 | `FALLBACK_VERSION` | `⚠ … 버전을 못 읽었습니다` |
+
+**이 경고 줄이 조기 경보다.** T49 는 바로 이것이 없어서 났다 — 상수가 `codex: '0.154'` 를 가리키는 동안 이 맥에는
+0.159 가 깔려 있었고, 0.159 에서 바뀐 신뢰 모달을 못 읽어 지시가 증발했다. 경고가 보이면 맵을 하나 더 뜰 때다.
+
+`new ScreenModel({ engine })` 은 `loadTuiMap(engine)`(= `loadTuiMap(engine, process.platform)`) 으로 엔진·플랫폼·맵
+버전당 하나를 컴파일해 캐시한다(`setInstalledCliVersion()` 이 버전을 바꾸면 그 엔진 캐시는 비워진다). 어떤 **파일**을
+쓸지는 `resolveTuiMapFile()` 이 위의 접미사 규칙으로 고른다.
+
+> 주의: `ScreenModel` 은 만들 때 맵을 컴파일한다 → 버전 감지는 **화면을 보는 것이 하나라도 생기기 전에** 끝나야
+> 한다. `src/index.ts` 에서 `office.usage.start()`·`office.usageProbe.start()` 보다 위에 있는 이유다.
 
 테스트나 실험에서는 `new ScreenModel({ engine, tuiMap })` 으로 JSON(또는 `compileTuiMap` 결과)을 직접 주입할 수 있다.
 
@@ -42,7 +64,8 @@ export const BUILTIN_FILES: Record<string, TuiMapJson> = {
 
 1. `src/tui-maps/<engine>-<major.minor>.json` 을 기존 파일을 복사해 만든다.
 2. 실측 픽스처를 뜬다(아래 "픽스처 다시 뜨기") → 바뀐 문구를 맵에 반영하고 `verified`/`source` 를 채운다.
-3. `tuiMap.ts` 의 import 를 더하고 `BUILTIN_FILES` 에 **파일 이름 키**로 등록한 뒤 `BUILTIN_VERSION` 을 새 버전으로 바꾼다(옛 파일은 지우거나, 롤백용으로 두려면 남겨도 된다 — `BUILTIN_VERSION` 이 가리키지 않으면 로드되지 않는다). 플랫폼 전용 맵을 더할 때는 `BUILTIN_FILES` 에 한 줄만 더한다(`BUILTIN_VERSION` 은 그대로).
+3. `tuiMap.ts` 의 import 를 더하고 `BUILTIN_FILES` 에 **파일 이름 키**로 등록한다. 새 맵이 가장 새 버전이면 `FALLBACK_VERSION` 도 그 버전으로 올린다(테스트 `tuiMapPlatform.test.ts` 가 "폴백은 최신 맵" 을 지킨다). **옛 파일은 지우지 말고 남겨 둔다** — 그 버전 CLI 를 쓰는 사람에게는 근접 규칙이 그것을 골라 준다. 플랫폼 전용 맵을 더할 때는 `BUILTIN_FILES` 에 한 줄만 더한다(`FALLBACK_VERSION` 은 그대로).
+   - 픽스처는 **버전 폴더**에 둔다(`test/screen/fixtures/codex-0.159/…`). 테스트는 `screenFromMap('codex-0.159.json', …)` 로 **그 버전 맵을 집어** 읽는다 — `screenFrom()` 은 내장 맵(= 이 PC 에 깔린 CLI 가 고른 것)을 쓰므로 버전별 화면 검사에는 쓰면 안 된다.
 4. `npx tsx --test "test/screen/*.test.ts"` 로 화면별 판정을 확인한다. 로더는 잘못된 정규식·모르는 `kind`/키·`approval-prompt` 규칙 위반을 **로드 시점에 throw** 하므로 데몬 기동 시 바로 드러난다.
 
 ## 스키마 요약
@@ -122,9 +145,14 @@ npx tsx test/screen/tools/capture-codex.ts <cwd>
 # Claude: 신뢰된 cwd(기본 dev/spike-0/sandbox), --settings 없이 → hooks 없음 → 허가는 TUI 프롬프트
 npx tsx test/screen/tools/capture-claude.ts [cwd]
 #   env: PIXEL_CLAUDE_EXE, CLAUDE_CAPTURE_LOG
+# Codex 신뢰 모달: **신뢰 안 된 새 폴더**로 띄워야 뜬다(위 capture-codex.ts 로는 절대 안 잡힌다) → T49
+npx tsx test/screen/tools/capture-codex-trust.ts [cwd]
+#   인자를 비우면 새 임시 폴더를 만든다. 끝나면 그 폴더는 codex 신뢰 목록에 남는다(같은 폴더로 두 번 돌리면 모달이 안 뜬다).
+#   산출물: fixtures/codex-0.159/{trust-dialog,trust-dialog-second,ready,working,after-stop}.txt
+#           + test/fixtures/usage/screens/codex-0.159-status.txt(/status 는 스크롤백까지 담는다)
 ```
 
-- 산출물: `test/screen/fixtures/codex/*.txt`, `test/screen/fixtures/claude/*.txt`. 프레임 로그(화면이 바뀔 때마다 한 프레임 + `ready/busy/intr/dialog` 판정)는 기본 `test/screen/tools/.capture-*.log` — 커밋하지 말 것. 로그에서 원하는 프레임을 골라 픽스처로 옮겨도 된다(`--- FRAME … --- END ---` 블록).
+- 산출물: `test/screen/fixtures/codex/*.txt`, `test/screen/fixtures/claude/*.txt`, 버전별 폴더 `test/screen/fixtures/codex-0.159/*.txt`. 프레임 로그(화면이 바뀔 때마다 한 프레임 + `ready/busy/intr/dialog` 판정)는 기본 `test/screen/tools/.capture-*.log` — 커밋하지 말 것. 로그에서 원하는 프레임을 골라 픽스처로 옮겨도 된다(`--- FRAME … --- END ---` 블록).
 - 시나리오는 `capture-*.ts` 안에 있다(READY → 작업 중 → Ctrl+C 중단 → 승인 프롬프트 거부 → 종료). 새 화면이 필요하면 시나리오에 단계를 추가한다. 도구는 끝나면 반드시 자식 프로세스를 kill 하고, 승인 실험으로 생긴 파일을 지운다.
 - 픽스처를 갱신했으면 `screens.test.ts` 의 기대값(마지막 줄 문구 등)과 맵의 `source` 를 같이 갱신한다.
 - 한글이 섞인 줄은 2칸 문자라 120칸을 넘어 줄바꿈될 수 있다. 판정 함수는 내용 기준이라 무해하지만, 행 번호를 검사하는 테스트는 주의.

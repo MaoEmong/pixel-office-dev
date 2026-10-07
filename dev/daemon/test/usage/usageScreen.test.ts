@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { loadTuiMap, type TuiUsage } from '../../src/screen/tuiMap.js';
+import { BUILTIN_FILES, compileTuiMap, loadTuiMap, type TuiUsage } from '../../src/screen/tuiMap.js';
 import { countPanels, panelReady, parseUsageScreen } from '../../src/usage/parse/usageScreen.js';
 import { parseResetText } from '../../src/usage/parse/resetText.js';
 
@@ -19,11 +19,19 @@ const claudeUsage = (): TuiUsage => {
   assert.ok(u, 'claude tui-map 에 usage 절이 있어야 한다');
   return u;
 };
-const codexUsage = (): TuiUsage => {
-  const u = loadTuiMap('codex').usage;
-  assert.ok(u, 'codex tui-map 에 usage 절이 있어야 한다');
+/**
+ * 픽스처는 **찍힌 그 버전의 맵**으로 읽는다(T49). 내장 맵을 그냥 쓰면 이 PC 에 깔린 CLI 버전에 따라
+ * 고르는 맵이 달라져 테스트가 흔들리고, 0.159 에서 `Account:` 줄 모양이 바뀌었으므로 실제로 갈린다.
+ */
+const usageFromFile = (file: string): TuiUsage => {
+  const json = BUILTIN_FILES[file];
+  assert.ok(json, `${file} 이 내장 표에 없다`);
+  const u = compileTuiMap(json).usage;
+  assert.ok(u, `${file} 에 usage 절이 있어야 한다`);
   return u;
 };
+const codexUsage = (): TuiUsage => usageFromFile('codex-0.154.json');
+const codexUsage0159 = (): TuiUsage => usageFromFile('codex-0.159.json');
 
 /** 2026-09-21 07:20 KST = 리셋 표기(`Sep 23`·`28 Sep`)의 기준 시각. */
 const NOW = Date.parse('2026-09-20T22:20:00.000Z');
@@ -143,6 +151,41 @@ describe('parseUsageScreen — Codex /status (실측 화면)', () => {
 
   test('Codex 는 모델별 한도가 없다 — 언제나 빈 배열', () => {
     assert.deepEqual(parseUsageScreen(read('codex-full-03-status-after-turn.txt'), codexUsage(), NOW).models, []);
+  });
+});
+
+// T49 — 0.159 의 /status 는 괘선이 없어지고 `Account:` 줄이 `<이메일> (Pro)` → `Pro (More)` 로 바뀌었다(D-49 ④).
+describe('parseUsageScreen — Codex 0.159 /status (실측 화면)', () => {
+  /** 2026-09-29 기준(픽스처의 `resets 9:13 PM on 5 Oct` 을 읽는 기준 시각). */
+  const NOW_0159 = Date.parse('2026-09-29T12:49:00.000Z');
+  const screen = () => read('codex-0.159-status.txt');
+
+  test('주간 한도를 읽는다 — 괘선(│)이 없어도 같다', () => {
+    const got = parseUsageScreen(screen(), codexUsage0159(), NOW_0159);
+    assert.equal(got.ok, true);
+    assert.equal(got.weekly?.usedPercent, 45, '화면은 55% left');
+    assert.equal(got.session, null, 'Pro 계정에는 5h limit 줄이 없다');
+  });
+
+  test('요금제는 `Account: Pro (More)` 에서 "Pro" 다 — "More" 를 집지 않는다', () => {
+    assert.equal(parseUsageScreen(screen(), codexUsage0159(), NOW_0159).plan, 'Pro');
+  });
+
+  test('0.154 맵으로 0.159 화면을 읽으면 요금제가 "More" 로 잘못 잡힌다 — 맵을 버전별로 두는 이유', () => {
+    assert.equal(parseUsageScreen(screen(), codexUsage(), NOW_0159).plan, 'More');
+  });
+
+  test('요금제 줄에 이메일이 돌아오더라도 그것을 요금제로 쓰지 않는다(D-45 ②)', () => {
+    const text = screen().replace('Account:             Pro (More)', 'Account:             someone@example.com (Pro)');
+    const got = parseUsageScreen(text, codexUsage0159(), NOW_0159);
+    assert.equal(got.plan, null, '모양이 바뀌면 요금제는 비운다 — 이메일을 흘리는 것보다 낫다');
+    assert.ok(!JSON.stringify(got).includes('@'), JSON.stringify(got));
+  });
+
+  test('패널이 떴다고 보는 표지(`Weekly limit:`)는 0.159 에서도 그대로다', () => {
+    const u = codexUsage0159();
+    assert.equal(panelReady(screen(), u), true);
+    assert.equal(countPanels(screen(), u), 1);
   });
 });
 

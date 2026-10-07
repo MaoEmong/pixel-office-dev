@@ -2,7 +2,7 @@
 // promptReady / detectDialog / lastNonEmptyLine / busyIndicator / interrupted 를 화면별로 검사한다.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { screenFrom } from './helpers.js';
+import { screenFrom, screenFromMap } from './helpers.js';
 import { ScreenModel } from '../../src/screen/ScreenModel.js';
 
 // ---- Claude 온보딩·첫 실행 다이얼로그 (run3/run4/run5) ---------------------------------------
@@ -490,4 +490,85 @@ test('approval-prompt never yields suggested keys (InputQueue pass-through sends
     assert.ok(sm.approvalPrompt().denyKeys.length > 0);
     sm.dispose();
   }
+});
+
+// ---- Codex 0.159 (T49 실측 · D-49) -----------------------------------------------------------
+//
+// 이 다섯 개가 T49 의 회귀 테스트다. 증상은 "지시가 입력 상자에 들어가고 제출은 안 된다" 였고, 원인은 화면
+// **한 장**이었다: 0.159 의 신뢰 모달을 다이얼로그로 못 읽어 `promptReady()` 가 true 로 남았다. 데몬은 준비된
+// 줄 알고 모달 위에 지시를 붙여넣었고, 모달은 목록 선택기라 글자를 버렸으며 Enter 는 'Trust and continue' 를
+// 고르는 데 쓰였다 → 지시가 증발하고 재시도 Enter 는 빈 상자에 떨어졌다.
+
+test('codex 0.159: "Folder access / Trust this folder?" → trust-folder-codex, enter', async () => {
+  const sm = await screenFromMap('codex-0.159.json', 'codex-0.159/trust-dialog.txt');
+  assert.deepEqual(sm.detectDialog(), { kind: 'trust-folder-codex', suggestedKeys: ['enter'], highlightDriven: true });
+  assert.equal(sm.promptReady(), false, '모달이 떠 있으면 절대 준비됐다고 하지 않는다 — 이것이 T49 의 핵심');
+  assert.equal(sm.busyIndicator(), false);
+  assert.equal(sm.lastNonEmptyLine(), 'enter continue · esc quit');
+  sm.dispose();
+});
+
+test('codex 0.159: 2번 항목("Quit")이 강조되면 up+enter — esc 는 종료라 쓰지 않는다', async () => {
+  const sm = await screenFromMap('codex-0.159.json', 'codex-0.159/trust-dialog-second.txt');
+  const d = sm.detectDialog();
+  assert.deepEqual(d, { kind: 'trust-folder-codex', suggestedKeys: ['up', 'enter'], highlightDriven: true });
+  assert.ok(!d.suggestedKeys.includes('esc' as never), 'esc 를 보내면 codex 가 그냥 종료된다(푸터: esc quit)');
+  sm.dispose();
+});
+
+test('codex 0.159: 세션 선택기에서 온 변형("2. Back to Agent Command Center")도 같은 다이얼로그다', async () => {
+  const sm = await screenFromMap('codex-0.159.json', 'codex-0.159/trust-dialog.txt');
+  // 픽스처 10행이 `  2. Quit` 이다(9행은 `› 1. Trust and continue` — 건드리면 매칭 조건이 깨진다).
+  await sm.feed('\x1b[10;1H\x1b[2K  2. Back to Agent Command Center');
+  assert.match(sm.text(), /^ {2}2\. Back to Agent Command Center$/m, '치환이 10행에 들어갔는지');
+  assert.match(sm.text(), /^› 1\. Trust and continue\s*$/m, '1번 항목은 그대로 남아 있어야 한다');
+  assert.deepEqual(sm.detectDialog(), { kind: 'trust-folder-codex', suggestedKeys: ['enter'], highlightDriven: true });
+  assert.equal(sm.promptReady(), false);
+  sm.dispose();
+});
+
+// 1차 방어선(dialogs)과 2차(promptReady.noneOf) 둘 다 **모달의 구조**를 요구한다 — 멤버가 대화 중에
+// "Trust this folder?" 라고 쓰기만 해도 가짜 다이얼로그가 되면(Enter 가 나간다) 그게 더 큰 사고다.
+test('codex 0.159: 대화 본문에 같은 낱말이 떠도 신뢰 모달로 오해하지 않는다', async () => {
+  const sm = await screenFromMap('codex-0.159.json', 'codex-0.159/after-stop.txt');
+  await sm.feed('\r\n  모델이 이렇게 물어볼 수 있다: Trust this folder? 라고요.\r\n');
+  assert.equal(sm.detectDialog().kind, 'none', '머리글·문장·1번 항목이 다 있어야 모달이다');
+  assert.equal(sm.promptReady(), true, 'noneOf 도 문장 앞부분으로 좁혀 큐가 막히지 않는다');
+  sm.dispose();
+});
+
+test('codex 0.159: READY·작업 중·턴 종료 판정은 0.154 와 같다', async () => {
+  const ready = await screenFromMap('codex-0.159.json', 'codex-0.159/ready.txt');
+  assert.deepEqual(ready.detectDialog(), { kind: 'none', suggestedKeys: [], highlightDriven: false });
+  assert.equal(ready.promptReady(), true);
+  assert.equal(ready.busyIndicator(), false);
+
+  const working = await screenFromMap('codex-0.159.json', 'codex-0.159/working.txt');
+  assert.equal(working.busyIndicator(), true, "'• Working (0s • esc to interrupt)'");
+  assert.equal(working.promptReady(), false, '작업 중에도 입력 상자는 보인다 — busy 가 이긴다');
+
+  const done = await screenFromMap('codex-0.159.json', 'codex-0.159/after-stop.txt');
+  assert.equal(done.promptReady(), true);
+  assert.equal(done.busyIndicator(), false);
+  for (const sm of [ready, working, done]) sm.dispose();
+});
+
+test('codex 0.159: 새 `⚠ n warnings · f2 to view` 푸터를 마지막 줄로 내보내지 않는다', async () => {
+  // 0.154 의 skipLines 는 `^\s*\? for shortcuts\s*$` 로 줄 끝을 고정해 두었는데, 0.159 는 같은 줄에 경고를
+  // 붙인다 → 안 걸러지고 입력 상자 판정까지 어긋나 책상 모니터에 이 줄이 뜬다.
+  for (const f of ['codex-0.159/ready.txt', 'codex-0.159/working.txt', 'codex-0.159/after-stop.txt']) {
+    const sm = await screenFromMap('codex-0.159.json', f);
+    assert.doesNotMatch(sm.lastNonEmptyLine(), /\? for shortcuts|warnings · f2/, f);
+    sm.dispose();
+  }
+  const done = await screenFromMap('codex-0.159.json', 'codex-0.159/after-stop.txt');
+  assert.equal(done.lastNonEmptyLine(), 'Worked for 2s • 9:55 PM');
+  done.dispose();
+});
+
+test('codex 0.154 맵으로 0.159 화면을 보면 T49 가 그대로 재현된다 — 맵을 버전별로 두는 이유', async () => {
+  const sm = await screenFromMap('codex-0.154.json', 'codex-0.159/trust-dialog.txt');
+  assert.equal(sm.detectDialog().kind, 'none', '옛 맵은 새 신뢰 모달을 못 본다');
+  assert.equal(sm.promptReady(), true, '그래서 "준비됐다" 고 말한다 — 여기서 지시가 증발했다');
+  sm.dispose();
 });

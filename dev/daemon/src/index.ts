@@ -3,6 +3,8 @@
 // node:sqlite ExperimentalWarning 은 Store 모듈이 로드 시 거른다.
 import { installFileLog } from './log.js';
 import { config, resolveClaudeExeDetailed } from './config.js';
+import { detectAndApplyCliVersions } from './screen/cliVersion.js';
+import { chooseMapVersion } from './screen/tuiMap.js';
 import { Office } from './office/Office.js';
 import { host, installShutdownSignals } from './platform.js';
 import { bindOrRefuse, DaemonStartRefusedError } from './office/singleton.js';
@@ -58,6 +60,19 @@ if (!claude.found) {
   console.warn(`[daemon] 경로를 직접 주려면 PIXEL_CLAUDE_EXE=<${host.isWindows ? 'claude.exe' : 'claude'} 경로>`);
 }
 console.log(`[daemon] codex     : ${config.codexExe}`);
+// T49: 설치된 CLI 버전을 읽어 화면 패턴(tui-map)을 고른다. **화면을 보는 것이 생기기 전에** 해야 한다 —
+// ScreenModel 은 만들 때 맵을 컴파일해 캐시하므로, 아래 usage/probe 보다 먼저다(D-49).
+for (const found of detectAndApplyCliVersions()) {
+  const choice = chooseMapVersion(found.engine);
+  if (!found.version) {
+    console.warn(`[daemon] ${found.engine} 버전을 못 읽었습니다(${found.reason}) — 화면 패턴은 ${choice.version} 맵을 씁니다`);
+  } else if (choice.exact) {
+    console.log(`[daemon] ${found.engine} ${found.raw} → tui-map ${choice.version}`);
+  } else {
+    // 이 줄이 T49 의 조기 경보다 — 맵이 없는 새 CLI 를 쓰고 있다는 뜻이고, 화면 문구가 바뀌었으면 여기서부터 샌다.
+    console.warn(`[daemon] ${found.engine} ${found.raw} 에 맞는 tui-map 이 없어 ${choice.version} 맵을 씁니다 — 화면 문구가 바뀌었으면 dev/daemon/src/tui-maps/README.md 를 보고 맵을 더해 주세요`);
+  }
+}
 // T43: 엔진 연결 확인(claude auth status / codex login status)을 지금 한 번 하고 주기 타이머를 건다.
 // Office.start() 가 아니라 여기서 켠다 — Office 는 멤버 CLI 말고 다른 프로세스를 스스로 띄우지 않는다.
 office.usage.start();

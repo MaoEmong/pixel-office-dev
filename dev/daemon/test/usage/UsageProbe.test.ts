@@ -10,6 +10,7 @@ import { Store } from '../../src/store/Store.js';
 import { UsageTracker } from '../../src/usage/UsageTracker.js';
 import { backoffMs, probeCwd, PROBE_TIMING, UsageProbe, type ProbeSession } from '../../src/usage/UsageProbe.js';
 import type { Engine } from '../../src/store/types.js';
+import { clearInstalledCliVersions, setInstalledCliVersion } from '../../src/screen/tuiMap.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const screens = path.resolve(here, '../fixtures/usage/screens');
@@ -215,8 +216,12 @@ describe('UsageProbe — Codex(스크롤백)', () => {
   beforeEach(() => {
     h = harness({ connected: ['codex'] });
   });
+  // 확인용 세션은 **내장 맵**을 쓴다 → 어느 맵을 고르는지는 설치된 CLI 버전에 달렸다(T49). 그래서 버전을
+  // 테스트마다 고정한다. 안 고정하면 이 PC 에 깔린 codex 에 따라 결과가 갈린다.
+  afterEach(() => clearInstalledCliVersions());
 
-  test('패널이 뷰포트 위로 밀려도 스크롤백 전체에서 읽는다', async () => {
+  test('패널이 뷰포트 위로 밀려도 스크롤백 전체에서 읽는다 (0.154)', async () => {
+    setInstalledCliVersion('codex', '0.154.0');
     const s = await boot(h!, 0, CODEX_READY);
     assert.deepEqual(s.writes, ['/status']);
     // 패널을 흘린 뒤 40줄 넘게 더 흘려 뷰포트 밖으로 밀어낸다.
@@ -227,6 +232,22 @@ describe('UsageProbe — Codex(스크롤백)', () => {
     const u = h!.tracker.engineUsage('codex');
     assert.equal(u.weekly?.usedPercent, 12, '88% left → 12% used');
     assert.equal(u.plan, 'pro', '화면은 "Pro" 지만 tracker 가 소문자로 눕힌다');
+    assert.equal(u.source, 'probe');
+  });
+
+  // T49 회귀: 0.159 화면은 괘선이 없고 `Account:` 줄 모양이 다르다. 설치 버전이 0.159 면 0.159 맵이 골라져
+  // **같은 결과**가 나와야 한다 — 이 테스트가 로더의 버전 선택까지 한 줄로 묶어 준다.
+  test('0.159 화면도 같은 값으로 읽는다 — 로더가 0.159 맵을 고른다', async () => {
+    setInstalledCliVersion('codex', '0.159.0');
+    const s = await boot(h!, 0, CODEX_READY);
+    assert.deepEqual(s.writes, ['/status']);
+    s.feed(read('codex-0.159-status.txt').replace(/\n/g, '\r\n'));
+    s.feed('\r\n'.repeat(60) + CODEX_READY);
+    await h!.advance(1000, 2);
+
+    const u = h!.tracker.engineUsage('codex');
+    assert.equal(u.weekly?.usedPercent, 45, '55% left → 45% used');
+    assert.equal(u.plan, 'pro');
     assert.equal(u.source, 'probe');
   });
 });

@@ -1,0 +1,177 @@
+{
+  "engine": "codex",
+  "version": "0.159.0",
+  "source": "test/screen/fixtures/codex-0.159/*.txt (T49 실측 2026-09-29, macOS, 120x40, 캡처 도구 test/screen/tools/capture-codex-trust.ts)",
+  "notes": [
+    "0.154 맵을 뜬 것이고, 실측으로 **달라진 것만** 아래 셋이다(D-49).",
+    "① 신뢰 다이얼로그가 통째로 바뀌었다. 0.154 는 'Do you trust the contents of this directory?' + 'Yes, continue'/'No, quit' 였고, 0.159 는 'Folder access' 머리글 + 'Trust this folder? Codex can read, edit, and run files here…' + '1. Trust and continue'/'2. Quit'(세션 선택기에서 온 경우 '2. Back to Agent Command Center') + 푸터 'enter continue · esc quit' 다. **esc 는 종료**이므로 절대 보내지 않는다.",
+    "② 그 모달은 **READY 화면이 그려진 뒤 몇 초 늦게** 뜬다. 즉 `promptReady()` 가 한 번 true 가 된 다음에 모달이 올라온다 — 스폰 직후 한 번 보고 마는 판정으로는 못 잡는다(데몬은 폴링하므로 잡는다). 모달이 떠 있는 동안 붙여넣은 글자는 **버려지고**(목록 선택기다) Enter 는 '1. Trust and continue' 를 고르는 데 쓰인다 → 지시가 증발한다(T49 의 증상).",
+    "③ 하단에 `⚠ <n> warnings · f2 to view` 가 `? for shortcuts` 와 **같은 줄**에 붙는다. 0.154 의 `^\\s*\\? for shortcuts\\s*$`(줄 끝 고정)로는 안 걸러져 입력 상자 판정과 마지막 줄이 어긋난다 → skipLines 에서 고정을 풀고 경고·`tab to queue message` 를 더했다.",
+    "④ `/status` 의 `Account:` 줄이 `<이메일> (Pro)` 에서 `Pro (More)` 로 바뀌었다. 0.154 패턴을 그대로 쓰면 plan 이 'More' 로 잡힌다 → 요금제 패턴을 고쳤다. 한도 블록(`Weekly limit:`)은 괘선만 없어졌고 모양은 같다.",
+    "⑤ promptReady.noneOf 에 신뢰 모달 문구를 **일부러 겹쳐 넣었다**. dialogs 매칭이 미래 버전에서 또 어긋나도 '모달이 떠 있는데 준비됐다' 고 말하지 않게 하는 이중 안전장치다 — T49 는 바로 그 한 줄이 없어서 지시를 잃었다.",
+    "⑦ 신뢰 모달 패턴은 **화면 전체**에 대어지므로 낱말 하나(`Trust this folder?`)로 잡으면 멤버의 대화 본문에 그 말이 뜨는 순간 가짜 다이얼로그가 되어 Enter 가 나가고, noneOf 쪽은 그 멤버의 큐가 영구히 막힌다. 그래서 dialogs 는 **머리글 + 문장 앞부분 + 1번 항목 줄 셋을 모두** 요구하고, noneOf 도 문장 앞부분으로 좁혔다. 대신 0.16x 가 문장을 고치면 이 이중 안전장치는 조용히 풀린다 — 1차 방어선인 dialogs 도 같이 안 맞을 테니 그때는 맵을 새로 뜨는 것이 답이다.",
+    "⑥ 부팅 중 `│ model: loading` 은 0.159 에서 **못 봤다**(실측에서 1초 안에 모달까지 갔다). 패턴은 0.154 에서 그대로 두었고 미검증이다 — 해가 없다(맞으면 막고, 안 맞으면 없는 화면이다)."
+  ],
+  "promptReady": {
+    "verified": true,
+    "source": "fixtures/codex-0.159/ready.txt, after-stop.txt; noneOf 의 신뢰 모달은 fixtures/codex-0.159/trust-dialog.txt",
+    "scanLines": 8,
+    "anyOf": [
+      "Ask Codex to do anything"
+    ],
+    "noneOf": [
+      "^\\s*│ model:\\s+loading\\b",
+      "^\\s*Trust this folder\\? Codex can read, edit, and run files here"
+    ],
+    "inputLine": {
+      "prompt": "^\\s*› ",
+      "status": " · ",
+      "statusWithin": 3
+    }
+  },
+  "busy": {
+    "verified": true,
+    "source": "fixtures/codex-0.159/working.txt — '• Working (0s • esc to interrupt)'",
+    "anyOf": [
+      "esc to interrupt",
+      "^\\s*[•◦] Working \\("
+    ]
+  },
+  "interrupted": {
+    "verified": false,
+    "source": "0.154 와 같다고 본 패턴 — 0.159 에서 중단 화면은 아직 못 잡았다",
+    "anyOf": [
+      "^\\s*[■•]?\\s*Conversation interrupted\\b"
+    ]
+  },
+  "inputBox": {
+    "prompt": "^\\s*›",
+    "ruleAbove": null
+  },
+  "skipLines": [
+    "^\\s*[─╌═━┄┈]+\\s*$",
+    "^\\s*\\S+ (default|minimal|low|medium|high|xhigh) · ",
+    "esc to interrupt",
+    "\\? for shortcuts",
+    "^\\s*⚠ \\d+ warnings? · f2 to view\\s*$",
+    "^\\s*tab to queue message\\s*$",
+    "^\\s*[•◦] Working \\("
+  ],
+  "dialogs": [
+    {
+      "id": "trust-folder",
+      "kind": "trust-folder-codex",
+      "verified": true,
+      "source": "fixtures/codex-0.159/trust-dialog.txt(1번 강조) · trust-dialog-second.txt(↓ 뒤 2번 강조)",
+      "all": [
+        "^\\s*Folder access\\s*$",
+        "^\\s*Trust this folder\\? Codex can read, edit, and run files here",
+        "^\\s*›?\\s*1\\. Trust and continue\\s*$"
+      ],
+      "keys": [
+        "enter"
+      ],
+      "highlight": {
+        "marker": "^\\s*›\\s*",
+        "choices": [
+          {
+            "match": "^1\\. Trust and continue",
+            "keys": [
+              "enter"
+            ]
+          },
+          {
+            "match": "^2\\. (Quit|Back to)",
+            "keys": [
+              "up",
+              "enter"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "trust-directory-legacy",
+      "kind": "trust-folder-codex",
+      "verified": true,
+      "source": "fixtures/codex-trust-dialog.txt — 0.158 이하의 문구다. 어느 버전에서 ①로 바뀌었는지 모르므로(0.155~0.158 은 이 맵으로 내려올 수 있다) 같이 둔다.",
+      "all": [
+        "Do you trust the contents of this directory\\?"
+      ],
+      "keys": [
+        "enter"
+      ],
+      "highlight": {
+        "marker": "^\\s*›\\s*",
+        "choices": [
+          {
+            "match": "Yes, continue",
+            "keys": [
+              "enter"
+            ]
+          },
+          {
+            "match": "No, quit",
+            "keys": [
+              "up",
+              "enter"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "rate-limit-model-switch",
+      "kind": "model-switch-offer",
+      "verified": false,
+      "source": "0.154 fixtures/codex/model-switch-offer.txt 그대로 — 0.159 에서는 못 띄웠다(사용량 한도에 안 걸렸다)",
+      "all": [
+        "Switch to \\S+ for lower credit usage\\?",
+        "Press enter to confirm or esc to go back"
+      ],
+      "keys": [
+        "esc"
+      ]
+    },
+    {
+      "id": "approval-exec",
+      "kind": "approval-prompt",
+      "verified": false,
+      "source": "0.154 fixtures/codex/approval-prompt.txt 그대로 — 0.159 에서는 못 띄웠다(운영에서는 PermissionRequest hook 이 먼저 답한다, D-04)",
+      "all": [
+        "Would you like to (run the following command|make the following edits|grant these permissions)\\?|Do you want to approve network access to|needs your approval\\."
+      ],
+      "allowKeys": [
+        "enter"
+      ],
+      "denyKeys": [
+        "esc"
+      ]
+    }
+  ],
+  "usage": {
+    "verified": true,
+    "source": "fixtures/codex-0.159/status.txt (T49 실측 2026-09-29, Pro 계정 · 턴 1회 뒤). **`5h limit` 줄은 미검증** — 0.154 와 같이 Pro 에서는 안 나온다.",
+    "command": "/status",
+    "closeKeys": [
+      "esc"
+    ],
+    "scrollback": true,
+    "ready": [
+      "Weekly limit:"
+    ],
+    "plan": "^\\s*Account:\\s+(?<plan>[A-Za-z][A-Za-z0-9+ ]*?)(?:\\s*\\(More\\))?\\s*$",
+    "blocks": [
+      {
+        "target": "weekly",
+        "percentIs": "left",
+        "pattern": "Weekly limit:\\s+\\[[^\\]]*\\]\\s+(?<percent>\\d+)% left \\(resets (?<resets>[^)]+)\\)"
+      },
+      {
+        "target": "session",
+        "percentIs": "left",
+        "pattern": "5h limit:\\s+\\[[^\\]]*\\]\\s+(?<percent>\\d+)% left \\(resets (?<resets>[^)]+)\\)"
+      }
+    ]
+  }
+}

@@ -6,9 +6,13 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import {
   BUILTIN_FILES,
-  BUILTIN_VERSION,
+  FALLBACK_VERSION,
+  availableMapVersions,
+  clearInstalledCliVersions,
   loadTuiMap,
+  majorMinor,
   resolveTuiMapFile,
+  setInstalledCliVersion,
   tuiMapCandidates,
   type TuiMapJson,
 } from '../../src/screen/tuiMap.js';
@@ -26,7 +30,19 @@ describe('tui-map 파일 이름 규칙', () => {
     for (const [file, json] of Object.entries(BUILTIN_FILES)) {
       assert.ok(fs.existsSync(new URL(`../../src/tui-maps/${file}`, import.meta.url)), `${file} 이 없다`);
       const stem = file.replace(/\.json$/, '');
-      assert.ok(stem.startsWith(`${json.engine}-${BUILTIN_VERSION[json.engine]}`), `${file} 의 이름과 engine/version 이 어긋난다`);
+      // 엔진마다 맵이 여러 개일 수 있으므로(codex 0.154 · 0.159) 파일 이름은 **그 파일 자신의** version 과 맞춘다.
+      // 폴백 상수와 맞추면 옛 맵을 함께 두는 순간 깨진다(T49 이전에는 엔진당 한 개뿐이었다).
+      const own = majorMinor(json.version);
+      assert.ok(own, `${file} 의 version(${json.version})을 major.minor 로 못 읽는다`);
+      assert.ok(stem.startsWith(`${json.engine}-${own}`), `${file} 의 이름과 engine/version 이 어긋난다`);
+    }
+  });
+
+  test('폴백 버전은 그 엔진이 실제로 가진 맵 중 가장 새 것이다', () => {
+    for (const engine of ['claude', 'codex'] as const) {
+      const versions = availableMapVersions(engine);
+      assert.ok(versions.length > 0, `${engine} 맵이 하나도 없다`);
+      assert.equal(FALLBACK_VERSION[engine], versions[versions.length - 1], `${engine} 폴백이 최신 맵이 아니다`);
     }
   });
 });
@@ -51,9 +67,16 @@ describe('resolveTuiMapFile — 접미사 우선, 없으면 폴백', () => {
   });
 
   test('접미사 파일이 없으면 폴백 — 지금 저장소가 바로 이 상태다', () => {
-    for (const p of ['win32', 'darwin', 'linux'] as const) {
-      assert.equal(resolveTuiMapFile('claude', p).file, 'claude-2.1.json');
-      assert.equal(resolveTuiMapFile('codex', p).file, 'codex-0.154.json');
+    // 설치 버전을 고정해 둔다 — 안 하면 이 PC 에 깔린 CLI 에 따라 고르는 맵이 달라진다.
+    setInstalledCliVersion('claude', '2.1.284');
+    setInstalledCliVersion('codex', '0.154.0');
+    try {
+      for (const p of ['win32', 'darwin', 'linux'] as const) {
+        assert.equal(resolveTuiMapFile('claude', p).file, 'claude-2.1.json');
+        assert.equal(resolveTuiMapFile('codex', p).file, 'codex-0.154.json');
+      }
+    } finally {
+      clearInstalledCliVersions();
     }
     assert.ok(!Object.keys(BUILTIN_FILES).some((f) => /-darwin\.json$/.test(f)), 'darwin 맵은 맥 실기 뒤에 들어온다');
   });

@@ -5,6 +5,7 @@
 // `claude-2.1-darwin.json` 이 있으면 맥에서 그것을, 없으면 `claude-2.1.json` 을 쓴다.
 import claude21 from '../tui-maps/claude-2.1.json' with { type: 'json' };
 import codex0154 from '../tui-maps/codex-0.154.json' with { type: 'json' };
+import codex0159 from '../tui-maps/codex-0.159.json' with { type: 'json' };
 
 export type Engine = 'claude' | 'codex';
 
@@ -276,11 +277,99 @@ function compileUsage(tag: string, u: TuiUsageJson): TuiUsage {
   };
 }
 
-/** 엔진별로 쓰는 맵 버전(파일 이름의 `<major.minor>`). 버전을 올릴 때 여기와 아래 표를 같이 고친다. */
-export const BUILTIN_VERSION: Record<Engine, string> = {
+/**
+ * **설치된 CLI 버전을 못 읽었을 때만** 쓰는 맵 버전(파일 이름의 `<major.minor>`).
+ *
+ * 원래는 이것이 유일한 기준이었고, 그래서 T49 가 터졌다 — 이 맥에 codex 0.159 가 깔려 있는데 상수는 0.154 를
+ * 가리켜, 0.159 에서 바뀐 신뢰 모달을 못 읽고 지시를 잃었다(D-49). 지금은 `setInstalledCliVersion()` 으로
+ * 넣어 준 **실제 설치 버전**이 우선이고, 이 표는 그것이 없을 때의 폴백이다.
+ *
+ * 값은 **우리가 가진 가장 새 맵**으로 둔다 — 버전을 못 읽는 상황에서 최신 CLI 를 가정하는 편이 낫다
+ * (CLI 는 늘 앞으로만 간다). 낡은 CLI 를 쓰는 사람은 버전이 읽히는 한 아래 근접 규칙이 옛 맵을 골라 준다.
+ */
+export const FALLBACK_VERSION: Record<Engine, string> = {
   claude: '2.1',
-  codex: '0.154',
+  codex: '0.159',
 };
+
+/** 이전 이름. 뜻이 "고정 버전" 에서 "폴백" 으로 바뀌었다 — 새 코드는 `FALLBACK_VERSION` 을 쓴다. */
+export const BUILTIN_VERSION = FALLBACK_VERSION;
+
+/** `setInstalledCliVersion()` 이 넣어 준 실제 설치 버전(`major.minor`). 안 넣었으면 비어 있다. */
+const installedVersion = new Map<Engine, string>();
+
+/**
+ * 그 엔진의 CLI 실제 설치 버전을 알려 준다. 데몬이 기동할 때 한 번 부른다(`cliVersion.ts` 가 읽는다).
+ * `undefined`(못 읽음)를 주면 폴백으로 돌아간다. 맵 캐시는 버전이 바뀌면 비워진다.
+ */
+export function setInstalledCliVersion(engine: Engine, version: string | undefined): void {
+  const norm = version ? majorMinor(version) : undefined;
+  const prev = installedVersion.get(engine);
+  if (norm === prev) return;
+  if (norm) installedVersion.set(engine, norm);
+  else installedVersion.delete(engine);
+  for (const key of [...cache.keys()]) if (key.startsWith(`${engine}:`)) cache.delete(key);
+}
+
+/** 테스트용: 넣어 준 설치 버전을 모두 잊는다. */
+export function clearInstalledCliVersions(): void {
+  for (const engine of [...installedVersion.keys()]) setInstalledCliVersion(engine, undefined);
+}
+
+/** `"0.159.0"` · `"2.1.284 (Claude Code)"` → `"0.159"` · `"2.1"`. 못 읽으면 undefined. */
+export function majorMinor(version: string): string | undefined {
+  const m = /(\d+)\.(\d+)/.exec(version);
+  return m ? `${m[1]}.${m[2]}` : undefined;
+}
+
+/** `"0.159"` → `[0, 159]`. 비교용. */
+function versionKey(v: string): [number, number] {
+  const m = /^(\d+)\.(\d+)$/.exec(v);
+  return m ? [Number(m[1]), Number(m[2])] : [-1, -1];
+}
+
+function compareVersions(a: string, b: string): number {
+  const [am, an] = versionKey(a);
+  const [bm, bn] = versionKey(b);
+  return am !== bm ? am - bm : an - bn;
+}
+
+/** 그 엔진의 맵이 있는 버전들(파일 이름에서 뽑아 오름차순). 플랫폼 접미사는 떼고 중복을 없앤다. */
+export function availableMapVersions(engine: Engine, files: Record<string, TuiMapJson> = BUILTIN_FILES): string[] {
+  const versions = new Set<string>();
+  for (const file of Object.keys(files)) {
+    const m = new RegExp(`^${engine}-(\\d+\\.\\d+)(?:-[a-z0-9]+)?\\.json$`).exec(file);
+    if (m) versions.add(m[1]);
+  }
+  return [...versions].sort(compareVersions);
+}
+
+export interface MapVersionChoice {
+  /** 쓸 맵 버전. */
+  version: string;
+  /** 설치된 CLI 버전(`major.minor`). 못 읽었으면 undefined. */
+  installed?: string;
+  /** 설치 버전과 맵 버전이 **정확히 같은가**. false 면 근접한 맵으로 내려/올려 잡았다는 뜻이다. */
+  exact: boolean;
+}
+
+/**
+ * 설치된 CLI 버전에 **가장 가까운 맵**을 고른다.
+ *   ① 같은 버전의 맵이 있으면 그것.
+ *   ② 없으면 설치 버전보다 **낮은 중 가장 높은** 맵(아직 안 만든 새 CLI → 제일 최신 맵으로).
+ *   ③ 그것도 없으면(설치 버전이 모든 맵보다 낮다) **가장 낮은** 맵.
+ *   ④ 설치 버전을 못 읽었으면 `FALLBACK_VERSION`.
+ */
+export function chooseMapVersion(engine: Engine, files: Record<string, TuiMapJson> = BUILTIN_FILES): MapVersionChoice {
+  const fallback = FALLBACK_VERSION[engine];
+  const installed = installedVersion.get(engine);
+  if (!installed) return { version: fallback, exact: false };
+  const versions = availableMapVersions(engine, files);
+  if (versions.includes(installed)) return { version: installed, installed, exact: true };
+  const lower = versions.filter((v) => compareVersions(v, installed) < 0);
+  const chosen = lower.length ? lower[lower.length - 1] : versions[0];
+  return { version: chosen ?? fallback, installed, exact: false };
+}
 
 /**
  * 내장 맵 파일 표 — **키가 파일 이름**이다(`tui-maps/README.md` 의 이름 규칙).
@@ -290,6 +379,7 @@ export const BUILTIN_VERSION: Record<Engine, string> = {
 export const BUILTIN_FILES: Record<string, TuiMapJson> = {
   'claude-2.1.json': claude21 as unknown as TuiMapJson,
   'codex-0.154.json': codex0154 as unknown as TuiMapJson,
+  'codex-0.159.json': codex0159 as unknown as TuiMapJson,
 };
 
 /**
@@ -308,21 +398,25 @@ export function resolveTuiMapFile(
   engine: Engine,
   platform: NodeJS.Platform = process.platform,
   files: Record<string, TuiMapJson> = BUILTIN_FILES,
-): { file: string; json: TuiMapJson } {
-  const version = BUILTIN_VERSION[engine];
+): { file: string; json: TuiMapJson; choice: MapVersionChoice } {
+  const choice = chooseMapVersion(engine, files);
+  const version = choice.version;
   if (!version) throw new Error(`no tui-map for engine ${JSON.stringify(engine)}`);
   for (const file of tuiMapCandidates(engine, version, platform)) {
     const json = files[file];
-    if (json) return { file, json };
+    if (json) return { file, json, choice };
   }
   throw new Error(`no tui-map file for engine ${JSON.stringify(engine)} on ${platform} (tried ${tuiMapCandidates(engine, version, platform).join(', ')})`);
 }
 
 const cache = new Map<string, TuiMap>();
 
-/** 엔진·플랫폼별 내장 tui-map. 한 번 컴파일해 재사용(캐시 키에 플랫폼이 들어간다). */
+/**
+ * 엔진·플랫폼별 내장 tui-map. 한 번 컴파일해 재사용한다.
+ * 캐시 키에 **고른 맵 버전**이 들어간다 — `setInstalledCliVersion()` 이 버전을 바꾸면 그 엔진 항목은 지워진다.
+ */
 export function loadTuiMap(engine: Engine, platform: NodeJS.Platform = process.platform): TuiMap {
-  const key = `${engine}:${platform}`;
+  const key = `${engine}:${platform}:${chooseMapVersion(engine).version}`;
   let m = cache.get(key);
   if (!m) {
     m = compileTuiMap(resolveTuiMapFile(engine, platform).json);

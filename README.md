@@ -44,7 +44,7 @@ pixel-office/
       PROTOCOL.md         WS JSON-RPC·이벤트·후처리 계약 — 앱과 데몬의 유일한 기준
       src/                office · rpc · pty · screen · hooks · adapters · mcp · input · store · cli
       src/tui-maps/       CLI 버전별 화면 패턴 JSON
-      test/               node:test (884건)
+      test/               node:test (905건)
     app/                Flutter 데스크탑 앱 (Windows · macOS 러너 포함, 맥 실기 전)  → dev/app/README.md
       lib/                rpc · model · state · topbar · office · panel · command
       test/               위젯·상태 테스트 (721건)
@@ -104,10 +104,10 @@ cd dev/daemon && npm run cli      # help 로 명령 목록
 sudo xcodebuild -license accept && sudo xcodebuild -runFirstLaunch   # 동의 전에는 git·flutter 까지 거부한다
 flutter config --enable-macos-desktop
 npm install -g @anthropic-ai/claude-code && claude       # 한 번 실행해 로그인
-npm install -g @openai/codex@0.154.0 && codex login      # (선택) Codex — 최신은 아직 안 된다, 아래 "한계" 참고
+npm install -g @openai/codex && codex login              # (선택) Codex — 최신으로 된다(0.159.0 실기 확인, T49)
 
 git clone https://github.com/MaoEmong/pixel-office-dev.git && cd pixel-office-dev
-cd dev/daemon && npm install && npx tsc --noEmit && npm test     # 874건 + 스킵된 MixedTeam 10건 = 윈도우의 884
+cd dev/daemon && npm install && npx tsc --noEmit && npm test     # 896건 + 스킵된 MixedTeam 9건 = 905
 cd ../app && flutter pub get && flutter analyze && flutter test  # 720 통과 · 2 스킵
 flutter build macos --release
 open build/macos/Build/Products/Release/pixel_office.app         # Finder 더블클릭과 같다
@@ -120,7 +120,9 @@ open build/macos/Build/Products/Release/pixel_office.app         # Finder 더블
 - **`npm install` 뒤 pty 가 `posix_spawnp failed` 로 죽으면** npm 11.16+ 가 node-pty 의 설치 스크립트를 막아 `prebuilds/darwin-*/spawn-helper` 에 실행 권한이 없는 것이다 — `dev/daemon` 에서 `npm approve-scripts --allow-scripts-pending`(또는 그 파일에 `chmod +x`). 윈도우에는 없는 문제다(T48-3 M1 함정 ①).
 - **저장소를 경로에 한글·비ASCII 가 없는 곳에 두라.** 있으면 `flutter analyze` 의 analysis server 가 LSP 메시지를 잘라 `FormatException` 으로 죽는다(툴체인 쪽 문제, `flutter test`·`pub get` 은 무관). T48-3 M7 함정 ②.
 - **`flutter build macos` 가 Xcode 27 에서 그냥은 안 된다.** 이 저장소는 `macos/Runner/Configs/Release.xcconfig` 에 `ARCHS = arm64` 을 박고 배포 대상을 12.0 으로 올려 두었다(T48-3 M7 함정 ③④). 인텔 맥에서 빌드하려면 그 줄을 `x86_64` 로 바꾼다 — 유니버설 바이너리는 Xcode 27 의 `lipo` 가 `-verify_arch` 에 arch 를 둘 받지 않아 못 만든다.
-- **아직 CLI 버전을 맞춰야 한다(알려진 한계).** **최신 codex(0.159)로는 코덱스 멤버에게 지시가 제출되지 않는다** — 지금 쓰려면 `npm i -g @openai/codex@0.154.0` 으로 내려야 한다. 원인은 **화면 패턴이 아니다**(0.159 에서도 `promptReady`·`busy` 판정과 붙여넣기는 정상이다) — 데몬의 세션 설정(spawn 인자·`.codex/hooks.json`)쪽으로 좁혔고 아직 확정하지 못했다(T48-3 M4 함정 ⑤). 버전 고정은 **임시 방편이고 최신에서 동작하는 것이 맞다.** claude 쪽에도 버전 드리프트가 있다(2.1.284 가 긴 주입 텍스트를 `<pasted_content>` 로 감싼다 — 테스트 쪽은 `unwrapPasted()` 로 막아 뒀다).
+- **CLI 버전을 고정하지 않아도 된다(T49 에서 해결).** 데몬이 기동할 때 `claude --version`·`codex --version` 을 읽어 **설치된 버전에 맞는 화면 패턴(tui-map)** 을 고른다. 기동 로그에 `codex codex-cli 0.159.0 → tui-map 0.159` 처럼 찍히고, **맞는 맵이 없으면 경고 한 줄**과 함께 가장 가까운 맵으로 내려 잡는다 — 그 경고가 보이면 화면 문구가 바뀌었을 수 있다는 신호다(맵 추가 절차는 `dev/daemon/src/tui-maps/README.md`).
+  - 내려간 이력: 0.159 로는 코덱스 멤버에게 지시가 제출되지 않았다. 원인은 spawn 인자도 `.codex/hooks.json` 도 아니고 **0.159 에서 새로 생긴 폴더 신뢰 모달**("Folder access / Trust this folder?")이었다 — 준비 화면이 그려진 **뒤에** 뜨는데 옛 맵이 그 문구를 몰라 "준비됨" 으로 보고, 모달 위에 붙여넣은 지시가 버려졌다. 지금은 `codex-0.159.json` 이 그 모달을 안다(D-49). 0.154 를 계속 쓰는 사람도 그대로 동작한다(맵을 둘 다 싣는다).
+  - 남은 드리프트: claude 2.1.284 가 긴 주입 텍스트를 `<pasted_content>` 로 감싼다 — 테스트 쪽은 `unwrapPasted()` 로 막아 뒀지만 **사용자에게 보이는 로그·말풍선에는 그 봉투가 그대로 찍힌다**(T48-3 M4 함정 ④).
 - **통합 테스트(`PIXEL_IT=1`)는 파일 하나씩 돌린다.** `node --test` 는 파일을 병렬로 돌리는데, 실기 CLI·포트·셸 락을 공유해 여러 파일이 동시에 뜨면 엉킨다(T48-3 M6 함정).
 - 가장 큰 미지수였던 둘은 T48-3 에서 확인됐다: 셰뱅 스크립트(`#!/usr/bin/env node`)는 심볼릭 링크를 거쳐서도 node-pty 가 진짜 TTY 로 띄운다(다만 npm 이 설치한 `claude` 2.1.284 는 **셰뱅 스크립트가 아니라 Mach-O arm64 네이티브**이고 맥에서도 이름이 `claude.exe` 다). SIGHUP 은 정상 종료 경로를 그대로 타고 `daemon.json` 까지 치운다.
 - 창 캡처는 `dev/app/tool/capture-window.sh`(창 단위). 처음 실행에 macOS 가 "화면 기록" 권한을 물어본다.
@@ -128,7 +130,7 @@ open build/macos/Build/Products/Release/pixel_office.app         # Finder 더블
 ## 검증
 
 ```bash
-cd dev/daemon && npx tsc --noEmit && npm test     # 884건 (PIXEL_IT=1 이면 실제 CLI 통합 테스트 포함)
+cd dev/daemon && npx tsc --noEmit && npm test     # 905건 (PIXEL_IT=1 이면 실제 CLI 통합 테스트 포함)
 cd dev/app    && flutter analyze && flutter test  # 721건
 # 새로 클론한 곳에서는 MixedTeam 스위트(10건)가 스킵된다 — 실측 hook 로그가 .gitignore 되어 있다(dev/spike-0/*.json).
 ```
