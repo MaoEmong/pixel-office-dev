@@ -19,7 +19,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { DaemonInfo } from '../../src/office/types.js';
 import type { Department, Member, Pending, Snapshot } from '../../src/store/types.js';
-import { Client, IT, SANDBOX, itEnv, killTree, pidAlive, sleep, snapshotOnce, startDaemon, sweepClaudeByDataDir, waitExit } from './it-helpers.js';
+import { Client, IT, SANDBOX, unwrapPasted, itEnv, killTree, pidAlive, sleep, snapshotOnce, startDaemon, sweepClaudeByDataDir, waitExit } from './it-helpers.js';
 
 /** 그 멤버의 마지막 member.status 알림이 조건을 만족할 때까지 폴링(최대 timeoutMs). */
 async function lastStatusWhen(client: Client, memberId: string, pred: (s: { status: string; derived: string }) => boolean, timeoutMs: number) {
@@ -119,7 +119,7 @@ test('real daemon + real Claude: ask_user via --mcp-config → question.respond 
     // ---- 답 → [ANSWER q#id] 주입 → 모델이 색을 말한다 -----------------------------------------------
     await client.call('question.respond', { pendingId: questionId, answers: { [String(pending.payload.question)]: ANSWER } });
     console.log(`[IT] question.respond → ${ANSWER} (${el()})`);
-    const answerTurn = await client.waitEvent(member.id, 'thinking', idle1.seq, 120_000, (e) => String(e.detail.text ?? '').startsWith(`[ANSWER q#${questionId}]`));
+    const answerTurn = await client.waitEvent(member.id, 'thinking', idle1.seq, 120_000, (e) => unwrapPasted(e.detail.text).startsWith(`[ANSWER q#${questionId}]`));
     console.log(`[IT] [ANSWER] typed #${answerTurn.seq} (${el()}): ${JSON.stringify(answerTurn.detail.text)}`);
     assert.equal(answerTurn.detail.text, `[ANSWER q#${questionId}]\n${ANSWER}`);
     const idle2 = await client.waitEvent(member.id, 'idle', answerTurn.seq, 180_000);

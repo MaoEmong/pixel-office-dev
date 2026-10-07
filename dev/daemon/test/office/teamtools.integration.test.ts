@@ -24,7 +24,7 @@ import path from 'node:path';
 import { MAX_THINKING_CHARS } from '../../src/adapters/BaseHooksAdapter.js';
 import type { DaemonInfo } from '../../src/office/types.js';
 import type { Department, Member, Task, Team } from '../../src/store/types.js';
-import { Client, IT, SANDBOX, itEnv, killTree, pidAlive, sleep, snapshotOnce, startDaemon, sweepClaudeByDataDir, waitExit } from './it-helpers.js';
+import { Client, IT, SANDBOX, unwrapPasted, itEnv, killTree, pidAlive, sleep, snapshotOnce, startDaemon, sweepClaudeByDataDir, waitExit } from './it-helpers.js';
 
 const FILE = 'hello25.txt';
 // 도구 이름 줄: Claude 2.1.270 은 MCP 도구를 지연 로딩(ToolSearch)해서 "도구가 없다"고 답하는 경우가 있다(D-22 참고).
@@ -119,14 +119,14 @@ test('real daemon + real Claude leader: hire → delegate → member works → [
     const delegating = await race(client.waitEvent(leader.id, 'delegating', seq0, 420_000));
     const subTaskId = delegating.ref.taskId!;
     console.log(`[IT] delegating #${delegating.seq} task#${subTaskId} → ${String(delegating.detail.toName)} (${String(delegating.detail.status)}) (${el()})`);
-    const typed = await race(client.waitEvent(worker.id, 'thinking', delegating.seq - 1, 300_000, (e) => String(e.detail.text ?? '').startsWith(`[TASK#${subTaskId} from `)));
+    const typed = await race(client.waitEvent(worker.id, 'thinking', delegating.seq - 1, 300_000, (e) => unwrapPasted(e.detail.text).startsWith(`[TASK#${subTaskId} from `)));
     console.log(`[IT] worker got: ${JSON.stringify(typed.detail.text)} (${el()})`);
-    assert.match(String(typed.detail.text), new RegExp(`^\\[TASK#${subTaskId} from 반장\\(팀장\\)\\]`));
+    assert.match(unwrapPasted(typed.detail.text), new RegExp(`^\\[TASK#${subTaskId} from 반장\\(팀장\\)\\]`));
 
     // ---- 팀원 작업 → 보고 → [ALL_REPORTS_IN] ----------------------------------------------------
-    const reports = await race(client.waitEvent(leader.id, 'thinking', delegating.seq, 480_000, (e) => String(e.detail.text ?? '').startsWith('[REPORTS ')));
+    const reports = await race(client.waitEvent(leader.id, 'thinking', delegating.seq, 480_000, (e) => unwrapPasted(e.detail.text).startsWith('[REPORTS ')));
     console.log(`[IT] leader got reports (${el()}):\n${String(reports.detail.text)}`);
-    const reportsText = String(reports.detail.text);
+    const reportsText = unwrapPasted(reports.detail.text);
     assert.match(reportsText, new RegExp(`^\\[REPORTS task#${subTaskId} ${worker.name} status=(done|blocked|aborted)\\]`));
     // `[ALL_REPORTS_IN]` 은 **꼬리가 남아 있을 때만** 본다 — `thinking.text` 는 MAX_THINKING_CHARS(200자)로 잘리므로
     // 보고가 길면 이벤트에서 꼬리가 사라진다(큐에 들어간 본문에는 있다). 그 규칙 자체는 단위 테스트가 본다(ranktools IT 와 같은 판단).

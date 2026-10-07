@@ -17,7 +17,7 @@ import os from 'node:os';
 import path from 'node:path';
 import type { DaemonInfo } from '../../src/office/types.js';
 import type { Department, Member, Snapshot, Task } from '../../src/store/types.js';
-import { Client, IT, SANDBOX, freePort, killTree, pidAlive, sleep, startDaemon, sweepClaudeByDataDir, waitExit } from './it-helpers.js';
+import { Client, IT, SANDBOX, unwrapPasted, freePort, killTree, pidAlive, sleep, startDaemon, sweepClaudeByDataDir, waitExit } from './it-helpers.js';
 
 const FILE = 'hello35.txt';
 const TOOL_NAMES =
@@ -91,7 +91,7 @@ test('real daemon + real Claude head: create_team → delegate → lead hire →
     const leadTaskId = headDelegating.ref.taskId!;
     console.log(`[IT] head delegating task#${leadTaskId} → ${String(headDelegating.detail.toName)} (${el()})`);
     const leadGot = await race(
-      client.waitEvent(lead.id, 'thinking', seq0, 480_000, (e) => String(e.detail.text ?? '').startsWith(`[TASK#${leadTaskId} from `)),
+      client.waitEvent(lead.id, 'thinking', seq0, 480_000, (e) => unwrapPasted(e.detail.text).startsWith(`[TASK#${leadTaskId} from `)),
     );
     console.log(`[IT] lead got: ${JSON.stringify(leadGot.detail.text)} (${el()})`);
     assert.match(String(leadGot.detail.text), new RegExp(`^\\[TASK#${leadTaskId} from ${head.name}\\(부장\\)\\]`));
@@ -112,11 +112,11 @@ test('real daemon + real Claude head: create_team → delegate → lead hire →
     console.log(`[IT] lead delegating task#${workTaskId} → ${String(leadDelegating.detail.toName)} (${el()})`);
 
     // ---- 보고가 올라온다: 팀원 → 팀장 → 부장 ------------------------------------------------------
-    const toLead = await race(client.waitEvent(lead.id, 'thinking', leadDelegating.seq, 600_000, (e) => String(e.detail.text ?? '').startsWith('[REPORTS ')));
+    const toLead = await race(client.waitEvent(lead.id, 'thinking', leadDelegating.seq, 600_000, (e) => unwrapPasted(e.detail.text).startsWith('[REPORTS ')));
     console.log(`[IT] lead got reports (${el()}):\n${String(toLead.detail.text)}`);
     assert.match(String(toLead.detail.text), new RegExp(`^\\[REPORTS task#${workTaskId} ${worker.name} status=(done|blocked|aborted)\\]`));
 
-    const toHead = await race(client.waitEvent(head.id, 'thinking', toLead.seq, 600_000, (e) => String(e.detail.text ?? '').startsWith('[REPORTS ')));
+    const toHead = await race(client.waitEvent(head.id, 'thinking', toLead.seq, 600_000, (e) => unwrapPasted(e.detail.text).startsWith('[REPORTS ')));
     console.log(`[IT] head got reports (${el()}):\n${String(toHead.detail.text)}`);
     assert.match(String(toHead.detail.text), new RegExp(`^\\[REPORTS task#${leadTaskId} ${lead.name} status=(done|blocked|aborted)\\]`));
     // `[ALL_REPORTS_IN]` 은 여기서 단언하지 않는다 — `thinking.text` 는 MAX_THINKING_CHARS(200자)로 잘리므로

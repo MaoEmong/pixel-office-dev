@@ -280,7 +280,7 @@ v1a 에서 데몬이 만드는 이벤트(어댑터 표는 worklog T04 참고):
 
 | 도구 | 직급 | 인자 | 결과 텍스트 |
 |---|---|---|---|
-| `create_team` | **부장만** | `{ name, leadName, engine?: 'claude'\|'codex', instructions? }` | `팀 <name> 생성, 팀장 <leadName>(<memberId>) 출근.` |
+| `create_team` | **부장만** | `{ name, leadName, engine?: 'claude'\|'codex', instructions? }` | `팀 <name> (<teamId>) 생성, 팀장 <leadName>(<memberId>) 출근.` — **teamId 필수**: `dismiss_team` 의 입력이라 빠지면 해산할 길이 없다(T48-3) |
 | `dismiss_team` | **부장만** | `{ teamId }` | `팀 <name> 해산. N명 퇴근 (<이름들>).` |
 | `hire` | **팀장만** | `{ name, role, engine?, instructions? }` | `팀원 <name> (<memberId>) 출근. 엔진 <engine>.` |
 | `dismiss` | **팀장만** | `{ memberId }` | `팀원 <name> (<memberId>) 퇴근. 자리가 하나 비었다.` |

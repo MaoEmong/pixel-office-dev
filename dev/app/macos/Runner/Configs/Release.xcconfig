@@ -1,2 +1,20 @@
 #include "../../Flutter/Flutter-Release.xcconfig"
 #include "Warnings.xcconfig"
+
+// arch 를 **하나로** 고정한다(유니버설 아님) — T48-3 M7.
+//
+// Xcode 기본값 ARCHS_STANDARD 는 "arm64 x86_64" 두 개다. 그러면 Flutter 3.44.7 의 unpack_macos 단계가
+//   lipo <FlutterMacOS> -verify_arch arm64 x86_64
+// 를 부르는데(`flutter_tools/lib/src/build_system/targets/darwin.dart` thinFramework), **Xcode 27 의
+// lipo 는 이 꼴을 거부한다** — `lipo: -verify_arch requires exactly one input file`(두 번째 arch 를
+// 입력 파일로 센다). 프레임워크에는 두 arch 가 멀쩡히 들어 있는데도 빌드가 이렇게 죽는다:
+//   Binary …/FlutterMacOS does not contain architectures "arm64 x86_64".
+// arch 가 하나면 lipo 가 정상이다(`-verify_arch arm64` → exit 0).
+//
+// `$(NATIVE_ARCH_ACTUAL)`·`$(NATIVE_ARCH_64_BIT)` 는 쓰지 말 것 — 빌드 시점에 `arm64e` 로 풀려
+// 프레임워크에 없는 arch 를 요구한다(`does not contain architectures "arm64e"`). 그래서 리터럴로 적는다.
+//
+// **인텔 맥에서 빌드하려면 이 줄을 `x86_64` 로 바꾼다.** Flutter 가 저 arg 순서를 고치면 이 줄을 지우고
+// 기본값(유니버설)으로 돌아가면 된다. 개인 도구라 유니버설 바이너리는 필요 없다(앱스토어 배포·공증은
+// D-48 범위 밖).
+ARCHS = arm64

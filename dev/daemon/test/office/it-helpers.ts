@@ -22,6 +22,24 @@ export const SANDBOX = process.env.PIXEL_IT_SANDBOX ? path.resolve(process.env.P
 export const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /**
+ * CLI 가 화면에 찍은 `thinking.text` 에서 **붙여넣기 봉투를 벗긴다**.
+ *
+ * claude 2.1.284 는 프롬프트로 밀어 넣은 텍스트가 길면 화면에 `\n\n<pasted_content id="…">\n` 으로 감싸
+ * 찍는다(2.1.270 에서는 없었다 — T48-3 M6 에서 드러났다. 플랫폼과 무관한 **CLI 버전** 변화다).
+ * 데몬은 화면에 찍힌 그대로를 `thinking.text` 에 담으므로 `[REPORTS …]`·`[TASK#n from …]`·`[ANSWER q#…]`
+ * 같은 주입 머리말이 문자열 맨 앞에 오지 않는다. 길이에 따라 감싸기도 하고 안 하기도 하므로
+ * (짧은 `[TASK#2 from …]` 은 안 감싼다) 두 모양 다 통과시켜야 한다.
+ *
+ * 주의: 이건 **테스트가 화면 텍스트를 읽는 방법**만 고친 것이다. 사용자에게 보이는 로그·말풍선에도 그 봉투가
+ * 그대로 찍히는 문제는 따로 남아 있다(T48-3 "남은 것").
+ */
+export function unwrapPasted(text: unknown): string {
+  const s = String(text ?? '');
+  const m = /^\s*<pasted_content\b[^>]*>\s*/.exec(s);
+  return m ? s.slice(m[0].length) : s;
+}
+
+/**
  * IT 용 데몬 환경변수 한 벌: 임시 dataDir + 빈 포트 3개(+ 추가분).
  * **포트를 하드코딩하지 않는다** — 기본 7420-7422 에 실사용 데몬이 떠 있어도 이 데몬은 그 옆에 뜬다.
  */
