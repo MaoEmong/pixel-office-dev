@@ -355,11 +355,20 @@ export function createPlatform(over: Partial<PlatformDeps> = {}): Platform {
 
       // npm 전역 설치(`npm i -g @anthropic-ai/claude-code`): 윈도우 PATH 에는 `claude.cmd` 셰임만 오르고 실제 exe 는
       // `<modulesRoot>/@anthropic-ai/claude-code/bin/` 에 있다(실측 2.1.278). codex 와 같은 뿌리를 뒤진다.
+      //
+      // **이름 두 가지를 다 본다.** 패키지 안의 파일은 맥에서도 `claude.exe` 다(2.1.284 실측 — Mach-O arm64
+      // 네이티브인데 이름만 `.exe`). PATH 로 보이는 확장자 없는 `claude` 는 `<prefix>/bin` 에 있는 **심볼릭
+      // 링크**이지 패키지 안의 파일이 아니다. 그래서 유닉스에서 `claude` 만 찾으면 이 단계가 **항상 빗나간다** —
+      // PATH 가 있을 때는 2단계에서 걸려 안 드러나지만, Finder·Dock 으로 띄운 앱은 PATH 가
+      // `/usr/bin:/bin:/usr/sbin:/sbin` 뿐이라(launchd) 여기까지 내려와 "못 찾았습니다" 로 끝났다(T48-3 뒤 실기).
+      const pkgExeNames = exeName === 'claude.exe' ? ['claude.exe', 'claude'] : ['claude', 'claude.exe'];
       for (const root of npmModulesRoots()) {
-        const exe = path.join(root, '@anthropic-ai', 'claude-code', 'bin', exeName);
-        if (deps.isFile(exe)) return { exe, found: true, tried: [...tried, `npm 전역: ${exe}`] };
+        for (const name of pkgExeNames) {
+          const exe = path.join(root, '@anthropic-ai', 'claude-code', 'bin', name);
+          if (deps.isFile(exe)) return { exe, found: true, tried: [...tried, `npm 전역: ${exe}`] };
+        }
       }
-      tried.push(`npm 전역에 @anthropic-ai/claude-code/bin/${exeName} 없음`);
+      tried.push(`npm 전역에 @anthropic-ai/claude-code/bin/{${pkgExeNames.join(',')}} 없음`);
 
       if (win) {
         const appData = env.APPDATA || path.join(home(), 'AppData', 'Roaming');
