@@ -77,21 +77,41 @@ export function toForwardSlashes(p: string): string {
   return p.replace(/\\/g, '/');
 }
 
-/**
- * hook 명령 한 줄: `node <슬래시경로> <port> <Event>`.
- * 경로에 공백이 있으면 bash 가 단어를 쪼개므로 그때만 큰따옴표로 감싼다.
- */
-export function buildHookCommand(hookScriptPath: string, hookPort: number, event: string): string {
-  const script = toForwardSlashes(hookScriptPath);
-  const quoted = /\s/.test(script) ? `"${script}"` : script;
-  return `node ${quoted} ${hookPort} ${event}`;
+/** 공백이 든 경로만 큰따옴표로 감싼다 — 셸이 단어를 쪼개지 않게. */
+function shellArg(p: string): string {
+  const s = toForwardSlashes(p);
+  return /\s/.test(s) ? `"${s}"` : s;
 }
 
-export function buildHooksMap(events: readonly string[], hookScriptPath: string, hookPort: number): HooksMap {
+/**
+ * hook·statusline 을 띄울 **node 실행 파일**. 맨 `node` 를 쓰면 안 된다.
+ *
+ * CLI 는 hook 명령을 `/bin/sh`(윈도우는 셸)로 돌리고 그 셸은 **데몬의 PATH** 를 물려받는다. 그런데
+ * Finder·Dock 으로 띄운 앱이 낳은 데몬은 PATH 가 `/usr/bin:/bin:/usr/sbin:/sbin` 뿐이라(launchd)
+ * nvm·Homebrew 의 `node` 가 없다 → 모든 hook 이
+ *   `SessionStart:startup hook error … /bin/sh: node: command not found`
+ * 로 죽고, 데몬은 세션 시작을 못 봐서 멤버가 `starting` 에 갇히고 지시는 `queued` 로 쌓인다(실기).
+ * D-48 ③ 이 앱→데몬 spawn 은 절대 경로로 고쳤지만 **이 문자열은 그대로 맨 `node`** 였다.
+ *
+ * `process.execPath` 는 지금 이 데몬을 돌리고 있는 node 다 — 반드시 존재하고, 앱이 절대 경로로 찾아 준
+ * 바로 그 바이너리다.
+ */
+export const nodeExeForHooks = (): string => process.execPath;
+
+/**
+ * hook 명령 한 줄: `<node 절대경로> <슬래시경로> <port> <Event>`.
+ * 경로에 공백이 있으면 셸이 단어를 쪼개므로 그때만 큰따옴표로 감싼다(node 경로도 같은 규칙 —
+ * 맥 `/Users/…/Application Support/…` 처럼 공백이 흔하다).
+ */
+export function buildHookCommand(hookScriptPath: string, hookPort: number, event: string, nodeExe: string = nodeExeForHooks()): string {
+  return `${shellArg(nodeExe)} ${shellArg(hookScriptPath)} ${hookPort} ${event}`;
+}
+
+export function buildHooksMap(events: readonly string[], hookScriptPath: string, hookPort: number, nodeExe: string = nodeExeForHooks()): HooksMap {
   const hooks: HooksMap = {};
   for (const event of events) {
     hooks[event] = [
-      { hooks: [{ type: 'command', command: buildHookCommand(hookScriptPath, hookPort, event), timeout: HOOK_TIMEOUT_SEC }] },
+      { hooks: [{ type: 'command', command: buildHookCommand(hookScriptPath, hookPort, event, nodeExe), timeout: HOOK_TIMEOUT_SEC }] },
     ];
   }
   return hooks;
@@ -101,10 +121,8 @@ export function buildHooksMap(events: readonly string[], hookScriptPath: string,
  * statusLine 명령 한 줄: `node <슬래시경로>/statusline.js <port>`(T43). hook 명령과 규칙이 같다
  * (공백 있는 경로만 큰따옴표). 이벤트 인자는 없다 — 경로가 곧 종류다.
  */
-export function buildStatusLineCommand(statusLineScriptPath: string, hookPort: number): string {
-  const script = toForwardSlashes(statusLineScriptPath);
-  const quoted = /\s/.test(script) ? `"${script}"` : script;
-  return `node ${quoted} ${hookPort}`;
+export function buildStatusLineCommand(statusLineScriptPath: string, hookPort: number, nodeExe: string = nodeExeForHooks()): string {
+  return `${shellArg(nodeExe)} ${shellArg(statusLineScriptPath)} ${hookPort}`;
 }
 
 /**
