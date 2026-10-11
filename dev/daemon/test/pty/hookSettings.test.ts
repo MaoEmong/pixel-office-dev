@@ -24,16 +24,27 @@ import {
 const HOOK = 'D:\\myproject\\pixel-office\\dev\\daemon\\src\\hooks\\hook.js';
 /** T43: 같은 폴더의 statusLine 스크립트. */
 const STATUSLINE = 'D:\\myproject\\pixel-office\\dev\\daemon\\src\\hooks\\statusline.js';
+/**
+ * hook 명령의 첫 토큰 — 지금 이 데몬을 돌리는 node 의 **절대 경로**다(맨 `node` 가 아니다).
+ * CLI 는 hook 을 셸로 돌리고 그 셸은 데몬의 PATH 를 물려받는데, Finder 로 띄운 앱이 낳은 데몬은
+ * PATH 에 nvm·Homebrew 가 없어 맨 `node` 가 `command not found` 로 죽는다(T51 실기).
+ * 경로에 공백이 있으면 따옴표가 붙는 것도 명령 생성기와 같은 규칙이라 여기서 그대로 흉내 낸다.
+ */
+const NODE = (() => {
+  const p = process.execPath.replace(/\\/g, '/');
+  return /\s/.test(p) ? `"${p}"` : p;
+})();
+
 const PORT = 7421;
 
 describe('buildHookCommand', () => {
   test('uses forward slashes and `node <script> <port> <event>` shape', () => {
-    assert.equal(buildHookCommand(HOOK, PORT, 'Stop'), 'node D:/myproject/pixel-office/dev/daemon/src/hooks/hook.js 7421 Stop');
+    assert.equal(buildHookCommand(HOOK, PORT, 'Stop'), `${NODE} D:/myproject/pixel-office/dev/daemon/src/hooks/hook.js 7421 Stop`);
   });
 
   test('quotes the script path only when it contains whitespace', () => {
-    assert.equal(buildHookCommand('C:\\Program Files\\x\\hook.js', 1, 'Stop'), 'node "C:/Program Files/x/hook.js" 1 Stop');
-    assert.equal(buildHookCommand('/c/x/hook.js', 1, 'Stop'), 'node /c/x/hook.js 1 Stop');
+    assert.equal(buildHookCommand('C:\\Program Files\\x\\hook.js', 1, 'Stop'), `${NODE} "C:/Program Files/x/hook.js" 1 Stop`);
+    assert.equal(buildHookCommand('/c/x/hook.js', 1, 'Stop'), `${NODE} /c/x/hook.js 1 Stop`);
   });
 
   test('toForwardSlashes leaves forward-slash paths alone', () => {
@@ -62,7 +73,7 @@ describe('buildClaudeSessionSettings', () => {
       assert.equal(h.type, 'command');
       assert.equal(h.timeout, HOOK_TIMEOUT_SEC);
       assert.equal(h.timeout, 86400);
-      assert.equal(h.command, `node D:/myproject/pixel-office/dev/daemon/src/hooks/hook.js ${PORT} ${ev}`);
+      assert.equal(h.command, `${NODE} D:/myproject/pixel-office/dev/daemon/src/hooks/hook.js ${PORT} ${ev}`);
       assert.ok(!h.command.includes('\\'), 'no backslashes in hook command');
     }
   });
@@ -83,15 +94,15 @@ describe('buildClaudeSessionSettings', () => {
     assert.deepEqual(withLine.hooks, settings.hooks, 'hooks 는 손대지 않는다');
     assert.deepEqual(withLine.statusLine, {
       type: 'command',
-      command: `node D:/myproject/pixel-office/dev/daemon/src/hooks/statusline.js ${PORT}`,
+      command: `${NODE} D:/myproject/pixel-office/dev/daemon/src/hooks/statusline.js ${PORT}`,
       padding: 0,
     });
     assert.ok(!withLine.statusLine!.command.includes('\\'), 'no backslashes');
   });
 
   test('buildStatusLineCommand: 공백 있는 경로만 큰따옴표(hook 명령과 같은 규칙)', () => {
-    assert.equal(buildStatusLineCommand('C:\\Program Files\\x\\statusline.js', 1), 'node "C:/Program Files/x/statusline.js" 1');
-    assert.equal(buildStatusLineCommand('/c/x/statusline.js', 1), 'node /c/x/statusline.js 1');
+    assert.equal(buildStatusLineCommand('C:\\Program Files\\x\\statusline.js', 1), `${NODE} "C:/Program Files/x/statusline.js" 1`);
+    assert.equal(buildStatusLineCommand('/c/x/statusline.js', 1), `${NODE} /c/x/statusline.js 1`);
   });
 });
 
@@ -109,7 +120,7 @@ describe('buildCodexHooksFile', () => {
 
   test('uses the same hook shape as Claude', () => {
     const h = file.hooks.Interrupt[0].hooks[0];
-    assert.deepEqual(h, { type: 'command', command: `node D:/myproject/pixel-office/dev/daemon/src/hooks/hook.js ${PORT} Interrupt`, timeout: HOOK_TIMEOUT_SEC });
+    assert.deepEqual(h, { type: 'command', command: `${NODE} D:/myproject/pixel-office/dev/daemon/src/hooks/hook.js ${PORT} Interrupt`, timeout: HOOK_TIMEOUT_SEC });
   });
 });
 
@@ -154,7 +165,7 @@ describe('file writers (temp dir, no spawn)', () => {
     const file = writeClaudeSessionSettings(tmp, 'member-line', HOOK, PORT, STATUSLINE);
     const parsed = JSON.parse(fs.readFileSync(file, 'utf8'));
     assert.deepEqual(parsed, buildClaudeSessionSettings(HOOK, PORT, STATUSLINE));
-    assert.equal((parsed as { statusLine: { command: string } }).statusLine.command, `node D:/myproject/pixel-office/dev/daemon/src/hooks/statusline.js ${PORT}`);
+    assert.equal((parsed as { statusLine: { command: string } }).statusLine.command, `${NODE} D:/myproject/pixel-office/dev/daemon/src/hooks/statusline.js ${PORT}`);
     assert.equal(Object.keys(parsed.hooks).length, CLAUDE_HOOK_EVENTS.length);
   });
 
@@ -192,11 +203,11 @@ describe('공백이 든 경로 인용 — 맥 `Application Support` (T48-1)', ()
   const MAC_STATUSLINE = `${MAC_DATA}/hooks/statusline.js`;
 
   test('hook 명령: 경로만 따옴표 안에 있고 포트·이벤트는 밖에 있다', () => {
-    assert.equal(buildHookCommand(MAC_HOOK, PORT, 'PreToolUse'), `node "${MAC_HOOK}" 7421 PreToolUse`);
+    assert.equal(buildHookCommand(MAC_HOOK, PORT, 'PreToolUse'), `${NODE} "${MAC_HOOK}" 7421 PreToolUse`);
   });
 
   test('statusLine 명령도 같은 규칙', () => {
-    assert.equal(buildStatusLineCommand(MAC_STATUSLINE, PORT), `node "${MAC_STATUSLINE}" 7421`);
+    assert.equal(buildStatusLineCommand(MAC_STATUSLINE, PORT), `${NODE} "${MAC_STATUSLINE}" 7421`);
   });
 
   test('Claude 세션 설정 JSON: 모든 이벤트 명령이 인용돼 있고 셸이 볼 토큰은 넷이다', () => {
@@ -206,16 +217,16 @@ describe('공백이 든 경로 인용 — 맥 `Application Support` (T48-1)', ()
     };
     for (const event of CLAUDE_HOOK_EVENTS) {
       const command = json.hooks[event]![0]!.hooks[0]!.command;
-      assert.equal(command, `node "${MAC_HOOK}" ${PORT} ${event}`, event);
-      assert.deepEqual(command.match(/"[^"]*"|\S+/g), ['node', `"${MAC_HOOK}"`, String(PORT), event]);
+      assert.equal(command, `${NODE} "${MAC_HOOK}" ${PORT} ${event}`, event);
+      assert.deepEqual(command.match(/"[^"]*"|\S+/g), [NODE, `"${MAC_HOOK}"`, String(PORT), event]);
     }
-    assert.equal(json.statusLine.command, `node "${MAC_STATUSLINE}" ${PORT}`);
+    assert.equal(json.statusLine.command, `${NODE} "${MAC_STATUSLINE}" ${PORT}`);
   });
 
   test('Codex `.codex/hooks.json` 도 같은 인용을 쓴다', () => {
     const file = buildCodexHooksFile(MAC_HOOK, PORT);
     for (const event of CODEX_HOOK_EVENTS) {
-      assert.equal(file.hooks[event]![0]!.hooks[0]!.command, `node "${MAC_HOOK}" ${PORT} ${event}`, event);
+      assert.equal(file.hooks[event]![0]!.hooks[0]!.command, `${NODE} "${MAC_HOOK}" ${PORT} ${event}`, event);
     }
   });
 
@@ -229,7 +240,7 @@ describe('공백이 든 경로 인용 — 맥 `Application Support` (T48-1)', ()
       const written = JSON.parse(fs.readFileSync(file, 'utf8')) as {
         hooks: Record<string, Array<{ hooks: Array<{ command: string }> }>>;
       };
-      assert.equal(written.hooks.SessionStart![0]!.hooks[0]!.command, `node "${MAC_HOOK}" ${PORT} SessionStart`);
+      assert.equal(written.hooks.SessionStart![0]!.hooks[0]!.command, `${NODE} "${MAC_HOOK}" ${PORT} SessionStart`);
 
       // Codex: cwd 에 공백이 있어도 파일 **경로**는 path.join 이 맡는다(명령 문자열이 아니라 인자다).
       const cwd = path.join(root, 'my project');
@@ -240,14 +251,14 @@ describe('공백이 든 경로 인용 — 맥 `Application Support` (T48-1)', ()
       const codexJson = JSON.parse(fs.readFileSync(res.path, 'utf8')) as {
         hooks: Record<string, Array<{ hooks: Array<{ command: string }> }>>;
       };
-      assert.equal(codexJson.hooks.SessionStart![0]!.hooks[0]!.command, `node "${MAC_HOOK}" ${PORT} SessionStart`);
+      assert.equal(codexJson.hooks.SessionStart![0]!.hooks[0]!.command, `${NODE} "${MAC_HOOK}" ${PORT} SessionStart`);
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }
   });
 
   test('윈도우 경로는 예전 그대로 — 공백이 없으면 따옴표를 붙이지 않는다', () => {
-    assert.equal(buildHookCommand(HOOK, PORT, 'Stop'), 'node D:/myproject/pixel-office/dev/daemon/src/hooks/hook.js 7421 Stop');
-    assert.equal(buildStatusLineCommand(STATUSLINE, PORT), 'node D:/myproject/pixel-office/dev/daemon/src/hooks/statusline.js 7421');
+    assert.equal(buildHookCommand(HOOK, PORT, 'Stop'), `${NODE} D:/myproject/pixel-office/dev/daemon/src/hooks/hook.js 7421 Stop`);
+    assert.equal(buildStatusLineCommand(STATUSLINE, PORT), `${NODE} D:/myproject/pixel-office/dev/daemon/src/hooks/statusline.js 7421`);
   });
 });

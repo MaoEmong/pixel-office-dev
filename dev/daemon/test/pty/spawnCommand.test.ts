@@ -10,6 +10,15 @@ import type { SpawnOptions } from '../../src/pty/types.js';
 
 const cfg = { claudeExe: 'C:\\claude.exe', codexExe: 'C:\\codex.exe', dataDir: '' };
 
+/**
+ * hook 명령의 첫 토큰 — 맨 `node` 가 아니라 **지금 이 데몬을 돌리는 node 의 절대 경로**다(T51).
+ * Finder 로 띄운 앱이 낳은 데몬은 PATH 에 nvm 이 없어 맨 `node` 가 `command not found` 로 죽는다.
+ */
+const NODE = (() => {
+  const p = process.execPath.replace(/\\/g, '/');
+  return /\s/.test(p) ? `"${p}"` : p;
+})();
+
 describe('prepareSpawnCommand', () => {
   let dir: string;
   let cwd: string;
@@ -43,7 +52,7 @@ describe('prepareSpawnCommand', () => {
     assert.equal(parsed.description, PIXEL_OFFICE_MARKER);
     assert.deepEqual(Object.keys(parsed.hooks).sort(), [...CODEX_HOOK_EVENTS].sort());
     assert.ok(parsed.hooks.Interrupt, 'Codex 는 Interrupt hook 이 있다');
-    assert.equal(parsed.hooks.PreToolUse![0]!.hooks[0]!.command, 'node D:/daemon/src/hooks/hook.js 7421 PreToolUse');
+    assert.equal(parsed.hooks.PreToolUse![0]!.hooks[0]!.command, `${NODE} D:/daemon/src/hooks/hook.js 7421 PreToolUse`);
   });
 
   test('codex: mcpUrl 이 있으면 -c mcp_servers.team.url="…" 이 붙는다 (T22, 실측: codex mcp add --url 이 쓰는 키)', () => {

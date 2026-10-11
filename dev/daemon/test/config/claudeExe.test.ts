@@ -13,6 +13,7 @@ describe('resolveClaudeExe (T41)', () => {
   let dir: string;
   let appData: string;
   let pathDir: string;
+  let npmPrefix: string;
   /** `%APPDATA%\Claude\claude-code\<version>\claude.exe` 를 만든다. */
   const makeBundle = (version: string): string => {
     const exe = path.join(appData, 'Claude', 'claude-code', version, 'claude.exe');
@@ -25,15 +26,27 @@ describe('resolveClaudeExe (T41)', () => {
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pixel-office-t41-claude-'));
     appData = path.join(dir, 'Roaming');
     pathDir = path.join(dir, 'bin');
+    npmPrefix = path.join(dir, 'npm-prefix');
     fs.mkdirSync(pathDir, { recursive: true });
   });
   afterEach(() => fs.rmSync(dir, { recursive: true, force: true }));
 
+  /** 유닉스 npm 전역 뿌리를 임시 폴더로 고정한다 — 안 그러면 **이 머신에 진짜 설치된 claude** 를 찾아
+   *  테스트가 머신에 따라 달라진다(실제로 걸렸다). 윈도우 뿌리는 APPDATA 로 이미 고정돼 있다. */
   const env = (over: Record<string, string | undefined> = {}): NodeJS.ProcessEnv => ({
     APPDATA: appData,
     PATH: pathDir,
+    PIXEL_NPM_PREFIX: npmPrefix,
     ...over,
   });
+
+  /** `<npmPrefix>/lib/node_modules/@anthropic-ai/claude-code/bin/<name>` 를 만든다(유닉스 모양). */
+  const makeNpmUnix = (name: string, body = 'cafebabe'): string => {
+    const exe = path.join(npmPrefix, 'lib', 'node_modules', '@anthropic-ai', 'claude-code', 'bin', name);
+    fs.mkdirSync(path.dirname(exe), { recursive: true });
+    fs.writeFileSync(exe, body);
+    return exe;
+  };
 
   test('PIXEL_CLAUDE_EXE 가 있으면 그대로 쓴다(존재 여부를 따지지 않는다)', () => {
     makeBundle('2.1.270');
@@ -85,6 +98,23 @@ describe('resolveClaudeExe (T41)', () => {
     assert.ok(r.tried.at(-1)?.startsWith('npm 전역:'));
     fs.rmSync(npmExe);
     assert.equal(resolveClaudeExe(env(), 'win32'), bundle, 'npm 전역이 없으면 번들로 간다');
+  });
+
+  // 맥·리눅스: npm 패키지 **안**의 파일은 맥에서도 `claude.exe` 다(2.1.284 실측 — Mach-O arm64 네이티브인데
+  // 이름만 .exe). PATH 로 보이는 확장자 없는 `claude` 는 `<prefix>/bin` 의 **심볼릭 링크**이지 패키지 안의
+  // 파일이 아니다. 그래서 `claude` 만 찾으면 이 단계가 항상 빗나간다 — PATH 가 있을 때는 앞 단계에서 걸려
+  // 안 드러나고, **Finder·Dock 으로 띄운 앱**(launchd 의 최소 PATH)에서만 "못 찾았습니다" 로 터졌다(실기).
+  test('맥: npm 전역 패키지 안에 claude.exe 만 있어도 찾는다 — PATH 가 없을 때의 유일한 길', () => {
+    const npmExe = makeNpmUnix('claude.exe');
+    // Finder·Dock 으로 띄운 앱이 받는 환경: PATH 에 claude 가 없다(launchd 의 최소 PATH).
+    const r = resolveClaudeExeDetailed(env({ PATH: '/usr/bin:/bin' }), 'darwin');
+    assert.equal(r.found, true, r.tried.join(' | '));
+    assert.equal(r.exe, npmExe);
+  });
+
+  test('맥: 확장자 없는 bin/claude 도 그대로 찾는다(옛 패키지 모양)', () => {
+    const npmExe = makeNpmUnix('claude', '#!/usr/bin/env node\n');
+    assert.equal(resolveClaudeExe(env({ PATH: '/usr/bin:/bin' }), 'darwin'), npmExe);
   });
 
   test('아무것도 못 찾으면 "claude" 폴백 + 찾아본 곳을 남긴다', () => {
