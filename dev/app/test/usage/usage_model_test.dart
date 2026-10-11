@@ -194,6 +194,34 @@ void main() {
       expect(empty.contextPercent, isNull);
     });
 
+    // U-05: 세션이 쓰는 모델. 옛 데몬은 이 키를 안 보낸다 — 없으면 null 이고 나머지는 그대로다.
+    test('model: {id, label} 을 읽는다 — 없거나 모양이 아니면 null', () {
+      final u = MemberUsage.tryParse({
+        'memberId': 'm_5',
+        'model': {'id': 'claude-opus-5[1m]', 'label': 'Opus 5 (1M context)'},
+      })!;
+      expect(u.model, const SessionModel(id: 'claude-opus-5[1m]', label: 'Opus 5 (1M context)'));
+      expect(u.isEmpty, isTrue, reason: '모델만 알고 숫자는 아직 없다 — 사용량 줄은 "첫 턴 뒤 표시" 그대로');
+      expect(MemberUsage.tryParse({'memberId': 'm_5'})!.model, isNull);
+      expect(MemberUsage.tryParse({'memberId': 'm_5', 'model': 'opus'})!.model, isNull);
+      expect(MemberUsage.tryParse({'memberId': 'm_5', 'model': {'id': 7}})!.model, isNull);
+      // 이름이 없으면 id 가 이름이다.
+      expect(MemberUsage.tryParse({'memberId': 'm_5', 'model': {'id': 'gpt-6-astra'}})!.model!.label, 'gpt-6-astra');
+    });
+
+    test('model: 배지용 짧은 이름은 끝의 괄호 꾸밈만 뗀다, 툴팁은 전부', () {
+      const opus = SessionModel(id: 'claude-opus-5[1m]', label: 'Opus 5 (1M context)');
+      expect(opus.shortLabel, 'Opus 5');
+      expect(opus.fullLabel, 'Opus 5 (1M context) · claude-opus-5[1m]');
+      const astra = SessionModel(id: 'gpt-6-astra', label: 'gpt-6-astra');
+      expect(astra.shortLabel, 'gpt-6-astra');
+      expect(astra.fullLabel, 'gpt-6-astra', reason: 'id 와 이름이 같으면 한 번만');
+      expect(const SessionModel(label: 'Fable 5.1').fullLabel, 'Fable 5.1');
+      // 괄호뿐이면 원문을 지킨다(빈 배지를 만들지 않는다). 가운데 괄호는 건드리지 않는다.
+      expect(const SessionModel(label: '(preview)').shortLabel, '(preview)');
+      expect(const SessionModel(label: 'Model (x) Pro').shortLabel, 'Model (x) Pro');
+    });
+
     test('context 에 percent·window 가 둘 다 없으면 컨텍스트만 모름', () {
       final u = MemberUsage.tryParse({
         'memberId': 'm_4',

@@ -135,6 +135,23 @@ describe('Store (in-memory)', () => {
     assert.equal(store.liveLeader(team.id)!.id, leader.id, 'liveLeader 는 liveLead 의 별칭');
   });
 
+  // U-02(D-51): 부서의 허가 방식. 기본은 `ask`, 모르는 값이 DB 에 있어도 `ask` 로 읽힌다(묻는 쪽으로 틀린다).
+  test('departments.approvalPolicy: 기본 ask · 생성 시 지정 · 변경 · 모르는 값은 ask', () => {
+    const a = store.createDepartment({ name: 'a', cwd: 'D:/a' });
+    assert.equal(a.approvalPolicy, 'ask');
+    const b = store.createDepartment({ name: 'b', cwd: 'D:/b', approvalPolicy: 'edits' });
+    assert.equal(b.approvalPolicy, 'edits');
+    assert.equal(store.updateDepartment(a.id, { approvalPolicy: 'trust' })!.approvalPolicy, 'trust');
+    assert.equal(store.getDepartment(a.id)!.approvalPolicy, 'trust');
+    assert.equal(store.updateDepartment(a.id, { name: 'a2' })!.approvalPolicy, 'trust', '다른 칸을 바꿔도 그대로');
+    assert.deepEqual(store.snapshot().departments.map((d) => d.approvalPolicy).sort(), ['edits', 'trust'], '스냅샷에 실린다');
+    // 손으로 넣은 이상한 값.
+    (store as unknown as { db: { prepare(sql: string): { run(...a: unknown[]): unknown } } }).db
+      .prepare('UPDATE departments SET approval_policy = ? WHERE id = ?')
+      .run('everything', b.id);
+    assert.equal(store.getDepartment(b.id)!.approvalPolicy, 'ask');
+  });
+
   test('tree: childrenOf(살아 있는 자식만) / parentOf / subtreeOf(깊이 우선)', () => {
     const { department, head, leader, member } = seedTeam(store);
     const second = store.createMember({

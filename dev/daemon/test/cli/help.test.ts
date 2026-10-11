@@ -28,7 +28,7 @@ const member = (id: string, name: string, rank: Member['rank'], derived: string)
   derived,
 });
 
-const DEPT: Department = { id: 'd_1', name: 'alpha', cwd: 'D:\\x', headId: 'mH', createdAt: 'c' };
+const DEPT: Department = { id: 'd_1', name: 'alpha', cwd: 'D:\\x', headId: 'mH', createdAt: 'c', approvalPolicy: 'ask' };
 const TEAM: Team = { id: 't1', departmentId: 'd_1', name: 't1', cwd: 'D:\\x', leaderId: 'mL', maxMembers: 4, allowedEngines: ['claude'], createdAt: 'c' };
 
 describe('콘솔 도움말 (T38 rev 3)', () => {
@@ -40,6 +40,7 @@ describe('콘솔 도움말 (T38 rev 3)', () => {
     for (const usage of [
       'dept create <name> <cwd> [claude|codex] [부장이름]',
       'depts',
+      'dept policy <dept> <ask|edits|trust>',
       'dept delete <dept>',
       'tree',
       'say <head> <text...>',

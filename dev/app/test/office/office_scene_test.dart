@@ -16,8 +16,9 @@ void main() {
       expect(summarize(w, event('m', OfficeEventKind.running, detail: {'cmd': 'ls\ncd'})), '▶ ls');
       expect(summarize(w, event('m', OfficeEventKind.thinking)), '…');
       expect(summarize(w, event('m', OfficeEventKind.idle)), '(대기)');
-      expect(summarize(w, event('m', OfficeEventKind.waitingApproval, detail: {'cmd': 'rm -rf x'})), '❗ 허가 대기');
-      expect(summarize(w, event('m', OfficeEventKind.asking, detail: {'summary': '어느 폴더?'})), '❓ 질문');
+      // 대기 이벤트는 **그 대기가 살아 있는 동안만** 말풍선이 된다(아래 U-01 테스트).
+      expect(summarize(MemberStatus.waitingApproval, event('m', OfficeEventKind.waitingApproval, detail: {'cmd': 'rm -rf x'})), '❗ 허가 대기');
+      expect(summarize(MemberStatus.waitingAnswer, event('m', OfficeEventKind.asking, detail: {'summary': '어느 폴더?'})), '❓ 질문');
       expect(summarize(w, event('m', OfficeEventKind.error, detail: {'summary': '재지시 필요'})), '⚠ 오류');
       expect(summarize(w, event('m', OfficeEventKind.text, detail: {'text': '끝났어요'})), '❝ 끝났어요');
       expect(summarize(w, event('m', OfficeEventKind.delegating)), '→ 위임');
@@ -41,6 +42,31 @@ void main() {
       // 긴 요약은 잘린다.
       final long = event('m', OfficeEventKind.running, detail: {'summary': '셸 대기 중 ${'가' * 60}', 'waiting': 'shell-lock'});
       expect(summarize(MemberStatus.working, long).runes.length, lessThanOrEqualTo(cmdMaxChars + 2));
+    });
+
+    // U-01: 데몬은 승인·거부·답변 때 status 만 바꾸고 이벤트를 새로 내지 않는다. 마지막 이벤트만 보면
+    // 내가 누른 뒤에도 "❗ 허가 대기" 가 다음 이벤트까지 남는다 — 낡은 대기 이벤트는 지금 상태로 바꿔 말한다.
+    test('U-01: 승인·답변이 끝난 뒤의 대기 이벤트는 낡았다 — 지금 상태를 말한다', () {
+      final approvalEv = event('m', OfficeEventKind.waitingApproval, detail: {'cmd': 'rm -rf x'});
+      final askingEv = event('m', OfficeEventKind.asking, detail: {'summary': '어느 폴더?'});
+      // 승인 직후: status working, pending 없음.
+      expect(summarize(MemberStatus.working, approvalEv), '…');
+      expect(isAlertFor(MemberStatus.working, approvalEv), isFalse);
+      expect(summarize(MemberStatus.working, askingEv), '…');
+      expect(isAlertFor(MemberStatus.working, askingEv), isFalse);
+      // 턴이 끝나 idle 이 됐는데 idle 이벤트가 안 온 경우(interrupt 등)도 같다.
+      expect(summarize(MemberStatus.idle, approvalEv), '(대기)');
+      // 아직 기다리는 중이면 그대로다 — raw 상태, 파생 상태, 열린 pending 중 하나라도 대기면.
+      expect(summarize(MemberStatus.waitingApproval, approvalEv), '❗ 허가 대기');
+      expect(isAlertFor(MemberStatus.waitingApproval, approvalEv), isTrue);
+      expect(summarize(MemberStatus.idle, askingEv, derived: DerivedStatus.waitingAnswer), '❓ 질문');
+      // T19b: ask_user 질문은 턴을 붙잡지 않는다 — status 가 working 으로 돌아와도 질문은 열려 있다.
+      expect(summarize(MemberStatus.working, askingEv, hasOpenPending: true), '❓ 질문');
+      expect(isAlertFor(MemberStatus.working, askingEv, hasOpenPending: true), isTrue);
+      // 대기가 아닌 이벤트는 건드리지 않는다("방금 한 일" 은 그대로 보여 준다).
+      expect(isStaleWaitEvent(MemberStatus.working, event('m', OfficeEventKind.reporting)), isFalse);
+      expect(isStaleWaitEvent(MemberStatus.working, event('m', OfficeEventKind.running, detail: {'cmd': 'ls'})), isFalse);
+      expect(isStaleWaitEvent(MemberStatus.working, null), isFalse);
     });
 
     test('T37: ask_parent 로 상사 답을 기다리면 "❓ 상사에게 질문" 이 이벤트보다 앞선다', () {
@@ -130,6 +156,54 @@ void main() {
       expect(scene.members[0].bubbleText.runes.length, bubbleMaxChars);
       expect(scene.members[0].bubbleText.endsWith('…'), isTrue);
       expect(scene.members.every((m) => !m.isQueued), isTrue);
+    });
+
+    // U-05: 장면 멤버는 엔진뿐 아니라 세션이 쓰는 모델도 안다(툴팁·시맨틱에 쓴다).
+    test('U-05: 사용량에 모델이 있으면 engineModelLabel 에 붙는다, 없으면 엔진만', () {
+      final scene = OfficeScene.build(
+        members: {
+          'a': member('a', name: '하루', createdAt: '1'),
+          'b': member('b', name: '모시', createdAt: '2', engine: Engine.codex),
+        },
+        latestEvents: const {},
+        pending: const {},
+        usage: {
+          'a': const MemberUsage(memberId: 'a', model: SessionModel(id: 'claude-opus-5[1m]', label: 'Opus 5 (1M context)')),
+        },
+      );
+      expect(scene.memberById('a')!.modelLabel, 'Opus 5');
+      expect(scene.memberById('a')!.engineModelLabel, 'Claude · Opus 5');
+      expect(scene.memberById('b')!.modelLabel, isNull);
+      expect(scene.memberById('b')!.engineModelLabel, 'Codex');
+    });
+
+    // U-01(장면): 같은 이벤트라도 pending 이 닫히고 status 가 돌아오면 말풍선이 바로 바뀐다.
+    test('U-01: 허가 pending 이 닫히고 status 가 working 이 되면 말풍선이 "허가 대기" 에서 벗어난다', () {
+      final ev = {'m1': event('m1', OfficeEventKind.waitingApproval, detail: {'cmd': 'rm -rf build/'})};
+      final before = OfficeScene.build(
+        members: {'m1': member('m1', name: '하루', status: MemberStatus.waitingApproval, createdAt: '1')},
+        latestEvents: ev,
+        pending: {'a1': approval('a1', 'm1', 'rm -rf build/')},
+      );
+      expect(before.memberById('m1')!.summary, '❗ 허가 대기');
+      expect(before.memberById('m1')!.isAlert, isTrue);
+      // 승인: 이벤트는 그대로(데몬이 새로 안 낸다), status 만 working, pending 은 닫혔다.
+      final after = OfficeScene.build(
+        members: {'m1': member('m1', name: '하루', status: MemberStatus.working, createdAt: '1')},
+        latestEvents: ev,
+        pending: const {},
+      );
+      expect(after.memberById('m1')!.summary, '…');
+      expect(after.memberById('m1')!.isAlert, isFalse);
+      expect(after.memberById('m1')!.isQueued, isFalse);
+      // ask_user 질문이 열린 채 working 으로 돌아온 멤버는 질문 말풍선을 유지한다(T19b).
+      final asking = OfficeScene.build(
+        members: {'m1': member('m1', name: '하루', status: MemberStatus.working, createdAt: '1', rank: MemberRank.head)},
+        latestEvents: {'m1': event('m1', OfficeEventKind.asking, detail: {'summary': '어느 폴더?'})},
+        pending: {'q1': askUserQuestion('q1', 'm1', '어느 폴더?')},
+      );
+      expect(asking.memberById('m1')!.summary, '❓ 질문');
+      expect(asking.memberById('m1')!.isAlert, isTrue);
     });
 
     test('waiting 멤버는 pending 생성 순으로 줄을 선다, 목록도 같은 순서', () {

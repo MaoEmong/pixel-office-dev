@@ -252,12 +252,15 @@ class OfficeNotifier extends Notifier<OfficeState> {
     required String cwd,
     required Engine headEngine,
     String? headName,
+    ApprovalPolicy approvalPolicy = ApprovalPolicy.ask,
   }) async {
     final r = await client.call('department.create', {
       'name': name,
       'cwd': cwd,
       'headEngine': headEngine.wire,
       if (headName != null && headName.isNotEmpty) 'headName': headName,
+      // 기본(`ask`)이면 보내지 않는다 — 이 키를 모르는 옛 데몬과도 그대로 맞는다(U-02).
+      if (approvalPolicy != ApprovalPolicy.ask) 'approvalPolicy': approvalPolicy.wire,
     });
     final dept = Department.fromJson(Map<String, dynamic>.from(r['department'] as Map));
     final headJson = r['head'];
@@ -267,6 +270,14 @@ class OfficeNotifier extends Notifier<OfficeState> {
       members: head == null ? null : {...state.members, head.id: head},
     );
     return (department: dept, head: head);
+  }
+
+  /// 부서의 허가 방식을 바꾼다(PROTOCOL `department.update`, U-02). 살아 있는 세션에 바로 먹는다 — 다음 허가 요청부터.
+  Future<Department> setApprovalPolicy(String departmentId, ApprovalPolicy policy) async {
+    final r = await client.call('department.update', {'departmentId': departmentId, 'approvalPolicy': policy.wire});
+    final dept = Department.fromJson(Map<String, dynamic>.from(r['department'] as Map));
+    state = state.copyWith(departments: {...state.departments, dept.id: dept});
+    return dept;
   }
 
   /// 부서 삭제(PROTOCOL `department.delete`) — 하위 트리를 잎부터 정리한 뒤 행을 지운다.

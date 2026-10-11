@@ -105,6 +105,7 @@ class LogRow extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final detail = eventDetailLine(event);
+    final auto = event.detail.auto;
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
       child: Row(
@@ -132,6 +133,22 @@ class LogRow extends StatelessWidget {
               style: const TextStyle(fontSize: 12, color: Colors.white70, fontFamily: panelMonoFamily, fontFamilyFallback: panelMonoFallback),
             ),
           ),
+          // U-02: 묻지 않고 넘긴 것은 로그에서 한눈에 보여야 한다 — 무엇이 내 허락 없이 실행됐는지의 기록이다.
+          if (auto != null) ...[
+            const SizedBox(width: 6),
+            Tooltip(
+              message: autoApprovedTooltip(auto),
+              child: Container(
+                key: const Key('log.autoApproved'),
+                padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+                decoration: BoxDecoration(
+                  border: Border.all(color: Colors.amber.withValues(alpha: 0.6)),
+                  borderRadius: BorderRadius.circular(3),
+                ),
+                child: Text(autoApprovedTag, style: TextStyle(fontSize: 10.5, color: Colors.amber.withValues(alpha: 0.9))),
+              ),
+            ),
+          ],
         ],
       ),
     );

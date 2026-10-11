@@ -313,6 +313,41 @@ void main() {
       expect(l.hitTest(l.barRect.center, s, null, scroll), isNull);
     });
 
+    // U-04: 보고 방문자는 바에 그려진다 — hitTest 도 같은 집합을 받아 뷰포트 좌표로 본다.
+    test('보고 방문자는 바(뷰포트 좌표)에서 눌린다 — 스크롤과 무관', () {
+      final plan = planOf(8);
+      final l = OfficeLayout(size: const Size(1000, 600), plan: plan);
+      final s = OfficeScene(
+        members: [
+          for (var i = 0; i < plan.deskCount; i++)
+            SceneMember(id: 'x$i', name: 'n$i', engine: Engine.claude, status: MemberStatus.idle, deskIndex: i, summary: '', isAlert: false),
+        ],
+        queue: const [],
+        plan: plan,
+      );
+      final spot = l.reportSpot(0);
+      final scroll = math.min(120.0, l.maxScroll);
+      expect(scroll, greaterThan(0));
+      // x1 이 보고하러 와서 내 책상 옆에 서 있다(나머지는 자리).
+      final placed = [
+        for (final p in l.placements(s))
+          p.memberId == 'x1' ? CharacterPlacement(memberId: 'x1', center: spot, bubbleAnchor: l.reportBubbleAnchor(0)) : p,
+      ];
+      expect(l.drawsInBar(s.memberById('x1')!), isFalse);
+      expect(l.drawsInBar(s.memberById('x1')!, visiting: const {'x1'}), isTrue);
+      for (final off in [0.0, scroll]) {
+        expect(l.hitTest(spot, s, placed, off, const {'x1'}), 'x1', reason: 'scroll=$off');
+        expect(l.hitTest(spot, s, placed, off), isNull, reason: '방문 집합을 안 주면 바의 빈 곳(scroll=$off)');
+      }
+      // 걸어오는 중(스크롤 영역 위를 지나는 중)에도 그려지는 좌표(뷰포트) 그대로 눌린다.
+      final onTheWay = Offset(spot.dx, l.viewportHeight - 40);
+      final walking = [
+        for (final p in placed)
+          p.memberId == 'x1' ? CharacterPlacement(memberId: 'x1', center: onTheWay, bubbleAnchor: onTheWay) : p,
+      ];
+      expect(l.hitTest(onTheWay, s, walking, scroll, const {'x1'}), 'x1');
+    });
+
     test('빈 장면: 배치 없음, 어디를 눌러도 null', () {
       final l = OfficeLayout(size: wide, deskCount: 0);
       expect(l.placements(OfficeScene.empty), isEmpty);

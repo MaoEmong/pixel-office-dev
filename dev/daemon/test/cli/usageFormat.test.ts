@@ -32,6 +32,7 @@ const CODEX_OFF: EngineUsage = {
 const HEAD: MemberUsage = {
   memberId: 'm_head',
   engine: 'claude',
+  model: null,
   context: { used: 43910, window: 1_000_000, percent: 4 },
   tokens: { input: 912, output: 17, cacheRead: 29413, cacheCreate: 14495, total: 44837 },
   costUsd: 0.16072150000000002,
@@ -40,6 +41,7 @@ const HEAD: MemberUsage = {
 const LEAD: MemberUsage = {
   memberId: 'm_lead',
   engine: 'codex',
+  model: { id: 'gpt-6-astra', label: 'gpt-6-astra' },
   context: { used: 21868, window: 258400, percent: 8 },
   tokens: { input: 43716, output: 10, cacheRead: 21632, cacheCreate: 0, total: 43726 },
   costUsd: null,
@@ -96,7 +98,7 @@ describe('formatMemberUsage', () => {
 
   test('Codex: 비용 자리는 `-`', () => {
     const line = formatMemberUsage(LEAD, nameOf);
-    assert.ok(line.startsWith('반장 [codex]'), line);
+    assert.ok(line.startsWith('반장 [codex · gpt-6-astra]'), line); // U-05: 모델을 알면 엔진 옆에
     assert.ok(line.includes('컨텍스트 8% (22k/258k)'), line);
     assert.ok(line.endsWith('-  2026-09-21T10:01:00.000Z'), line);
   });

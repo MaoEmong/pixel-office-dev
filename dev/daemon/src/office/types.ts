@@ -7,6 +7,7 @@ import type { ApprovalDecisionInput } from '../adapters/types.js';
 import type { EngineUsage, MemberUsage, UsageSnapshot } from '../usage/types.js';
 import type { StatusLineRequest } from '../hooks/HookReceiver.js';
 import type {
+  ApprovalPolicy,
   Department,
   Engine,
   EventsQueryInput,
@@ -44,6 +45,14 @@ export interface CreateDepartmentParams {
   headEngine: Engine;
   /** 자동 출근하는 부장의 이름. 기본 '부장'. */
   headName?: string;
+  /** 허가 방식(U-02). 생략하면 `ask`(전부 묻기). */
+  approvalPolicy?: ApprovalPolicy;
+}
+
+/** `department.update` — 지금은 허가 방식만 바꾼다(U-02). 이름·폴더는 부서의 정체라 못 바꾼다. */
+export interface UpdateDepartmentParams {
+  departmentId: string;
+  approvalPolicy?: ApprovalPolicy;
 }
 
 export interface CreateDepartmentResult {
@@ -269,7 +278,7 @@ export type OfficeEvents = {
    * 다른 클라이언트가 재접속할 때까지 지운 부서·팀이 화면에 남아 있었다(T37 함정 ①).
    * `reason` 은 로그·테스트용 꼬리표다.
    */
-  tree: [reason: 'department.create' | 'department.delete' | 'team.create' | 'team.delete'];
+  tree: [reason: 'department.create' | 'department.update' | 'department.delete' | 'team.create' | 'team.delete'];
   /**
    * 엔진 사용량이 **바뀌었다** → `usage.engine` 알림(비영속·seq 없음, T43). 값이 그대로면 오지 않는다.
    * 연결 여부·요금제·주간/5시간 한도·마지막 확인 시각이 한 덩어리로 온다.
@@ -298,6 +307,8 @@ export interface OfficeApi extends EventEmitter<OfficeEvents> {
 
   /** 부서 생성 + 부장 자동 출근(T34, D-32). 사용자가 하는 유일한 생성. */
   createDepartment(params: CreateDepartmentParams): CreateDepartmentResult;
+  /** 부서 설정 변경(U-02: 허가 방식). 살아 있는 세션에 **바로** 적용된다 — 다음 허가 요청부터. */
+  updateDepartment(params: UpdateDepartmentParams): Department;
   /** 부서 하위 트리 전체(팀·팀장·팀원)를 정리하고 삭제한다. 부장이 마지막. */
   deleteDepartment(departmentId: string): Promise<void>;
   /** 부서 트리(콘솔 `tree`·앱). */

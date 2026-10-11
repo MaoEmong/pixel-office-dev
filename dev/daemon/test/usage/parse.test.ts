@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { parseClaudeStatusLine } from '../../src/usage/parse/claudeStatusLine.js';
+import { parseClaudeStatusLine, sessionModelOf } from '../../src/usage/parse/claudeStatusLine.js';
 import { parseClaudeCostState } from '../../src/usage/parse/claudeCostState.js';
 import { parseCodexTokenCounts, WEEKLY_WINDOW_MINUTES } from '../../src/usage/parse/codexTokenCount.js';
 import { parseClaudeAuthStatus, parseCodexLoginStatus } from '../../src/usage/parse/connection.js';
@@ -32,6 +32,22 @@ describe('parseClaudeStatusLine (실측 페이로드)', () => {
     assert.equal(got.costUsd, 0.16072150000000002);
     assert.equal(got.sessionId, '50cc7bea-750f-4e3f-8492-4c4595194b6d');
     assert.ok(got.transcriptPath?.endsWith('.jsonl'), got.transcriptPath ?? '(없음)');
+  });
+
+  // U-05: 세션이 쓰는 모델. 실측 페이로드에 처음부터 있었는데 안 꺼내고 있었다.
+  test('모델: `model{id, display_name}` — 첫 턴 전에도 온다', () => {
+    const want = { id: 'claude-opus-5[1m]', label: 'Opus 5 (1M context)' };
+    assert.deepEqual(parseClaudeStatusLine(statusLine(1)).model, want);
+    assert.deepEqual(parseClaudeStatusLine(statusLine(0)).model, want, '한도가 아직 없는 첫 장에도 모델은 있다');
+    assert.deepEqual(parseClaudeStatusLine(readJson('claude-statusline-fresh.json')).model, want);
+  });
+
+  test('모델: 모양이 달라도 죽지 않는다 — 문자열 하나 · 이름만 · id 만 · 없음', () => {
+    assert.deepEqual(sessionModelOf('gpt-6-astra'), { id: 'gpt-6-astra', label: 'gpt-6-astra' }, 'hook 페이로드의 모양');
+    assert.deepEqual(sessionModelOf({ display_name: 'Fable 5.1' }), { id: null, label: 'Fable 5.1' });
+    assert.deepEqual(sessionModelOf({ id: 'claude-fable-5-1' }), { id: 'claude-fable-5-1', label: 'claude-fable-5-1' });
+    for (const bad of [undefined, null, '', '   ', 42, {}, { id: 7 }, []]) assert.equal(sessionModelOf(bad), null, JSON.stringify(bad));
+    assert.equal(parseClaudeStatusLine({ context_window: {} }).model, null);
   });
 
   test('used 는 current_usage 입력 세 값의 합 = total_input_tokens (실측 2+14495+29413=43910)', () => {

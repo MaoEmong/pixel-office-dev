@@ -32,6 +32,7 @@ import type {
   UpdateTaskInput,
   UpdateTeamInput,
 } from './types.js';
+import { DEFAULT_APPROVAL_POLICY, isApprovalPolicy } from './types.js';
 
 // ---- node:sqlite ExperimentalWarning 억제 ----------------------------------
 // node:sqlite 는 로드 시 "SQLite is an experimental feature..." ExperimentalWarning 을 낸다.
@@ -109,6 +110,8 @@ function rowToDepartment(r: Row): Department {
     cwd: r.cwd as string,
     headId: (r.head_id as string | null) ?? null,
     createdAt: r.created_at as string,
+    // 모르는 값·옛 행은 `ask` — 틀리더라도 "묻는" 쪽으로 틀린다(U-02).
+    approvalPolicy: isApprovalPolicy(r.approval_policy) ? r.approval_policy : DEFAULT_APPROVAL_POLICY,
   };
 }
 
@@ -258,7 +261,19 @@ export class Store {
     }
     this.repairPendingFk();
     this.addSuspendedStatus();
+    this.addApprovalPolicy();
     this.writeVersion(SCHEMA_VERSION);
+  }
+
+  /**
+   * **v5 → v6(U-02)** — `departments.approval_policy` 칼럼. 새 DB 는 SCHEMA_SQL 이 이미 만들었고, 옛 DB 에만 넣는다.
+   * `addSuspendedStatus` 처럼 버전이 아니라 **실제 칼럼**을 본다. 기본값 `ask` 라 옛 부서는 전부 "전부 묻기" 다. 멱등.
+   */
+  private addApprovalPolicy(): void {
+    const cols = this.db.prepare("SELECT name FROM pragma_table_info('departments')").all() as Row[];
+    if (cols.length === 0 || cols.some((c) => c.name === 'approval_policy')) return;
+    this.db.exec("ALTER TABLE departments ADD COLUMN approval_policy TEXT NOT NULL DEFAULT 'ask'");
+    console.log('[store] departments.approval_policy 추가 (schema v6, U-02)');
   }
 
   /**
@@ -394,8 +409,8 @@ export class Store {
   createDepartment(input: CreateDepartmentInput): Department {
     const id = input.id ?? newId('d');
     this.db
-      .prepare('INSERT INTO departments(id, name, cwd, head_id, created_at) VALUES (?, ?, ?, ?, ?)')
-      .run(id, input.name, input.cwd, input.headId ?? null, nowIso());
+      .prepare('INSERT INTO departments(id, name, cwd, head_id, created_at, approval_policy) VALUES (?, ?, ?, ?, ?, ?)')
+      .run(id, input.name, input.cwd, input.headId ?? null, nowIso(), input.approvalPolicy ?? DEFAULT_APPROVAL_POLICY);
     return this.getDepartment(id)!;
   }
 
@@ -413,6 +428,7 @@ export class Store {
       name: { col: 'name' },
       cwd: { col: 'cwd' },
       headId: { col: 'head_id', encode: nullable },
+      approvalPolicy: { col: 'approval_policy' },
     });
     if (sets.length > 0) {
       this.db.prepare(`UPDATE departments SET ${sets.join(', ')} WHERE id = ?`).run(...params, id);

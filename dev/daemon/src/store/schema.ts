@@ -30,7 +30,13 @@
 //   `suspended` 는 "데몬이 정상 종료하면서 잠시 닫아 둔 세션" 이다 — 사용자 퇴근(`exited`)·상사 dismiss(`exited`)·
 //   오류(`error`) 와 달리 **다음 기동에 말없이 되살린다**(수명주기.md §5).
 
-export const SCHEMA_VERSION = 5;
+//
+// v6(U-02, D-51 허가 방식): `departments.approval_policy` 칼럼 하나(`ask`|`edits`|`trust`, 기본 `ask`).
+//   옛 행은 전부 `ask` 가 된다 — **켜기 전에는 아무 동작도 안 바뀐다.** `ALTER TABLE ADD COLUMN` 한 줄이라 표를
+//   다시 만들지 않는다. 버전 번호가 아니라 실제 칼럼을 보고 넣는다(Store.addApprovalPolicy — v5 와 같은 방식).
+//   CHECK 는 걸지 않는다: 값 검증은 Store 가 읽을 때 한다(모르는 값은 `ask` — 가장 조심스러운 쪽으로 떨어진다).
+
+export const SCHEMA_VERSION = 6;
 
 export const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -40,11 +46,12 @@ CREATE TABLE IF NOT EXISTS schema_version (
 -- 부서 = 프로젝트(cwd). head_id 는 그 부서의 부장(members.id). 부장이 나가도 값은 남는다
 -- (살아 있는 부장 판정은 Store.liveHead 가 rank/status 로 한다 — teams.leader_id 와 같은 규칙).
 CREATE TABLE IF NOT EXISTS departments (
-  id         TEXT PRIMARY KEY,
-  name       TEXT NOT NULL,
-  cwd        TEXT NOT NULL,
-  head_id    TEXT,
-  created_at TEXT NOT NULL
+  id              TEXT PRIMARY KEY,
+  name            TEXT NOT NULL,
+  cwd             TEXT NOT NULL,
+  head_id         TEXT,
+  created_at      TEXT NOT NULL,
+  approval_policy TEXT NOT NULL DEFAULT 'ask'
 );
 
 CREATE TABLE IF NOT EXISTS teams (

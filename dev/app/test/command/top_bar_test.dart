@@ -5,6 +5,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:pixel_office/model/models.dart';
 import 'package:pixel_office/rpc/rpc_client.dart';
 import 'package:pixel_office/state/office_state.dart';
 import 'package:pixel_office/state/selection.dart';
@@ -205,6 +206,140 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.byType(CreateDepartmentDialog), findsOneWidget);
     expect(find.text('cwd 가 폴더가 아닙니다 (-32602)'), findsOneWidget);
+  });
+
+  // ---- U-02(D-51): 허가 방식 --------------------------------------------------------------------
+  testWidgets('부서 만들기: 세부 설정은 접혀 있고 기본은 "전부 묻기" — 안 건드리면 approvalPolicy 를 안 보낸다', (tester) async {
+    fake.responder = (m, p) => switch (m) {
+          'department.create' => {
+              'department': {...fakeDepartment('dNew', name: p['name'] as String, headId: 'mH'), 'approvalPolicy': p['approvalPolicy'] ?? 'ask'},
+              'head': fakeMember('mH', rank: 'head', status: 'starting', departmentId: 'dNew'),
+            },
+          _ => <String, dynamic>{},
+        };
+    await pumpApp(tester, fake);
+    fake.emitHello();
+    await pump2(tester);
+    await tester.tap(find.byKey(const Key('topbar.createDepartment')));
+    await tester.pumpAndSettle();
+
+    // 접혀 있어도 지금 값이 보인다.
+    expect(find.byKey(const Key('createDepartment.approvalPolicy')), findsNothing);
+    expect(find.text('허가 방식: 전부 묻기'), findsOneWidget);
+
+    await tester.enterText(find.byKey(const Key('createDepartment.cwd')), existingFolder);
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('createDepartment.submit')));
+    await tester.pumpAndSettle();
+    expect(fake.callList.single[1], isNot(contains('approvalPolicy')), reason: '이 키를 모르는 옛 데몬과도 그대로 맞는다');
+    expect(containerOf(tester).read(departmentsProvider)['dNew']!.approvalPolicy, ApprovalPolicy.ask);
+  });
+
+  testWidgets('부서 만들기: 세부 설정에서 고르면 approvalPolicy 가 실리고, trust 에는 한계가 같이 보인다', (tester) async {
+    fake.responder = (m, p) => switch (m) {
+          'department.create' => {
+              'department': {...fakeDepartment('dNew', name: p['name'] as String, headId: 'mH'), 'approvalPolicy': p['approvalPolicy'] ?? 'ask'},
+              'head': fakeMember('mH', rank: 'head', status: 'starting', departmentId: 'dNew'),
+            },
+          _ => <String, dynamic>{},
+        };
+    await pumpApp(tester, fake);
+    fake.emitHello();
+    await pump2(tester);
+    await tester.tap(find.byKey(const Key('topbar.createDepartment')));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byKey(const Key('createDepartment.cwd')), existingFolder);
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byKey(const Key('createDepartment.advanced')));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('createDepartment.approvalPolicy')), findsOneWidget);
+    for (final p in ApprovalPolicy.values) {
+      expect(find.text(p.label), findsOneWidget);
+      expect(find.text(p.hint), findsOneWidget, reason: '무엇이 묻지 않고 넘어가는지 칸마다 적는다');
+    }
+    expect(find.text(approvalAlwaysAsksHint), findsOneWidget);
+
+    await tester.tap(find.byKey(const Key('approvalPolicy.trust')));
+    await tester.pumpAndSettle();
+    expect(find.text(approvalTrustCaveat), findsOneWidget, reason: 'trust 는 보안 경계가 아니라는 한 줄');
+    expect(find.text('허가 방식: 위험한 것만 묻기'), findsOneWidget);
+
+    await tester.tap(find.byKey(const Key('approvalPolicy.edits')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('createDepartment.submit')));
+    await tester.pumpAndSettle();
+    expect(fake.callList.single[1], containsPair('approvalPolicy', 'edits'));
+    expect(containerOf(tester).read(departmentsProvider)['dNew']!.approvalPolicy, ApprovalPolicy.edits);
+  });
+
+  testWidgets('부서 메뉴 → 허가 방식: 지금 값이 메뉴에 보이고, 바꾸면 department.update → 상태 갱신', (tester) async {
+    fake.responder = (m, p) => switch (m) {
+          'department.update' => {
+              'department': {...fakeDepartment('d1', name: 'alpha', headId: 'mH'), 'approvalPolicy': p['approvalPolicy']},
+            },
+          _ => <String, dynamic>{},
+        };
+    await pumpApp(tester, fake);
+    fake.emitHello(departments: [fakeDepartment('d1', name: 'alpha', headId: 'mH')], members: [fakeMember('mH', rank: 'head')]);
+    await pump2(tester);
+
+    await tester.tap(find.byKey(const Key('topbar.departmentMenu')));
+    await tester.pumpAndSettle();
+    expect(find.text('허가 방식 — 전부 묻기'), findsOneWidget);
+    await tester.tap(find.byKey(const Key('topbar.approvalPolicy')));
+    await tester.pumpAndSettle();
+    expect(find.text('허가 방식 — alpha'), findsOneWidget);
+
+    // 같은 값이면 "바꾸기" 가 꺼져 있다. 취소하면 아무것도 안 나간다.
+    expect(tester.widget<FilledButton>(find.byKey(const Key('approvalPolicy.save'))).onPressed, isNull);
+    await tester.tap(find.byKey(const Key('approvalPolicy.trust')));
+    await tester.pumpAndSettle();
+    expect(find.text(approvalTrustCaveat), findsOneWidget);
+    await tester.tap(find.text('취소'));
+    await tester.pumpAndSettle();
+    expect(fake.calls, isEmpty);
+
+    await tester.tap(find.byKey(const Key('topbar.departmentMenu')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('topbar.approvalPolicy')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('approvalPolicy.edits')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('approvalPolicy.save')));
+    await tester.pumpAndSettle();
+    expect(fake.callList, [['department.update', {'departmentId': 'd1', 'approvalPolicy': 'edits'}]]);
+    expect(containerOf(tester).read(departmentsProvider)['d1']!.approvalPolicy, ApprovalPolicy.edits);
+
+    // 메뉴에도 바뀐 값이 보인다.
+    await tester.tap(find.byKey(const Key('topbar.departmentMenu')));
+    await tester.pumpAndSettle();
+    expect(find.text('허가 방식 — 폴더 안 편집은 자동'), findsOneWidget);
+  });
+
+  testWidgets('허가 방식: 부서가 없으면 메뉴 항목이 꺼져 있고, RPC 오류는 스낵바로 알린다', (tester) async {
+    fake.responder = (m, p) => throw const RpcException(RpcException.invalidParams, 'approvalPolicy must be ask|edits|trust');
+    await pumpApp(tester, fake);
+    fake.emitHello();
+    await pump2(tester);
+    await tester.tap(find.byKey(const Key('topbar.departmentMenu')));
+    await tester.pumpAndSettle();
+    expect(tester.widget<PopupMenuItem<String>>(find.byKey(const Key('topbar.approvalPolicy'))).enabled, isFalse);
+    await tester.tapAt(const Offset(5, 400)); // 메뉴 닫기
+    await tester.pumpAndSettle();
+
+    fake.emitHello(departments: [fakeDepartment('d1', name: 'alpha', headId: 'mH')], members: [fakeMember('mH', rank: 'head')]);
+    await pump2(tester);
+    await tester.tap(find.byKey(const Key('topbar.departmentMenu')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('topbar.approvalPolicy')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('approvalPolicy.trust')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('approvalPolicy.save')));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('허가 방식을 바꾸지 못했습니다'), findsOneWidget);
+    expect(containerOf(tester).read(departmentsProvider)['d1']!.approvalPolicy, ApprovalPolicy.ask, reason: '실패하면 그대로');
   });
 
   testWidgets('부서 메뉴 → 삭제 → 확인 → department.delete, 상태에서 그 부서 트리가 빠진다', (tester) async {

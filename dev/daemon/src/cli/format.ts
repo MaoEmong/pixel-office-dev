@@ -62,7 +62,9 @@ export function formatTeam(t: Team, memberCount: number): string {
 }
 
 export function formatDepartment(d: Department, teamCount: number, memberCount: number): string {
-  return `${d.id}  ${d.name}  ${d.cwd}  head=${d.headId ?? '-'}  팀 ${teamCount}개  멤버 ${memberCount}명`;
+  // 허가 방식은 기본(`ask`)이 아닐 때만 보인다 — 옛 데몬의 행에는 칸 자체가 없다(U-02).
+  const policy = d.approvalPolicy && d.approvalPolicy !== 'ask' ? `  허가=${d.approvalPolicy}` : '';
+  return `${d.id}  ${d.name}  ${d.cwd}  head=${d.headId ?? '-'}  팀 ${teamCount}개  멤버 ${memberCount}명${policy}`;
 }
 
 /** `department.tree` 결과 한 그루(데몬 office/types.ts DepartmentTree 의 와이어 모양). */
@@ -237,7 +239,8 @@ export function formatEngineModels(u: EngineUsage): string[] {
 
 /**
  * 콘솔 `usage` 의 멤버 한 줄.
- *   `반장 [claude]  컨텍스트 4% (44k/1.0M)  토큰 45k  $0.1607  2026-09-21T10:00:00.000Z`
+ *   `반장 [claude · Opus 5 (1M context)]  컨텍스트 4% (44k/1.0M)  토큰 45k  $0.1607  2026-09-21T10:00:00.000Z`
+ * 모델을 아직 못 봤으면 `[claude]` 뿐이다.
  * Codex 는 비용 칸이 없다(`-`).
  */
 export function formatMemberUsage(u: MemberUsage, nameOf: NameOf): string {
@@ -247,7 +250,9 @@ export function formatMemberUsage(u: MemberUsage, nameOf: NameOf): string {
       ? `컨텍스트 ${ctx.percent}% (${formatTokens(ctx.used)}/${formatTokens(ctx.window)})`
       : '컨텍스트 -';
   const cost = typeof u.costUsd === 'number' ? `$${u.costUsd.toFixed(4)}` : '-';
-  return `${nameOf(u.memberId)} [${u.engine}]  ${ctxText}  토큰 ${formatTokens(u.tokens?.total ?? null)}  ${cost}  ${u.updatedAt}`;
+  // U-05: 모델을 알면 엔진 옆에 붙인다(`[claude · Opus 5 (1M context)]`). 옛 데몬이면 필드 자체가 없다.
+  const engine = u.model?.label ? `${u.engine} · ${u.model.label}` : u.engine;
+  return `${nameOf(u.memberId)} [${engine}]  ${ctxText}  토큰 ${formatTokens(u.tokens?.total ?? null)}  ${cost}  ${u.updatedAt}`;
 }
 
 /** 콘솔 `usage` 전체 출력(엔진 → 멤버, 컨텍스트 큰 순). */

@@ -92,7 +92,11 @@ describe('스키마 v3 → v4 마이그레이션 (T43-4 확인용 세션 pid)', 
 
     const raw = new DatabaseSync(dbPath);
     assert.equal((raw.prepare('SELECT version FROM schema_version').get() as { version: number }).version, SCHEMA_VERSION);
-    assert.equal(SCHEMA_VERSION, 5, 'T46-1 에서 members.status 에 suspended 가 붙으며 v5 가 됐다');
+    assert.equal(SCHEMA_VERSION, 6, 'U-02 에서 departments.approval_policy 가 붙으며 v6 이 됐다(v5 = T46-1 suspended)');
+    // v6(U-02): 옛 부서 행에 칼럼이 붙고 값은 `ask` — 켜기 전에는 아무 동작도 안 바뀐다.
+    const deptCols = (raw.prepare("SELECT name FROM pragma_table_info('departments')").all() as Array<{ name: string }>).map((r) => r.name);
+    assert.ok(deptCols.includes('approval_policy'), deptCols.join(','));
+    assert.equal((raw.prepare('SELECT approval_policy FROM departments WHERE id = ?').get('d_a') as { approval_policy: string }).approval_policy, 'ask');
     const tables = (raw.prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name").all() as Array<{ name: string }>).map((r) => r.name);
     assert.ok(tables.includes('usage_probe'), tables.join(','));
     // v5(T46-1): 같은 열기에서 members 표가 다시 만들어지고 CHECK 에 suspended 가 들어간다.

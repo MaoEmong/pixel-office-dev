@@ -34,7 +34,8 @@ import { InputQueue } from '../input/InputQueue.js';
 import { UsageProbe } from '../usage/UsageProbe.js';
 import { UsageTracker } from '../usage/UsageTracker.js';
 import { ALL_TEAM_TOOLS, TeamToolsServer, TEAM_MCP_NAME, canUseTool, rankToolMessage, type TeamToolName } from '../mcp/TeamToolsServer.js';
-import { CHILD_RANK, USER_ACTOR } from '../store/types.js';
+import { CHILD_RANK, USER_ACTOR, isApprovalPolicy } from '../store/types.js';
+import { decideAutoApproval, type AutoApprovalDecision } from '../adapters/autoApproval.js';
 import type {
   Department,
   Engine,
@@ -71,6 +72,7 @@ import type {
   AttachResult,
   ClockInParams,
   CreateDepartmentParams,
+  UpdateDepartmentParams,
   CreateDepartmentResult,
   CreateTeamParams,
   CreateTeamResult,
@@ -477,6 +479,8 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
       getInstructions: (memberId: string) => this.buildSessionContext(memberId) || undefined,
       // T27: 셸 도구(읽기 전용 제외)의 PreToolUse 는 팀 락을 잡을 때까지 응답을 보류한다.
       toolGate: (memberId, tool, input, ctx) => this.shellGate(memberId, tool, input, ctx),
+      // U-02: 부서의 허가 방식이 허락하면 허가 요청을 사람에게 묻지 않고 넘긴다.
+      autoApprove: (member, tool, input) => this.autoApprove(member, tool, input),
     };
     this.adapter = new ClaudeHooksAdapter(adapterDeps);
     this.codexAdapter = new CodexHooksAdapter(adapterDeps);
@@ -863,9 +867,16 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
     if (!fs.existsSync(params.cwd) || !fs.statSync(params.cwd).isDirectory()) throw invalidParams(`cwd is not a directory: ${params.cwd}`);
     if (params.headEngine !== 'claude' && params.headEngine !== 'codex') throw invalidParams(`unknown engine: ${String(params.headEngine)}`);
     if (!params.name.trim()) throw invalidParams('name is empty');
+    if (params.approvalPolicy !== undefined && !isApprovalPolicy(params.approvalPolicy)) {
+      throw invalidParams(`unknown approvalPolicy: ${String(params.approvalPolicy)}`);
+    }
     const headName = (params.headName ?? DEFAULT_HEAD_NAME).trim() || DEFAULT_HEAD_NAME;
 
-    const department = this.store.createDepartment({ name: params.name.trim(), cwd: path.resolve(params.cwd) });
+    const department = this.store.createDepartment({
+      name: params.name.trim(),
+      cwd: path.resolve(params.cwd),
+      ...(params.approvalPolicy !== undefined ? { approvalPolicy: params.approvalPolicy } : {}),
+    });
     let head: Member;
     try {
       head = this.hireChild({ departmentId: department.id, name: headName, rank: 'head', engine: params.headEngine, hiredBy: 'user' });
@@ -878,6 +889,34 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
     const created = this.store.updateDepartment(department.id, { headId: head.id })!;
     this.emit('tree', 'department.create');
     return { department: created, head };
+  }
+
+  /**
+   * 부서 설정 변경 — 지금은 **허가 방식**뿐이다(U-02, D-51).
+   *
+   * 세션을 다시 띄우지 않는다: 판정은 허가 요청이 올 때마다 부서 행을 읽으므로 **다음 요청부터** 바로 먹는다.
+   * 이미 떠 있는 허가 카드는 건드리지 않는다 — 방식을 바꿨다고 사람이 보고 있던 카드를 뒤에서 넘기지 않는다.
+   */
+  updateDepartment(params: UpdateDepartmentParams): Department {
+    const department = this.store.getDepartment(params.departmentId);
+    if (!department) throw notFound('department', params.departmentId);
+    if (params.approvalPolicy === undefined) return department;
+    if (!isApprovalPolicy(params.approvalPolicy)) throw invalidParams(`unknown approvalPolicy: ${String(params.approvalPolicy)}`);
+    if (params.approvalPolicy === department.approvalPolicy) return department;
+    const updated = this.store.updateDepartment(department.id, { approvalPolicy: params.approvalPolicy })!;
+    this.notice('info', `부서 "${updated.name}" 허가 방식: ${department.approvalPolicy} → ${updated.approvalPolicy}`);
+    this.emit('tree', 'department.update');
+    return updated;
+  }
+
+  /**
+   * `AdapterDeps.autoApprove`: 이 멤버 부서의 허가 방식으로 판정한다(U-02). 부서를 못 찾으면 묻는다.
+   * **기준 폴더는 부서 cwd** 다 — 멤버·팀 cwd 가 아니다(D-32: 한 부서는 한 폴더에서 일한다).
+   */
+  private autoApprove(member: Member, tool: string, input: unknown): AutoApprovalDecision | undefined {
+    const department = this.store.getDepartment(member.departmentId);
+    if (!department || department.approvalPolicy === 'ask') return undefined;
+    return decideAutoApproval(department.approvalPolicy, { toolName: tool, toolInput: input, cwd: department.cwd });
   }
 
   /**
@@ -2548,6 +2587,21 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
     this.appendEvent(member, 'running', detail);
   }
 
+  /**
+   * 줄을 섰던 셸 명령이 락을 넘겨받았다 → 평범한 `running{cmd}` 를 한 번 더 남긴다(U-01).
+   *
+   * 이게 없으면 마지막 이벤트가 `running{waiting:'shell-lock'}` 인 채로 명령이 돈다 — 말풍선·모니터가
+   * 실행 중인데도 "◷ 셸 대기 중" 이고, 명령이 끝나도(PostToolUse 는 이벤트를 안 낸다) 다음 도구까지 그대로다.
+   * "시작했다 → 막혔다 → 풀려서 돈다" 는 서로 다른 사실이다(D-41 의 기준 그대로).
+   */
+  private noticeShellGranted(info: ShellLockInfo): void {
+    const member = this.store.getMember(info.memberId);
+    if (!member) return;
+    const detail: OfficeEvent['detail'] = { summary: '셸 대기 끝 — 실행' };
+    if (info.cmd) detail.cmd = truncate(info.cmd, 300);
+    this.appendEvent(member, 'running', detail);
+  }
+
   private memberLabel(memberId: string): string {
     return this.store.getMember(memberId)?.name ?? memberId;
   }
@@ -2597,6 +2651,9 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
 
     // T27: 대기·강제 해제는 사용자에게 보여야 한다(대기는 이벤트, 강제 해제는 알림).
     this.shell.on('waiting', (info, holder) => this.noticeShellWait(info, holder));
+    this.shell.on('granted', (info, _waitedMs, queued) => {
+      if (queued) this.noticeShellGranted(info);
+    });
     this.shell.on('warn', (info, message) => this.notice('warn', `${this.memberLabel(info.memberId)}: ${message}${info.cmd ? ` (${truncate(info.cmd, 80)})` : ''}`));
 
     this.receiver.on('hook', (req) => {
@@ -2615,6 +2672,13 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
         if (typeof req.payload.transcript_path === 'string' && req.payload.transcript_path) {
           rt.transcriptPath = req.payload.transcript_path;
         }
+      }
+      // U-05: 세션이 쓰는 모델. Codex 는 모든 hook 에, Claude 는 SessionStart 에 `model`(id)이 실린다
+      // (Claude 의 표시 이름은 statusLine 이 준다). 모델 때문에 hook 처리가 멈추면 안 된다.
+      try {
+        this.usage.applyHookModel({ id: member.id, engine: member.engine }, req.payload.model);
+      } catch (err) {
+        console.warn(`[office] hook model 처리 실패(${member.id}):`, err);
       }
       // T20: 멤버의 engine 으로 어댑터를 고른다(Codex 는 명령 휴리스틱 매핑 + Interrupt hook).
       this.adapterFor(member.engine).handleHook(req, member);

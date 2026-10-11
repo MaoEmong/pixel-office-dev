@@ -253,6 +253,14 @@ describe('Office 배선: 팀 셸 뮤텍스 (T27)', () => {
     assert.deepEqual(b.sent, [{}], 'PostToolUse 가 두 번째를 풀어 준다');
     assert.equal(office.shell.holder(deptId)?.memberId, 이음.id);
     assert.equal(waitEventsOf(이음).length, 1, '대기 이벤트는 한 번만');
+
+    // U-01: 락을 넘겨받으면 "대기 중" 이 마지막 이벤트로 남지 않는다 — 평범한 running 이 하나 더 온다.
+    const after = events.filter((e) => e.memberId === 이음.id);
+    assert.deepEqual(after.map((e) => e.kind), ['running', 'running', 'running']);
+    assert.equal(after[2]!.detail.waiting, undefined, '마지막 이벤트는 더 이상 대기가 아니다');
+    assert.equal(after[2]!.detail.cmd, 'echo x > y.txt');
+    // 줄을 서지 않고 바로 잡은 쪽(하루)에는 그런 이벤트가 없다.
+    assert.deepEqual(events.filter((e) => e.memberId === 하루.id).map((e) => e.kind), ['running']);
   });
 
   test('읽기 전용 명령은 락을 안 기다린다 (D-27)', async () => {

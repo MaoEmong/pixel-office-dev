@@ -111,6 +111,76 @@ describe('UsageTracker — statusLine', () => {
   });
 });
 
+// ---- U-05: 세션이 쓰는 모델 ------------------------------------------------------------------
+describe('UsageTracker — 세션 모델(U-05)', () => {
+  test('Claude: statusLine 의 display_name 이 멤버 사용량에 실린다', () => {
+    h = harness();
+    h.tracker.applyStatusLine(CLAUDE, statusLine(0)); // 첫 장 — 한도·컨텍스트는 아직 비어 있다
+    assert.deepEqual(h.tracker.memberUsage(CLAUDE.id)?.model, { id: 'claude-opus-5[1m]', label: 'Opus 5 (1M context)' });
+    assert.deepEqual(h.members.at(-1)?.model, { id: 'claude-opus-5[1m]', label: 'Opus 5 (1M context)' }, '알림으로도 나간다');
+  });
+
+  test('Codex: hook 의 model(id) 하나로 채워지고, 같은 값이 또 와도 알림을 다시 내지 않는다', () => {
+    h = harness();
+    h.tracker.applyHookModel(CODEX, 'gpt-6-astra');
+    assert.deepEqual(h.tracker.memberUsage(CODEX.id)?.model, { id: 'gpt-6-astra', label: 'gpt-6-astra' });
+    assert.equal(h.tracker.memberUsage(CODEX.id)?.context, null, '사용량은 아직 모른다 — 모델만 먼저 안다');
+    const n = h.members.length;
+    for (let i = 0; i < 5; i++) h.tracker.applyHookModel(CODEX, 'gpt-6-astra'); // 모든 hook 에 실려 온다
+    assert.equal(h.members.length, n);
+  });
+
+  test('세션 중에 모델이 바뀌면(`/model` · 한도 초과 전환) 따라 바뀐다', () => {
+    h = harness();
+    h.tracker.applyHookModel(CODEX, 'gpt-6-astra');
+    h.tracker.applyHookModel(CODEX, 'gpt-6-sol');
+    assert.equal(h.tracker.memberUsage(CODEX.id)?.model?.label, 'gpt-6-sol');
+  });
+
+  test('Claude: id 만 아는 hook 이 statusLine 의 좋은 이름을 되돌리지 않는다', () => {
+    h = harness();
+    h.tracker.applyStatusLine(CLAUDE, statusLine(1));
+    h.tracker.applyHookModel(CLAUDE, 'claude-opus-5[1m]'); // SessionStart 가 같은 id 를 들고 온다
+    assert.equal(h.tracker.memberUsage(CLAUDE.id)?.model?.label, 'Opus 5 (1M context)');
+    // 반대 순서: hook 이 먼저면 id 가 이름이고, statusLine 이 오면 좋은 이름으로 바뀐다.
+    h.tracker.applyHookModel(CODEX, 'x');
+    h.tracker.removeMember(CLAUDE.id);
+    h.tracker.applyHookModel(CLAUDE, 'claude-opus-5[1m]');
+    assert.equal(h.tracker.memberUsage(CLAUDE.id)?.model?.label, 'claude-opus-5[1m]');
+    h.tracker.applyStatusLine(CLAUDE, statusLine(1));
+    assert.equal(h.tracker.memberUsage(CLAUDE.id)?.model?.label, 'Opus 5 (1M context)');
+  });
+
+  test('model 이 없거나 이상한 hook 은 아무 일도 하지 않는다', () => {
+    h = harness();
+    for (const bad of [undefined, null, '', 42, {}]) h.tracker.applyHookModel(CODEX, bad);
+    assert.equal(h.tracker.memberUsage(CODEX.id), undefined);
+    assert.equal(h.members.length, 0);
+  });
+
+  test('모델을 알아도 사용량 숫자는 안 건드리고, 숫자가 와도 모델은 남는다', () => {
+    h = harness();
+    h.tracker.applyStatusLine(CLAUDE, statusLine(1));
+    const before = h.tracker.memberUsage(CLAUDE.id)!;
+    h.tracker.applyHookModel(CLAUDE, 'claude-fable-5-1'); // 사용자가 /model 로 바꿨다
+    const after = h.tracker.memberUsage(CLAUDE.id)!;
+    assert.deepEqual(after.context, before.context);
+    assert.equal(after.costUsd, before.costUsd);
+    assert.equal(after.model?.id, 'claude-fable-5-1');
+  });
+
+  test('DB 에 남는다 — 재시작해도 보이고, 모델 칸이 없던 옛 행은 null 로 읽힌다', () => {
+    h = harness();
+    h.tracker.applyHookModel(CODEX, 'gpt-6-astra');
+    h.store.putMemberUsage(CLAUDE.id, { memberId: CLAUDE.id, engine: 'claude', context: null, tokens: null, costUsd: 1, updatedAt: '2026-09-21T10:00:00.000Z' });
+    const again = new UsageTracker({ store: h.store, pollIntervalMs: 0 });
+    assert.deepEqual(again.memberUsage(CODEX.id)?.model, { id: 'gpt-6-astra', label: 'gpt-6-astra' });
+    assert.equal(again.memberUsage(CLAUDE.id)?.model, null);
+    assert.equal(again.memberUsage(CLAUDE.id)?.costUsd, 1);
+    again.stop();
+  });
+});
+
 describe('UsageTracker — 변화 감지', () => {
   beforeEach(() => {
     h = harness();

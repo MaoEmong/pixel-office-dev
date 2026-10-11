@@ -1,6 +1,7 @@
 // 어댑터 공개 타입. 설계: 01 §구성 요소 1(ClaudeHooks 어댑터, 대기 정책, interrupt/fire/error 후처리), §2 오피스 이벤트 스키마.
 import type { Store } from '../store/Store.js';
-import type { MemberStatus, OfficeEvent, Pending } from '../store/types.js';
+import type { Member, MemberStatus, OfficeEvent, Pending } from '../store/types.js';
+import type { AutoApprovalDecision } from './autoApproval.js';
 
 /** 어댑터가 밖에서 받는 의존성. Store 외에는 전부 선택. */
 export interface AdapterDeps {
@@ -13,6 +14,12 @@ export interface AdapterDeps {
    * hook 도착 순서대로 **동기** 호출되므로(첫 await 전까지) 게이트는 그 순서를 획득 순서로 쓸 수 있다.
    */
   toolGate?(memberId: string, tool: string, input: unknown, ctx: ToolGateContext): Promise<void>;
+  /**
+   * 이 허가 요청을 **사람에게 묻지 않고** 넘길 것인가(U-02, D-51). Office 가 그 멤버 부서의 허가 방식과 작업 폴더로
+   * `decideAutoApproval` 을 불러 준다. 없거나 `allow:false` 면 지금까지처럼 pending 을 만들어 묻는다.
+   * 팀 도구(즉시 허가, D-22)와 질문 도구(AskUserQuestion)에는 부르지 않는다.
+   */
+  autoApprove?(member: Member, tool: string, input: unknown): AutoApprovalDecision | undefined;
   /** 이벤트 ts 용 시각(epoch ms). 테스트에서 고정. 기본 Date.now. */
   now?(): number;
 }

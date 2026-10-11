@@ -1,5 +1,7 @@
 // 로그 탭: 라이브 이벤트 행(한국어 kind 라벨·상세), events.query 백필(seq 중복 제거·오름차순), 재접속 시 재백필.
+import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:pixel_office/panel/labels.dart';
 import 'package:pixel_office/panel/log_tab.dart';
 import 'package:pixel_office/panel/member_log.dart';
 import 'package:pixel_office/state/office_state.dart';
@@ -35,6 +37,29 @@ void main() {
       // 시각 HH:MM (ts 00:00:11Z → 로컬 시각) — 행마다 하나
       final rows = tester.widgetList<LogRow>(find.byType(LogRow)).map((r) => r.event.seq).toList();
       expect(rows, [11, 12, 13]); // 최신이 아래
+    });
+  });
+
+  // U-02(D-51): 묻지 않고 넘긴 도구 호출은 로그에서 한눈에 보여야 한다 — 무엇이 허락 없이 실행됐는지의 기록.
+  testWidgets('자동 허가된 이벤트(detail.auto)에는 "자동 허가" 꼬리표가 붙고, 아닌 줄에는 없다', (tester) async {
+    await tester.runAsync(() async {
+      final c = await pumpPanel(tester, daemon, const LogTab(memberId: 'm1'));
+      await pumpUntilConnected(tester, c);
+      daemon.emitEvent(ev(21, kind: 'running', detail: {'tool': 'Bash', 'cmd': 'npm test'})); // PreToolUse — 시작했다
+      daemon.emitEvent(ev(22, kind: 'running', detail: {'tool': 'Bash', 'cmd': 'npm test', 'auto': 'plain-shell'})); // 자동 허가
+      daemon.emitEvent(ev(23, kind: 'editing', detail: {'tool': 'Edit', 'path': 'src/a.ts', 'auto': 'edit-in-cwd'}));
+      daemon.emitEvent(ev(24, kind: 'waiting_approval', detail: {'tool': 'Bash', 'cmd': 'git push'})); // 이건 물었다
+      await pumpUntil(tester, () => find.byType(LogRow).evaluate().length == 4, reason: '4 rows');
+
+      expect(find.byKey(const Key('log.autoApproved')), findsNWidgets(2));
+      expect(find.text(autoApprovedTag), findsNWidgets(2));
+      expect(find.byTooltip(autoApprovedTooltip('plain-shell')), findsOneWidget);
+      expect(find.byTooltip(autoApprovedTooltip('edit-in-cwd')), findsOneWidget);
+      // 꼬리표는 그 줄에만 붙는다.
+      final rows = tester.widgetList<LogRow>(find.byType(LogRow)).toList();
+      expect(rows.map((r) => r.event.detail.auto), [null, 'plain-shell', 'edit-in-cwd', null]);
+      // 모르는 규칙 이름이 와도 죽지 않는다(데몬이 나중에 규칙을 더해도).
+      expect(autoApprovedTooltip('something-new'), contains('묻지 않고 허가'));
     });
   });
 

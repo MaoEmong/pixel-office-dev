@@ -60,6 +60,30 @@ test('serialize() roundtrip: ANSI colours + wide chars + cursor moves reproduce 
   b.dispose();
 });
 
+// U-03: fullscreen claude 는 시작할 때 `?1049h ?1000h ?1002h ?1003h ?1006h` 를 켠다(실측). serialize 애드온은
+// 추적 모드(?1003h)까지만 싣고 **인코딩(?1006h)은 빠뜨린다** — attach 한 앱 터미널이 옛 인코딩으로 보고하게 된다.
+test('serialize(): 마우스 인코딩 모드(?1006h)를 실어 준다 — 애드온이 빠뜨리는 것', async () => {
+  const a = new ScreenModel({ engine: 'claude', cols: 40, rows: 6 });
+  assert.ok(!a.serialize().includes('\x1b[?1006h'), '안 켰으면 안 붙는다');
+  await a.feed('\x1b[?1049h\x1b[?1000h\x1b[?1002h\x1b[?1003h\x1b[?1006hhello');
+  const ansi = a.serialize();
+  assert.ok(ansi.includes('\x1b[?1049h'), 'alt 버퍼');
+  assert.ok(ansi.includes('\x1b[?1003h'), '추적 모드(애드온이 싣는다)');
+  assert.ok(ansi.endsWith('\x1b[?1006h'), '인코딩 모드(우리가 붙인다)');
+  assert.deepEqual(a.trimmedLines()[0], 'hello', '지켜보기만 한다 — 화면 처리는 그대로');
+  // 한 CSI 에 여러 모드가 묶여 와도 본다.
+  const b = new ScreenModel({ engine: 'claude', cols: 40, rows: 6 });
+  await b.feed('\x1b[?1003;1006h');
+  assert.ok(b.serialize().endsWith('\x1b[?1006h'));
+  // 끄면 사라진다(CLI 가 종료하며 되돌린다). 다른 인코딩을 끄는 것은 영향이 없다.
+  await a.feed('\x1b[?1015l');
+  assert.ok(a.serialize().endsWith('\x1b[?1006h'));
+  await a.feed('\x1b[?1006l');
+  assert.ok(!a.serialize().includes('\x1b[?1006h'));
+  a.dispose();
+  b.dispose();
+});
+
 test('serialize() roundtrip after resize', async () => {
   const a = await screenFrom('claude', 'claude-interrupted.txt');
   a.resize(80, 30);

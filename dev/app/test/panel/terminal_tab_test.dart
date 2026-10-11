@@ -1,8 +1,11 @@
 // 터미널 탭: attach(cols/rows) → 화면 기록, term 알림 → 버퍼, onOutput → member.type, dispose → detach,
 // -32003 → 배너, 재접속 → 재attach, 멤버 교체 → detach(old)+attach(new).
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:pixel_office/panel/right_panel.dart';
+import 'package:pixel_office/panel/terminal_cache.dart';
 import 'package:pixel_office/rpc/rpc_client.dart';
 import 'package:pixel_office/state/office_state.dart';
 import 'package:xterm/xterm.dart';
@@ -157,6 +160,78 @@ void main() {
       expect(first.buffer.getText(), contains('SCREEN:m1')); // 현재 화면은 다시 받았다
       // 다른 멤버는 다른 인스턴스
       expect(identical(c.read(terminalCacheProvider).of('m2').terminal, first), isFalse);
+    });
+  });
+
+  // ---- U-03: 터미널 탭에서 위로 넘겨 보기 ---------------------------------------------------------
+  // Claude 의 전체 화면 렌더러는 alt 버퍼에서 돌아 스크롤백이 없다 — 대신 휠을 직접 받아 자기 대화를 넘긴다.
+  // xterm 패키지는 휠을 버튼 68/69 로 보고하는데(= Shift+휠) Claude 는 그걸 무시한다(실측). 표준은 64/65 다.
+  group('U-03 휠 보고', () {
+    /// fullscreen claude 가 켜는 모드(실측 순서 그대로) + 화면 한 줄. 데몬 attach 의 `screen` 이 이렇게 온다.
+    const fullscreen = '\x1b[?1049h\x1b[H화면\x1b[?1003h\x1b[?1006h';
+
+    Future<void> wheel(WidgetTester tester, Offset delta) async {
+      final center = tester.getCenter(find.byType(TerminalView));
+      final mouse = TestPointer(1, PointerDeviceKind.mouse)..hover(center);
+      await tester.sendEventToBinding(mouse.scroll(delta));
+      await tester.pump(const Duration(milliseconds: 50));
+    }
+
+    testWidgets('전체 화면 CLI: 휠 위/아래 → 표준 번호 64/65 로 member.type (68/69 가 아니다)', (tester) async {
+      await tester.runAsync(() async {
+        final c = await pumpPanel(tester, daemon, const TerminalTab(memberId: 'm1'));
+        await pumpUntilConnected(tester, c);
+        await pumpUntil(tester, () => bufferText(tester).contains('SCREEN:m1'));
+        daemon.push('term', {'memberId': 'm1', 'data': fullscreen});
+        await pumpUntil(tester, () => terminalOf(tester).isUsingAltBuffer, reason: 'alt buffer');
+        expect(terminalOf(tester).mouseReportMode, MouseReportMode.sgr);
+
+        await wheel(tester, const Offset(0, -60)); // 위로
+        await pumpUntil(tester, () => daemon.countOf('member.type') > 0, reason: 'wheel up reported');
+        final up = daemon.paramsOf('member.type').map((p) => p['data'] as String).toList();
+        expect(up, everyElement(matches(RegExp(r'^\x1b\[<64;\d+;\d+M$'))), reason: '$up');
+
+        final before = daemon.countOf('member.type');
+        await wheel(tester, const Offset(0, 60)); // 아래로
+        await pumpUntil(tester, () => daemon.countOf('member.type') > before, reason: 'wheel down reported');
+        final down = daemon.paramsOf('member.type').skip(before).map((p) => p['data'] as String).toList();
+        expect(down, everyElement(matches(RegExp(r'^\x1b\[<65;\d+;\d+M$'))), reason: '$down');
+      });
+    });
+
+    test('인코딩별 모양 — SGR · urxvt · 옛 X10, 번호는 늘 64~67', () {
+      String? report(TerminalMouseButton b, MouseMode mode, MouseReportMode enc, {TerminalMouseButtonState st = TerminalMouseButtonState.down, int x = 9, int y = 4}) {
+        final t = Terminal(mouseHandler: terminalMouseHandler);
+        t.setMouseMode(mode);
+        t.setMouseReportMode(enc);
+        String? out;
+        t.onOutput = (d) => out = d;
+        t.mouseInput(b, st, CellOffset(x, y));
+        return out;
+      }
+
+      const any = MouseMode.upDownScrollMove;
+      expect(report(TerminalMouseButton.wheelUp, any, MouseReportMode.sgr), '\x1b[<64;10;5M');
+      expect(report(TerminalMouseButton.wheelDown, any, MouseReportMode.sgr), '\x1b[<65;10;5M');
+      expect(report(TerminalMouseButton.wheelLeft, any, MouseReportMode.sgr), '\x1b[<66;10;5M');
+      expect(report(TerminalMouseButton.wheelRight, any, MouseReportMode.sgr), '\x1b[<67;10;5M');
+      expect(report(TerminalMouseButton.wheelUp, any, MouseReportMode.urxvt), '\x1b[96;10;5M');
+      // 옛 인코딩: ESC [ M + (32+번호) + (32+열) + (32+행). 데몬이 ?1006h 를 못 전했을 때의 모양이다.
+      expect(report(TerminalMouseButton.wheelUp, any, MouseReportMode.normal), '\x1b[M${String.fromCharCodes([32 + 64, 32 + 10, 32 + 5])}');
+      expect(report(TerminalMouseButton.wheelDown, MouseMode.upDownScroll, MouseReportMode.normal), '\x1b[M${String.fromCharCodes([32 + 65, 32 + 10, 32 + 5])}');
+      expect(report(TerminalMouseButton.wheelUp, any, MouseReportMode.normal, x: 300), '\x1b[M${String.fromCharCode(32 + 64)}\x00${String.fromCharCode(32 + 5)}', reason: '상한 223 을 넘는 열은 0');
+      // CLI 가 마우스를 달라고 하지 않았으면 보고하지 않는다(뷰가 스크롤백을 넘기거나 화살표로 흉내 낸다).
+      expect(report(TerminalMouseButton.wheelUp, MouseMode.none, MouseReportMode.sgr), isNull);
+      expect(report(TerminalMouseButton.wheelUp, MouseMode.clickOnly, MouseReportMode.sgr), isNull);
+      expect(report(TerminalMouseButton.wheelUp, any, MouseReportMode.sgr, st: TerminalMouseButtonState.up), isNull, reason: '휠에는 뗌이 없다');
+      // 클릭은 건드리지 않는다 — 패키지 기본 처리 그대로.
+      expect(report(TerminalMouseButton.left, any, MouseReportMode.sgr), '\x1b[<0;10;5M');
+    });
+
+    test('캐시가 만드는 Terminal 은 이 처리기를 쓴다', () {
+      final c = ProviderContainer();
+      addTearDown(c.dispose);
+      expect(c.read(terminalCacheProvider).of('m9').terminal.mouseHandler, same(terminalMouseHandler));
     });
   });
 }

@@ -72,10 +72,30 @@ export interface UsageTokens {
   total: number | null;
 }
 
+/**
+ * 멤버 세션이 **지금 쓰는 모델**(U-05). 엔진(claude/codex)보다 한 칸 아래 — Opus 인지 Fable 인지, astra 인지.
+ *
+ * 데몬은 모델을 지정하지 않는다(`--model` 을 안 준다) — 그래서 CLI 가 말해 주는 대로 읽는다:
+ *   - Claude: statusLine 의 `model{id, display_name}`(상태줄을 그릴 때마다) + SessionStart hook 의 `model`(id).
+ *   - Codex: **모든** hook 페이로드의 `model`(id). statusLine 은 없다.
+ * 세션 중에 바뀔 수 있다(`/model`, Codex 의 한도 초과 시 모델 전환) — 생성 시점 설정이 아니라 **마지막으로 본 값**이다.
+ */
+export interface SessionModel {
+  /** CLI 의 모델 id(`claude-opus-5[1m]`, `gpt-6-astra`). 표시 이름만 온 경우 null. */
+  id: string | null;
+  /**
+   * 사람에게 보일 이름. Claude 는 `display_name`(`Opus 5 (1M context)`), 그 밖에는 id 그대로 —
+   * **모델 이름을 하드코딩하지 않는다**(`UsageModel.label` 과 같은 규칙).
+   */
+  label: string;
+}
+
 /** 멤버(= 캐릭터 세션) 단위 사용량. `snapshot.usage.members[]` 와 `usage.member` 알림의 모양. */
 export interface MemberUsage {
   memberId: string;
   engine: Engine;
+  /** 이 세션이 쓰는 모델. 한 번도 못 봤으면 null(U-05). */
+  model: SessionModel | null;
   context: UsageContext | null;
   tokens: UsageTokens | null;
   /** 누적 비용(USD). **Codex 는 언제나 null**(토큰만 준다). */
@@ -115,6 +135,11 @@ export function toPercent(v: unknown): number | null {
 export function toCount(v: unknown): number | null {
   if (typeof v !== 'number' || !Number.isFinite(v) || v < 0) return null;
   return v;
+}
+
+/** 비어 있지 않은 문자열만(앞뒤 공백 제거). 아니면 null. */
+export function toText(v: unknown): string | null {
+  return typeof v === 'string' && v.trim() ? v.trim() : null;
 }
 
 export function isRecord(v: unknown): v is Record<string, unknown> {

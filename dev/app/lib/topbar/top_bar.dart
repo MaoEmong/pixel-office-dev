@@ -277,10 +277,18 @@ class _DepartmentMenu extends ConsumerWidget {
       enabled: true,
       iconSize: 18,
       onSelected: (v) {
+        if (v == 'approvalPolicy' && dept != null) showApprovalPolicyDialog(context, ref, dept);
         if (v == 'delete' && dept != null) confirmDeleteDepartment(context, ref, dept);
         if (v == 'keepDaemon') ref.read(keepDaemonProvider.notifier).toggle();
       },
       itemBuilder: (_) => [
+        // U-02(D-51): 이 부서 멤버의 허가 요청을 어디까지 묻지 않고 넘길지. 지금 값을 메뉴에서 바로 보여 준다.
+        PopupMenuItem(
+          key: const Key('topbar.approvalPolicy'),
+          value: 'approvalPolicy',
+          enabled: enabled && dept != null,
+          child: Text('허가 방식${dept == null ? '' : ' — ${dept.approvalPolicy.label}'}'),
+        ),
         PopupMenuItem(
           key: const Key('topbar.deleteDepartment'),
           value: 'delete',
@@ -316,6 +324,115 @@ class _DepartmentMenu extends ConsumerWidget {
         ),
       ],
     );
+  }
+}
+
+/// 허가 방식 세 칸 — 부서 만들기와 "허가 방식" 다이얼로그가 같이 쓴다(U-02).
+///
+/// 이름만이 아니라 **무엇이 묻지 않고 넘어가는지**를 칸마다 적는다. `trust` 를 고르면 한계도 같이 보인다.
+class ApprovalPolicyChooser extends StatelessWidget {
+  const ApprovalPolicyChooser({super.key, required this.value, required this.onChanged, this.enabled = true});
+
+  final ApprovalPolicy value;
+  final ValueChanged<ApprovalPolicy> onChanged;
+  final bool enabled;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        for (final p in ApprovalPolicy.values)
+          InkWell(
+            key: Key('approvalPolicy.${p.wire}'),
+            onTap: enabled ? () => onChanged(p) : null,
+            borderRadius: BorderRadius.circular(6),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(vertical: 5, horizontal: 2),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Padding(
+                    padding: const EdgeInsets.only(top: 1),
+                    child: Icon(
+                      p == value ? Icons.radio_button_checked : Icons.radio_button_unchecked,
+                      size: 16,
+                      color: p == value ? scheme.primary : Colors.white38,
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(p.label, style: TextStyle(fontSize: 13, fontWeight: p == value ? FontWeight.w600 : FontWeight.normal)),
+                        Text(p.hint, style: const TextStyle(fontSize: 11, color: Colors.white54)),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        const SizedBox(height: 4),
+        Text(
+          value == ApprovalPolicy.trust ? approvalTrustCaveat : approvalAlwaysAsksHint,
+          key: const Key('approvalPolicy.note'),
+          style: TextStyle(fontSize: 11, color: value == ApprovalPolicy.trust ? Colors.amber.withValues(alpha: 0.9) : Colors.white38),
+        ),
+      ],
+    );
+  }
+}
+
+/// 어느 방식에서도 묻는 것 — 고르는 자리 맨 아래에 늘 적어 둔다.
+const String approvalAlwaysAsksHint = '어느 방식이든 작업 폴더 밖, .git·.env 같은 보호 파일, 웹 요청은 늘 묻습니다. 자동으로 넘긴 것은 로그에 "자동 허가" 로 남습니다.';
+
+/// "허가 방식" 다이얼로그 → `department.update`. 살아 있는 세션에 바로 먹는다(다음 허가 요청부터).
+Future<void> showApprovalPolicyDialog(BuildContext context, WidgetRef ref, Department d) async {
+  final picked = await showDialog<ApprovalPolicy>(
+    context: context,
+    builder: (ctx) {
+      var value = d.approvalPolicy;
+      return StatefulBuilder(
+        builder: (ctx, setState) => AlertDialog(
+          title: Text('허가 방식 — ${d.name}'),
+          content: SizedBox(
+            width: 420,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  '이 부서의 부장·팀장·팀원이 허가를 구할 때, 어디까지 묻지 않고 넘길지 고릅니다. 바꾸면 다음 요청부터 바로 적용됩니다.',
+                  style: TextStyle(fontSize: 12, color: Colors.white54),
+                ),
+                const SizedBox(height: 10),
+                ApprovalPolicyChooser(value: value, onChanged: (p) => setState(() => value = p)),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.of(ctx).pop(), child: const Text('취소')),
+            FilledButton(
+              key: const Key('approvalPolicy.save'),
+              onPressed: value == d.approvalPolicy ? null : () => Navigator.of(ctx).pop(value),
+              child: const Text('바꾸기'),
+            ),
+          ],
+        ),
+      );
+    },
+  );
+  if (picked == null || picked == d.approvalPolicy) return;
+  try {
+    await ref.read(officeProvider.notifier).setApprovalPolicy(d.id, picked);
+  } catch (e) {
+    if (context.mounted) {
+      ScaffoldMessenger.maybeOf(context)?.showSnackBar(SnackBar(content: Text('허가 방식을 바꾸지 못했습니다: ${e is RpcException ? e.message : e}')));
+    }
   }
 }
 
@@ -437,6 +554,12 @@ class _CreateDepartmentDialogState extends ConsumerState<CreateDepartmentDialog>
   // 기본값(T41) — 폴더만 고르면 아무것도 안 치고 만들 수 있다.
   final _headName = TextEditingController(text: kDefaultHeadName);
   Engine _headEngine = Engine.claude;
+
+  /// 허가 방식(U-02). 기본은 지금까지의 동작 그대로 — 켜는 것은 사용자의 선택이다.
+  ApprovalPolicy _approvalPolicy = ApprovalPolicy.ask;
+
+  /// "세부 설정" 을 펼쳤는가. 접혀 있어도 폴더만 고르면 만들 수 있다(T41).
+  bool _advancedOpen = false;
   bool _busy = false;
   bool _picking = false;
 
@@ -525,6 +648,7 @@ class _CreateDepartmentDialogState extends ConsumerState<CreateDepartmentDialog>
             cwd: cwd,
             headEngine: _headEngine,
             headName: headName.isEmpty ? null : headName,
+            approvalPolicy: _approvalPolicy,
           );
       ref.read(selectedDepartmentIdProvider.notifier).select(r.department.id);
       // 새 부서에서 처음 고를 멤버는 부장이다(지시는 부장에게만 간다).
@@ -620,6 +744,45 @@ class _CreateDepartmentDialogState extends ConsumerState<CreateDepartmentDialog>
                     ),
                   ],
                 ),
+                const SizedBox(height: 6),
+                // 세부 설정 — 접혀 있다. 기본 화면은 폴더만 고르면 끝나는 그대로 둔다(T41).
+                InkWell(
+                  key: const Key('createDepartment.advanced'),
+                  onTap: _busy ? null : () => setState(() => _advancedOpen = !_advancedOpen),
+                  borderRadius: BorderRadius.circular(6),
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 6),
+                    child: Row(
+                      children: [
+                        Icon(_advancedOpen ? Icons.expand_more : Icons.chevron_right, size: 18, color: Colors.white70),
+                        const SizedBox(width: 4),
+                        const Text('세부 설정', style: TextStyle(fontSize: 13)),
+                        const SizedBox(width: 8),
+                        // 접혀 있어도 지금 값이 보인다 — 펼쳐 보지 않고 만들어도 무엇으로 만들어지는지 안다.
+                        Text(
+                          '허가 방식: ${_approvalPolicy.label}',
+                          key: const Key('createDepartment.advanced.summary'),
+                          style: const TextStyle(fontSize: 11, color: Colors.white54),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+                if (_advancedOpen) ...[
+                  const Padding(
+                    padding: EdgeInsets.only(left: 22, bottom: 2),
+                    child: Text('허가 방식', style: TextStyle(fontSize: 12, color: Colors.white70)),
+                  ),
+                  Padding(
+                    padding: const EdgeInsets.only(left: 22),
+                    child: ApprovalPolicyChooser(
+                      key: const Key('createDepartment.approvalPolicy'),
+                      value: _approvalPolicy,
+                      enabled: !_busy,
+                      onChanged: (p) => setState(() => _approvalPolicy = p),
+                    ),
+                  ),
+                ],
                 if (_error != null) ...[
                   const SizedBox(height: 12),
                   Text(_error!, key: const Key('createDepartment.error'), style: TextStyle(color: Theme.of(context).colorScheme.error, fontSize: 12)),

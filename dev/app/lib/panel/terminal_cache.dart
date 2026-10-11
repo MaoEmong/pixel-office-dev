@@ -30,6 +30,58 @@ const int terminalMaxRows = 300;
 int terminalCols(Terminal t) => t.viewWidth.clamp(terminalMinCols, terminalMaxCols);
 int terminalRows(Terminal t) => t.viewHeight.clamp(terminalMinRows, terminalMaxRows);
 
+/// 휠 버튼의 **표준** 보고 번호(xterm ctlseqs: 64 위 · 65 아래 · 66 왼쪽 · 67 오른쪽).
+int wheelButtonCode(TerminalMouseButton b) => switch (b) {
+      TerminalMouseButton.wheelUp => 64,
+      TerminalMouseButton.wheelDown => 65,
+      TerminalMouseButton.wheelLeft => 66,
+      TerminalMouseButton.wheelRight => 67,
+      _ => b.id,
+    };
+
+/// 휠 보고를 **표준 번호**로 고쳐 보낸다(U-03).
+///
+/// xterm 패키지 4.0.0 은 휠을 `64 + 4`(68)·`64 + 5`(69)로 보고한다. 마우스 프로토콜에서 4 는 **Shift 수정자
+/// 비트**라 받는 쪽에는 "Shift+휠" 로 보인다. Claude 의 전체 화면 렌더러(`tui: fullscreen` — alt 버퍼라 스크롤백이
+/// 없고 **휠을 직접 받아** 자기 대화를 넘긴다)는 그걸 무시한다 — 실측: 64 는 스크롤되고 68 은 인코딩과 무관하게
+/// 안 된다. 그래서 터미널 탭에서 위로 넘겨 볼 방법이 없었다.
+///
+/// 휠만 가로챈다. 클릭·이동은 null 을 돌려 뒤의 기본 처리기로 넘긴다.
+class StandardWheelMouseHandler implements TerminalMouseHandler {
+  const StandardWheelMouseHandler();
+
+  @override
+  String? call(TerminalMouseEvent event) {
+    if (!event.button.isWheel) return null;
+    // 앱(CLI)이 마우스를 달라고 하지 않았으면 보고하지 않는다 — 그때는 뷰가 스크롤백을 넘기거나 화살표로 흉내 낸다.
+    final mode = event.state.mouseMode;
+    if (mode == MouseMode.none || mode == MouseMode.clickOnly) return null;
+    // 휠에는 "뗌" 이 없다.
+    if (event.buttonState == TerminalMouseButtonState.up) return null;
+    final code = wheelButtonCode(event.button);
+    final x = event.position.x + 1, y = event.position.y + 1; // 보고는 1 부터
+    switch (event.state.mouseReportMode) {
+      case MouseReportMode.sgr:
+        return '\x1b[<$code;$x;${y}M';
+      case MouseReportMode.urxvt:
+        return '\x1b[${32 + code};$x;${y}M';
+      case MouseReportMode.normal:
+      case MouseReportMode.utf:
+        // 한 바이트에 싣는 옛 인코딩 — 좌표 상한을 넘으면 0 을 보낸다(패키지와 같은 규칙).
+        final limit = event.state.mouseReportMode == MouseReportMode.normal ? 223 : 2015;
+        String coord(int v) => v > limit ? '\x00' : String.fromCharCode(32 + v);
+        return '\x1b[M${String.fromCharCode(32 + code)}${coord(x)}${coord(y)}';
+    }
+  }
+}
+
+/// 터미널 탭의 마우스 처리기: 휠은 표준 번호로, 나머지는 패키지 기본 그대로.
+const TerminalMouseHandler terminalMouseHandler = CascadeMouseHandler([
+  StandardWheelMouseHandler(),
+  ClickMouseHandler(),
+  UpDownMouseHandler(),
+]);
+
 class CachedTerminal {
   CachedTerminal(this.memberId, this.terminal);
 
@@ -65,7 +117,7 @@ class TerminalCache {
   void remove(String memberId) => _entries.remove(memberId);
 
   CachedTerminal _create(String memberId) {
-    final entry = CachedTerminal(memberId, Terminal(maxLines: terminalMaxLines));
+    final entry = CachedTerminal(memberId, Terminal(maxLines: terminalMaxLines, mouseHandler: terminalMouseHandler));
     entry.terminal.onOutput = (data) => _send('member.type', {'memberId': memberId, 'data': data});
     // 크기는 이벤트 인자가 아니라 터미널에서 다시 읽는다 — attach 와 같은 clamp 를 태우려고.
     entry.terminal.onResize = (_, _, _, _) => syncSize(entry);

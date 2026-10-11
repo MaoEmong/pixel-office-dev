@@ -25,19 +25,22 @@ import {
 } from './claudeTranscriptReader.js';
 import { probeClaudeConnection, probeCodexConnection } from './connection.js';
 import { parseClaudeCostState } from './parse/claudeCostState.js';
-import { parseClaudeStatusLine } from './parse/claudeStatusLine.js';
+import { parseClaudeStatusLine, sessionModelOf } from './parse/claudeStatusLine.js';
 import { parseCodexTokenCounts } from './parse/codexTokenCount.js';
 import { readTail as defaultReadTail } from './tail.js';
-import type {
-  EngineConnection,
-  EngineUsage,
-  MemberUsage,
-  UsageContext,
-  UsageModel,
-  UsageSnapshot,
-  UsageSource,
-  UsageTokens,
-  UsageWindow,
+import {
+  isRecord,
+  toText,
+  type EngineConnection,
+  type EngineUsage,
+  type MemberUsage,
+  type SessionModel,
+  type UsageContext,
+  type UsageModel,
+  type UsageSnapshot,
+  type UsageSource,
+  type UsageTokens,
+  type UsageWindow,
 } from './types.js';
 
 export const ENGINES: readonly Engine[] = ['claude', 'codex'];
@@ -101,6 +104,7 @@ interface MemberPatch {
   context?: UsageContext | null;
   tokens?: UsageTokens | null;
   costUsd?: number | null;
+  model?: SessionModel | null;
 }
 
 /**
@@ -137,6 +141,13 @@ function emptyEngine(engine: Engine): EngineUsage {
  */
 function normalizePlan(plan: unknown): string | null {
   return typeof plan === 'string' ? plan.trim().toLowerCase() || null : null;
+}
+
+/** `member_usage` 에 저장해 둔 모델(`{id, label}`)을 다시 읽는다. 모양이 아니면 null. */
+function storedModelOf(raw: unknown): SessionModel | null {
+  if (!isRecord(raw)) return null;
+  const label = toText(raw.label);
+  return label ? { id: toText(raw.id), label } : null;
 }
 
 /** `updatedAt` 을 뺀 나머지가 같은가(변화 감지). 값이 작아 JSON 비교로 충분하다. */
@@ -237,10 +248,26 @@ export class UsageTracker extends EventEmitter<UsageTrackerEvents> {
     if (info.weekly || info.session) {
       this.recordEngineLimits(member.engine, { weekly: info.weekly, session: info.session }, 'turn');
     }
-    if (info.context || info.costUsd !== null) {
-      this.recordMemberUsage(member, { context: info.context, costUsd: info.costUsd });
+    if (info.context || info.costUsd !== null || info.model) {
+      this.recordMemberUsage(member, { context: info.context, costUsd: info.costUsd, model: info.model });
     }
     return this.statusLineText(member.id, member.engine);
+  }
+
+  // ---- 입력 ①-b hook 의 `model` (U-05) -------------------------------------------
+
+  /**
+   * hook 페이로드의 `model`(모델 id 문자열)을 반영한다. Codex 는 **모든** hook 에, Claude 는 SessionStart 에 실린다.
+   *
+   * 이미 같은 id 를 알고 있으면 건드리지 않는다 — Claude 는 statusLine 이 더 좋은 이름(`display_name`)을 주는데,
+   * id 만 아는 hook 이 그 이름을 id 로 되돌리면 안 된다. id 가 **달라졌으면**(`/model`, 모델 전환) 바꾼다.
+   */
+  applyHookModel(member: UsageMemberRef, rawModel: unknown): void {
+    const model = sessionModelOf(rawModel);
+    if (!model) return;
+    const prev = this.members.get(member.id)?.model;
+    if (prev && prev.id === model.id) return;
+    this.recordMemberUsage(member, { model });
   }
 
   // ---- 입력 ② 턴 종료 ----------------------------------------------------------
@@ -485,6 +512,8 @@ export class UsageTracker extends EventEmitter<UsageTrackerEvents> {
       this.members.set(row.memberId, {
         memberId: row.memberId,
         engine: value.engine,
+        // 옛 행(U-05 이전)에는 없다 — 다음 hook·statusLine 이 채운다.
+        model: storedModelOf(value.model),
         context: value.context ?? null,
         tokens: value.tokens ?? null,
         costUsd: value.costUsd ?? null,
@@ -570,6 +599,7 @@ export class UsageTracker extends EventEmitter<UsageTrackerEvents> {
     const next: MemberUsage = {
       memberId: member.id,
       engine: member.engine,
+      model: patch.model !== undefined && patch.model !== null ? patch.model : (prev?.model ?? null),
       context: patch.context !== undefined && patch.context !== null ? patch.context : (prev?.context ?? null),
       tokens: patch.tokens !== undefined && patch.tokens !== null ? patch.tokens : (prev?.tokens ?? null),
       costUsd: patch.costUsd !== undefined && patch.costUsd !== null ? patch.costUsd : (prev?.costUsd ?? null),

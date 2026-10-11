@@ -18,6 +18,7 @@ export const HELP: HelpSection[] = [
     rows: [
       ['dept create <name> <cwd> [claude|codex] [부장이름]', '부서 생성 + 부장 자동 출근 (엔진 기본 claude, 이름 기본 부장)'],
       ['depts', '부서 목록 (부서 = 프로젝트 폴더)'],
+      ['dept policy <dept> <ask|edits|trust>', '허가 방식 — ask 전부 묻기(기본) · edits 폴더 안 편집·읽기는 자동 · trust 위험해 보이는 것만 묻기'],
       ['dept delete <dept>', '부서 삭제 — 하위 트리 전원(팀원 → 팀장 → 부장)을 잎부터 퇴근시키고 행·task 삭제'],
       ['tree', '부서 → 부장 → 팀/팀장 → 팀원 (department.tree)'],
     ],

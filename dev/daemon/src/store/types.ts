@@ -53,11 +53,28 @@ export type ReportStatus = 'done' | 'blocked' | 'aborted';
 /** tasks.from_member / to_member 에 들어가는 값. 사용자 지시는 'user'. */
 export const USER_ACTOR = 'user';
 
+/**
+ * 부서의 **허가 방식**(U-02, D-51) — 이 부서 멤버의 허가 요청을 어디까지 묻지 않고 넘길 것인가.
+ *   ask    전부 묻기(기본 — D-32 ③ 그대로)
+ *   edits  작업 폴더 안의 파일 편집 + 읽기만 하는 셸 명령은 자동
+ *   trust  위에 더해 평범한 셸 명령도 자동 — 위험해 보이는 것만 묻는다
+ * 판정은 `adapters/autoApproval.ts` 하나에 있다.
+ */
+export type ApprovalPolicy = 'ask' | 'edits' | 'trust';
+export const APPROVAL_POLICIES: readonly ApprovalPolicy[] = ['ask', 'edits', 'trust'];
+export const DEFAULT_APPROVAL_POLICY: ApprovalPolicy = 'ask';
+
+export function isApprovalPolicy(v: unknown): v is ApprovalPolicy {
+  return typeof v === 'string' && (APPROVAL_POLICIES as readonly string[]).includes(v);
+}
+
 export interface Department {
   id: string;
   name: string;
   /** 부서 = 프로젝트. 이 부서의 팀·멤버는 모두 이 폴더에서 일한다(D-32). */
   cwd: string;
+  /** 허가 방식(U-02). 옛 행은 `ask`. */
+  approvalPolicy: ApprovalPolicy;
   /** 부장 memberId. 부장이 나가도 남는다 — "살아 있는 부장" 은 `Store.liveHead`. */
   headId: string | null;
   createdAt: string;
@@ -158,6 +175,8 @@ export interface CreateDepartmentInput {
   name: string;
   cwd: string;
   headId?: string | null;
+  /** 생략하면 `ask`. */
+  approvalPolicy?: ApprovalPolicy;
 }
 
 export type UpdateDepartmentInput = Partial<Omit<Department, 'id' | 'createdAt'>>;

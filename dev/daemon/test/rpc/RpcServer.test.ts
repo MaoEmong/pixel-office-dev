@@ -10,6 +10,7 @@ import type {
   AttachResult,
   ClockInParams,
   CreateDepartmentParams,
+  UpdateDepartmentParams,
   CreateDepartmentResult,
   CreateTeamParams,
   CreateTeamResult,
@@ -53,7 +54,7 @@ function member(id: string, status: Member['status'] = 'idle'): Member {
 }
 
 const TEAM: Team = { id: 't1', departmentId: 'd1', name: 'team', cwd: 'D:\\x', leaderId: null, maxMembers: 4, allowedEngines: ['claude', 'codex'], createdAt: 'c' };
-const DEPT: Department = { id: 'd1', name: 'dept', cwd: 'D:\\x', headId: null, createdAt: 'c' };
+const DEPT: Department = { id: 'd1', name: 'dept', cwd: 'D:\\x', headId: null, createdAt: 'c', approvalPolicy: 'ask' };
 /** T43: 스냅샷의 `usage` 칸(엔진은 항상 둘 다). */
 const USAGE: UsageSnapshot = {
   engines: [
@@ -117,6 +118,10 @@ class FakeOffice extends EventEmitter<OfficeEvents> implements OfficeApi {
     };
     this.emit('tree', 'department.create'); // 실제 Office 와 같은 자리에서(T38)
     return { department: { ...DEPT, name: params.name, cwd: params.cwd, headId: head.id }, head };
+  }
+  updateDepartment(params: UpdateDepartmentParams): Department {
+    this.rec('updateDepartment', params);
+    return { ...DEPT, id: params.departmentId, approvalPolicy: params.approvalPolicy ?? DEPT.approvalPolicy };
   }
   async deleteDepartment(departmentId: string): Promise<void> {
     this.rec('deleteDepartment', departmentId);
@@ -434,6 +439,16 @@ describe('RpcServer', () => {
     assert.equal(dept.head.parentId, null);
     assert.equal(dept.department.headId, dept.head.id);
     assert.deepEqual(office.calls.at(-1)?.args[0], { name: 'D', cwd: 'D:\\y', headEngine: 'claude', headName: '국장' });
+
+    // U-02: 허가 방식 — 생성할 때 줄 수 있고(안 주면 위처럼 키가 없다), department.update 로 바꾼다.
+    await c.call('department.create', { name: 'D2', cwd: 'D:\\y', headEngine: 'claude', approvalPolicy: 'edits' });
+    assert.equal((office.calls.at(-1)!.args[0] as { approvalPolicy?: string }).approvalPolicy, 'edits');
+    const updated = await c.call<{ department: Department }>('department.update', { departmentId: 'd1', approvalPolicy: 'trust' });
+    assert.equal(updated.department.approvalPolicy, 'trust');
+    assert.deepEqual(office.calls.at(-1), { method: 'updateDepartment', args: [{ departmentId: 'd1', approvalPolicy: 'trust' }] });
+    await expectError(c.call('department.update', { departmentId: 'd1', approvalPolicy: 'yolo' }), RPC_ERROR.INVALID_PARAMS);
+    await expectError(c.call('department.create', { name: 'D3', cwd: 'D:\\y', headEngine: 'claude', approvalPolicy: 'all' }), RPC_ERROR.INVALID_PARAMS);
+    await expectError(c.call('department.update', { approvalPolicy: 'trust' }), RPC_ERROR.INVALID_PARAMS);
 
     const tree = await c.call<{ departments: DepartmentTree[] }>('department.tree', {});
     assert.deepEqual(tree.departments.map((d) => d.department.id), ['d1']);

@@ -46,8 +46,12 @@ export type ShellReleaseReason =
 export interface ShellMutexEvents {
   /** 락이 잡혀 있어 줄을 섰다. 대기자당 한 번(Office 가 `running{waiting:'shell-lock'}` 을 남긴다). */
   waiting: [info: ShellLockInfo, holder: ShellLockInfo];
-  /** 락을 쥐었다(즉시 획득 포함). waitedMs 는 줄에서 기다린 시간. */
-  granted: [info: ShellLockInfo, waitedMs: number];
+  /**
+   * 락을 쥐었다(즉시 획득 포함). waitedMs 는 줄에서 기다린 시간, `queued` 는 **줄을 섰다가** 넘겨받았는가
+   * (= 앞서 `waiting` 이 나간 자리다 — Office 가 "대기 끝" 이벤트를 남긴다, U-01). 시간으로 가르지 않는다:
+   * 즉시 획득도 시계에 따라 0ms 가 아닐 수 있다.
+   */
+  granted: [info: ShellLockInfo, waitedMs: number, queued: boolean];
   /** 락이 풀렸다. */
   released: [info: ShellLockInfo, reason: ShellReleaseReason, heldMs: number];
   /** 보유 상한 초과 — 강제 해제 직전(Office 가 daemon.notice{warn}). */
@@ -112,7 +116,7 @@ export class ShellMutex extends EventEmitter<ShellMutexEvents> {
     const entry: Entry = { teamId, memberId, toolUseId, cmd, since: this.now(), resolve };
 
     if (!state.holder) {
-      this.grant(state, entry);
+      this.grant(state, entry, false);
       return promise;
     }
 
@@ -198,7 +202,7 @@ export class ShellMutex extends EventEmitter<ShellMutexEvents> {
   }
 
   /** 락을 넘긴다(타이머 시작 → granted → 대기자 깨우기). */
-  private grant(state: TeamState, entry: Entry): void {
+  private grant(state: TeamState, entry: Entry, queued: boolean): void {
     const now = this.now();
     entry.grantedAt = now;
     state.holder = entry;
@@ -208,7 +212,7 @@ export class ShellMutex extends EventEmitter<ShellMutexEvents> {
       timer.unref?.();
       state.timer = timer;
     }
-    this.emit('granted', info(entry), now - entry.since);
+    this.emit('granted', info(entry), now - entry.since, queued);
     entry.resolve();
   }
 
@@ -221,7 +225,7 @@ export class ShellMutex extends EventEmitter<ShellMutexEvents> {
     state.timer = undefined;
     this.emit('released', info(holder), reason, this.now() - (holder.grantedAt ?? holder.since));
     const next = state.queue.shift();
-    if (next) this.grant(state, next);
+    if (next) this.grant(state, next, true);
     else if (state.queue.length === 0) this.teams.delete(holder.teamId);
   }
 
