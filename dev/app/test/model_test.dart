@@ -101,6 +101,18 @@ void main() {
 
   // ---- T37 rev 3: 부서 · 트리 · 직급 -------------------------------------------------
 
+  // U-02(D-51): 허가 방식. 옛 데몬은 키를 안 보내고, 모르는 값이 와도 "묻는" 쪽으로 읽는다.
+  test('Department.approvalPolicy: 없으면 ask, 아는 값은 그대로, 모르는 값은 ask', () {
+    expect(Department.fromJson(j(departmentJson)).approvalPolicy, ApprovalPolicy.ask);
+    for (final p in ApprovalPolicy.values) {
+      expect(Department.fromJson({...Map<String, dynamic>.from(jsonDecode(departmentJson) as Map), 'approvalPolicy': p.wire}).approvalPolicy, p);
+    }
+    for (final bad in ['everything', '', 3, null]) {
+      expect(Department.fromJson({...Map<String, dynamic>.from(jsonDecode(departmentJson) as Map), 'approvalPolicy': bad}).approvalPolicy, ApprovalPolicy.ask);
+    }
+    expect(ApprovalPolicy.values.map((p) => p.wire), ['ask', 'edits', 'trust'], reason: '데몬과 같은 문자열');
+  });
+
   test('Department.fromJson + 스냅샷 departments[]', () {
     final d = Department.fromJson(j(departmentJson));
     expect(d.id, 'd1');

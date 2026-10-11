@@ -48,6 +48,10 @@ class EventDetail {
   /// `running` 이벤트여도 **아직 실행이 시작되지 않았다** — 말풍선·모니터는 `cmd` 가 아니라 [summary] 를 써야 한다
   /// (T29 결함 ③ / T37). `holder` 는 락을 쥔 멤버 id.
   String? get waiting => raw['waiting'] as String?;
+
+  /// 자동 허가된 도구 호출이면 통과시킨 규칙(`edit-in-cwd` · `read-only-shell` · `plain-shell` — U-02).
+  /// 사람에게 물어야 했는데 부서의 허가 방식에 따라 **묻지 않고 넘긴** 것이다.
+  String? get auto => raw['auto'] is String ? raw['auto'] as String : null;
   String? get holder => raw['holder'] as String?;
 
   /// MCP 팀 도구 호출인가(`mcp__team__report` 등). 보고 방문을 취소하면 안 되는 이벤트다(T29 결함 ④ / T37).

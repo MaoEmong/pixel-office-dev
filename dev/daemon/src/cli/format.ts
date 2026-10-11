@@ -62,7 +62,9 @@ export function formatTeam(t: Team, memberCount: number): string {
 }
 
 export function formatDepartment(d: Department, teamCount: number, memberCount: number): string {
-  return `${d.id}  ${d.name}  ${d.cwd}  head=${d.headId ?? '-'}  팀 ${teamCount}개  멤버 ${memberCount}명`;
+  // 허가 방식은 기본(`ask`)이 아닐 때만 보인다 — 옛 데몬의 행에는 칸 자체가 없다(U-02).
+  const policy = d.approvalPolicy && d.approvalPolicy !== 'ask' ? `  허가=${d.approvalPolicy}` : '';
+  return `${d.id}  ${d.name}  ${d.cwd}  head=${d.headId ?? '-'}  팀 ${teamCount}개  멤버 ${memberCount}명${policy}`;
 }
 
 /** `department.tree` 결과 한 그루(데몬 office/types.ts DepartmentTree 의 와이어 모양). */

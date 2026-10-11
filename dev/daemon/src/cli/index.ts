@@ -471,6 +471,16 @@ class Cli {
           if (res.head) this.print(`부장: ${formatMember(res.head, res.department.name)}`);
           return;
         }
+        if (sub === 'policy') {
+          // U-02(D-51): 부서의 허가 방식. 살아 있는 세션에 바로 먹는다(다음 허가 요청부터).
+          const dept = resolveDepartment(this.departments.values(), args[1] ?? '');
+          const policy = args[2];
+          if (policy !== 'ask' && policy !== 'edits' && policy !== 'trust') throw new CliError('사용법: dept policy <dept> <ask|edits|trust>');
+          const res = (await c.call('department.update', { departmentId: dept.id, approvalPolicy: policy })) as { department: Department };
+          this.departments.set(res.department.id, res.department);
+          this.print(`허가 방식: ${res.department.name} → ${res.department.approvalPolicy}`);
+          return;
+        }
         if (sub === 'delete') {
           const dept = resolveDepartment(this.departments.values(), args[1] ?? '');
           await c.call('department.delete', { departmentId: dept.id }, SPAWN_TIMEOUT_MS);
@@ -480,7 +490,7 @@ class Cli {
           this.print(`부서 삭제: ${dept.name}`);
           return;
         }
-        throw new CliError('사용법: dept create <name> <cwd> [claude|codex] [부장이름] | dept delete <dept>');
+        throw new CliError('사용법: dept create <name> <cwd> [claude|codex] [부장이름] | dept policy <dept> <ask|edits|trust> | dept delete <dept>');
       }
       case 'tree': {
         const res = (await c.call('department.tree', {})) as { departments: TreeNode[] };

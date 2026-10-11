@@ -11,7 +11,8 @@
 |---|---|---|
 | `hello` | `{ token, since?: number, parentPid?: number, activeDepartmentId?: string, client: { name, version } }` | `{ daemon: { version, pid }, snapshot }` 후 `seq > since` 인 `event` 알림 replay(응답이 먼저, replay 는 오름차순). `since` 없으면 스냅샷만. **T46-1(D-47, 아래 "수명 주기"):** `parentPid` 는 데몬이 지켜볼 부모 앱 pid(앱만 재시작되면 감시 대상이 그쪽으로 바뀐다. `PIXEL_KEEP_DAEMON=1` 이면 무시). `activeDepartmentId` 는 앱이 보고 있는 부서 — 아직 안 깨운 기동 복구 줄에서 그 부서를 맨 앞으로 당긴다(복구가 이미 끝났으면 아무 일도 없다). 둘 다 선택이고, 이상한 값은 조용히 무시한다. |
 | `events.query` | `{ departmentId?, teamId?, memberId?, beforeSeq?, limit? }` | `{ events: OfficeEvent[] }` (seq 내림차순 아님 — 오름차순 반환. `beforeSeq` 미만 중 최신 `limit`(기본 200)건; 다음 페이지는 첫 건 seq 를 `beforeSeq` 로) |
-| `department.create` | `{ name, cwd, headEngine: 'claude'\|'codex', headName? }` | `{ department, head: Member }` — **사용자가 하는 유일한 생성**(T34, D-32). 부서 행 → 부장 멤버(`rank:'head'`, `parentId:null`, `teamId:null`, `hiredBy:'user'`, 이름 `headName ?? '부장'`, 엔진 `headEngine`) → CLI 스폰 → `department.headId` 기록. 부장 출근은 보통 멤버와 같은 경로라 `member.status{starting}` 알림이 다른 클라이언트에도 나간다. `headEngine:'codex'` 도 그대로 허용한다(**T43 에서 "v1 권장은 claude" 경고를 지웠다** — T42 실기에서 Codex 부장이 오케스트레이션 도구를 전부 통과해 근거가 사라졌다, D-46). 오류: `cwd` 가 폴더가 아님·모르는 엔진·빈 이름 → -32602. 부장 스폰이 실패하면 부서 행도 되돌린다. 성공하면 전 클라이언트에 `snapshot` 알림을 민다(T38). |
+| `department.create` | `{ name, cwd, headEngine: 'claude'\|'codex', headName?, approvalPolicy? }` | `{ department, head: Member }` — **사용자가 하는 유일한 생성**(T34, D-32). 부서 행 → 부장 멤버(`rank:'head'`, `parentId:null`, `teamId:null`, `hiredBy:'user'`, 이름 `headName ?? '부장'`, 엔진 `headEngine`) → CLI 스폰 → `department.headId` 기록. 부장 출근은 보통 멤버와 같은 경로라 `member.status{starting}` 알림이 다른 클라이언트에도 나간다. `headEngine:'codex'` 도 그대로 허용한다(**T43 에서 "v1 권장은 claude" 경고를 지웠다** — T42 실기에서 Codex 부장이 오케스트레이션 도구를 전부 통과해 근거가 사라졌다, D-46). 오류: `cwd` 가 폴더가 아님·모르는 엔진·빈 이름 → -32602. 부장 스폰이 실패하면 부서 행도 되돌린다. 성공하면 전 클라이언트에 `snapshot` 알림을 민다(T38). |
+| `department.update` | `{ departmentId, approvalPolicy?: 'ask'\|'edits'\|'trust' }` | `{ department }` — 부서 설정 변경. 지금은 **허가 방식**뿐이다(U-02, D-51, 아래 "허가 방식"). 세션을 다시 띄우지 않는다 — **다음 허가 요청부터** 바로 먹고, 이미 떠 있는 pending 은 건드리지 않는다. 값이 바뀌면 `daemon.notice{info}` + `snapshot` 재전송. 모르는 값 -32602, 없는 부서 -32002. |
 | `department.delete` | `{ departmentId }` | `{}` — 하위 트리 전체(팀원 → 팀장 → 부장, **잎부터**)를 후처리·퇴근시키고 부서·팀·멤버·task 행을 지운다. events 는 남는다. 없는 부서 -32002. 삭제 후 전 클라이언트에 `snapshot` 알림(T38) — 다른 클라이언트의 부서 탭·책상이 그때 사라진다. |
 | `department.tree` | `{}` | `{ departments: [{ department, head?, teams: [{ team, lead?, members: [] }], orphans: [] }] }` — 읽기 전용 트리. 멤버 행에는 스냅샷과 같은 `derived` 가 붙는다. `orphans` 는 어느 팀에도 안 붙은(부장 이외) 멤버 — 디버그 경로로만 생긴다. 콘솔 `tree`. |
 | `team.create` | `{ departmentId, name, leadEngine?, leadName?, maxMembers?, allowedEngines?, force: true }` | `{ team, lead: Member }` — **T34 부터 디버그 전용**: `force:true` 가 없으면 -32004(정식 경로는 부장의 `create_team` 도구, T35). 팀은 부서 안에서만 만들어지고 **cwd 는 부서 cwd** 다(D-32 "한 부서 안의 팀들은 같은 cwd"). 팀장 멤버(`rank:'lead'`, `parentId` = 그 부서의 살아 있는 부장, `hiredBy:'leader'`, 이름 `leadName ?? '팀장'`, 엔진 `leadEngine ?? 부장 엔진`)가 자동 출근하고 `team.leaderId` 가 채워진다. 팀장도 정원(`maxMembers`, 기본 4)의 한 자리다. 오류: 없는 부서 -32002, 살아 있는 부장 없음 -32003, 모르는 엔진·`allowedEngines` 밖·`maxMembers < 1` -32602. 팀장 스폰이 실패하면 팀 행도 되돌린다. 성공하면 `snapshot` 알림(T38). |
@@ -176,6 +177,7 @@ v1a 에서 데몬이 만드는 이벤트(어댑터 표는 worklog T04 참고):
 - `delegating{tool:'delegate', summary:<task>, to:<memberId>, toName, status:'assigned'|'queued'}` ref `{taskId}` — 팀장이 `delegate` 로 팀원에게 일을 넘겼다(T25). 이벤트는 **팀장**에게 붙는다(사무실에서 "위임" 표시). `status:'queued'` 면 그 팀원이 바빠서 줄을 선 것이고, 유휴가 되면 데몬이 전달한다(따로 이벤트를 내지 않는다 — `thinking{text:'[TASK#n from …]'}` 으로 보인다).
 - `idle{summary:'interrupted'}` — `member.interrupt` 후 화면 준비 문구로 idle 판정.
 - **`waiting_approval`·`asking` 은 "상태 주장" 이다(U-01).** 데몬은 허가·질문이 **닫힐 때**(승인·거부·답변·만료) `member.status` 와 `pending.settled` 만 보내고 그 멤버의 이벤트는 새로 내지 않는다. 그러므로 클라이언트가 "마지막 이벤트" 로 현재 표시를 만들 때는 이 두 kind 를 **status(raw·`derived`)가 대기이거나 열린 pending 이 있는 동안만** 유효하다고 봐야 한다 — 아니면 응답한 뒤에도 다음 이벤트까지 "허가 대기" 로 보인다(앱은 `isStaleWaitEvent`).
+- **`detail.auto`** — 도구 이벤트(`reading`·`editing`·`running`)에 이 키가 있으면 **사람에게 물어야 했던 허가 요청을 부서의 허가 방식에 따라 묻지 않고 넘긴 것**이다(U-02, D-51). 값은 통과시킨 규칙: `edit-in-cwd`(작업 폴더 안의 파일 편집) · `read-only-shell`(읽기만 하는 셸 명령) · `plain-shell`(`trust` 에서, 위험해 보이는 것이 없는 셸 명령). 같은 도구 호출의 `PreToolUse` 이벤트(꼬리표 없음) **바로 뒤에** 한 번 더 나온다 — "시작했다" 와 "묻지 않고 넘겼다" 는 다른 사실이다. 이때 pending·`waiting_approval` 은 **생기지 않는다**. 클라이언트는 이 꼬리표를 눈에 띄게 그려야 한다(앱 로그의 `자동 허가`) — 무엇이 허락 없이 실행됐는지의 기록이다.
 - `idle{summary:'screen-idle'}` — **턴 종료 hook 없이 프롬프트로 돌아온 화면**의 폴백(T23b, D-25). 멤버가 `working`/`waiting_approval`/`waiting_answer` 인데 ① 열린 pending 이 하나도 없고 ② 화면에 다이얼로그·busy 표시가 없고 prompt ready 이고 ③ 그 사이 새 hook 이 오지 않은 상태가 **3초 연속**이면 데몬이 이 이벤트를 내고 status 를 `idle` 로 내린다(500ms 폴링, 멤버당 타이머 하나, 세션이 끝나면 정지). 실제 사례: Codex 사용량 한도 안내는 화면에만 뜨고 `Stop` 을 내지 않아 멤버가 `working` 에 갇혔다. 보류(허가·질문)가 열려 있거나 busy 표시가 있으면 절대 나오지 않는다.
 - `running{cmd?, summary:'셸 대기 중 (락: <이름>)', waiting:'shell-lock', holder:<memberId>}` — **팀 셸 뮤텍스**(T27, 아래 "팀 셸 뮤텍스")에서 다른 멤버가 락을 쥐고 있어 이 멤버의 셸 명령이 줄을 섰다. 그 도구의 보통 `running{tool, cmd}` **바로 뒤에** 대기 한 번당 한 번만 나온다(말풍선이 "대기 중"으로 끝난다). `member.status` 는 `working` 그대로 — CLI 는 도구를 부른 채 데몬 응답을 기다린다. **락을 넘겨받으면 `running{cmd?, summary:'셸 대기 끝 — 실행'}` 를 한 번 더 낸다**(U-01 — `waiting` 없음. 전에는 안 냈는데, 그러면 *마지막* 이벤트가 대기인 채로 명령이 돌아 말풍선이 실행 중에도 "셸 대기 중" 이었다). 줄을 서지 않고 바로 잡은 명령에는 없다.
 - `idle{summary:'clocked out'}` — `member.clockOut`.
@@ -207,6 +209,24 @@ v1a 에서 데몬이 만드는 이벤트(어댑터 표는 worklog T04 참고):
 | 보고(`reporting`) | TeamTools `report`(M4) / v1a 는 턴 종료 메시지 승격 | 같음(**폴백**: 아래 "Codex 폴백") |
 
 `SessionEnd` 의 `reason` 이 `clear`/`resume` 이면 두 엔진 모두 종료로 보지 않는다(같은 프로세스에서 새 `SessionStart` 가 따라온다).
+
+## 허가 방식 (U-02, D-51)
+
+부서마다 `approvalPolicy` 가 있다(`Department.approvalPolicy` — `snapshot.departments[]`·`department.tree` 에 실린다). 그 부서 멤버의 `PermissionRequest` 를 **어디까지 사람에게 묻지 않고 넘길지**다. 직급과 무관하다(부장도 팀원도 같은 부서 방식을 따른다). 기준 폴더는 **부서 `cwd`** 다.
+
+| 값 | 묻지 않고 넘기는 것 |
+|---|---|
+| `ask` | 없다 — **기본값**. 옛 부서·옛 DB 는 전부 이 값이라 켜기 전에는 아무 동작도 안 바뀐다. |
+| `edits` | 작업 폴더 **안**의 파일 편집(`Edit`·`Write`·`MultiEdit`·`NotebookEdit`·Codex `apply_patch`) + **읽기만 하는** 셸 명령. Codex 의 `workspace-write` 와 같은 수준 — Claude 를 거기에 맞춘다. |
+| `trust` | 위에 더해 **평범한 셸 명령**(테스트·빌드·`git add`/`commit`·파일 이동). 위험해 보이는 것만 묻는다. |
+
+**어느 값에서도 묻는 것**: 작업 폴더 밖 경로(절대·`~`·`..`·홈 변수, 폴더 안의 심볼릭 링크가 밖을 가리키는 경우 포함) · 폴더 안이어도 `.git`/`.claude`/`.codex`/`.ssh` 아래와 비밀 파일(`.env*`·`*.pem`·`*.key`·`.npmrc`·`.mcp.json` …) · 웹 요청(`WebFetch`/`WebSearch`) · 팀 도구가 아닌 MCP 도구 · 모르는 도구 · 질문(`AskUserQuestion` — 허가가 아니라 답이 필요하다).
+
+**`trust` 에서도 묻는 셸**: 위험 패턴(`rm -r/-f`·`git reset --hard`·`git clean`·`chmod -R`·`dd` …) · 밖으로 나가는 것(`git push`·`publish`·`deploy`·`curl`·`ssh`·`gh`·`docker`·클라우드 CLI) · 권한·시스템(`sudo`·전역 설치·`brew`·`kill`·`open`·`launchctl`) · **안을 볼 수 없는 것**(`bash -c`·`eval`·`source`·`xargs`·`$(…)`·백틱·백그라운드 `&`·인터프리터 한 줄 코드 `-c`/`-e`·파이프로 인터프리터에 흘리기) · 변경을 버리는 git(`checkout -- .`·`restore`·`stash drop`·`branch -D`) · 와일드카드 삭제(`rm *`) · 이름을 가린 명령(`s"u"do`·`$CMD`).
+
+판정은 `src/adapters/autoApproval.ts` 한 곳이다. `edits` 는 **허용 목록**(아는 것만 통과), `trust` 는 차단 목록이되 **구조를 모르겠으면 묻는다**. **`trust` 는 보안 경계가 아니다** — `python build.py`·`npm install` 은 그 안에서 무엇이든 할 수 있다. 막는 것은 사고(실수로 나가는 `rm -rf`·`git push`·폴더 밖 쓰기)이지 악의적인 에이전트가 아니다. 판정이 던지거나 부서를 못 찾으면 묻는 쪽으로 떨어진다.
+
+넘긴 요청에는 pending 이 없고 응답(`allow`)이 바로 나간다. 기록은 이벤트의 `detail.auto`(위 "오피스 이벤트")와 데몬 로그의 `auto-approve …` 줄이다. 콘솔에서는 `dept policy <dept> <ask|edits|trust>`.
 
 ## 셸 뮤텍스 (T27 · T34 에서 범위가 부서로)
 

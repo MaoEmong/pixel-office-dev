@@ -90,6 +90,17 @@ String formatElapsed(Duration d) {
 }
 
 /// 로그 행의 상세 한 줄: `tool` + (path | cmd | summary | text) 첫 줄. 길면 자른다.
+/// 로그 줄의 "자동 허가" 꼬리표(U-02). 사람에게 물어야 했는데 부서의 허가 방식에 따라 묻지 않고 넘긴 도구 호출이다.
+const String autoApprovedTag = '자동 허가';
+
+/// 통과시킨 규칙 → 꼬리표 툴팁.
+String autoApprovedTooltip(String rule) => switch (rule) {
+      'edit-in-cwd' => '작업 폴더 안의 파일 편집이라 묻지 않고 허가했습니다',
+      'read-only-shell' => '읽기만 하는 명령이라 묻지 않고 허가했습니다',
+      'plain-shell' => '위험해 보이는 것이 없는 명령이라 묻지 않고 허가했습니다',
+      _ => '부서의 허가 방식에 따라 묻지 않고 허가했습니다',
+    };
+
 String eventDetailLine(OfficeEvent e, {int maxLength = 200}) {
   final d = e.detail;
   final body = d.path ?? d.cmd ?? d.summary ?? d.text;

@@ -7,7 +7,7 @@ import type { AddressInfo } from 'node:net';
 import { WebSocketServer, WebSocket, type RawData } from 'ws';
 import { OfficeError, RPC_ERROR } from '../office/errors.js';
 import type { OfficeApi, OfficeEvents } from '../office/types.js';
-import type { Engine, MemberRank } from '../store/types.js';
+import { isApprovalPolicy, type ApprovalPolicy, type Engine, type MemberRank } from '../store/types.js';
 
 export interface RpcServerOptions {
   port: number;
@@ -216,13 +216,21 @@ export class RpcServer {
         }),
 
       // 결과는 `{ department, head }` — 부장이 자동 출근한다(T34, D-32). 사용자가 하는 유일한 생성이다.
-      'department.create': (_c, p) =>
-        o.createDepartment({
+      'department.create': (_c, p) => {
+        const approvalPolicy = optApprovalPolicy(p, 'approvalPolicy');
+        return o.createDepartment({
           name: reqStr(p, 'name'),
           cwd: reqStr(p, 'cwd'),
           headEngine: reqEngine(p, 'headEngine'),
           headName: optStr(p, 'headName'),
-        }),
+          // 안 왔으면 키 자체를 싣지 않는다 — Office 가 기본값(`ask`)을 고른다(U-02).
+          ...(approvalPolicy !== undefined ? { approvalPolicy } : {}),
+        });
+      },
+      // U-02(D-51): 부서의 허가 방식을 바꾼다. 결과는 `{ department }`. 다음 허가 요청부터 바로 먹는다.
+      'department.update': (_c, p) => ({
+        department: o.updateDepartment({ departmentId: reqStr(p, 'departmentId'), approvalPolicy: optApprovalPolicy(p, 'approvalPolicy') }),
+      }),
       'department.delete': async (_c, p) => {
         await o.deleteDepartment(reqStr(p, 'departmentId'));
         return {};
@@ -443,6 +451,13 @@ function optNum(p: Record<string, unknown>, key: string): number | undefined {
 function reqEngine(p: Record<string, unknown>, key: string): Engine {
   const v = p[key];
   if (v !== 'claude' && v !== 'codex') throw invalid(`${key} must be claude|codex`);
+  return v;
+}
+
+function optApprovalPolicy(p: Record<string, unknown>, key: string): ApprovalPolicy | undefined {
+  const v = p[key];
+  if (v === undefined || v === null) return undefined;
+  if (!isApprovalPolicy(v)) throw invalid(`${key} must be ask|edits|trust`);
   return v;
 }
 

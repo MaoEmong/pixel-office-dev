@@ -34,7 +34,8 @@ import { InputQueue } from '../input/InputQueue.js';
 import { UsageProbe } from '../usage/UsageProbe.js';
 import { UsageTracker } from '../usage/UsageTracker.js';
 import { ALL_TEAM_TOOLS, TeamToolsServer, TEAM_MCP_NAME, canUseTool, rankToolMessage, type TeamToolName } from '../mcp/TeamToolsServer.js';
-import { CHILD_RANK, USER_ACTOR } from '../store/types.js';
+import { CHILD_RANK, USER_ACTOR, isApprovalPolicy } from '../store/types.js';
+import { decideAutoApproval, type AutoApprovalDecision } from '../adapters/autoApproval.js';
 import type {
   Department,
   Engine,
@@ -71,6 +72,7 @@ import type {
   AttachResult,
   ClockInParams,
   CreateDepartmentParams,
+  UpdateDepartmentParams,
   CreateDepartmentResult,
   CreateTeamParams,
   CreateTeamResult,
@@ -477,6 +479,8 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
       getInstructions: (memberId: string) => this.buildSessionContext(memberId) || undefined,
       // T27: 셸 도구(읽기 전용 제외)의 PreToolUse 는 팀 락을 잡을 때까지 응답을 보류한다.
       toolGate: (memberId, tool, input, ctx) => this.shellGate(memberId, tool, input, ctx),
+      // U-02: 부서의 허가 방식이 허락하면 허가 요청을 사람에게 묻지 않고 넘긴다.
+      autoApprove: (member, tool, input) => this.autoApprove(member, tool, input),
     };
     this.adapter = new ClaudeHooksAdapter(adapterDeps);
     this.codexAdapter = new CodexHooksAdapter(adapterDeps);
@@ -863,9 +867,16 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
     if (!fs.existsSync(params.cwd) || !fs.statSync(params.cwd).isDirectory()) throw invalidParams(`cwd is not a directory: ${params.cwd}`);
     if (params.headEngine !== 'claude' && params.headEngine !== 'codex') throw invalidParams(`unknown engine: ${String(params.headEngine)}`);
     if (!params.name.trim()) throw invalidParams('name is empty');
+    if (params.approvalPolicy !== undefined && !isApprovalPolicy(params.approvalPolicy)) {
+      throw invalidParams(`unknown approvalPolicy: ${String(params.approvalPolicy)}`);
+    }
     const headName = (params.headName ?? DEFAULT_HEAD_NAME).trim() || DEFAULT_HEAD_NAME;
 
-    const department = this.store.createDepartment({ name: params.name.trim(), cwd: path.resolve(params.cwd) });
+    const department = this.store.createDepartment({
+      name: params.name.trim(),
+      cwd: path.resolve(params.cwd),
+      ...(params.approvalPolicy !== undefined ? { approvalPolicy: params.approvalPolicy } : {}),
+    });
     let head: Member;
     try {
       head = this.hireChild({ departmentId: department.id, name: headName, rank: 'head', engine: params.headEngine, hiredBy: 'user' });
@@ -878,6 +889,34 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
     const created = this.store.updateDepartment(department.id, { headId: head.id })!;
     this.emit('tree', 'department.create');
     return { department: created, head };
+  }
+
+  /**
+   * 부서 설정 변경 — 지금은 **허가 방식**뿐이다(U-02, D-51).
+   *
+   * 세션을 다시 띄우지 않는다: 판정은 허가 요청이 올 때마다 부서 행을 읽으므로 **다음 요청부터** 바로 먹는다.
+   * 이미 떠 있는 허가 카드는 건드리지 않는다 — 방식을 바꿨다고 사람이 보고 있던 카드를 뒤에서 넘기지 않는다.
+   */
+  updateDepartment(params: UpdateDepartmentParams): Department {
+    const department = this.store.getDepartment(params.departmentId);
+    if (!department) throw notFound('department', params.departmentId);
+    if (params.approvalPolicy === undefined) return department;
+    if (!isApprovalPolicy(params.approvalPolicy)) throw invalidParams(`unknown approvalPolicy: ${String(params.approvalPolicy)}`);
+    if (params.approvalPolicy === department.approvalPolicy) return department;
+    const updated = this.store.updateDepartment(department.id, { approvalPolicy: params.approvalPolicy })!;
+    this.notice('info', `부서 "${updated.name}" 허가 방식: ${department.approvalPolicy} → ${updated.approvalPolicy}`);
+    this.emit('tree', 'department.update');
+    return updated;
+  }
+
+  /**
+   * `AdapterDeps.autoApprove`: 이 멤버 부서의 허가 방식으로 판정한다(U-02). 부서를 못 찾으면 묻는다.
+   * **기준 폴더는 부서 cwd** 다 — 멤버·팀 cwd 가 아니다(D-32: 한 부서는 한 폴더에서 일한다).
+   */
+  private autoApprove(member: Member, tool: string, input: unknown): AutoApprovalDecision | undefined {
+    const department = this.store.getDepartment(member.departmentId);
+    if (!department || department.approvalPolicy === 'ask') return undefined;
+    return decideAutoApproval(department.approvalPolicy, { toolName: tool, toolInput: input, cwd: department.cwd });
   }
 
   /**

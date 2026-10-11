@@ -63,6 +63,7 @@ export abstract class BaseHooksAdapter extends EventEmitter<HooksAdapterEvents> 
   protected readonly store: Store;
   private readonly getInstructions: AdapterDeps['getInstructions'];
   private readonly toolGate: AdapterDeps['toolGate'];
+  private readonly autoApprove: AdapterDeps['autoApprove'];
   private readonly now: () => number;
   /** 사용자 답을 기다리는 hook 보류. pendingId → handle. */
   private readonly held = new Map<string, HeldPending>();
@@ -74,6 +75,7 @@ export abstract class BaseHooksAdapter extends EventEmitter<HooksAdapterEvents> 
     this.store = deps.store;
     this.getInstructions = deps.getInstructions;
     this.toolGate = deps.toolGate;
+    this.autoApprove = deps.autoApprove;
     this.now = deps.now ?? Date.now;
   }
 
@@ -381,6 +383,10 @@ export abstract class BaseHooksAdapter extends EventEmitter<HooksAdapterEvents> 
       return;
     }
 
+    // U-02(D-51): 부서의 허가 방식이 이 요청을 묻지 않고 넘기라고 하면 pending 을 만들지 않는다.
+    // 질문 도구는 "허가" 가 아니라 사람의 **답**이 필요한 것이라 여기 오지 않는다.
+    if (!this.isQuestionTool(toolName) && this.tryAutoApprove(req, member, toolName, toolInput)) return;
+
     const handle = req.hold();
 
     if (this.isQuestionTool(toolName)) {
@@ -413,6 +419,34 @@ export abstract class BaseHooksAdapter extends EventEmitter<HooksAdapterEvents> 
     this.emit('pendingCreated', pending);
     this.appendEvent(member, 'waiting_approval', this.approvalDetail(toolName, toolInput), { approvalId: pending.id });
     this.setStatus(member.id, 'waiting_approval');
+  }
+
+  /**
+   * 자동 허가(U-02). 통과시켰으면 true — 응답은 이미 나갔다.
+   *
+   * **보이는 기록을 남긴다**: 같은 도구 이벤트를 `detail.auto = <규칙>` 과 함께 한 번 더 낸다. PreToolUse 가 이미
+   * `running{cmd}` 을 남겼지만 그건 "시작했다" 이고 이건 "물어야 했는데 묻지 않고 넘겼다" 다 — 서로 다른 사실이고
+   * (D-41), 이게 없으면 무엇이 내 허락 없이 실행됐는지 나중에 알 길이 없다. 앱 로그는 이 꼬리표를 `자동 허가` 로 그린다.
+   *
+   * 판정이 던지면 묻는 쪽으로 떨어진다 — 자동 허가는 편의 기능이지 허가 흐름을 깨도 되는 것이 아니다.
+   */
+  private tryAutoApprove(req: HookRequest, member: Member, toolName: string, toolInput: unknown): boolean {
+    if (!this.autoApprove) return false;
+    let decision: ReturnType<NonNullable<AdapterDeps['autoApprove']>>;
+    try {
+      decision = this.autoApprove(member, toolName, toolInput);
+    } catch (err) {
+      console.error(`[${this.label}] autoApprove(${member.id}, ${toolName}) threw — 사람에게 묻는다:`, err);
+      return false;
+    }
+    if (!decision?.allow) return false;
+    req.respond(allow());
+    const mapped = this.mapTool(toolName, toolInput);
+    const detail: EventDetail = { ...(mapped?.detail ?? { tool: toolName }), auto: decision.rule ?? 'auto' };
+    this.appendEvent(member, mapped?.kind ?? 'running', detail);
+    this.setStatus(member.id, 'working');
+    console.log(`[${this.label}] auto-approve ${member.name}(${member.id}) ${toolName} — ${decision.rule}: ${decision.why}`);
+    return true;
   }
 
   private onPostToolUse(req: HookRequest, member: Member, ok: boolean): void {
