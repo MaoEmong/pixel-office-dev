@@ -63,6 +63,10 @@ function screenDebugFile(): string {
 /** 한 ScreenModel 이 남길 덤프 상한. 프롬프트가 오래 떠 있어도 로그가 터지지 않게. */
 const SCREEN_DEBUG_MAX_DUMPS = 200;
 
+/** 마우스 좌표 **인코딩**을 고르는 DEC private 모드. 서로 배타적이라 마지막에 켠 것 하나만 기억한다. */
+const MOUSE_ENCODING_MODES = { 1005: 'utf', 1006: 'sgr', 1015: 'urxvt' } as const;
+type MouseEncodingMode = keyof typeof MOUSE_ENCODING_MODES;
+
 export class ScreenModel {
   readonly engine: Engine;
   readonly tuiMap: TuiMap;
@@ -73,6 +77,8 @@ export class ScreenModel {
   private debugDumps = 0;
   /** `approval-prompt` 를 처음 본 시각(연속 구간의 시작). 사라지면 undefined. */
   private approvalSeenAt?: number;
+  /** CLI 가 켠 마우스 인코딩 모드(DEC private). 안 켰으면 undefined(= 기본 X10). serialize() 가 붙인다. */
+  private mouseEncoding?: MouseEncodingMode;
 
   constructor(opts: ScreenModelOptions) {
     this.engine = opts.engine;
@@ -86,6 +92,21 @@ export class ScreenModel {
     });
     this.ser = new SerializeAddon();
     this.term.loadAddon(this.ser);
+    // U-03: 마우스 **인코딩** 모드(?1005 utf · ?1006 sgr · ?1015 urxvt)는 serialize 애드온이 안 실어 준다
+    // (추적 모드 ?1000/?1002/?1003 만 싣는다 — `terminal.modes` 에 인코딩이 없다). CLI 가 켜는 것을 직접 지켜봤다가
+    // serialize() 끝에 붙인다. false 를 돌려주므로 xterm 의 기본 처리는 그대로 이어진다.
+    const watch = (on: boolean) => (params: (number | number[])[]) => {
+      for (const p of params) {
+        const n = Array.isArray(p) ? p[0] : p;
+        if (n !== undefined && n in MOUSE_ENCODING_MODES) {
+          if (on) this.mouseEncoding = n as MouseEncodingMode;
+          else if (this.mouseEncoding === n) this.mouseEncoding = undefined;
+        }
+      }
+      return false;
+    };
+    this.term.parser.registerCsiHandler({ prefix: '?', final: 'h' }, watch(true));
+    this.term.parser.registerCsiHandler({ prefix: '?', final: 'l' }, watch(false));
   }
 
   get cols(): number {
@@ -107,9 +128,15 @@ export class ScreenModel {
     this.term.resize(cols, rows);
   }
 
-  /** ANSI 직렬화(스크롤백 + 현재 화면 + 모드). 새 터미널에 그대로 write 하면 같은 화면이 복원된다. */
+  /**
+   * ANSI 직렬화(스크롤백 + 현재 화면 + 모드). 새 터미널에 그대로 write 하면 같은 화면이 복원된다.
+   *
+   * 마우스 인코딩 모드는 애드온이 빠뜨리므로 여기서 붙인다(U-03). 이게 없으면 attach 한 쪽 터미널은
+   * "마우스는 보고하되 옛 X10 인코딩으로" 가 된다 — 223 열·행을 넘는 좌표를 못 싣고, CLI 가 요청한 모양도 아니다.
+   */
   serialize(): string {
-    return this.ser.serialize();
+    const base = this.ser.serialize();
+    return this.mouseEncoding === undefined ? base : `${base}\x1b[?${this.mouseEncoding}h`;
   }
 
   /** 현재 보이는 rows 줄(스크롤 끝 기준, 오른쪽 공백 제거). 스크롤백은 포함하지 않는다. */
