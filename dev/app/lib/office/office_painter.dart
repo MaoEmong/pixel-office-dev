@@ -204,7 +204,10 @@ class OfficePainter extends CustomPainter {
       !m.isGone && (p.center - layout.seatCenter(m.deskIndex)).distance > 0.5;
 
   /// **바닥 고정 바**에 그리는 캐릭터인가 — 내 책상 슬롯에 선 대기자와 보고 방문 중인 멤버.
-  bool _inBar(OfficeLayout layout, SceneMember m) => layout.drawsInBar(m) || bubbleOverrides.containsKey(m.id);
+  ///
+  /// 판단은 레이아웃 한 곳에 둔다(`hitTest` 와 같은 답이어야 눌린다 — U-04). 전에는 `bubbleOverrides` 에
+  /// 있는지를 봤는데, 거기에는 **자리에 앉은 채** 뜨는 "복구" 말풍선도 들어 있어 그 멤버까지 바 좌표로 그렸다.
+  bool _inBar(OfficeLayout layout, SceneMember m) => layout.drawsInBar(m, visiting: visitingIds);
 
   @override
   void paint(Canvas canvas, Size size) {

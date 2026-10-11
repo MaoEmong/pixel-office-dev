@@ -33,6 +33,7 @@ Future<void> render(
   List<CharacterPlacement>? placements,
   Map<String, double> bob = const {},
   Map<String, String> bubbleOverrides = const {},
+  Set<String> visitingIds = const {},
 }) async {
   final rec = ui.PictureRecorder();
   final canvas = Canvas(rec);
@@ -44,6 +45,7 @@ Future<void> render(
     placements: placements,
     bob: bob,
     bubbleOverrides: bubbleOverrides,
+    visitingIds: visitingIds,
   ).paint(canvas, size);
   final img = await rec.endRecording().toImage(size.width.toInt(), size.height.toInt());
   final png = await img.toByteData(format: ui.ImageByteFormat.png);
@@ -102,7 +104,7 @@ void main() {
       await render(scene, const Size(640, 520), 'T12-office-narrow');
       await render(OfficeScene.empty, size, 'T12-office-empty');
       await render(t16Scene, size, 'T16-office-walk',
-          selected: 'm3', placements: motion.placementsAt(half), bob: motion.bobAt(const Duration(milliseconds: 250)), bubbleOverrides: motion.bubbleOverrides);
+          selected: 'm3', placements: motion.placementsAt(half), bob: motion.bobAt(const Duration(milliseconds: 250)), bubbleOverrides: motion.bubbleOverrides, visitingIds: {for (final v in motion.visits) v.memberId});
     });
   }, skip: outDir == null); // OFFICE_PREVIEW_OUT 미설정이면 건너뜀
 }

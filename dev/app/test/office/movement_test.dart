@@ -175,6 +175,44 @@ void main() {
     handle.dispose();
   });
 
+  // U-04: 페인터는 보고 방문자를 바(뷰포트 좌표)에 그리는데 hitTest 는 그 사실을 몰라서, 내 책상 옆에 선
+  // 방문자가 "바의 빈 곳" 으로 떨어져 눌리지 않았다. 그린 자리와 눌리는 자리는 같아야 한다.
+  testWidgets('보고하러 와서 내 책상 옆에 선 캐릭터를 누르면 그 멤버가 선택된다(U-04)', (tester) async {
+    final picks = <String?>[];
+    final notifier = FakeOfficeNotifier(idlePair());
+    await pumpHarness(tester, notifier, onSelect: picks.add);
+    final layout = painterOf(tester).lastLayout!;
+    final origin = tester.getTopLeft(find.byType(OfficeView));
+    final spot = layout.reportSpot(0);
+    expect(spot.dy, greaterThanOrEqualTo(layout.viewportHeight), reason: '보고 자리는 스크롤 영역이 아니라 바 안이다');
+
+    // 방문 전: 거기는 바의 빈 곳이다.
+    await tester.tapAt(origin + spot);
+    expect(picks, [null]);
+    picks.clear();
+
+    notifier.set(idlePair(events: {'m1': event('m1', OfficeEventKind.reporting, seq: 3)}));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 1000)); // 걸어오는 중
+    final mid = painterOf(tester).lastPlacements[0].center;
+    expect(mid, isNot(layout.seatCenter(0)));
+    expect(mid, isNot(spot));
+    await tester.tapAt(origin + mid);
+    expect(picks, ['m1'], reason: '걸어오는 중에도 그려진 자리에서 눌린다');
+    picks.clear();
+
+    await tester.pump(const Duration(milliseconds: 1500)); // 도착
+    expect(painterOf(tester).lastPlacements[0].center, spot);
+    await tester.tapAt(origin + spot);
+    expect(picks, ['m1'], reason: '내 책상 옆에 선 보고 방문자');
+
+    await tester.pump(const Duration(seconds: 4)); // 방문 끝 → 복귀
+    await settleMotion(tester);
+    picks.clear();
+    await tester.tapAt(origin + spot);
+    expect(picks, [null], reason: '돌아간 뒤에는 다시 빈 곳');
+  });
+
   testWidgets('보고하러 오는 도중 새 작업 이벤트가 오면 취소하고 자리로', (tester) async {
     final notifier = FakeOfficeNotifier(idlePair());
     await pumpHarness(tester, notifier);

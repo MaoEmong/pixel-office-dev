@@ -456,8 +456,14 @@ class OfficeLayout {
 
   // ---- 배치 · 히트 테스트 ------------------------------------------------------------
 
-  /// 이 멤버가 **바닥 고정 바**(뷰포트 좌표)에 그려지는가 — 내 책상 슬롯에 선 대기자.
-  bool drawsInBar(SceneMember m) => m.isQueued && m.queueIndex! < myDeskSlots;
+  /// 이 멤버가 **바닥 고정 바**(뷰포트 좌표)에 그려지는가 — 내 책상 슬롯에 선 대기자, 그리고 보고하러
+  /// 내 책상에 와 있는(오는 중인) 멤버([visiting] — `OfficeMotion.visits`).
+  ///
+  /// 그리는 쪽(`OfficePainter`)과 누르는 쪽([hitTest])이 **이 한 곳**을 본다. 둘이 따로 판단하면 그려진 자리와
+  /// 눌리는 자리가 어긋난다 — U-04: 페인터만 보고 방문자를 바에 그리고 hitTest 는 몰라서, 내 책상 옆에 선
+  /// 보고 방문자가 "바의 빈 곳" 으로 떨어져 **눌리지 않았다**.
+  bool drawsInBar(SceneMember m, {Set<String> visiting = const {}}) =>
+      (m.isQueued && m.queueIndex! < myDeskSlots) || visiting.contains(m.id);
 
   List<CharacterPlacement> placements(OfficeScene scene) => [
         for (final m in scene.members)
@@ -485,13 +491,15 @@ class OfficeLayout {
   /// 점이 캐릭터(우선) 또는 책상 위에 있으면 그 멤버 id, 아니면 null.
   ///
   /// [p] 는 **뷰포트 좌표**다 — 바(내 책상 슬롯)는 그대로, 스크롤 영역은 [scrollOffset] 만큼 내려 콘텐츠 좌표로 본다.
-  String? hitTest(Offset p, OfficeScene scene, [List<CharacterPlacement>? placed, double scrollOffset = 0]) {
+  /// [visiting] 은 보고 방문 중인 멤버 — 페인터가 바에 그리므로 여기서도 뷰포트 좌표로 본다([drawsInBar]).
+  String? hitTest(Offset p, OfficeScene scene,
+      [List<CharacterPlacement>? placed, double scrollOffset = 0, Set<String> visiting = const {}]) {
     final ps = placed ?? placements(scene);
     // 클릭 목표는 최소 18px(패스 6) — 축소해도 캐릭터를 누를 수 있어야 한다.
     final r = math.max(18.0, charRadius + 4);
-    // 1. 바(슬롯)에 그려진 대기자 — 뷰포트 좌표 그대로.
+    // 1. 바에 그려진 캐릭터(슬롯 대기자·보고 방문자) — 뷰포트 좌표 그대로.
     for (var i = ps.length - 1; i >= 0; i--) {
-      if (!drawsInBar(scene.members[i])) continue;
+      if (!drawsInBar(scene.members[i], visiting: visiting)) continue;
       if ((ps[i].center - p).distance <= r) return ps[i].memberId;
     }
     final k = slotAt(p);
@@ -505,7 +513,7 @@ class OfficeLayout {
     // 2. 스크롤 영역 — 콘텐츠 좌표로.
     final c = toContent(p, scrollOffset);
     for (var i = ps.length - 1; i >= 0; i--) {
-      if (drawsInBar(scene.members[i])) continue;
+      if (drawsInBar(scene.members[i], visiting: visiting)) continue;
       if ((ps[i].center - c).distance <= r) return ps[i].memberId;
     }
     for (final m in scene.members) {

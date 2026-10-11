@@ -164,6 +164,9 @@ class _OfficeViewState extends ConsumerState<OfficeView> with SingleTickerProvid
 
   Duration get _now => _clockBase + _elapsed;
 
+  /// 지금 보고 방문 중인 멤버 — 페인터(바에 그린다)와 hitTest(바에서 누른다)에 **같은 집합**을 준다.
+  Set<String> get _visitingIds => {for (final v in _motion.visits) v.memberId};
+
   @override
   void initState() {
     super.initState();
@@ -289,11 +292,11 @@ class _OfficeViewState extends ConsumerState<OfficeView> with SingleTickerProvid
       ref.read(expandedExitedTeamsProvider.notifier).toggle(teamId);
       return;
     }
-    widget.onSelectMember?.call(layout.hitTest(local, scene, _motion.placementsAt(_now), _scroll));
+    widget.onSelectMember?.call(layout.hitTest(local, scene, _motion.placementsAt(_now), _scroll, _visitingIds));
   }
 
   void _onHover(Offset local, OfficeScene scene, OfficeLayout layout) {
-    final id = layout.hitTest(local, scene, _motion.placementsAt(_now), _scroll);
+    final id = layout.hitTest(local, scene, _motion.placementsAt(_now), _scroll, _visitingIds);
     if (id != _hovered) setState(() => _hovered = id);
   }
 
@@ -330,7 +333,7 @@ class _OfficeViewState extends ConsumerState<OfficeView> with SingleTickerProvid
           showEmptyHint: !noDepartment,
           sprites: sprites,
           walk: _motion.walkAt(now),
-          visitingIds: {for (final v in _motion.visits) v.memberId},
+          visitingIds: _visitingIds,
           typeFrame: typeFrameAt(now),
         );
         return Listener(
