@@ -584,6 +584,8 @@ class OfficeScene {
     // (와 턴을 붙잡는 TUI 질문). `ask_parent` 는 상사에게 가는 것이라 여기 없다 — 그 멤버는 상사 책상으로 간다.
     final userPending = [for (final p in openPending) if (p.goesToUser(rank: members[p.memberId]?.rank)) p];
     final withUserPending = {for (final p in userPending) p.memberId};
+    // 누구 몫이든 열린 허가·질문이 있는 멤버 — "대기 이벤트가 아직 유효한가" 의 근거(U-01).
+    final withOpenPending = {for (final p in openPending) p.memberId};
     final otherPending = {for (final p in openPending) if (!p.goesToUser(rank: members[p.memberId]?.rank)) p.memberId};
     // `ask_parent` 질문자 → 답을 기다리는 상사(같은 화면에 있을 때만 책상 번호를 얻는다).
     final askParentTarget = <String, int>{};
@@ -645,12 +647,14 @@ class OfficeScene {
             latestEvents[ordered[i].id],
             derived: derived[ordered[i].id],
             askingParent: askParentTarget.containsKey(ordered[i].id),
+            hasOpenPending: withOpenPending.contains(ordered[i].id),
           ),
           isAlert: isAlertFor(
             ordered[i].status,
             latestEvents[ordered[i].id],
             derived: derived[ordered[i].id],
             askingParent: askParentTarget.containsKey(ordered[i].id),
+            hasOpenPending: withOpenPending.contains(ordered[i].id),
           ),
           queueIndex: queued[ordered[i].id],
           eventKind: latestEvents[ordered[i].id]?.kind,
@@ -726,13 +730,24 @@ bool _listEq<T>(List<T> a, List<T> b) {
 /// 모니터·말풍선용 한 줄 요약. [derived] 가 `waiting_answer` 면(= `ask_user` 질문이 열린 채 raw 는 `idle`)
 /// 마지막 이벤트보다 "❓ 질문" 이 앞선다 — 답을 기다리는 동안 "(대기)" 로 보이지 않게(T19 함정 1).
 /// [askingParent] 면 상사 답을 기다리는 중이라 그 표시가 가장 앞선다(T37).
-String summarize(MemberStatus status, OfficeEvent? event, {DerivedStatus? derived, bool askingParent = false}) {
+///
+/// [hasOpenPending] 은 이 멤버에게 **열린 허가·질문이 남아 있는가** — 마지막 이벤트가 "대기" 인데 대기가 이미
+/// 끝났는지([isStaleWaitEvent])를 가를 때 쓴다(U-01).
+String summarize(
+  MemberStatus status,
+  OfficeEvent? event, {
+  DerivedStatus? derived,
+  bool askingParent = false,
+  bool hasOpenPending = false,
+}) {
   if (status == MemberStatus.suspended) return suspendedSummary;
   if (status == MemberStatus.exited) return '(퇴근)';
   if (status == MemberStatus.error) return '⚠ 오류';
   if (askingParent) return askParentSummary;
   if (derived == DerivedStatus.waitingAnswer) return '❓ 질문';
   if (derived == DerivedStatus.waitingApproval) return '❗ 허가 대기';
+  // 승인·답변이 끝났는데 마지막 이벤트가 아직 "대기" 다 → 그 이벤트는 버리고 **지금 상태**를 말한다(U-01).
+  if (isStaleWaitEvent(status, event, derived: derived, hasOpenPending: hasOpenPending)) return _statusSummary(status);
   // 상사가 위임 후 idle 인데 미종료 task 가 남았다 — 마지막 이벤트("(대기)")보다 이게 사실에 가깝다(01 §3).
   if (derived == DerivedStatus.waitingReports) return waitingReportsSummary;
   // 턴도 끝났고 맡은 일도 없다(T28). "(대기)" 가 나올 자리에서만 바꾼다 — 방금 한 일(보고·편집)은 그대로 보여 준다.
@@ -791,12 +806,35 @@ bool isResumeEvent(OfficeEvent? event) {
   return (d.summary ?? '') == 'resumed' || (d.text ?? '').startsWith('[RESUMED]');
 }
 
+/// 마지막 이벤트가 **이미 끝난 대기**를 말하고 있는가(U-01).
+///
+/// `waiting_approval`·`asking` 이벤트는 "무슨 일이 있었다" 가 아니라 **"지금 기다린다" 는 상태 주장**이다.
+/// 그런데 데몬은 승인·거부·답변을 처리할 때 status 만 바꾸고(`→ working`) 이벤트는 새로 내지 않는다 —
+/// 그래서 말풍선이 마지막 이벤트만 보면 **내가 누른 뒤에도 "❗ 허가 대기" 가 다음 이벤트까지 남는다.**
+/// 상태(raw·파생)도 대기가 아니고 열린 pending 도 없으면 그 이벤트는 낡은 것이다.
+///
+/// [hasOpenPending] 을 같이 보는 이유(T19b): TeamTools `ask_user` 질문은 턴을 붙잡지 않아 `asking` 직후
+/// status 가 `working` 으로 돌아온다 — 그 동안에도 질문은 **열려 있다**. status 만 보면 살아 있는 질문을 지운다.
+bool isStaleWaitEvent(MemberStatus status, OfficeEvent? event, {DerivedStatus? derived, bool hasOpenPending = false}) {
+  if (event == null) return false;
+  if (event.kind != OfficeEventKind.waitingApproval && event.kind != OfficeEventKind.asking) return false;
+  return !status.isWaiting && !(derived?.isWaiting ?? false) && !hasOpenPending;
+}
+
 /// alert 말풍선 여부: 마지막 이벤트가 waiting_approval/asking/reporting 이거나 멤버가 (raw·파생) waiting 상태.
-bool isAlertFor(MemberStatus status, OfficeEvent? event, {DerivedStatus? derived, bool askingParent = false}) {
+/// 단 이미 끝난 대기 이벤트([isStaleWaitEvent])는 alert 가 아니다.
+bool isAlertFor(
+  MemberStatus status,
+  OfficeEvent? event, {
+  DerivedStatus? derived,
+  bool askingParent = false,
+  bool hasOpenPending = false,
+}) {
   if (status.isGone) return false;
   if (askingParent) return true;
   if (status.isWaiting) return true;
   if (derived?.isWaiting ?? false) return true;
+  if (isStaleWaitEvent(status, event, derived: derived, hasOpenPending: hasOpenPending)) return false;
   return event?.kind.isAlert ?? false;
 }
 

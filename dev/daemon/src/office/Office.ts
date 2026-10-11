@@ -2548,6 +2548,21 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
     this.appendEvent(member, 'running', detail);
   }
 
+  /**
+   * 줄을 섰던 셸 명령이 락을 넘겨받았다 → 평범한 `running{cmd}` 를 한 번 더 남긴다(U-01).
+   *
+   * 이게 없으면 마지막 이벤트가 `running{waiting:'shell-lock'}` 인 채로 명령이 돈다 — 말풍선·모니터가
+   * 실행 중인데도 "◷ 셸 대기 중" 이고, 명령이 끝나도(PostToolUse 는 이벤트를 안 낸다) 다음 도구까지 그대로다.
+   * "시작했다 → 막혔다 → 풀려서 돈다" 는 서로 다른 사실이다(D-41 의 기준 그대로).
+   */
+  private noticeShellGranted(info: ShellLockInfo): void {
+    const member = this.store.getMember(info.memberId);
+    if (!member) return;
+    const detail: OfficeEvent['detail'] = { summary: '셸 대기 끝 — 실행' };
+    if (info.cmd) detail.cmd = truncate(info.cmd, 300);
+    this.appendEvent(member, 'running', detail);
+  }
+
   private memberLabel(memberId: string): string {
     return this.store.getMember(memberId)?.name ?? memberId;
   }
@@ -2597,6 +2612,9 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
 
     // T27: 대기·강제 해제는 사용자에게 보여야 한다(대기는 이벤트, 강제 해제는 알림).
     this.shell.on('waiting', (info, holder) => this.noticeShellWait(info, holder));
+    this.shell.on('granted', (info, _waitedMs, queued) => {
+      if (queued) this.noticeShellGranted(info);
+    });
     this.shell.on('warn', (info, message) => this.notice('warn', `${this.memberLabel(info.memberId)}: ${message}${info.cmd ? ` (${truncate(info.cmd, 80)})` : ''}`));
 
     this.receiver.on('hook', (req) => {
