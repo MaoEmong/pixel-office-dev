@@ -339,6 +339,7 @@ class PanelHeader extends ConsumerWidget {
     final askingParent = ref.watch(openPendingProvider).values.any((p) => p.isAskParent && p.memberId == member.id);
     final legend = legendSlotFor(status: member.status, derived: derived, askingParent: askingParent);
     final hired = DateTime.tryParse(member.createdAt);
+    final model = ref.watch(memberUsageProvider(member.id).select((u) => u?.model));
     final cwd = department?.cwd ?? team?.cwd ?? member.cwd;
     final scope = [
       if (department != null) department.name,
@@ -355,6 +356,17 @@ class PanelHeader extends ConsumerWidget {
               Text(member.name, style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold)),
               const SizedBox(width: 8),
               _Badge(member.engine.name),
+              // U-05: 엔진만으로는 Opus 인지 Fable 인지, astra 인지 알 수 없다 — 세션이 쓰는 모델을 옆에 붙인다.
+              // 아직 못 봤으면(첫 hook·statusLine 전, 옛 데몬) 배지 자체를 그리지 않는다. 길면 줄여서 이름을 지킨다.
+              if (model != null) ...[
+                const SizedBox(width: 4),
+                Flexible(
+                  child: Tooltip(
+                    message: '모델 ${model.fullLabel}',
+                    child: _Badge(model.shortLabel, key: const Key('panel.model')),
+                  ),
+                ),
+              ],
               const SizedBox(width: 8),
               Tooltip(
                 message: '${legend.label}${legend.icon.isEmpty ? '' : ' ${legend.icon}'}',
@@ -420,7 +432,7 @@ class _UnknownMemberHeader extends StatelessWidget {
 }
 
 class _Badge extends StatelessWidget {
-  const _Badge(this.text);
+  const _Badge(this.text, {super.key});
   final String text;
 
   @override
@@ -430,7 +442,13 @@ class _Badge extends StatelessWidget {
           border: Border.all(color: Colors.white24),
           borderRadius: BorderRadius.circular(4),
         ),
-        child: Text(text, style: const TextStyle(fontSize: 11, color: Colors.white70)),
+        child: Text(
+          text,
+          style: const TextStyle(fontSize: 11, color: Colors.white70),
+          maxLines: 1,
+          softWrap: false,
+          overflow: TextOverflow.ellipsis,
+        ),
       );
 }
 

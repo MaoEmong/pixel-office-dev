@@ -283,11 +283,52 @@ class TokenUsage {
   String toString() => 'TokenUsage(total=$total)';
 }
 
+/// 세션이 **지금 쓰는 모델**(U-05) — 엔진(Claude/Codex)보다 한 칸 아래(Opus 인지 Fable 인지, astra 인지).
+///
+/// 데몬이 CLI 에게서 읽어 온 값이다(Claude statusLine 의 `display_name`, Codex hook 의 `model`).
+/// 세션 중에 바뀔 수 있다(`/model`) — 마지막으로 본 값이다. **모델 이름을 앱에 하드코딩하지 않는다.**
+class SessionModel {
+  const SessionModel({required this.label, this.id});
+
+  /// CLI 의 모델 id(`claude-opus-5[1m]`, `gpt-6-astra`). 표시 이름만 온 경우 null.
+  final String? id;
+
+  /// 사람에게 보일 이름 그대로(`Opus 5 (1M context)`, `gpt-6-astra`).
+  final String label;
+
+  /// 배지에 넣을 짧은 이름 — 끝에 붙은 괄호 꾸밈(`(1M context)`)을 뗀다. 떼고 남는 게 없으면 원문.
+  String get shortLabel {
+    final cut = label.replaceFirst(RegExp(r'\s*\([^()]*\)\s*$'), '').trim();
+    return cut.isEmpty ? label : cut;
+  }
+
+  /// 툴팁용 전체 표기: `Opus 5 (1M context) · claude-opus-5[1m]`(id 가 이름과 같으면 한 번만).
+  String get fullLabel => id == null || id == label ? label : '$label · $id';
+
+  static SessionModel? tryParse(Object? v) {
+    if (v is! Map) return null;
+    final j = Map<String, dynamic>.from(v);
+    final id = _text(j['id']);
+    final label = _text(j['label']) ?? id;
+    return label == null ? null : SessionModel(label: label, id: id);
+  }
+
+  @override
+  bool operator ==(Object other) => other is SessionModel && other.id == id && other.label == label;
+
+  @override
+  int get hashCode => Object.hash(id, label);
+
+  @override
+  String toString() => 'SessionModel($fullLabel)';
+}
+
 /// 캐릭터 한 명의 사용량.
 class MemberUsage {
   const MemberUsage({
     required this.memberId,
     this.engine,
+    this.model,
     this.context,
     this.tokens,
     this.costUsd,
@@ -298,6 +339,9 @@ class MemberUsage {
 
   /// 그 멤버의 엔진(없으면 멤버 행에서 찾는다).
   final Engine? engine;
+
+  /// 이 세션이 쓰는 모델(U-05). 아직 못 봤거나 옛 데몬이면 null.
+  final SessionModel? model;
   final ContextUsage? context;
   final TokenUsage? tokens;
 
@@ -317,6 +361,7 @@ class MemberUsage {
     return MemberUsage(
       memberId: id,
       engine: _engine(j['engine']),
+      model: SessionModel.tryParse(j['model']),
       context: ContextUsage.tryParse(j['context']),
       tokens: TokenUsage.tryParse(j['tokens']),
       costUsd: _num(j['costUsd']),
@@ -324,7 +369,7 @@ class MemberUsage {
     );
   }
 
-  /// 보여 줄 것이 하나도 없는가(= 패널 한 줄이 "첫 턴 뒤 표시" 로 떨어진다).
+  /// 보여 줄 **숫자**가 하나도 없는가(= 패널 한 줄이 "첫 턴 뒤 표시" 로 떨어진다). 모델은 따로 배지로 간다.
   bool get isEmpty => context == null && tokens == null && costUsd == null;
 
   @override
@@ -332,13 +377,14 @@ class MemberUsage {
       other is MemberUsage &&
       other.memberId == memberId &&
       other.engine == engine &&
+      other.model == model &&
       other.context == context &&
       other.tokens == tokens &&
       other.costUsd == costUsd &&
       other.updatedAt == updatedAt;
 
   @override
-  int get hashCode => Object.hash(memberId, engine, context, tokens, costUsd, updatedAt);
+  int get hashCode => Object.hash(memberId, engine, model, context, tokens, costUsd, updatedAt);
 
   @override
   String toString() => 'MemberUsage($memberId ctx=$context tokens=$tokens)';

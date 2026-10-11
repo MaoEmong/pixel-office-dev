@@ -82,6 +82,7 @@ raw `status` 는 "CLI 프로세스가 어떤 상태인가" 일 뿐이다 — `id
   ],
   "members": [
     { "memberId": "m_…", "engine": "claude",
+      "model": { "id": "claude-opus-5[1m]", "label": "Opus 5 (1M context)" },   // 이 세션이 **지금 쓰는 모델**(U-05). 못 봤으면 null
       "context": { "used": 43910, "window": 1000000, "percent": 4 },
       "tokens":  { "input": 912, "output": 17, "cacheRead": 29413, "cacheCreate": 14495, "total": 44837 },
       "costUsd": 0.1607,             // **Codex 는 언제나 null**(토큰만 준다)
@@ -120,6 +121,9 @@ raw `status` 는 "CLI 프로세스가 어떤 상태인가" 일 뿐이다 — `id
 | `connected`/`reason`, Claude `plan` | `claude auth status` · `codex login status` | 기동 시 + 60초(`PIXEL_USAGE_POLL_SEC`) |
 | 두 엔진 `weekly`/`session`/`models`, Codex `plan` | **확인용 세션**(T43-4)이 읽은 `/usage`·`/status` 화면 | 5분(`PIXEL_USAGE_PROBE_SEC`) |
 | Codex `costUsd` | **없다** — Codex 는 토큰만 준다 | — |
+| 멤버 `model` (U-05) | **Claude**: statusLine 페이로드의 `model{id, display_name}`(→ `label` = `display_name`) + `SessionStart` hook 의 `model`(id). **Codex**: **모든** hook 페이로드의 `model`(id — `label` 도 같은 값) | 상태줄을 그릴 때 · hook 마다. **값이 바뀔 때만** 알림 |
+
+`model` 은 데몬이 정한 값이 아니다 — 데몬은 CLI 에 `--model` 을 주지 않으므로 **CLI 가 말해 주는 대로** 읽는다. 세션 중에 바뀔 수 있다(`/model`, Codex 의 한도 초과 시 모델 전환) → "마지막으로 본 값" 이다. `label` 은 CLI 의 문자열 그대로이고(이름을 하드코딩하지 않는다 — `models[].label` 과 같은 규칙), 숫자(`context`·`tokens`)가 아직 없어도 `model` 만 먼저 채워져 올 수 있다(첫 hook 직후). 이 키가 없는 옛 데몬·옛 행은 `null` 로 읽는다.
 
 `plan` 은 이 표의 어느 줄에서 오든 **소문자로 통일해서** 나간다(위 규칙) — `/status` 화면의 `Pro` 도 rollout `plan_type` 의 `pro` 도 `"pro"` 하나다.
 

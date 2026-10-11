@@ -835,7 +835,7 @@ class OfficePainter extends CustomPainter {
                   ? Rect.fromCircle(center: placed[i].center, radius: layout.charRadius)
                   : layout.deskRect(scene.members[i].deskIndex).shift(Offset(0, -dy)),
               properties: SemanticsProperties(
-                label: '${scene.members[i].deskTooltip} · ${scene.members[i].engineLabel}'
+                label: '${scene.members[i].deskTooltip} · ${scene.members[i].engineModelLabel}'
                     '${rankBadgeLabel(scene.members[i].rank).isEmpty ? '' : ' · ${scene.members[i].rank.label}'}'
                     ' · ${scene.members[i].summary}'
                     '${scene.members[i].isQueued ? ' · 내 책상 줄' : bubbleOverrides.containsKey(scene.members[i].id) ? ' · ${bubbleOverrides[scene.members[i].id]}' : ''}',

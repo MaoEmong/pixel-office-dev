@@ -101,6 +101,22 @@ describe('사용량 배선 (T43, D-45)', () => {
     assert.equal(memberNotes[0]!.memberId, head.id);
   });
 
+  // U-05: 세션이 쓰는 모델 — Claude 는 statusLine, Codex 는 hook 페이로드의 `model`.
+  test('모델: Codex 는 hook 의 model 로, Claude 는 statusLine 으로 스냅샷·알림에 실린다', () => {
+    receiver.emit('hook', fakeReq(lead.memberToken, 'SessionStart', { hook_event_name: 'SessionStart', source: 'startup', session_id: 's-codex', model: 'gpt-6-astra' }).req);
+    const codex = office.snapshot().usage.members.find((u) => u.memberId === lead.id);
+    assert.deepEqual(codex?.model, { id: 'gpt-6-astra', label: 'gpt-6-astra' });
+    assert.deepEqual(memberNotes.at(-1)?.model, { id: 'gpt-6-astra', label: 'gpt-6-astra' });
+
+    fireStatusLine(head, statusLine(1));
+    const claude = office.snapshot().usage.members.find((u) => u.memberId === head.id);
+    assert.deepEqual(claude?.model, { id: 'claude-opus-5[1m]', label: 'Opus 5 (1M context)' });
+
+    // model 이 없는 hook 은 그대로 지나간다(값을 지우지 않는다).
+    receiver.emit('hook', fakeReq(lead.memberToken, 'UserPromptSubmit', { hook_event_name: 'UserPromptSubmit', prompt: 'hi' }).req);
+    assert.equal(office.snapshot().usage.members.find((u) => u.memberId === lead.id)?.model?.id, 'gpt-6-astra');
+  });
+
   test('같은 값이 연달아 와도 알림은 한 번뿐이다', () => {
     fireStatusLine(head, statusLine(1));
     for (const n of [2, 3, 4, 5]) fireStatusLine(head, statusLine(n));

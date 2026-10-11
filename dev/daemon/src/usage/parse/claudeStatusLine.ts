@@ -9,7 +9,7 @@
 //     데몬은 DB 에 남은 마지막 값을 계속 보여 준다("첫 작업 후 표시").
 //   - 그때 `context_window.current_usage` 와 `used_percentage` 도 `null` 이다(키는 있다).
 //   - `resets_at` 은 **유닉스 초**다(화면의 사람 표기가 아니다).
-import { isoFromUnixSeconds, isRecord, toCount, toPercent, type UsageContext, type UsageWindow } from '../types.js';
+import { isoFromUnixSeconds, isRecord, toCount, toPercent, toText, type SessionModel, type UsageContext, type UsageWindow } from '../types.js';
 
 /** statusLine 페이로드에서 뽑아내는 것. 없는 값은 전부 null(필드별 방어). */
 export interface ClaudeStatusLineInfo {
@@ -24,6 +24,8 @@ export interface ClaudeStatusLineInfo {
   weekly: UsageWindow | null;
   /** 5시간 한도 = `rate_limits.five_hour`. */
   session: UsageWindow | null;
+  /** 이 세션의 모델 = `model{id, display_name}`(U-05). 첫 턴 전에도 온다. */
+  model: SessionModel | null;
 }
 
 const EMPTY: ClaudeStatusLineInfo = {
@@ -33,7 +35,21 @@ const EMPTY: ClaudeStatusLineInfo = {
   costUsd: null,
   weekly: null,
   session: null,
+  model: null,
 };
+
+/**
+ * `model` → SessionModel. 실측(T43-0 픽스처)은 `{id:"claude-opus-5[1m]", display_name:"Opus 5 (1M context)"}`.
+ * 문자열 하나로 오는 경우(hook 페이로드의 모양)도 받는다 — 그때는 그 값이 id 이자 이름이다.
+ */
+export function sessionModelOf(raw: unknown): SessionModel | null {
+  const asText = toText(raw);
+  if (asText) return { id: asText, label: asText };
+  if (!isRecord(raw)) return null;
+  const id = toText(raw.id);
+  const label = toText(raw.display_name) ?? id;
+  return label ? { id, label } : null;
+}
 
 /** `{used_percentage, resets_at}` → UsageWindow. 둘 다 없으면 null(= 이 창을 못 봤다). */
 function windowOf(raw: unknown): UsageWindow | null {
@@ -88,5 +104,6 @@ export function parseClaudeStatusLine(payload: unknown): ClaudeStatusLineInfo {
     costUsd: cost ? toCount(cost.total_cost_usd) : null,
     weekly: limits ? windowOf(limits.seven_day) : null,
     session: limits ? windowOf(limits.five_hour) : null,
+    model: sessionModelOf(obj.model),
   };
 }

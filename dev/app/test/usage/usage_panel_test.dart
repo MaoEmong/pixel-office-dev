@@ -103,6 +103,65 @@ void main() {
     });
   });
 
+  // ---- U-05: 세션이 쓰는 모델 배지 -----------------------------------------------------------
+  testWidgets('모델을 알면 엔진 배지 옆에 짧은 이름이 붙는다(툴팁은 전체), 모르면 배지가 없다', (tester) async {
+    withUsage(daemon, [
+      {...usageMemberJson('m1'), 'model': {'id': 'claude-opus-5[1m]', 'label': 'Opus 5 (1M context)'}},
+    ]);
+    await tester.runAsync(() async {
+      final c = await pumpPanel(tester, daemon, const RightPanel(memberId: 'm1'));
+      await pumpUntilConnected(tester, c);
+      await tester.pump();
+      expect(find.text('claude'), findsOneWidget);
+      expect(find.descendant(of: find.byKey(const Key('panel.model')), matching: find.text('Opus 5')), findsOneWidget);
+      expect(find.byTooltip('모델 Opus 5 (1M context) · claude-opus-5[1m]'), findsOneWidget);
+    });
+  });
+
+  testWidgets('모델을 아직 못 봤으면 배지를 그리지 않고, usage.member 알림이 오면 바로 뜬다 — 숫자가 없어도', (tester) async {
+    await tester.runAsync(() async {
+      final c = await pumpPanel(tester, daemon, const RightPanel(memberId: 'm2'));
+      await pumpUntilConnected(tester, c);
+      expect(find.byKey(const Key('panel.model')), findsNothing);
+      // Codex: 첫 hook 이 모델만 알려 준다(컨텍스트·토큰은 턴이 끝나야 온다).
+      daemon.push('usage.member', {
+        'memberId': 'm2',
+        'engine': 'codex',
+        'model': {'id': 'gpt-6-astra', 'label': 'gpt-6-astra'},
+        'context': null,
+        'tokens': null,
+        'costUsd': null,
+        'updatedAt': DateTime.now().toUtc().toIso8601String(),
+      });
+      await pumpUntil(tester, () => find.byKey(const Key('panel.model')).evaluate().isNotEmpty, reason: 'model badge');
+      expect(find.text('gpt-6-astra'), findsOneWidget);
+      expect(find.byKey(const Key('panel.usage.empty')), findsOneWidget, reason: '사용량 줄은 아직 "첫 턴 뒤 표시"');
+      // 세션 중에 모델을 바꾸면(/model) 배지도 따라 바뀐다.
+      daemon.push('usage.member', {
+        'memberId': 'm2',
+        'engine': 'codex',
+        'model': {'id': 'gpt-6-sol', 'label': 'gpt-6-sol'},
+        'updatedAt': DateTime.now().toUtc().toIso8601String(),
+      });
+      await pumpUntil(tester, () => find.text('gpt-6-sol').evaluate().isNotEmpty, reason: 'model changed');
+      expect(find.text('gpt-6-astra'), findsNothing);
+    });
+  });
+
+  testWidgets('패널 420px: 모델 이름이 아주 길어도 헤더가 넘치지 않는다', (tester) async {
+    withUsage(daemon, [
+      {...usageMemberJson('m1'), 'model': {'id': 'x', 'label': '아주-아주-긴-모델-이름-${'가' * 40}'}},
+    ]);
+    await tester.runAsync(() async {
+      final c = await pumpPanel(tester, daemon, const RightPanel(memberId: 'm1'), size: const Size(panelWidthMin, 700));
+      await pumpUntilConnected(tester, c);
+      await tester.pump();
+      expect(tester.takeException(), isNull);
+      expect(find.byKey(const Key('panel.model')), findsOneWidget);
+      expect(tester.getSize(find.byType(PanelHeader)).width, lessThanOrEqualTo(panelWidthMin));
+    });
+  });
+
   testWidgets('패널 420px: 한 줄 높이 그대로 · 넘치지 않고 · 탭은 그대로', (tester) async {
     // 일부러 아주 긴 꼬리(토큰 1.2M + 비용 네 자리)를 준다 — 좁을 때 잘리는 쪽이 꼬리인지 본다.
     withUsage(daemon, [usageMemberJson('m1', percent: 88, total: 1234567, cost: 1234.56)]);

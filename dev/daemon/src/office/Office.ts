@@ -2634,6 +2634,13 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
           rt.transcriptPath = req.payload.transcript_path;
         }
       }
+      // U-05: 세션이 쓰는 모델. Codex 는 모든 hook 에, Claude 는 SessionStart 에 `model`(id)이 실린다
+      // (Claude 의 표시 이름은 statusLine 이 준다). 모델 때문에 hook 처리가 멈추면 안 된다.
+      try {
+        this.usage.applyHookModel({ id: member.id, engine: member.engine }, req.payload.model);
+      } catch (err) {
+        console.warn(`[office] hook model 처리 실패(${member.id}):`, err);
+      }
       // T20: 멤버의 engine 으로 어댑터를 고른다(Codex 는 명령 휴리스틱 매핑 + Interrupt hook).
       this.adapterFor(member.engine).handleHook(req, member);
     });

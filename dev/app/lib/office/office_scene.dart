@@ -215,11 +215,15 @@ class SceneMember {
     this.isShellWaiting = false,
     this.isResumed = false,
     this.contextPercent,
+    this.modelLabel,
   });
 
   final String id;
   final String name;
   final Engine engine;
+
+  /// 세션이 쓰는 모델의 짧은 이름(`Opus 5`, `gpt-6-astra` — U-05). 아직 못 봤으면 null.
+  final String? modelLabel;
   final MemberStatus status;
 
   /// 직급(T37 rev 3). 부장·팀장은 책상 배지 + 캐릭터 링으로 표시한다.
@@ -304,6 +308,9 @@ class SceneMember {
         Engine.codex => 'Codex',
       };
 
+  /// 엔진 + 모델(`Claude · Opus 5`). 모델을 모르면 엔진만 — 빈칸을 남기지 않는다(U-05).
+  String get engineModelLabel => modelLabel == null ? engineLabel : '$engineLabel · $modelLabel';
+
   /// 책상 라벨 = **이름만**(패스 1 D7: "책상 N ·" 접두어 삭제 — 번호는 툴팁·로그에만).
   String get deskLabel => name;
 
@@ -343,12 +350,14 @@ class SceneMember {
       other.askParentVisitorIndex == askParentVisitorIndex &&
       other.isShellWaiting == isShellWaiting &&
       other.isResumed == isResumed &&
-      other.contextPercent == contextPercent;
+      other.contextPercent == contextPercent &&
+      other.modelLabel == modelLabel;
 
+  // Object.hash 는 인자 20개까지다 — 뒤쪽 둘을 한 번 묶는다.
   @override
   int get hashCode => Object.hash(id, name, engine, status, rank, teamId, deskIndex, summary, isAlert, queueIndex, eventKind,
       eventSeq, eventTool, askParentDeskIndex, derived, monitorSecond, askParentVisitorIndex, isShellWaiting, isResumed,
-      contextPercent);
+      Object.hash(contextPercent, modelLabel));
 
   @override
   String toString() => 'SceneMember($id $name ${rank.wire} desk=$deskIndex queue=$queueIndex "$summary")';
@@ -673,6 +682,7 @@ class OfficeScene {
           isResumed: isResumeEvent(latestEvents[ordered[i].id]),
           // 퇴근·오류로 나간 캐릭터의 마지막 컨텍스트는 캔버스에 띄우지 않는다(경고할 일이 없다).
           contextPercent: ordered[i].status.isGone ? null : usage[ordered[i].id]?.contextPercent,
+          modelLabel: usage[ordered[i].id]?.model?.shortLabel,
         ),
     ];
 

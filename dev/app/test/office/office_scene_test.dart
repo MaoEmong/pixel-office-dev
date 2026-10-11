@@ -158,6 +158,25 @@ void main() {
       expect(scene.members.every((m) => !m.isQueued), isTrue);
     });
 
+    // U-05: 장면 멤버는 엔진뿐 아니라 세션이 쓰는 모델도 안다(툴팁·시맨틱에 쓴다).
+    test('U-05: 사용량에 모델이 있으면 engineModelLabel 에 붙는다, 없으면 엔진만', () {
+      final scene = OfficeScene.build(
+        members: {
+          'a': member('a', name: '하루', createdAt: '1'),
+          'b': member('b', name: '모시', createdAt: '2', engine: Engine.codex),
+        },
+        latestEvents: const {},
+        pending: const {},
+        usage: {
+          'a': const MemberUsage(memberId: 'a', model: SessionModel(id: 'claude-opus-5[1m]', label: 'Opus 5 (1M context)')),
+        },
+      );
+      expect(scene.memberById('a')!.modelLabel, 'Opus 5');
+      expect(scene.memberById('a')!.engineModelLabel, 'Claude · Opus 5');
+      expect(scene.memberById('b')!.modelLabel, isNull);
+      expect(scene.memberById('b')!.engineModelLabel, 'Codex');
+    });
+
     // U-01(장면): 같은 이벤트라도 pending 이 닫히고 status 가 돌아오면 말풍선이 바로 바뀐다.
     test('U-01: 허가 pending 이 닫히고 status 가 working 이 되면 말풍선이 "허가 대기" 에서 벗어난다', () {
       final ev = {'m1': event('m1', OfficeEventKind.waitingApproval, detail: {'cmd': 'rm -rf build/'})};
