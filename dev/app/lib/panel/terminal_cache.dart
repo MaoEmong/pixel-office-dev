@@ -46,9 +46,17 @@ int wheelButtonCode(TerminalMouseButton b) => switch (b) {
 /// 없고 **휠을 직접 받아** 자기 대화를 넘긴다)는 그걸 무시한다 — 실측: 64 는 스크롤되고 68 은 인코딩과 무관하게
 /// 안 된다. 그래서 터미널 탭에서 위로 넘겨 볼 방법이 없었다.
 ///
+/// **위치도 고친다**(U-07). 같은 패키지의 스크롤 처리기는 휠 위치를 `event.position`(**창 전체 기준** 좌표)으로
+/// 칸을 계산한다 — 터미널 탭은 창의 오른쪽 아래에 있으니 열은 맨 오른쪽, 행은 맨 아래로 잘린다. Claude 는 휠의
+/// 위치를 안 봐서 드러나지 않았지만 **Codex 는 포인터가 대화 영역 위에 있을 때만 넘긴다**(실측: 입력창·바닥줄 행에
+/// 대고 굴리면 무시) — 그래서 Codex 터미널만 스크롤이 안 됐다. [pointerCell] 이 진짜 칸을 주면 그걸 쓴다.
+///
 /// 휠만 가로챈다. 클릭·이동은 null 을 돌려 뒤의 기본 처리기로 넘긴다.
 class StandardWheelMouseHandler implements TerminalMouseHandler {
-  const StandardWheelMouseHandler();
+  const StandardWheelMouseHandler({this.pointerCell});
+
+  /// 지금 포인터가 올라가 있는 칸(터미널 뷰 기준). 모르면 null → 패키지가 준 위치를 그대로 쓴다.
+  final CellOffset? Function()? pointerCell;
 
   @override
   String? call(TerminalMouseEvent event) {
@@ -59,7 +67,8 @@ class StandardWheelMouseHandler implements TerminalMouseHandler {
     // 휠에는 "뗌" 이 없다.
     if (event.buttonState == TerminalMouseButtonState.up) return null;
     final code = wheelButtonCode(event.button);
-    final x = event.position.x + 1, y = event.position.y + 1; // 보고는 1 부터
+    final at = pointerCell?.call() ?? event.position;
+    final x = at.x + 1, y = at.y + 1; // 보고는 1 부터
     switch (event.state.mouseReportMode) {
       case MouseReportMode.sgr:
         return '\x1b[<$code;$x;${y}M';
@@ -75,12 +84,15 @@ class StandardWheelMouseHandler implements TerminalMouseHandler {
   }
 }
 
-/// 터미널 탭의 마우스 처리기: 휠은 표준 번호로, 나머지는 패키지 기본 그대로.
-const TerminalMouseHandler terminalMouseHandler = CascadeMouseHandler([
-  StandardWheelMouseHandler(),
-  ClickMouseHandler(),
-  UpDownMouseHandler(),
-]);
+/// 터미널 탭의 마우스 처리기: 휠은 표준 번호 + 진짜 위치로, 나머지는 패키지 기본 그대로.
+TerminalMouseHandler terminalMouseHandlerFor(CellOffset? Function()? pointerCell) => CascadeMouseHandler([
+      StandardWheelMouseHandler(pointerCell: pointerCell),
+      const ClickMouseHandler(),
+      const UpDownMouseHandler(),
+    ]);
+
+/// 위치를 모르는 기본 처리기(테스트·단독 사용).
+final TerminalMouseHandler terminalMouseHandler = terminalMouseHandlerFor(null);
 
 class CachedTerminal {
   CachedTerminal(this.memberId, this.terminal);
@@ -90,6 +102,10 @@ class CachedTerminal {
 
   /// 데몬에 attach 된 상태인지(TerminalTab 이 갱신). resize 는 attach 뒤에만 의미가 있다.
   bool attached = false;
+
+  /// 지금 포인터가 올라가 있는 칸(터미널 뷰 기준, 0 부터). TerminalTab 이 포인터 이벤트마다 갱신한다 — 휠 보고의
+  /// 위치로 쓴다(U-07). 탭이 안 떠 있거나 포인터가 한 번도 안 올라왔으면 null.
+  CellOffset? pointerCell;
 
   /// 데몬이 아는 크기(attach 파라미터 · 마지막 resize). null 이면 아직 아무것도 안 알렸다.
   ///
@@ -117,7 +133,8 @@ class TerminalCache {
   void remove(String memberId) => _entries.remove(memberId);
 
   CachedTerminal _create(String memberId) {
-    final entry = CachedTerminal(memberId, Terminal(maxLines: terminalMaxLines, mouseHandler: terminalMouseHandler));
+    late final CachedTerminal entry;
+    entry = CachedTerminal(memberId, Terminal(maxLines: terminalMaxLines, mouseHandler: terminalMouseHandlerFor(() => entry.pointerCell)));
     entry.terminal.onOutput = (data) => _send('member.type', {'memberId': memberId, 'data': data});
     // 크기는 이벤트 인자가 아니라 터미널에서 다시 읽는다 — attach 와 같은 clamp 를 태우려고.
     entry.terminal.onResize = (_, _, _, _) => syncSize(entry);
