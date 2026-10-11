@@ -228,10 +228,114 @@ void main() {
       expect(report(TerminalMouseButton.left, any, MouseReportMode.sgr), '\x1b[<0;10;5M');
     });
 
-    test('캐시가 만드는 Terminal 은 이 처리기를 쓴다', () {
+    test('캐시가 만드는 Terminal 은 표준 번호로 보고하고, 탭이 적어 둔 포인터 칸을 위치로 쓴다', () {
       final c = ProviderContainer();
       addTearDown(c.dispose);
-      expect(c.read(terminalCacheProvider).of('m9').terminal.mouseHandler, same(terminalMouseHandler));
+      final entry = c.read(terminalCacheProvider).of('m9');
+      final t = entry.terminal;
+      t.setMouseMode(MouseMode.upDownScrollMove);
+      t.setMouseReportMode(MouseReportMode.sgr);
+      String? out;
+      t.onOutput = (d) => out = d;
+      // 포인터 칸을 모르면 패키지가 준 위치 그대로.
+      t.mouseInput(TerminalMouseButton.wheelUp, TerminalMouseButtonState.down, const CellOffset(70, 23));
+      expect(out, '\x1b[<64;71;24M');
+      // 탭이 진짜 칸을 적어 두면 그걸 쓴다(U-07) — 패키지가 준 (70, 23) 은 버린다.
+      entry.pointerCell = const CellOffset(11, 4);
+      t.mouseInput(TerminalMouseButton.wheelUp, TerminalMouseButtonState.down, const CellOffset(70, 23));
+      expect(out, '\x1b[<64;12;5M');
+      // 클릭은 위치를 바꾸지 않는다(패키지가 클릭에는 맞는 좌표를 준다).
+      t.mouseInput(TerminalMouseButton.left, TerminalMouseButtonState.down, const CellOffset(3, 2));
+      expect(out, '\x1b[<0;4;3M');
+    });
+  });
+
+  // ---- U-07: 휠의 **위치** ------------------------------------------------------------------------
+  // xterm 패키지의 스크롤 처리기는 휠 위치를 창 전체 기준 좌표로 칸을 계산한다. 터미널 탭은 창의 오른쪽 아래에 있어
+  // 열은 맨 오른쪽, 행은 맨 아래로 잘려 나간다. Codex 는 포인터가 **대화 영역 위**에 있을 때만 대화를 넘긴다
+  // (실측 codex 0.159: 입력창·바닥줄 행에 대고 굴린 휠은 무시) — 그래서 Codex 터미널만 스크롤이 안 됐다.
+  group('U-07 휠 위치', () {
+    const fullscreen = '\x1b[?1049h\x1b[H화면\x1b[?1003h\x1b[?1006h';
+
+    testWidgets('창 안에서 밀려 있는 터미널: 휠 보고의 위치는 **터미널 기준 칸**이다(창 기준이 아니다)', (tester) async {
+      // 터미널이 창의 (460, 100) 쯤에서 시작하게 한다 — 실제 앱의 오른쪽 패널과 같은 처지.
+      tester.view.physicalSize = const Size(1400, 900);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.reset);
+      await tester.runAsync(() async {
+        final c = await pumpPanel(tester, daemon, const TerminalTab(memberId: 'm1'));
+        await pumpUntilConnected(tester, c);
+        await pumpUntil(tester, () => bufferText(tester).contains('SCREEN:m1'));
+        daemon.push('term', {'memberId': 'm1', 'data': fullscreen});
+        await pumpUntil(tester, () => terminalOf(tester).isUsingAltBuffer, reason: 'alt buffer');
+
+        final view = tester.state<TerminalViewState>(find.byType(TerminalView));
+        final origin = tester.getTopLeft(find.byType(TerminalView));
+        expect(origin.dx, greaterThan(200), reason: '이 테스트는 터미널이 창 왼쪽 위에 붙어 있지 않아야 뜻이 있다');
+        expect(origin.dy, greaterThan(50));
+
+        // 터미널의 **위쪽**(대화 영역)에 포인터를 두고 굴린다.
+        final at = origin + const Offset(60, 48);
+        final want = view.renderTerminal.getCellOffset(view.renderTerminal.globalToLocal(at));
+        final mouse = TestPointer(1, PointerDeviceKind.mouse)..hover(at);
+        await tester.sendEventToBinding(mouse.scroll(const Offset(0, -60)));
+        await tester.pump(const Duration(milliseconds: 50));
+        await pumpUntil(tester, () => daemon.countOf('member.type') > 0, reason: 'wheel reported');
+        final sent = daemon.paramsOf('member.type').map((p) => p['data'] as String).toList();
+        expect(sent, everyElement('\x1b[<64;${want.x + 1};${want.y + 1}M'), reason: '$sent');
+        // 그 칸은 화면 위쪽이다 — 예전에는 창 기준 좌표라 맨 아래 행·맨 오른쪽 열로 잘려 나갔다.
+        final t = terminalOf(tester);
+        expect(want.y, lessThan(5));
+        expect(want.x, lessThan(12));
+        expect(want.y, lessThan(t.viewHeight - 1));
+        expect(want.x, lessThan(t.viewWidth - 1));
+        // 캐시에도 그 칸이 적혀 있다.
+        expect(c.read(terminalCacheProvider).of('m1').pointerCell, CellOffset(want.x, want.y));
+      });
+    });
+
+    testWidgets('트랙패드 두 손가락도 같은 위치를 싣는다', (tester) async {
+      tester.view.physicalSize = const Size(1400, 900);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.reset);
+      await tester.runAsync(() async {
+        final c = await pumpPanel(tester, daemon, const TerminalTab(memberId: 'm1'));
+        await pumpUntilConnected(tester, c);
+        await pumpUntil(tester, () => bufferText(tester).contains('SCREEN:m1'));
+        daemon.push('term', {'memberId': 'm1', 'data': fullscreen});
+        await pumpUntil(tester, () => terminalOf(tester).isUsingAltBuffer, reason: 'alt buffer');
+        final view = tester.state<TerminalViewState>(find.byType(TerminalView));
+        final at = tester.getTopLeft(find.byType(TerminalView)) + const Offset(120, 90);
+        final want = view.renderTerminal.getCellOffset(view.renderTerminal.globalToLocal(at));
+
+        final pad = TestPointer(2, PointerDeviceKind.trackpad);
+        await tester.sendEventToBinding(pad.panZoomStart(at));
+        for (var i = 1; i <= 5; i++) {
+          await tester.sendEventToBinding(pad.panZoomUpdate(at, pan: Offset(0, 30.0 * i)));
+          await tester.pump(const Duration(milliseconds: 16));
+        }
+        await tester.sendEventToBinding(pad.panZoomEnd());
+        await tester.pump(const Duration(milliseconds: 300));
+        await pumpUntil(tester, () => daemon.countOf('member.type') > 0, reason: 'trackpad reported');
+        final sent = daemon.paramsOf('member.type').map((p) => p['data'] as String).toList();
+        expect(sent, everyElement(matches(RegExp('^\x1b\\[<6[45];${want.x + 1};${want.y + 1}M\$'))), reason: '$sent');
+      });
+    });
+
+    testWidgets('탭이 내려가면 포인터 칸을 잊는다', (tester) async {
+      await tester.runAsync(() async {
+        final c = await pumpPanel(tester, daemon, const TerminalTab(memberId: 'm1'));
+        await pumpUntilConnected(tester, c);
+        await pumpUntil(tester, () => bufferText(tester).contains('SCREEN:m1'));
+        final entry = c.read(terminalCacheProvider).of('m1');
+        final mouse = TestPointer(1, PointerDeviceKind.mouse)..hover(tester.getCenter(find.byType(TerminalView)));
+        await tester.sendEventToBinding(mouse.scroll(const Offset(0, -20)));
+        await tester.pump();
+        expect(entry.pointerCell, isNotNull);
+        await pumpPanel(tester, daemon, const SizedBox.shrink());
+        await tester.pump();
+        expect(entry.pointerCell, isNull);
+      });
     });
   });
 }

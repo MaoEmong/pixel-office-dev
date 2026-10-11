@@ -46,6 +46,9 @@ class _TerminalTabState extends ConsumerState<TerminalTab> {
   /// 멤버 교체·dispose 뒤 도착한 늦은 attach 응답을 버리기 위한 세대 번호.
   int _generation = 0;
 
+  /// TerminalView 의 렌더 객체에 닿는 키 — 포인터 위치를 **뷰 기준 칸**으로 바꾸는 데 쓴다(U-07).
+  final GlobalKey<TerminalViewState> _viewKey = GlobalKey<TerminalViewState>();
+
   /// dispose 에서 detach 를 보내야 하므로 initState 에서 잡아 둔다(unmount 뒤에는 ref 를 쓸 수 없다).
   late final RpcClient _client;
   late final TerminalCache _cache;
@@ -74,6 +77,7 @@ class _TerminalTabState extends ConsumerState<TerminalTab> {
   void didUpdateWidget(covariant TerminalTab old) {
     super.didUpdateWidget(old);
     if (old.memberId != widget.memberId) {
+      _entry.pointerCell = null;
       _cache.markDetached(_entry);
       _detach(old.memberId);
       _generation++;
@@ -89,6 +93,7 @@ class _TerminalTabState extends ConsumerState<TerminalTab> {
     _generation++;
     _termSub?.cancel();
     _connSub?.close();
+    _entry.pointerCell = null; // 탭이 내려가면 포인터 위치도 모른다
     _cache.markDetached(_entry);
     _detach(widget.memberId);
     super.dispose();
@@ -139,6 +144,18 @@ class _TerminalTabState extends ConsumerState<TerminalTab> {
     }
   }
 
+  /// 포인터가 지금 어느 칸 위에 있는지 적어 둔다(U-07). 휠 보고가 이 위치를 싣는다 —
+  /// xterm 패키지는 창 전체 기준 좌표로 계산해 맨 아래·맨 오른쪽 칸으로 잘라 보낸다(terminal_cache.dart 주석).
+  void _trackPointer(Offset globalPosition) {
+    final state = _viewKey.currentState;
+    if (state == null || !state.mounted) return;
+    final render = state.renderTerminal;
+    if (!render.attached || !render.hasSize) return;
+    final cell = render.getCellOffset(render.globalToLocal(globalPosition));
+    // 패키지는 행을 버퍼 줄 수로만 자른다 — 보이는 화면 안으로 한 번 더 자른다.
+    _entry.pointerCell = CellOffset(cell.x, cell.y.clamp(0, _entry.terminal.viewHeight - 1));
+  }
+
   void _onNotification(RpcNotification n) {
     if (n.method != 'term' || n.params['memberId'] != widget.memberId) return;
     final data = n.params['data'];
@@ -157,11 +174,20 @@ class _TerminalTabState extends ConsumerState<TerminalTab> {
       children: [
         ColoredBox(
           color: Colors.black,
-          child: TerminalView(
-            _entry.terminal,
-            textStyle: TerminalStyle(fontSize: widget.fontSize, fontFamily: panelMonoFamily, fontFamilyFallback: panelMonoFallback),
-            autofocus: widget.autofocus,
-            padding: const EdgeInsets.all(4),
+          // 포인터 위치를 먼저 적는다 — 이 Listener 는 안쪽 스크롤 처리기보다 먼저 이벤트를 받는다(휠 · 트랙패드 둘 다).
+          child: Listener(
+            onPointerHover: (e) => _trackPointer(e.position),
+            onPointerDown: (e) => _trackPointer(e.position),
+            onPointerMove: (e) => _trackPointer(e.position),
+            onPointerSignal: (e) => _trackPointer(e.position),
+            onPointerPanZoomStart: (e) => _trackPointer(e.position),
+            child: TerminalView(
+              _entry.terminal,
+              key: _viewKey,
+              textStyle: TerminalStyle(fontSize: widget.fontSize, fontFamily: panelMonoFamily, fontFamilyFallback: panelMonoFallback),
+              autofocus: widget.autofocus,
+              padding: const EdgeInsets.all(4),
+            ),
           ),
         ),
         if (banner != null)
