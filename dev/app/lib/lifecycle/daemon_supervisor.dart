@@ -20,6 +20,7 @@
 import 'dart:async';
 
 import 'daemon_process.dart';
+import 'daemon_preflight.dart';
 
 enum SupervisorState {
   /// 이미 도는 데몬이 있는지 2초 동안 본다.
@@ -43,6 +44,7 @@ enum SupervisorState {
 
 /// 실패 화면의 두 문장 중 어느 쪽인가.
 enum SupervisorFailure {
+  setupRequired,
   /// `데몬을 시작하지 못했습니다` — 못 띄웠거나 떴는데 붙을 수 없다.
   startFailed,
 
@@ -247,6 +249,8 @@ class DaemonSupervisor {
       // node 를 못 찾은 것은 재시도로 나아지지 않는다 — 몇 번째 시도든 바로 그 화면으로 간다(D-48 ③).
       if (e is DaemonNodeNotFoundException) {
         _fail(SupervisorFailure.nodeNotFound, e.message);
+      } else if (e is DaemonSetupException) {
+        _fail(SupervisorFailure.setupRequired, e.message);
       } else if (attempt == 0) {
         _fail(SupervisorFailure.startFailed, e.toString());
       }

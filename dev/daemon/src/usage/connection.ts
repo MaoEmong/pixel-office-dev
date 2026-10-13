@@ -35,12 +35,12 @@ export interface RunResult {
 export type RunCommand = (file: string, args: string[], timeoutMs: number) => Promise<RunResult>;
 
 /** 기본 실행기. 절대 reject 하지 않는다 — 실패도 RunResult 로 돌려준다. */
-export const runCommand: RunCommand = (file, args, timeoutMs) =>
+export const commandRunner = (sessionEnv:Record<string,string> = {}):RunCommand => (file, args, timeoutMs) =>
   new Promise<RunResult>((resolve) => {
     execFile(
       file,
       args,
-      { timeout: timeoutMs, windowsHide: true, maxBuffer: 1024 * 1024, env: stripDaemonEnv(process.env) },
+      { timeout: timeoutMs, windowsHide: true, maxBuffer: 1024 * 1024, env: {...stripDaemonEnv(process.env),...sessionEnv} },
       (err, stdout, stderr) => {
         const e = err as (NodeJS.ErrnoException & { code?: string | number; killed?: boolean }) | null;
         if (!e) return resolve({ stdout: String(stdout), stderr: String(stderr), exitCode: 0 });
@@ -58,12 +58,14 @@ export const runCommand: RunCommand = (file, args, timeoutMs) =>
       },
     );
   });
+export const runCommand:RunCommand=commandRunner();
 
 export interface ProbeOptions {
   env?: NodeJS.ProcessEnv;
   platform?: NodeJS.Platform;
   timeoutMs?: number;
   run?: RunCommand;
+  sessionEnv?: Record<string,string>;
 }
 
 const NOT_INSTALLED: EngineConnection = { connected: false, plan: null, reason: 'not-installed' };
@@ -72,7 +74,7 @@ const LOGGED_OUT: EngineConnection = { connected: false, plan: null, reason: 'lo
 
 /** 스폰 자체가 실패했는가(파일 없음 계열). */
 function isMissingExe(res: RunResult): boolean {
-  return res.errorCode === 'ENOENT' || res.errorCode === 'EACCES' || res.errorCode === 'ENOTDIR';
+  return res.errorCode === 'ENOENT' || res.errorCode === 'ENOTDIR';
 }
 
 /**
@@ -82,7 +84,7 @@ function isMissingExe(res: RunResult): boolean {
 export async function probeClaudeConnection(opts: ProbeOptions = {}): Promise<EngineConnection> {
   const resolved = resolveClaudeExeDetailed(opts.env ?? process.env, opts.platform ?? process.platform);
   if (!resolved.found) return { ...NOT_INSTALLED };
-  const run = opts.run ?? runCommand;
+  const run = opts.run ?? commandRunner(opts.sessionEnv);
   const res = await run(resolved.exe, ['auth', 'status'], opts.timeoutMs ?? PROBE_TIMEOUT_MS);
   if (isMissingExe(res)) return { ...NOT_INSTALLED };
   if (res.timedOut) return { ...UNKNOWN };
@@ -98,11 +100,11 @@ export async function probeClaudeConnection(opts: ProbeOptions = {}): Promise<En
  */
 export async function probeCodexConnection(opts: ProbeOptions = {}): Promise<EngineConnection> {
   const exe = resolveCodexExe(opts.env ?? process.env, opts.platform ?? process.platform);
-  const run = opts.run ?? runCommand;
+  const run = opts.run ?? commandRunner(opts.sessionEnv);
   const res = await run(exe, ['login', 'status'], opts.timeoutMs ?? PROBE_TIMEOUT_MS);
   if (isMissingExe(res)) return { ...NOT_INSTALLED };
   if (res.timedOut) return { ...UNKNOWN };
-  const parsed = parseCodexLoginStatus(res.stdout, res.exitCode ?? -1);
+  const parsed = parseCodexLoginStatus(`${res.stdout}\n${res.stderr}`, res.exitCode ?? -1);
   if (parsed.loggedIn === true) return { connected: true, plan: null, reason: null };
   if (parsed.loggedIn === false) return { ...LOGGED_OUT };
   return { ...UNKNOWN };

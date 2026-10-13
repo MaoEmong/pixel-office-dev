@@ -99,7 +99,7 @@ void main() {
     test('찾은 node 경로로 띄운다 — 오류 문구에 그 경로가 들어 있다(이 PC 엔 없는 경로다)', () async {
       final log = '${tmp.path}/daemon.log';
       await expectLater(
-        spawnDaemon(daemonDir: tmp, logPath: log, platform: macWithNode()),
+        spawnDaemon(daemonDir: tmp, logPath: log, platform: macWithNode(), preflight: (_,_) async {}),
         throwsA(isA<DaemonSpawnException>().having((e) => e.message, '문구', contains('/opt/homebrew/bin/node'))),
       );
     });

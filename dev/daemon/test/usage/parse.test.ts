@@ -228,7 +228,7 @@ describe('parseClaudeAuthStatus / parseCodexLoginStatus (실측 출력)', () => 
 
   test('codex: 문구가 바뀌면 종료 코드로 판단한다', () => {
     assert.equal(parseCodexLoginStatus('something else', 0).loggedIn, true);
-    assert.equal(parseCodexLoginStatus('something else', 1).loggedIn, false);
+    assert.equal(parseCodexLoginStatus('something else', 1).loggedIn, null);
     assert.equal(parseCodexLoginStatus('', -1).loggedIn, null);
   });
 

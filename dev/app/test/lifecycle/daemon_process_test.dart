@@ -5,6 +5,7 @@ import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:pixel_office/lifecycle/daemon_process.dart';
+import 'package:pixel_office/lifecycle/daemon_preflight.dart';
 
 bool get _hasNode {
   try {
@@ -131,7 +132,7 @@ void main() {
         "console.error('표준오류 한 줄');",
       );
       final log = '${tmp.path}/daemon.log';
-      final proc = await spawnDaemon(daemonDir: tmp, extraEnv: {'PIXEL_PARENT_PID': '4242'}, logPath: log);
+      final proc = await spawnDaemon(daemonDir: tmp, extraEnv: {'PIXEL_PARENT_PID': '4242'}, logPath: log, preflight: (_,_) async {});
       expect(proc.pid, greaterThan(0));
       expect(await proc.exitCode, 0);
       final text = File(log).readAsStringSync();
@@ -148,7 +149,7 @@ void main() {
         "console.log('로그경로=' + process.env.PIXEL_DAEMON_LOG);",
       );
       final log = '${tmp.path}/daemon.log';
-      final proc = await spawnDaemon(daemonDir: tmp, logPath: log);
+      final proc = await spawnDaemon(daemonDir: tmp, logPath: log, preflight: (_,_) async {});
       expect(await proc.exitCode, 0);
       expect(File(log).readAsStringSync(), contains('로그경로=$log'));
     }, skip: _hasNode ? false : 'node 없음');
@@ -162,7 +163,7 @@ void main() {
         "setTimeout(()=>{}, 60000);",
       );
       final log = '${tmp.path}/daemon.log';
-      final proc = await spawnDaemon(daemonDir: tmp, logPath: log);
+      final proc = await spawnDaemon(daemonDir: tmp, logPath: log, preflight: (_,_) async {});
       // 손자 pid 가 로그에 찍힐 때까지.
       var grandchild = 0;
       for (var i = 0; i < 100 && grandchild == 0; i++) {
@@ -181,7 +182,7 @@ void main() {
     test('띄우지 못하면 DaemonSpawnException(앱이 죽지 않는다)', () async {
       await expectLater(
         spawnDaemon(daemonDir: Directory('${tmp.path}/없는폴더'), logPath: '${tmp.path}/daemon.log'),
-        throwsA(isA<DaemonSpawnException>()),
+        throwsA(isA<DaemonSetupException>()),
       );
     });
   });

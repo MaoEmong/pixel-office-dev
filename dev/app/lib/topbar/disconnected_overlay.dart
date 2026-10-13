@@ -250,6 +250,12 @@ class _DisconnectedOverlayState extends ConsumerState<DisconnectedOverlay> {
           textAlign: TextAlign.center,
         ),
         const SizedBox(height: 10),
+        if (status.failure == SupervisorFailure.setupRequired && status.lastError != null)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 12),
+            child: SelectableText(status.lastError!, key: const Key('overlay.repairHint'),
+              style: const TextStyle(color: Colors.white70, fontSize: 13), textAlign: TextAlign.center),
+          ),
         // 마지막 8줄(수명주기 §1). 원인을 덮지 않는다 — 접지 않고 그대로 보여 준다.
         Container(
           key: const Key('overlay.logTail'),

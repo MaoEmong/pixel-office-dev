@@ -1,3 +1,4 @@
+// T57: 현재 모든 플랫폼은 환경 검사·파이프 스포너를 사용한다. 아래 콘솔 설명은 T14 역사다.
 // 데몬 시작(T14). 앱이 데몬과 끊겨 있을 때 `dev/daemon` 의 데몬을 띄운다 — 윈도우는 보이는 콘솔 창
 // (`cmd /c start "" npm start`), 맥·리눅스는 창 없이 감시자와 **같은 스포너**(T48-2 · D-48).
 // 데몬 폴더는 실행 파일 위치와 현재 디렉토리에서 위로 올라가며 `dev/daemon/package.json` 을 찾는다
@@ -49,7 +50,7 @@ Future<void> _spawnPipeMode(Directory daemonDir) async {
   await spawnDaemon(daemonDir: daemonDir);
 }
 
-/// 데몬을 띄운다. 폴더를 못 찾으면 [DaemonLaunchException].
+/// 데몬을 띄운다. 폴더를 못 찾으면 [DaemonLaunchException]. T57부터 모든 플랫폼이 환경 검사·파이프 스포너를 사용한다.
 ///
 /// - 윈도우: 새 **콘솔 창**에서 분리 실행(`cmd /c start "" npm start`) — 실패 화면에서 원인을 눈으로 보는 용도.
 /// - 맥·리눅스: `open -a Terminal` 같은 것을 쓰지 않는다. 창 없이 **감시자와 같은 스포너**로 띄운다
@@ -61,10 +62,6 @@ Future<void> launchDaemon({Iterable<String>? startPaths, plat.AppPlatform? platf
     throw const DaemonLaunchException('dev/daemon 폴더를 찾지 못했습니다 — 저장소 안에서 앱을 실행하거나 데몬을 직접 시작하세요(dev/daemon 에서 npm start).');
   }
   try {
-    if (p.isWindows) {
-      await Process.start('cmd', ['/c', 'start', '', 'npm', 'start'], workingDirectory: dir.path, mode: ProcessStartMode.detached);
-      return;
-    }
     await (spawn ?? _spawnPipeMode)(dir);
   } on ProcessException catch (e) {
     throw DaemonLaunchException('데몬 실행 실패: ${e.message}');
@@ -72,13 +69,13 @@ Future<void> launchDaemon({Iterable<String>? startPaths, plat.AppPlatform? platf
 }
 
 /// 데몬을 띄운 뒤 daemon.json 이 나타나기를 기다리는 시간(실측 1~2초). 넘기면 [daemonNotStartedMessage].
-const Duration daemonStartTimeout = Duration(seconds: 6);
+const Duration daemonStartTimeout = Duration(seconds: 30);
 
 /// 띄운 데몬이 조용히 죽었을 때(T41 실기): `cmd /c start` 는 분리 실행이라 **종료 코드를 못 본다** —
 /// 대신 "daemon.json 이 안 생겼다" 로 판정하고 콘솔 창을 보라고 한다. 가장 흔한 원인이 포트 충돌이다
 /// (다른 환경에서 띄운 데몬이 7420~7422 를 쥐고 있으면 daemon.json 은 그 환경에만 있다).
 const String daemonNotStartedMessage =
-    '데몬이 뜨지 않았습니다 — dev/daemon 콘솔 창의 오류를 확인하세요 (포트 7420~7422 를 다른 데몬이 쓰고 있을 수 있음)';
+    '데몬이 뜨지 않았습니다 — daemon.log의 오류를 확인하세요 (포트 7420~7422 또는 7423 충돌·권한 문제일 수 있음)';
 
 /// 데몬이 떴는가 = daemon.json 을 읽을 수 있는가.
 Future<bool> daemonJsonPresent() async => (await DaemonInfo.read()) != null;

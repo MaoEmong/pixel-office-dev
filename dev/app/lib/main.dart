@@ -34,6 +34,7 @@ import 'state/office_state.dart';
 import 'state/selection.dart';
 
 import 'topbar/daemon_launcher.dart' show findDaemonDir;
+import 'lifecycle/daemon_preflight.dart';
 import 'topbar/notices.dart';
 import 'topbar/top_bar.dart';
 
@@ -55,19 +56,20 @@ Future<void> main() async {
   const prefs = FileUiPrefsStore();
   final keepDaemon = await readKeepDaemon(prefs);
   final daemonDir = await findDaemonDir();
-  final supervisor = daemonDir == null
-      ? null
-      : DaemonSupervisor(
-          spawn: (env) => spawnDaemon(daemonDir: daemonDir, extraEnv: env),
+  final supervisor = DaemonSupervisor(
+          spawn: (env) async {
+            if(daemonDir==null)throw const DaemonSetupException('데몬 소스 폴더를 찾지 못했습니다. 실행 파일만 옮기지 말고 저장소 전체와 dev/daemon 폴더를 함께 두세요.');
+            return spawnDaemon(daemonDir: daemonDir, extraEnv: env);
+          },
           probe: daemonReachable,
           // 계속 일하기면 부모 pid 를 안 넘긴다 — 데몬이 앱을 지켜보지 않는다(§2·§3).
           parentPid: keepDaemon ? null : selfPid,
         );
-  unawaited(supervisor?.start());
+  unawaited(supervisor.start());
 
   runApp(ProviderScope(
     overrides: [
-      if (supervisor != null) daemonSupervisorProvider.overrideWithValue(supervisor),
+      daemonSupervisorProvider.overrideWithValue(supervisor),
       if (!keepDaemon) helloParentPidProvider.overrideWithValue(selfPid),
     ],
     child: PixelOfficeApp(appLock: lock),

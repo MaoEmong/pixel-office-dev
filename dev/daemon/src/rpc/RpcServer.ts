@@ -15,6 +15,7 @@ export interface RpcServerOptions {
   host?: string;
   /** Management methods for locally authenticated desktop clients only. */
   localHandlers?: Record<string,(params:Record<string,unknown>)=>unknown>;
+  beforeOperation?: (method:string,params:Record<string,unknown>)=>Promise<void>;
 }
 
 interface Client {
@@ -43,7 +44,7 @@ type Handler = (client: Client, params: Record<string, unknown>) => unknown;
 
 export class RpcServer {
   private readonly office: OfficeApi;
-  private readonly opts: Required<Pick<RpcServerOptions,'port'|'host'>>;
+  private readonly opts: Required<Pick<RpcServerOptions,'port'|'host'>> & Pick<RpcServerOptions,'beforeOperation'>;
   private wss?: WebSocketServer;
   private readonly clients = new Map<string, Client>();
   private readonly handlers: Record<string, Handler>;
@@ -51,7 +52,7 @@ export class RpcServer {
 
   constructor(office: OfficeApi, opts: RpcServerOptions) {
     this.office = office;
-    this.opts = { port: opts.port, host: opts.host ?? '127.0.0.1' };
+    this.opts = { port: opts.port, host: opts.host ?? '127.0.0.1',beforeOperation:opts.beforeOperation };
     this.handlers = this.buildHandlers();
     for(const [method,handler] of Object.entries(opts.localHandlers ?? {}))this.handlers[method]=(_c,p)=>handler(p);
     this.subscribeOffice();
@@ -150,6 +151,8 @@ export class RpcServer {
       return;
     }
     try {
+      await this.opts.beforeOperation?.(msg.method,params);
+      if(client.ws.readyState!==WebSocket.OPEN)return;
       const result = await handler(client, params);
       this.send(client, { jsonrpc: '2.0', id, result: result ?? {} });
     } catch (err) {

@@ -24,6 +24,7 @@ import 'dart:io';
 
 import '../platform/platform.dart' as plat;
 import '../rpc/daemon_info.dart';
+import 'daemon_preflight.dart';
 
 /// 데몬 로그 파일 이름(`<데이터 폴더>/daemon.log`).
 const String daemonLogName = 'daemon.log';
@@ -198,11 +199,15 @@ Future<DaemonProcess> spawnDaemon({
   Map<String, String> extraEnv = const {},
   String? logPath,
   plat.AppPlatform? platform,
+  Future<void> Function(String, Directory)? preflight,
 }) async {
   final p = platform ?? plat.currentPlatform;
   final start = await readStartScript(daemonDir, platform: p);
   // 맥에서는 여기서 `node` 가 절대 경로로 바뀐다 — 못 찾으면 [DaemonNodeNotFoundException].
   final cmd = resolveDaemonCommand(daemonCommandFor(start, platform: p), platform: p);
+  final probeNode = cmd.executable == plat.npmExecutable(platform: p) ? plat.findNode(platform: p) : cmd.executable;
+  if (probeNode == null) throw const DaemonNodeNotFoundException();
+  await (preflight ?? checkDaemonEnvironment)(probeNode, daemonDir);
   final path = logPath ?? defaultDaemonLogPath();
   IOSink? sink;
   if (path != null) {

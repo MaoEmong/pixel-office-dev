@@ -34,6 +34,7 @@ import '../state/office_state.dart';
 import '../state/selection.dart';
 import '../usage/usage_chips.dart';
 import '../remote/device_dialog.dart';
+import '../diagnostics/environment_dialog.dart';
 import 'daemon_pill.dart';
 import 'selected_department.dart';
 
@@ -278,6 +279,7 @@ class _DepartmentMenu extends ConsumerWidget {
       enabled: true,
       iconSize: 18,
       onSelected: (v) {
+        if (v == 'environment') showDialog<void>(context: context, builder: (_) => const EnvironmentDialog());
         if (v == 'remote') showDialog<void>(context: context, builder: (_) => const DeviceDialog());
         if (v == 'approvalPolicy' && dept != null) showApprovalPolicyDialog(context, ref, dept);
         if (v == 'delete' && dept != null) confirmDeleteDepartment(context, ref, dept);
@@ -285,6 +287,7 @@ class _DepartmentMenu extends ConsumerWidget {
       },
       itemBuilder: (_) => [
         PopupMenuItem(key: const Key('topbar.remote'), value: 'remote', enabled: enabled, child: const Text('기기 연결 · 원격 조작')),
+        PopupMenuItem(key: const Key('topbar.environment'), value: 'environment', enabled: enabled, child: const Text('환경 점검 · CLI 로그인')),
         // U-02(D-51): 이 부서 멤버의 허가 요청을 어디까지 묻지 않고 넘길지. 지금 값을 메뉴에서 바로 보여 준다.
         PopupMenuItem(
           key: const Key('topbar.approvalPolicy'),

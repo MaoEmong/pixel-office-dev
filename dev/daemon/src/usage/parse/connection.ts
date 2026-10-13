@@ -49,6 +49,6 @@ export function parseCodexLoginStatus(stdout: string, exitCode: number): ParsedA
   if (/not\s+logged\s+in/i.test(text)) return { loggedIn: false, plan: null };
   if (/logged\s+in/i.test(text)) return { loggedIn: true, plan: null };
   if (exitCode === 0) return { loggedIn: true, plan: null };
-  if (Number.isInteger(exitCode) && exitCode > 0) return { loggedIn: false, plan: null };
+  // A nonzero exit may be a network, permission or unsupported-command failure.
   return { loggedIn: null, plan: null };
 }

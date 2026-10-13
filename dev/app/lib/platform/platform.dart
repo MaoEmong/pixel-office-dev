@@ -208,7 +208,18 @@ String? findNode({AppPlatform? platform}) {
   // 사용자가 지정했으면 그대로 쓴다 — 틀렸으면 스폰 오류로 드러나는 게 조용히 다른 node 를 쓰는 것보다 낫다.
   final explicit = p.env[nodeEnvVar];
   if (explicit != null && explicit.isNotEmpty) return explicit;
-  if (p.isWindows) return 'node';
+  if (p.isWindows) {
+    final candidates = [
+      for (final dir in (p.env['PATH'] ?? '').split(';'))
+        if (dir.isNotEmpty) '${dir.replaceAll('"', '')}\\node.exe',
+      '${p.env['ProgramFiles'] ?? r'C:\Program Files'}\\nodejs\\node.exe',
+      if (p.env['LOCALAPPDATA'] != null) '${p.env['LOCALAPPDATA']}\\Programs\\nodejs\\node.exe',
+    ];
+    for (final candidate in candidates) {
+      if (p.fileExists(candidate)) return candidate;
+    }
+    return 'node'; // Let the actual probe diagnose an unavailable PATH executable.
+  }
 
   for (final dir in (p.env['PATH'] ?? '').split(_pathListSeparator(p))) {
     if (dir.isEmpty) continue;
@@ -232,7 +243,7 @@ String? findNode({AppPlatform? platform}) {
 }
 
 /// node 를 못 찾았을 때 실패 화면에 그대로 나가는 문장(D-48 ③).
-const String nodeNotFoundMessage = 'node 를 찾지 못했습니다 — Homebrew 로 설치하거나 PIXEL_NODE 로 경로를 지정하세요';
+const String nodeNotFoundMessage = 'node 를 찾지 못했습니다 — Node.js 24 이상을 설치하거나 PIXEL_NODE 로 실행 파일 경로를 지정하세요';
 
 /// nvm 버전 폴더 이름 비교 — **내림차순**(`v22.14.0` 이 `v22.9.1` 보다 앞). 숫자 조각만 본다.
 int compareNodeVersionDesc(String a, String b) {

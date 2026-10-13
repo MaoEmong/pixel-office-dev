@@ -119,12 +119,16 @@ void main() {
       final none = FakePlatform(os: 'macos', env: {'PATH': '/usr/bin:/bin', 'HOME': '/Users/u'});
       expect(findNode(platform: none), isNull);
       expect(findNode(platform: FakePlatform(os: 'macos')), isNull, reason: 'HOME 도 PATH 도 없다');
-      expect(nodeNotFoundMessage, 'node 를 찾지 못했습니다 — Homebrew 로 설치하거나 PIXEL_NODE 로 경로를 지정하세요');
+      expect(nodeNotFoundMessage, contains('Node.js 24 이상'));
     });
 
     test('윈도우는 오늘 그대로 `node`(PATH 는 CreateProcess 가 찾는다)', () {
       expect(findNode(platform: FakePlatform(os: 'windows')), 'node');
       expect(findNode(platform: FakePlatform(os: 'windows', env: {'PIXEL_NODE': r'C:\node\node.exe'})), r'C:\node\node.exe');
+    });
+    test('Windows GUI can find an installed Node without a refreshed PATH',(){
+      expect(findNode(platform:FakePlatform(os:'windows',files:{r'C:\Program Files\nodejs\node.exe'})),r'C:\Program Files\nodejs\node.exe');
+      expect(findNode(platform:FakePlatform(os:'windows',env:{'PATH':r'D:\tools'},files:{r'D:\tools\node.exe',r'C:\Program Files\nodejs\node.exe'})),r'D:\tools\node.exe');
     });
 
     test('버전 정렬은 숫자 조각으로 — 문자열 정렬이 아니다', () {
@@ -264,7 +268,7 @@ void main() {
       expect(host.pathSeparator, host.isWindows ? r'\' : '/');
       expect(npmExecutable(platform: host), host.isWindows ? 'npm.cmd' : 'npm');
       if (host.isWindows) {
-        expect(findNode(platform: host), 'node', reason: '윈도우는 PATH 에 맡긴다');
+        expect(findNode(platform: host), isNotNull);
       }
       expect(currentPlatform.isWindows, host.isWindows, reason: '기본값은 진짜 플랫폼이다');
     });

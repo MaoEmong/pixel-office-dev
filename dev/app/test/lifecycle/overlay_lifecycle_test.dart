@@ -134,6 +134,14 @@ void main() {
       expect(find.byKey(const Key('daemon.start')), findsOneWidget);
     });
 
+    testWidgets('setup repair is visible without opening raw error details', (tester) async {
+      await pump(tester,status:const SupervisorStatus(state:SupervisorState.failed,failure:SupervisorFailure.setupRequired,lastError:'의존성 복구: npm ci를 실행하세요'));
+      await tester.pump();
+      expect(find.byKey(const Key('overlay.repairHint')),findsOneWidget);
+      expect(find.textContaining('npm ci'),findsOneWidget);
+      expect(find.byKey(const Key('overlay.error')),findsNothing);
+    });
+
     testWidgets('crashLoop → `데몬이 반복해서 종료됩니다`', (tester) async {
       await pump(
         tester,
@@ -162,7 +170,7 @@ void main() {
       await tester.pump();
       expect(find.byKey(const Key('overlay.nodeNotFound')), findsOneWidget);
       expect(
-        find.text('node 를 찾지 못했습니다 — Homebrew 로 설치하거나 PIXEL_NODE 로 경로를 지정하세요'),
+        find.text(overlayNodeNotFoundTitle),
         findsOneWidget,
       );
       expect(find.text(overlayStartFailedTitle), findsNothing);

@@ -346,6 +346,19 @@ const tick = () => new Promise((r) => setTimeout(r, 30));
 
 // ---- 테스트 ------------------------------------------------------------------------------
 
+test('readiness failure blocks mutation and repaired retry executes once',async t=>{
+ const office=new FakeOffice();let ready=false;
+ const server=new RpcServer(office,{port:0,beforeOperation:async(method)=>{if(method==='department.create'&&!ready)throw new OfficeError(RPC_ERROR.BAD_STATE,'로그인 필요');}});
+ const port=await server.listen(),c=await TestClient.connect(port);
+ t.after(async()=>{c.close();await server.close();});
+ await c.call('hello',{token:TOKEN});
+ const params={name:'new',cwd:'D:/x',headEngine:'claude'};
+ await expectError(c.call('department.create',params),RPC_ERROR.BAD_STATE);
+ assert.equal(office.calls.length,0);
+ ready=true;await c.call('department.create',params);
+ assert.equal(office.calls.filter(c=>c.method==='createDepartment').length,1);
+});
+
 describe('RpcServer', () => {
   let office: FakeOffice;
   let server: RpcServer;

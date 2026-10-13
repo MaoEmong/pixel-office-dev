@@ -7,6 +7,14 @@
 
 ## 클라이언트 → 데몬 (요청)
 
+### 환경 점검 (T57)
+
+`environment.check {memberId?}` → `{checkedAt,nodeVersion,memberName?,engines}`.
+로컬 인증 클라이언트가 사용한다. memberId는 프로젝트 세션 전용 인증을 검사하며,
+생략하면 전역 Claude/Codex 설치·인증을 검사한다. 결과에는 인증 정보·이메일·원시 CLI 출력이 없다.
+관련 사용자 작업은 미설치·로그아웃이 확인되면 -32003과 복구 안내를 반환하고 실행하지 않는다.
+확인 불가는 로그아웃으로 단정하지 않는다. 원격 gateway allowlist에는 이 관리 RPC를 추가하지 않는다.
+
 | method | params | result |
 |---|---|---|
 | `hello` | `{ token, since?: number, parentPid?: number, activeDepartmentId?: string, client: { name, version } }` | `{ daemon: { version, pid }, snapshot }` 후 `seq > since` 인 `event` 알림 replay(응답이 먼저, replay 는 오름차순). `since` 없으면 스냅샷만. **T46-1(D-47, 아래 "수명 주기"):** `parentPid` 는 데몬이 지켜볼 부모 앱 pid(앱만 재시작되면 감시 대상이 그쪽으로 바뀐다. `PIXEL_KEEP_DAEMON=1` 이면 무시). `activeDepartmentId` 는 앱이 보고 있는 부서 — 아직 안 깨운 기동 복구 줄에서 그 부서를 맨 앞으로 당긴다(복구가 이미 끝났으면 아무 일도 없다). 둘 다 선택이고, 이상한 값은 조용히 무시한다. |

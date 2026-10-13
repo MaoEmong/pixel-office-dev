@@ -136,17 +136,18 @@ class TerminalCache {
     late final CachedTerminal entry;
     entry = CachedTerminal(memberId, Terminal(maxLines: terminalMaxLines, mouseHandler: terminalMouseHandlerFor(() => entry.pointerCell)));
     entry.terminal.onOutput = (data) => _send('member.type', {'memberId': memberId, 'data': data});
-    // 크기는 이벤트 인자가 아니라 터미널에서 다시 읽는다 — attach 와 같은 clamp 를 태우려고.
-    entry.terminal.onResize = (_, _, _, _) => syncSize(entry);
+    // 크기 이벤트도 attach와 같은 허용 범위로 자른다.
+    // xterm calls onResize before updating viewWidth/viewHeight. Use event dimensions.
+    entry.terminal.onResize = (cols, rows, _, _) => syncSize(entry, newCols: cols, newRows: rows);
     return entry;
   }
 
   /// 뷰 크기가 데몬이 아는 크기와 다르면 `member.resize`. attach 전에는 보내지 않는다(그때는
   /// attach 파라미터가 크기를 알린다) — 대신 [markAttached] 가 붙자마자 같은 검사를 한 번 더 한다.
-  void syncSize(CachedTerminal entry) {
+  void syncSize(CachedTerminal entry, {int? newCols, int? newRows}) {
     if (!entry.attached) return;
-    final cols = terminalCols(entry.terminal);
-    final rows = terminalRows(entry.terminal);
+    final cols = (newCols ?? entry.terminal.viewWidth).clamp(terminalMinCols, terminalMaxCols);
+    final rows = (newRows ?? entry.terminal.viewHeight).clamp(terminalMinRows, terminalMaxRows);
     if (cols == entry.sentCols && rows == entry.sentRows) return;
     entry.sentCols = cols;
     entry.sentRows = rows;

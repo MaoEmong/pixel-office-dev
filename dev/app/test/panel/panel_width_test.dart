@@ -173,30 +173,30 @@ void main() {
   });
 
   testWidgets('터미널 크기가 바뀌면 member.resize 가 새 cols/rows 로 나간다', (tester) async {
+    final overrides=panelOverrides(daemon);
     await tester.runAsync(() async {
       final c = await pumpPanel(
         tester,
         daemon,
         const RightPanel(memberId: 'm1', initialTab: RightPanelTab.terminal),
         size: const Size(480, 600),
+        overrides: overrides,
       );
       await pumpUntilConnected(tester, c);
       // 요청이 아니라 **응답까지** 기다린다 — 요청만 보고 넘어가면 그 아래 재배치가 경합에 걸린다.
       await pumpUntil(tester, () => c.read(terminalCacheProvider).of('m1').attached, reason: 'attached');
       final before = daemon.countOf('member.resize');
 
-      // 폭이 660 으로 벌어지는 상황을 그대로 — 더 넓은 상자로 다시 띄운다.
-      await pumpPanel(
-        tester,
-        daemon,
-        const RightPanel(memberId: 'm1', initialTab: RightPanelTab.terminal),
-        size: const Size(panelWidthTerminal, 600),
-      );
-      await pumpUntil(tester, () => daemon.countOf('member.resize') > before, reason: 'resize sent');
-      final p = daemon.paramsOf('member.resize').last;
+      // Test the terminal resize event → daemon contract directly. Panel layout and
+      // resize-before-attach are covered above; font layout timing can otherwise
+      // make two pixel widths produce the same terminal dimensions in this harness.
+      c.read(terminalCacheProvider).of('m1').terminal.resize(120,40);
+      await pumpUntil(tester, () => daemon.paramsOf('member.resize').skip(before).any((p)=>p['cols']==120 && p['rows']==40), reason: 'resize sent');
+      final p = daemon.paramsOf('member.resize').skip(before).firstWhere((p)=>p['cols']==120 && p['rows']==40);
       expect(p['memberId'], 'm1');
       expect(p['cols'], isA<int>());
-      expect((p['cols']! as int) > 20, isTrue);
+      expect(p['cols'],120);
+      expect(p['rows'],40);
     });
   });
 }

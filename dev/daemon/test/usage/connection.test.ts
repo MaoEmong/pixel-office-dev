@@ -16,6 +16,12 @@ const read = (f: string): string => fs.readFileSync(path.join(fixtures, f), 'utf
 const ok = (stdout: string): RunResult => ({ stdout, stderr: '', exitCode: 0 });
 const fail = (stdout: string, exitCode: number): RunResult => ({ stdout, stderr: '', exitCode });
 
+test('permission/network errors are not mislabeled missing or logged out, and stderr auth is read',async()=>{
+ assert.equal((await probeCodexConnection({run:async()=>({stdout:'',stderr:'network failure',exitCode:1})})).reason,'unknown');
+ assert.equal((await probeCodexConnection({run:async()=>({stdout:'',stderr:'Not logged in',exitCode:1})})).reason,'logged-out');
+ assert.equal((await probeCodexConnection({run:async()=>({stdout:'',stderr:'',exitCode:null,errorCode:'EACCES'})})).reason,'unknown');
+});
+
 /** `resolveClaudeExeDetailed` 가 found:true 를 주도록 PIXEL_CLAUDE_EXE 를 쓴다. */
 const CLAUDE_ENV = { PIXEL_CLAUDE_EXE: 'D:/fake/claude.exe' };
 const CODEX_ENV = { PIXEL_CODEX_EXE: 'D:/fake/codex.exe' };

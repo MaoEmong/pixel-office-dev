@@ -4,11 +4,18 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:pixel_office/lifecycle/daemon_process.dart';
 import 'package:pixel_office/lifecycle/daemon_supervisor.dart';
+import 'package:pixel_office/lifecycle/daemon_preflight.dart';
 
 import 'fake_supervisor_world.dart';
 
 void main() {
   group('기동(§1)', () {
+    test('setup failure does not restart-loop and retry can recover',()async{
+      final w=FakeSupervisorWorld();bool broken=true;
+      final s=DaemonSupervisor(spawn:(env)async{if(broken)throw const DaemonSetupException('npm ci');return w.spawn(env);},sleep:w.sleep,now:()=>w.now,probe:w.probe);
+      await s.start();expect(s.status.failure,SupervisorFailure.setupRequired);expect(w.spawnCount,0);
+      broken=false;await s.retry();expect(s.status.state,SupervisorState.running);await s.stop();
+    });
     test(
       'cold startup taking ten seconds is allowed without killing the daemon',
       () async {
