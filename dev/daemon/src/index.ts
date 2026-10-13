@@ -9,6 +9,7 @@ import { Office } from './office/Office.js';
 import { host, installShutdownSignals } from './platform.js';
 import { bindOrRefuse, DaemonStartRefusedError } from './office/singleton.js';
 import { RpcServer } from './rpc/RpcServer.js';
+import { RemoteGateway } from './remote/RemoteGateway.js';
 
 // 첫 줄을 찍기 전에 로그 목적지를 정한다. 앱이 띄운 데몬(`PIXEL_DAEMON_LOG` 있음)은 **stdout 을 쓰지 않는다** —
 // 읽는 쪽(앱)이 사라진 파이프에 한 줄만 써도 이벤트 루프가 그 자리에서 멈춘다(까닭과 실측은 `log.ts` 머리말).
@@ -34,7 +35,8 @@ try {
 } catch (err) {
   refuse(err);
 }
-const rpc = new RpcServer(office, { port: config.wsPort });
+const remote = new RemoteGateway({port:Number(process.env.PIXEL_REMOTE_PORT ?? (config.wsPort===7420 ? 7423 : 0)),dataDir:config.dataDir,upstreamUrl:()=>`ws://127.0.0.1:${rpc.port}`,token:()=>office.token});
+const rpc = new RpcServer(office, { port: config.wsPort, localHandlers:remote.localHandlers() });
 let wsPort: number;
 try {
   wsPort = await bindOrRefuse('ws', config.wsPort, office.daemonJsonPath, () => rpc.listen());
@@ -44,6 +46,9 @@ try {
   refuse(err);
 }
 if (wsPort !== info.wsPort) office.updateDaemonInfo({ wsPort });
+try {office.updateDaemonInfo({remotePort:await remote.listen()});}
+catch(err){await remote.close();await office.shutdown();refuse(err);}
+console.log(`[daemon] remote    : ${remote.localUrl} (기기 등록 전용, 외부 HTTPS 연결은 별도 설정)`);
 
 console.log(`[daemon] pixel-office daemon v${office.version} pid=${office.pid}`);
 console.log(`[daemon] data dir : ${config.dataDir}`);
@@ -90,6 +95,7 @@ console.log(
 console.log(`[daemon] listening`);
 
 office.once('shutdown', async () => {
+  await remote.close();
   await rpc.close();
   console.log('[daemon] bye');
   process.exit(0);

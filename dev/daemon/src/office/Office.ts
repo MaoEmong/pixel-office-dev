@@ -668,7 +668,7 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
   }
 
   /** 실제 바인딩된 WS 포트가 설정과 다를 때(임시 포트 0) daemon.json 을 다시 쓴다. */
-  updateDaemonInfo(patch: Partial<Pick<DaemonInfo, 'wsPort'>>): DaemonInfo {
+  updateDaemonInfo(patch: Partial<Pick<DaemonInfo, 'wsPort'|'remotePort'>>): DaemonInfo {
     if (!this.info) throw badState('office not started');
     this.info = { ...this.info, ...patch };
     this.writeDaemonInfo();

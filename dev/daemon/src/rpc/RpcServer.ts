@@ -13,6 +13,8 @@ export interface RpcServerOptions {
   port: number;
   /** 기본 127.0.0.1 — 로컬 전용(원격은 v2). */
   host?: string;
+  /** Management methods for locally authenticated desktop clients only. */
+  localHandlers?: Record<string,(params:Record<string,unknown>)=>unknown>;
 }
 
 interface Client {
@@ -41,7 +43,7 @@ type Handler = (client: Client, params: Record<string, unknown>) => unknown;
 
 export class RpcServer {
   private readonly office: OfficeApi;
-  private readonly opts: Required<RpcServerOptions>;
+  private readonly opts: Required<Pick<RpcServerOptions,'port'|'host'>>;
   private wss?: WebSocketServer;
   private readonly clients = new Map<string, Client>();
   private readonly handlers: Record<string, Handler>;
@@ -51,6 +53,7 @@ export class RpcServer {
     this.office = office;
     this.opts = { port: opts.port, host: opts.host ?? '127.0.0.1' };
     this.handlers = this.buildHandlers();
+    for(const [method,handler] of Object.entries(opts.localHandlers ?? {}))this.handlers[method]=(_c,p)=>handler(p);
     this.subscribeOffice();
   }
 

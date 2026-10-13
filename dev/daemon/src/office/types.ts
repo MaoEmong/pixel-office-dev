@@ -25,6 +25,7 @@ import type {
 
 /** `${dataDir}/daemon.json`. 클라이언트가 읽어 접속·인증한다(PROTOCOL.md 인증). */
 export interface DaemonInfo {
+  remotePort?: number;
   wsPort: number;
   hookPort: number;
   /** TeamTools MCP(Streamable HTTP) 포트(T17). CLI 세션의 mcp.json 이 이 포트를 가리킨다. */
