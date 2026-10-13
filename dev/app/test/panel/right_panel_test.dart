@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:pixel_office/model/models.dart';
 import 'package:pixel_office/panel/right_panel.dart';
+import 'package:pixel_office/panel/terminal_cache.dart';
 import 'package:xterm/xterm.dart';
 
 import 'panel_harness.dart';
@@ -101,6 +102,9 @@ void main() {
       await tester.pumpAndSettle(); // 탭 전환 애니메이션(pump() 만으로는 시간이 흐르지 않는다)
       await pumpUntil(tester, () => daemon.countOf('member.attach') == 1, reason: 'attach on tab shown');
       await pumpUntil(tester, () => find.byType(TerminalView).evaluate().isNotEmpty);
+      // Wait for the response too: disposing during attach legitimately sends a second
+      // compensating detach when that late response arrives.
+      await pumpUntil(tester, () => c.read(terminalCacheProvider).of('m1').attached, reason: 'attach response applied');
       await tester.tap(find.text('로그'));
       await tester.pumpAndSettle();
       await pumpUntil(tester, () => daemon.countOf('member.detach') == 1, reason: 'detach on tab hidden');

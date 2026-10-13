@@ -5,6 +5,7 @@ const statuses={starting:'출근 중',working:'작업 중',idle:'한가함',wait
 let db,info,identity,socket,retryTimer,connected=false,stopped=false,seq=0,selected='',memberId='',workflow=null;
 let snapshot={departments:[],members:[],pending:[],tasks:[]},events=[],inboxVersion='',deptVersion='',renderTimer;
 const requests=new Map();
+function clearWorkView(){snapshot={departments:[],members:[],pending:[],tasks:[]};events=[];workflow=null;selected='';memberId='';seq=0;inboxVersion='';deptVersion='';$('task-text').value='';$('device-details').textContent='';$('fingerprint').textContent='';render();$('workspace').hidden=true;$('device-panel').hidden=true;}
 const b64=buffer=>btoa(String.fromCharCode(...new Uint8Array(buffer)));
 const error=e=>{$('error').textContent=e?.message??String(e);};
 const setConnection=text=>{$('connection').textContent=text;$('connection').className=connected?'online':'';};
@@ -18,11 +19,12 @@ const remove=key=>transaction('readwrite',s=>s.delete(key));
 async function api(endpoint,body){const response=await fetch(endpoint,{method:body?'POST':'GET',headers:body?{'Content-Type':'application/json'}:{},body:body?JSON.stringify(body):undefined,cache:'no-store'});const result=await response.json();if(!response.ok)throw new Error(result.error??'PC에 연결할 수 없습니다.');return result;}
 async function proof(message,key=identity?.privateKey){if(!key)throw new Error('기기 키가 없습니다.');return b64(await crypto.subtle.sign({name:'ECDSA',hash:'SHA-256'},key,encoder.encode(message)));}
 async function flushRevocations(){const rows=await transaction('readonly',s=>s.getAll());for(const row of rows??[]){if(row.kind!=='revocation')continue;try{await api('/api/revoke',{deviceId:row.deviceId,signature:row.signature});await remove(row.storageKey);}catch{}}}
+function consumePairCode(){const code=new URLSearchParams(location.hash.slice(1)).get('pair');if(code){$('pair-code').value=code;history.replaceState(null,'',location.pathname);}}
 
 async function boot(){
  if(!window.isSecureContext || !crypto.subtle){$('pair-submit').disabled=true;error(new Error('기기 키를 만들려면 HTTPS 접속이 필요합니다. PC 로컬 테스트는 localhost 주소를 사용하세요.'));return;}
  db=await new Promise((resolve,reject)=>{const r=indexedDB.open('pixel-office-device',1);r.onupgradeneeded=()=>r.result.createObjectStore('identity');r.onsuccess=()=>resolve(r.result);r.onerror=()=>reject(r.error);});
- const code=new URLSearchParams(location.hash.slice(1)).get('pair');if(code){$('pair-code').value=code;history.replaceState(null,'',location.pathname);}
+ consumePairCode();
  info=await api('/api/info');await flushRevocations();identity=await get(info.workstationId);
  $('pair-submit').disabled=!!identity;
  if(identity){$('device-name').value=identity.name;$('fingerprint').textContent=`기기 지문: ${identity.fingerprint}`;connect();}else setConnection('기기 등록 필요');
@@ -55,12 +57,12 @@ function connect(){
    if(m.type==='auth.challenge'){current.send(JSON.stringify({type:'auth.prove',signature:await proof(m.message)}));return;}
    if(m.type==='auth.pending'){setConnection('PC 승인 대기');$('pair-message').textContent=m.message;retryTimer=setTimeout(()=>{if(current.readyState===1)current.send(JSON.stringify({type:'auth.begin',deviceId:identity.deviceId}));},3000);return;}
    if(m.type==='auth.error'){
-    setConnection(m.message);if(m.reason==='revoked'){await remove(info.workstationId);identity=null;stopped=true;$('pair-submit').disabled=false;$('workspace').hidden=true;$('pairing').hidden=false;$('pair-message').textContent='연결이 해제되었습니다. 다시 등록하려면 PC에서 새 연결 키를 받으세요.';}return;
+    setConnection(m.message);if(m.reason==='revoked'){stopped=true;connected=false;await remove(info.workstationId);identity=null;clearWorkView();$('pair-submit').disabled=false;$('pairing').hidden=false;$('pair-message').textContent='연결이 해제되었습니다. 다시 등록하려면 PC에서 새 연결 키를 받으세요.';}return;
    }
    if(m.type==='auth.ready'){
     if(m.workstationId!==info.workstationId || m.deviceId!==identity.deviceId)throw new Error('다른 PC의 인증 응답입니다.');
     clearTimeout(retryTimer);connected=true;setConnection('연결됨');snapshot=m.snapshot;seq=snapshot.seq??0;events=[];$('pairing').hidden=true;$('workspace').hidden=false;
-    $('device-details').textContent=`${identity.name}\n지문: ${identity.fingerprint}`;
+    $('device-details').textContent=`${identity.name}\n지문: ${identity.fingerprint}`;$('disconnect-device').disabled=false;for(const el of $('device-panel').querySelectorAll('.revoke-confirm'))el.remove();
     if(!snapshot.departments.some(d=>d.id===selected))selected=snapshot.departments[0]?.id??'';
     render();await refresh();return;
    }
@@ -176,10 +178,11 @@ $('disconnect-device').onclick=()=>{
   if(!identity)return;const current=identity,signature=await proof(`pixel-office revoke v1\n${info.workstationId}\n${current.deviceId}`),storageKey=`revoke:${current.deviceId}`;
   // Atomically retain only the signed revocation and delete the private key, even while offline.
   await transaction('readwrite',store=>{store.put({kind:'revocation',storageKey,deviceId:current.deviceId,signature},storageKey);return store.delete(info.workstationId);});
-  stopped=true;identity=null;clearTimeout(retryTimer);socket?.close();connected=false;snapshot={departments:[],members:[],pending:[],tasks:[]};events=[];workflow=null;
+  stopped=true;identity=null;clearTimeout(retryTimer);socket?.close();connected=false;clearWorkView();
   $('workspace').hidden=true;$('device-panel').hidden=true;$('pairing').hidden=false;$('pair-submit').disabled=false;$('fingerprint').textContent='';setConnection('연결 해제됨');
   $('pair-message').textContent='이 기기의 연결을 해제했습니다. PC에 연결할 수 없으면 다음 접속 때 해제 사실을 전달합니다.';await flushRevocations();
- },'danger');$('device-panel').append(node('p','이 기기를 다시 사용하려면 PC에서 새로 등록해야 합니다.'),confirm);$('disconnect-device').disabled=true;
+ },'danger revoke-confirm');$('device-panel').append(node('p','이 기기를 다시 사용하려면 PC에서 새로 등록해야 합니다.','revoke-confirm'),confirm);$('disconnect-device').disabled=true;
 };
 window.addEventListener('online',()=>{void flushRevocations().catch(error);if(identity && !connected)connect();});
+window.addEventListener('hashchange',consumePairCode);
 void boot().catch(error);

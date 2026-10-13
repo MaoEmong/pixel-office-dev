@@ -614,3 +614,28 @@ meeting_decide{workflowId,minutes,assignments:[{leadId,task,acceptance:string[],
 전원이 두 차례 제출해야 부장이 모든 참석 팀장의 업무를 확정할 수 있다.
 자기 의존성·없는 팀장·순환 의존성은 배정 전에 거부한다.
 회의 중 구현·delegate·조기 최종 보고는 거부된다.
+
+## 기기 연결 추가 계약 (T55)
+
+로컬 hello{token} 인증 뒤에만:
+remote.status → {localUrl,publicUrl,workstationId,devices:[id,name,fingerprint,status,createdAt,lastSeenAt?]}
+remote.pair.create → {code,expiresAt,url,qrPngDataUrl}; 5분·1회용.
+remote.configure{publicUrl:HTTPS origin} → {publicUrl}.
+remote.device.approve{deviceId} → {approved:true}; remote.device.revoke{deviceId} → {revoked:true}.
+remote.snapshot → {snapshot}; gateway에는 memberToken/token을 제거해 전달한다.
+
+원격 gateway 7423: GET /api/info에는 PC identity만, POST /api/pair에는
+{code,name,publicKey:SPKI base64,signature:IEEE-P1363 base64}. 서명 본문은
+`pixel-office pair v1\n<workstationId>\n<code>\n<trimmed name>`.
+승인 전에는 작업 조회·명령 불가. POST /api/revoke{deviceId,signature}는
+`pixel-office revoke v1\n<workstationId>\n<deviceId>` 서명을 검증하고 즉시 해제한다.
+
+WS /connect: auth.begin{deviceId} → auth.pending 또는 auth.challenge{message}.
+auth.prove{signature} → auth.ready{workstationId,deviceId,daemon,snapshot}.
+challenge는 socket마다 다르고 30초·1회용. 이후 일반 JSON-RPC와 알림을 사용한다.
+쓰기 요청은 추가 requestId(UUID)를 요구하고 동일 입력의 중복 실행을 차단한다.
+허용: snapshot/tree/events/workflow/getInstructions 읽기, workflow 단계 변경,
+approval/question 응답, 멤버 interrupt/rehire. 로컬 관리자 기능·force·parentPid는 차단한다.
+PC 또는 기기에서 해제하면 WS를 닫고 다음 서명을 거부한다.
+브라우저 offline 해제는 개인키 삭제 + 서명된 해제 요청을 저장해 재접속 때 동기화한다.
+외부 연결은 지정 HTTPS Origin/Host만 허용하고 요청·응답은 no-store다.

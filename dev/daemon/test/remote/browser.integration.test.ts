@@ -51,5 +51,17 @@ test('real mobile-width browser: pairing, persistent non-exportable key, approva
  await context.setOffline(false);await page.reload();await page.getByRole('button',{name:'등록 요청',exact:true}).waitFor();
  for(let i=0;i<30 && gateway.registry.get(d.id)?.status!=='revoked';i++)await new Promise(r=>setTimeout(r,100));
  assert.equal(gateway.registry.get(d.id)?.status,'revoked','signed offline revocation syncs on next connection');
+ // A fresh registration can be revoked from the PC; hidden work DOM and identity must disappear too.
+ const next=await gateway.localHandlers()['remote.pair.create']();await page.goto(next.url);
+ await page.getByLabel('이 기기 이름').fill('재등록 테스트');await page.getByRole('button',{name:'등록 요청',exact:true}).click();
+ await page.getByText('작업 PC에서 이 기기를 승인해 주세요.',{exact:true}).waitFor();
+ const second=gateway.registry.list().find(row=>row.status==='pending')!;gateway.registry.approve(second.id);
+ await page.locator('#workspace').waitFor({state:'visible'});await page.locator('#workflow-body').filter({hasText:'REMOTE_OK 완료 보고'}).waitFor();
+ await gateway.localHandlers()['remote.device.revoke']({deviceId:second.id});
+ await page.locator('#pairing').waitFor({state:'visible'});
+ assert.equal(await page.locator('#workflow-body').innerText(),'부장과 목표·완료 기준을 정리한 뒤 작업을 시작하세요.');
+ assert.equal(await page.locator('#fingerprint').innerText(),'');assert.equal(await page.locator('#device-details').innerText(),'');
+ await page.reload();await page.locator('#pairing').waitFor({state:'visible'});
+ assert.equal(await page.getByRole('button',{name:'등록 요청',exact:true}).isEnabled(),true);
  assert.deepEqual(errors,[]);
 });

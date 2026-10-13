@@ -9,6 +9,25 @@ import 'fake_supervisor_world.dart';
 
 void main() {
   group('기동(§1)', () {
+    test(
+      'cold startup taking ten seconds is allowed without killing the daemon',
+      () async {
+        final w = FakeSupervisorWorld(spawnBecomesReachable: false);
+        final s = DaemonSupervisor(
+          spawn: w.spawn,
+          sleep: w.sleep,
+          now: () => w.now,
+          probe: () async =>
+              w.spawnTimes.isNotEmpty &&
+              w.now.difference(w.spawnTimes.single) >=
+                  const Duration(seconds: 10),
+        );
+        await s.start();
+        expect(s.status.state, SupervisorState.running);
+        expect(w.spawned.single.killed, isFalse);
+        await s.stop();
+      },
+    );
     test('이미 도는 데몬이 있으면 새로 띄우지 않고 붙는다', () async {
       final w = FakeSupervisorWorld(reachable: true);
       final s = w.supervisor();
@@ -30,7 +49,10 @@ void main() {
       expect(w.spawnCount, 1);
       // 250ms × 8 = 2초를 기다린 뒤에야 띄웠다.
       expect(w.slept.take(8), everyElement(const Duration(milliseconds: 250)));
-      expect(w.spawnTimes.single.difference(DateTime.utc(2026, 9, 21, 10)), const Duration(seconds: 2));
+      expect(
+        w.spawnTimes.single.difference(DateTime.utc(2026, 9, 21, 10)),
+        const Duration(seconds: 2),
+      );
     });
 
     test('앱 pid 를 PIXEL_PARENT_PID 로 넘긴다', () async {
@@ -49,7 +71,9 @@ void main() {
     });
 
     test('스폰이 실패하면 failed(startFailed) + 원인', () async {
-      final w = FakeSupervisorWorld(spawnThrows: const DaemonSpawnException('node 를 찾을 수 없습니다'));
+      final w = FakeSupervisorWorld(
+        spawnThrows: const DaemonSpawnException('node 를 찾을 수 없습니다'),
+      );
       final s = w.supervisor();
       await s.start();
       expect(s.status.state, SupervisorState.failed);
@@ -57,7 +81,7 @@ void main() {
       expect(s.status.lastError, contains('node 를 찾을 수 없습니다'));
     });
 
-    test('떴는데 daemon.json 이 안 나타나면 8초 뒤 실패 + 남은 프로세스를 치운다', () async {
+    test('떴는데 daemon.json 이 안 나타나면 기동 상한 뒤 실패 + 남은 프로세스를 치운다', () async {
       final w = FakeSupervisorWorld(spawnBecomesReachable: false);
       final s = w.supervisor();
       await s.start();
@@ -74,7 +98,14 @@ void main() {
       s.statusStream.listen((st) => seen.add(st.state));
       await s.start();
       await until(() => seen.contains(SupervisorState.running));
-      expect(seen, containsAllInOrder([SupervisorState.attaching, SupervisorState.starting, SupervisorState.running]));
+      expect(
+        seen,
+        containsAllInOrder([
+          SupervisorState.attaching,
+          SupervisorState.starting,
+          SupervisorState.running,
+        ]),
+      );
     });
   });
 
@@ -100,7 +131,10 @@ void main() {
       // 이제부터 띄워도 안 뜬다.
       w.spawnBecomesReachable = false;
       first.die();
-      await until(() => s.status.state == SupervisorState.failed, why: '4회 뒤 실패');
+      await until(
+        () => s.status.state == SupervisorState.failed,
+        why: '4회 뒤 실패',
+      );
       expect(w.spawnCount, 5, reason: '처음 1 + 재시작 4');
       expect(w.restartWaits, [
         const Duration(seconds: 2),
@@ -195,14 +229,27 @@ void main() {
         if (world.spawnEnvs.length == 3) world.reachable = true;
       };
       w.spawned.single.die();
-      await until(() => s.status.state == SupervisorState.running && w.spawnEnvs.length == 3);
+      await until(
+        () =>
+            s.status.state == SupervisorState.running &&
+            w.spawnEnvs.length == 3,
+      );
       expect(s.status.spawned, isFalse, reason: '콘솔에서 띄운 데몬에 붙었다');
-      expect(w.spawnEnvs, hasLength(3), reason: '처음 1 + 실패한 재시작 2 — 그 뒤로는 안 띄운다');
-      expect(w.restartWaits, [const Duration(seconds: 2), const Duration(seconds: 5)]);
+      expect(
+        w.spawnEnvs,
+        hasLength(3),
+        reason: '처음 1 + 실패한 재시작 2 — 그 뒤로는 안 띄운다',
+      );
+      expect(w.restartWaits, [
+        const Duration(seconds: 2),
+        const Duration(seconds: 5),
+      ]);
     });
 
     test('`다시 시도` 는 죽음 기록을 지우고 처음부터 다시 한다', () async {
-      final w = FakeSupervisorWorld(spawnThrows: const DaemonSpawnException('실패'));
+      final w = FakeSupervisorWorld(
+        spawnThrows: const DaemonSpawnException('실패'),
+      );
       final s = w.supervisor();
       await s.start();
       expect(s.status.state, SupervisorState.failed);
@@ -231,12 +278,16 @@ void main() {
       expect(s.status.spawned, isFalse);
       w.reachable = false;
       await s.socketClosed();
-      await until(() => s.status.state == SupervisorState.running && w.spawnCount == 1);
+      await until(
+        () => s.status.state == SupervisorState.running && w.spawnCount == 1,
+      );
       expect(s.status.spawned, isTrue);
     });
 
     test('running 이 아니면 무시한다', () async {
-      final w = FakeSupervisorWorld(spawnThrows: const DaemonSpawnException('실패'));
+      final w = FakeSupervisorWorld(
+        spawnThrows: const DaemonSpawnException('실패'),
+      );
       final s = w.supervisor();
       await s.start();
       await s.socketClosed();

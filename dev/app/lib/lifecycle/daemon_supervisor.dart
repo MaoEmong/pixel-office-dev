@@ -134,7 +134,7 @@ class DaemonSupervisor {
     DateTime Function()? now,
     this.parentPid,
     this.attachTimeout = const Duration(seconds: 2),
-    this.readyTimeout = const Duration(seconds: 8),
+    this.readyTimeout = const Duration(seconds: 30),
     this.pollInterval = const Duration(milliseconds: 250),
     this.restartDelays = defaultRestartDelays,
     this.crashWindow = const Duration(seconds: 60),
