@@ -104,6 +104,7 @@ void main() {
       expect(r.text, 'task#9 done');
       // reporting 이 오면 상태 층이 task 를 지우지만(openTasks) 지시문은 thinking 절단본으로 남는다
       await pumpUntil(tester, () => !c.read(openTasksProvider).containsKey(9));
+      await pumpUntil(tester, () => c.read(memberReportsProvider('m1')).single.instruction != null, reason: 'thinking backfill loaded');
       expect(c.read(memberReportsProvider('m1')).single.instruction, startsWith('아주 긴 지시'));
     });
   });

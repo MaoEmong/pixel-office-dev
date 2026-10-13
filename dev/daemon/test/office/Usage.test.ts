@@ -135,7 +135,8 @@ describe('사용량 배선 (T43, D-45)', () => {
     tails.set(transcript, read('claude-transcript-tail.jsonl'));
     const r = fakeReq(head.memberToken, 'Stop', { session_id: 's1', hook_event_name: 'Stop', transcript_path: transcript, last_assistant_message: '끝' });
     receiver.emit('hook', r.req);
-    await sleep(30);
+    const deadline=Date.now()+2000;
+    while (!office.snapshot().usage.members.find(u=>u.memberId===head.id)?.tokens && Date.now()<deadline) await sleep(10);
     const m = office.snapshot().usage.members.find((u) => u.memberId === head.id)!;
     assert.equal(m.tokens?.total, 44837);
     assert.equal(m.costUsd, 0.16072150000000002);

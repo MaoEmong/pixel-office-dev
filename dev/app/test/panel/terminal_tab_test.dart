@@ -193,8 +193,10 @@ void main() {
 
         final before = daemon.countOf('member.type');
         await wheel(tester, const Offset(0, 60)); // 아래로
-        await pumpUntil(tester, () => daemon.countOf('member.type') > before, reason: 'wheel down reported');
-        final down = daemon.paramsOf('member.type').skip(before).map((p) => p['data'] as String).toList();
+        // More up events may still be in the socket when down is injected. Wait for the direction, not any request.
+        await pumpUntil(tester, () => daemon.paramsOf('member.type').skip(before).any((p) => (p['data'] as String).startsWith('\x1b[<65;')), reason: 'wheel down reported');
+        final down = daemon.paramsOf('member.type').skip(before).map((p) => p['data'] as String).where((s) => s.startsWith('\x1b[<65;')).toList();
+        expect(daemon.paramsOf('member.type').map((p) => p['data']), everyElement(matches(RegExp(r'^\x1b\[<6[45];\d+;\d+M$'))));
         expect(down, everyElement(matches(RegExp(r'^\x1b\[<65;\d+;\d+M$'))), reason: '$down');
       });
     });

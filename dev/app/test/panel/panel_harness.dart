@@ -114,6 +114,7 @@ List<Override> panelOverrides(PanelFakeDaemon daemon) => [
     ];
 
 GlobalKey? _appKey;
+List<Override>? _defaultOverrides;
 
 /// 테스트 하나 안에서만 같은 키를 쓴다(테스트가 끝나면 버림 — 한 테스트의 트리가 깨져도 다음 테스트로 번지지 않게).
 GlobalKey _keyForThisTest() {
@@ -121,7 +122,7 @@ GlobalKey _keyForThisTest() {
   if (existing != null) return existing;
   final key = GlobalKey();
   _appKey = key;
-  addTearDown(() => _appKey = null);
+  addTearDown(() { _appKey = null; _defaultOverrides = null; });
   return key;
 }
 
@@ -139,7 +140,7 @@ Future<ProviderContainer> pumpPanel(
   final key = _keyForThisTest();
   await tester.pumpWidget(
     ProviderScope(
-      overrides: overrides ?? panelOverrides(daemon),
+      overrides: overrides ?? (_defaultOverrides ??= panelOverrides(daemon)),
       child: MaterialApp(
         key: key,
         debugShowCheckedModeBanner: false,
