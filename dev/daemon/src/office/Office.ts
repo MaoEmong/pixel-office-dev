@@ -730,6 +730,9 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
     const suspended = this.suspendLiveMembers();
     // 종료 뒤 정리할 자식 pid 를 **지금** 모아 둔다(store 를 닫은 뒤에는 못 읽는다).
     const childPids = this.recordedChildPids();
+    // Stop probe timers before awaiting CLI exits: a late connection check must not launch a new probe during shutdown.
+    this.usage.stop();
+    this.usageProbe.stop();
     for (const rt of this.runtimes.values()) {
       rt.exitMode = 'shutdown';
       rt.queue.stop();
@@ -748,8 +751,6 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
     for (const rt of this.runtimes.values()) rt.screen.dispose();
     this.runtimes.clear();
     this.shell.clear(); // T27: 남은 보류·타이머 정리
-    this.usage.stop(); // T43: 연결 폴링 타이머
-    this.usageProbe.stop(); // ③ T43-4: 확인용 세션(숨은 CLI)을 죽인다 — 데몬이 내려가면 남아 있으면 안 된다
     if (this.retentionTimer) {
       clearInterval(this.retentionTimer);
       this.retentionTimer = undefined;

@@ -122,6 +122,7 @@ export type PtyManagerEvents = {
 
 class PtySessionImpl implements PtySession {
   #alive = true;
+  #killIssued = false;
 
   constructor(
     readonly memberId: string,
@@ -136,6 +137,7 @@ class PtySessionImpl implements PtySession {
   get alive(): boolean {
     return this.#alive;
   }
+  get killIssued(): boolean { return this.#killIssued; }
 
   /** onExit 에서 PtyManager 가 호출. */
   markExited(): void {
@@ -163,10 +165,12 @@ class PtySessionImpl implements PtySession {
   }
 
   kill(): void {
-    if (!this.#alive) return;
+    if (!this.#alive || this.#killIssued) return;
+    this.#killIssued = true;
     try {
       this.proc.kill();
     } catch {
+      this.#killIssued = false;
       // 이미 죽은 프로세스면 무시. 최종 상태는 onExit 이 정한다.
     }
   }
@@ -235,7 +239,7 @@ export class PtyManager extends EventEmitter<PtyManagerEvents> {
     proc.onData((chunk) => this.emit('data', id, chunk));
     proc.onExit((e) => {
       session.markExited();
-      releaseConptyResources(proc);
+      releaseConptyResources(proc, session.killIssued);
       // 그 사이 같은 id 로 새 세션이 떴을 수 있으니 내 것일 때만 지운다.
       if (this.sessions.get(id) === session) this.sessions.delete(id);
       this.emit('exit', id, { exitCode: e.exitCode, signal: e.signal });
@@ -342,12 +346,17 @@ function withTimeout(p: Promise<void>, ms: number): Promise<boolean> {
  * conpty_console_list_agent 를 fork 해 죽은 콘솔에 AttachConsole 을 시도하다 stderr 에 스택을 찍고 5초를 기다린다.
  * 그래서 내부 필드를 직접 정리하고, 필드 모양이 다르면(node-pty 버전 변경) proc.kill() 로 폴백한다.
  */
-function releaseConptyResources(proc: pty.IPty): void {
+export function releaseConptyResources(proc: pty.IPty, killIssued = false): void {
   // **윈도우 전용 처방이다**(T48-1). 유닉스 node-pty(UnixTerminal)는 자식이 끝나면 fd·소켓을 스스로 닫으므로
   // 여기서 할 일이 없고, 이미 죽은 프로세스에 `proc.kill()` 을 부르면 ESRCH 만 난다.
   if (!host.isWindows) return;
   const agent = (proc as unknown as { _agent?: ConptyAgentInternals })._agent;
   try {
+    if (killIssued) {
+      // node-pty.kill already closed the pseudoconsole and disposed its worker. Never close that native handle twice.
+      agent?._inSocket?.destroy();
+      return;
+    }
     if (agent && agent._conoutSocketWorker && agent._ptyNative && typeof agent._pty === 'number') {
       agent._inSocket?.destroy();
       agent._ptyNative.kill(agent._pty, agent._useConptyDll ?? false);

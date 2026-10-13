@@ -6,14 +6,14 @@ import path from 'node:path';
 import type {Workflow} from '../../src/workflow/types.js';
 import type {DaemonInfo} from '../../src/office/types.js';
 import type {Department, Member} from '../../src/store/types.js';
-import {Client, IT, SANDBOX, itEnv, startDaemon, waitExit, killTree, sweepClaudeByDataDir, snapshotOnce} from './it-helpers.js';
+import {Client, IT, SANDBOX, itEnv, startDaemon, waitExit, killTree, sweepClaudeByDataDir, snapshotOnce, pidAlive} from './it-helpers.js';
 
 test('real meeting: clarify → two rounds → approved write → dependent verification → report → restart → complete',
   {skip: IT ? false : 'set PIXEL_IT=1 to run', timeout:900_000}, async()=> {
   const filename=`workflow-it-${Date.now()}.txt`, target=path.join(SANDBOX,filename);
   const {dataDir,env}=await itEnv('workflow');
   const daemons:ReturnType<typeof startDaemon>[]=[];
-  let c:Client|undefined, stop:(()=>void)|undefined;
+  let c:Client|undefined;
   const connect=async()=> {
     const d=startDaemon('workflow',env);daemons.push(d);
     await d.waitLine('listening',l=>l.includes('[daemon] listening'),20000);
@@ -44,7 +44,6 @@ test('real meeting: clarify → two rounds → approved write → dependent veri
     assert.equal(fs.existsSync(target),false,'Write waits for explicit approval');
     assert.equal((approval.params.detail as Record<string,unknown>).tool,'Write');
     await c!.call('approval.respond',{pendingId:(approval.params.ref as Record<string,unknown>).approvalId,behavior:'allow'});
-    stop=c!.autoApproveAll();
     const final=await c!.waitFor('final review',n=>n.method==='workflow.changed' && n.params.id===before.id && n.params.phase==='review',300000);
     const completed=final.params as unknown as Workflow;
     assert.ok(completed.assignments.every(a=>a.status==='done'));
@@ -53,9 +52,10 @@ test('real meeting: clarify → two rounds → approved write → dependent veri
     const snap=await snapshotOnce(info.wsPort,info.token,'workflow-before-restart');
     const sessionId=snap.members.find(m=>m.id===head.id)!.sessionId;
     assert.ok(sessionId);
-    stop();stop=undefined;
     await c!.call('daemon.shutdown',{});
     assert.ok(await waitExit(d.child,30000));c!.close();c=undefined;
+    assert.equal(d.child.exitCode,0,'original daemon exits cleanly');
+    assert.ok(snap.members.every(m=>!m.childPid || !pidAlive(m.childPid)),'original sessions exited before restart');
     ({d,info}=await connect());
     const restored=(await c!.call<{workflow:Workflow}>('workflow.get',{departmentId:department.id})).workflow;
     assert.deepEqual(restored,completed,'final report and entire meeting persist across restart');
@@ -66,9 +66,13 @@ test('real meeting: clarify → two rounds → approved write → dependent veri
     assert.equal(checked.workflow.phase,'completed');
     const exported=JSON.parse(fs.readFileSync(path.join(SANDBOX,'.pixel-office','workflows',`${before.id}.json`),'utf8'));
     assert.equal(exported.phase,'completed');
-    await c!.call('daemon.shutdown',{});await waitExit(d.child,30000);
+    await c!.call('daemon.shutdown',{});
+    assert.ok(await waitExit(d.child,60000),'recovered daemon finishes its shutdown');
+    assert.equal(d.child.exitCode,0,'recovered daemon exits cleanly');
+    const pids=recovered.members.map(m=>m.childPid).filter((p):p is number=>!!p);
+    assert.ok(pids.every(p=>!pidAlive(p)),'all test sessions exit without orphan CLI processes');
   } finally {
-    stop?.();c?.close();
+    c?.close();
     for(const d of daemons) if(d.child.exitCode===null && d.child.pid) killTree(d.child.pid);
     sweepClaudeByDataDir(dataDir,[]);
     fs.rmSync(target,{force:true});
