@@ -256,8 +256,23 @@ class RpcClient {
   }
 
   /// 요청 하나. 에러 응답은 `RpcException(code, message, data)` 로 throw.
-  Future<Map<String, dynamic>> call(String method, [Map<String, dynamic> params = const {}]) =>
-      _send(method, params);
+  final Map<String, String> _workflowRetries = {};
+  Future<Map<String, dynamic>> call(String method, [Map<String, dynamic> params = const {}]) async {
+    if (!['workflow.discuss', 'workflow.start'].contains(method) || params.containsKey('requestId')) {
+      return _send(method, params);
+    }
+    final key = '$method:${jsonEncode(params)}';
+    if (_workflowRetries.length >= 100 && !_workflowRetries.containsKey(key)) {
+      _workflowRetries.remove(_workflowRetries.keys.first);
+    }
+    final requestId = _workflowRetries.putIfAbsent(
+      key,
+      () => '${DateTime.now().microsecondsSinceEpoch}-${math.Random.secure().nextInt(1 << 32)}',
+    );
+    final result = await _send(method, {...params, 'requestId': requestId});
+    _workflowRetries.remove(key);
+    return result;
+  }
 
   Future<Map<String, dynamic>> _send(String method, Map<String, dynamic> params, {bool isHello = false}) {
     final ch = _channel;
@@ -268,10 +283,13 @@ class RpcClient {
     final completer = Completer<Map<String, dynamic>>();
     _pending[id] = _PendingCall(method, completer);
     ch.sink.add(jsonEncode({'jsonrpc': '2.0', 'id': id, 'method': method, 'params': params}));
-    return completer.future.timeout(callTimeout, onTimeout: () {
-      _pending.remove(id);
-      throw RpcException(RpcException.timeout, 'timeout after ${callTimeout.inMilliseconds}ms ($method)');
-    });
+    return completer.future.timeout(
+      callTimeout,
+      onTimeout: () {
+        _pending.remove(id);
+        throw RpcException(RpcException.timeout, 'timeout after ${callTimeout.inMilliseconds}ms ($method)');
+      },
+    );
   }
 
   void _onMessage(dynamic raw) {
@@ -301,11 +319,9 @@ class RpcClient {
     final err = msg['error'];
     if (err is Map) {
       final e = err.cast<String, dynamic>();
-      p.completer.completeError(RpcException(
-        (e['code'] as num?)?.toInt() ?? -32000,
-        e['message']?.toString() ?? 'error',
-        e['data'],
-      ));
+      p.completer.completeError(
+        RpcException((e['code'] as num?)?.toInt() ?? -32000, e['message']?.toString() ?? 'error', e['data']),
+      );
       return;
     }
     final res = msg['result'];

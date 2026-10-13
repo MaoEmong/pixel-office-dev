@@ -12,6 +12,7 @@
 // 판정 기준은 데몬 `Store.liveHead` 와 같은 `liveHeadProvider`(state/office_state.dart).
 
 import 'dart:async';
+import '../diagnostics/error_panel.dart';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -357,14 +358,28 @@ class _CommandBarState extends ConsumerState<CommandBar> {
             // 오류는 데몬 문구를 그대로 보여 준다(-32004 "부장에게만 지시할 수 있습니다 (head: …)" 도) — 조금 더 넓게.
             width: _error != null ? 180 : 120,
             child: _error != null
-                ? Tooltip(
-                    message: _error!,
-                    child: Text(
-                      _error!,
-                      key: const Key('commandBar.error'),
-                      style: TextStyle(fontSize: 11, color: scheme.error),
-                      maxLines: 2,
-                      overflow: TextOverflow.ellipsis,
+                ? InkWell(
+                    onTap: () => showErrorPanel(
+                      context,
+                      title: '지시를 전달하지 못했어요',
+                      message: _error!,
+                    ),
+                    child: Container(
+                      padding: const EdgeInsets.all(8),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF493140),
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: Tooltip(
+                        message: '눌러서 오류 내용 보기',
+                        child: Text(
+                          _error!,
+                          key: const Key('commandBar.error'),
+                          style: TextStyle(fontSize: 11, color: scheme.error),
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
                     ),
                   )
                 : _sentTaskId != null

@@ -18,7 +18,14 @@ export function projectMemberDir(cwd: string, memberId: string): string {
 }
 
 /** Keep generated session state out of Git, including native CLI login state. */
+export function assertProjectFolder(cwd: string): void {
+  if (!fs.existsSync(cwd) || !fs.statSync(cwd).isDirectory()) {
+    throw new Error('프로젝트 폴더를 찾지 못했습니다. 이동한 폴더를 원래 위치로 돌리거나, 부서의 모든 멤버를 퇴근시킨 뒤 작업 폴더를 변경하세요: '+cwd);
+  }
+}
+
 export function ensureProjectDataDir(cwd: string): void {
+  assertProjectFolder(cwd);
   const root = projectDataDir(cwd);
   fs.mkdirSync(root, { recursive: true, mode: 0o700 });
   const ignore = path.join(root, '.gitignore');

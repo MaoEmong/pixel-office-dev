@@ -34,6 +34,7 @@ class FakeDaemon {
 
   /// 메서드별 응답(등록 안 된 메서드는 아래 기본 동작 → -32601).
   final Map<String, Map<String, dynamic> Function(Map<String, dynamic>)> handlers = {};
+  final Set<String> dropReplies = {};
 
   /// 마지막으로 받은 그 메서드의 params(없으면 null).
   Map<String, dynamic>? paramsOf(String method) {
@@ -59,69 +60,78 @@ class FakeDaemon {
       final ws = await WebSocketTransformer.upgrade(req);
       _all.add(ws);
       var authed = false;
-      ws.listen((data) {
-        final msg = jsonDecode(data as String) as Map<String, dynamic>;
-        final id = msg['id'];
-        final method = msg['method'] as String;
-        final params = (msg['params'] as Map?)?.cast<String, dynamic>() ?? {};
-        requests.add((method, params));
-        void send(Map<String, dynamic> m) {
-          if (ws.readyState == WebSocket.open) ws.add(jsonEncode(m));
-        }
-
-        void reply(Object? result) => send({'jsonrpc': '2.0', 'id': id, 'result': result});
-        void error(int code, String message, [Object? data]) =>
-            send({'jsonrpc': '2.0', 'id': id, 'error': {'code': code, 'message': message, 'data': ?data}});
-
-        if (!authed) {
-          if (method != 'hello' || params['token'] != token) {
-            error(-32001, 'unauthorized');
-            ws.close(4001, 'unauthorized');
-            return;
+      ws.listen(
+        (data) {
+          final msg = jsonDecode(data as String) as Map<String, dynamic>;
+          final id = msg['id'];
+          final method = msg['method'] as String;
+          final params = (msg['params'] as Map?)?.cast<String, dynamic>() ?? {};
+          requests.add((method, params));
+          void send(Map<String, dynamic> m) {
+            if (ws.readyState == WebSocket.open) ws.add(jsonEncode(m));
           }
-          authed = true;
-          _authed.add(ws);
-          helloParams.add(params);
-          final seq = snapshotSeq ?? (history.isEmpty ? 0 : history.last['seq'] as int);
-          reply({
-            'daemon': {'version': version, 'pid': pid},
-            'snapshot': {'seq': seq, ...snapshotBody},
+
+          void reply(Object? result) {
+            if (!dropReplies.contains(method)) send({'jsonrpc': '2.0', 'id': id, 'result': result});
+          }
+
+          void error(int code, String message, [Object? data]) => send({
+            'jsonrpc': '2.0',
+            'id': id,
+            'error': {'code': code, 'message': message, 'data': ?data},
           });
-          final since = params['since'];
-          if (since is num) {
-            for (final ev in history) {
-              if ((ev['seq'] as int) > since) {
-                ws.add(jsonEncode({'jsonrpc': '2.0', 'method': 'event', 'params': ev}));
+
+          if (!authed) {
+            if (method != 'hello' || params['token'] != token) {
+              error(-32001, 'unauthorized');
+              ws.close(4001, 'unauthorized');
+              return;
+            }
+            authed = true;
+            _authed.add(ws);
+            helloParams.add(params);
+            final seq = snapshotSeq ?? (history.isEmpty ? 0 : history.last['seq'] as int);
+            reply({
+              'daemon': {'version': version, 'pid': pid},
+              'snapshot': {'seq': seq, ...snapshotBody},
+            });
+            final since = params['since'];
+            if (since is num) {
+              for (final ev in history) {
+                if ((ev['seq'] as int) > since) {
+                  ws.add(jsonEncode({'jsonrpc': '2.0', 'method': 'event', 'params': ev}));
+                }
               }
             }
+            return;
           }
-          return;
-        }
-        final handler = handlers[method];
-        if (handler != null) {
-          reply(handler(params));
-          return;
-        }
-        switch (method) {
-          case 'hello':
-            authed = false;
-            error(-32003, 'already said hello');
-          case 'echo':
-            final delay = (params['delayMs'] as num?)?.toInt() ?? 0;
-            Future.delayed(Duration(milliseconds: delay), () => reply(params));
-          case 'fail':
-            error(-32003, 'bad state', {'why': 'test'});
-          case 'hang':
-            break;
-          case 'empty':
-            reply({});
-          default:
-            error(-32601, 'method not found: $method');
-        }
-      }, onDone: () {
-        _all.remove(ws);
-        _authed.remove(ws);
-      });
+          final handler = handlers[method];
+          if (handler != null) {
+            reply(handler(params));
+            return;
+          }
+          switch (method) {
+            case 'hello':
+              authed = false;
+              error(-32003, 'already said hello');
+            case 'echo':
+              final delay = (params['delayMs'] as num?)?.toInt() ?? 0;
+              Future.delayed(Duration(milliseconds: delay), () => reply(params));
+            case 'fail':
+              error(-32003, 'bad state', {'why': 'test'});
+            case 'hang':
+              break;
+            case 'empty':
+              reply({});
+            default:
+              error(-32601, 'method not found: $method');
+          }
+        },
+        onDone: () {
+          _all.remove(ws);
+          _authed.remove(ws);
+        },
+      );
     });
   }
 
@@ -150,13 +160,19 @@ class FakeDaemon {
   }
 }
 
-Map<String, dynamic> sampleEvent(int seq, {String memberId = 'm1', String kind = 'reading', Map<String, dynamic>? detail, Map<String, dynamic>? ref}) => {
-      'seq': seq,
-      'ts': '2026-09-15T00:00:${seq.toString().padLeft(2, '0')}.000Z',
-      'departmentId': 'd1',
-      'teamId': 't1',
-      'memberId': memberId,
-      'kind': kind,
-      'detail': detail ?? {'tool': 'Read', 'path': 'lib/main.dart'},
-      'ref': ref ?? {'approvalId': null, 'questionId': null, 'taskId': null},
-    };
+Map<String, dynamic> sampleEvent(
+  int seq, {
+  String memberId = 'm1',
+  String kind = 'reading',
+  Map<String, dynamic>? detail,
+  Map<String, dynamic>? ref,
+}) => {
+  'seq': seq,
+  'ts': '2026-09-15T00:00:${seq.toString().padLeft(2, '0')}.000Z',
+  'departmentId': 'd1',
+  'teamId': 't1',
+  'memberId': memberId,
+  'kind': kind,
+  'detail': detail ?? {'tool': 'Read', 'path': 'lib/main.dart'},
+  'ref': ref ?? {'approvalId': null, 'questionId': null, 'taskId': null},
+};

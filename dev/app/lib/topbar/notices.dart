@@ -10,6 +10,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../model/models.dart';
 import '../state/office_state.dart';
+import '../diagnostics/error_panel.dart';
 
 /// 배너 자동 숨김 시간.
 const Duration noticeBannerDuration = Duration(seconds: 5);
@@ -17,7 +18,11 @@ const Duration noticeBannerDuration = Duration(seconds: 5);
 /// `noticesProvider` 의 마지막 `daemon.notice` 를 오른쪽 아래에 [duration] 동안 보여 주는 오버레이.
 /// Stack 안에 그대로 넣는다. 새 알림이 오면 타이머를 다시 시작한다.
 class NoticeBanner extends ConsumerStatefulWidget {
-  const NoticeBanner({super.key, this.duration = noticeBannerDuration, this.margin = const EdgeInsets.only(right: 16, bottom: 72)});
+  const NoticeBanner({
+    super.key,
+    this.duration = noticeBannerDuration,
+    this.margin = const EdgeInsets.only(right: 16, bottom: 72),
+  });
 
   final Duration duration;
 
@@ -39,9 +44,10 @@ class _NoticeBannerState extends ConsumerState<NoticeBanner> {
   }
 
   void _show(DaemonNotice n) {
+    if (_current?.level == NoticeLevel.error && n.level == NoticeLevel.info) return;
     _timer?.cancel();
     setState(() => _current = n);
-    _timer = Timer(widget.duration, _hide);
+    if (n.level != NoticeLevel.error) _timer = Timer(widget.duration, _hide);
   }
 
   void _hide() {
@@ -81,11 +87,11 @@ class NoticeToaster extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => Stack(
-        children: [
-          child,
-          NoticeBanner(duration: duration),
-        ],
-      );
+    children: [
+      child,
+      NoticeBanner(duration: duration),
+    ],
+  );
 }
 
 /// 배너 본체. 색은 level 별.
@@ -97,6 +103,30 @@ class NoticeCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    if (notice.level == NoticeLevel.error) {
+      return Material(
+        key: const Key('notice.banner'),
+        color: Colors.transparent,
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 460),
+          child: Stack(
+            children: [
+              ErrorPanel(title: '확인이 필요한 문제가 있어요', message: notice.message, compact: true),
+              Positioned(
+                right: 0,
+                top: 0,
+                child: IconButton(
+                  key: const Key('notice.close'),
+                  tooltip: '닫기',
+                  onPressed: onClose,
+                  icon: const Icon(Icons.close, size: 16),
+                ),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
     final (color, icon) = switch (notice.level) {
       NoticeLevel.info => (const Color(0xFF2E3A59), Icons.info_outline),
       NoticeLevel.warn => (const Color(0xFF6B4E00), Icons.warning_amber_outlined),
@@ -116,7 +146,9 @@ class NoticeCard extends StatelessWidget {
             children: [
               Icon(icon, size: 18, color: Colors.white70),
               const SizedBox(width: 8),
-              Flexible(child: Text(notice.message, style: const TextStyle(fontSize: 13, color: Colors.white))),
+              Flexible(
+                child: Text(notice.message, style: const TextStyle(fontSize: 13, color: Colors.white)),
+              ),
               const SizedBox(width: 4),
               IconButton(
                 key: const Key('notice.close'),

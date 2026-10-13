@@ -39,7 +39,7 @@ try {
 }
 const remote = new OptionalRemote({port:Number(process.env.PIXEL_REMOTE_PORT ?? (config.wsPort===7420 ? 7423 : 0)),dataDir:config.dataDir,upstreamUrl:()=>`ws://127.0.0.1:${rpc.port}`,token:()=>office.token});
 const rpc = new RpcServer(office, { port: config.wsPort,
- localHandlers:{...remote.localHandlers(),'remote.retry':async()=>{const port=await remote.start();if(port)office.updateDaemonInfo({remotePort:port});return remote.status();},'engines.get':()=>office.enginePolicy(),'engines.set':p=>office.setEnginePolicy(p.allowedEngines),'environment.check':p=>environment.check(office.snapshot().members.find(m=>m.id===p.memberId))},
+ localHandlers:{...remote.localHandlers(),'resources.get':()=>office.resourceLimits(),'resources.set':p=>office.setResourceLimits(p),'remote.retry':async()=>{const port=await remote.start();if(port)office.updateDaemonInfo({remotePort:port});return remote.status();},'engines.get':()=>office.enginePolicy(),'engines.set':p=>office.setEnginePolicy(p.allowedEngines),'environment.check':p=>environment.check(office.snapshot().members.find(m=>m.id===p.memberId))},
  beforeOperation:async(method,p)=>{
   const head=office.store.liveHead(String(p.departmentId ?? ''));
   let engine:unknown;

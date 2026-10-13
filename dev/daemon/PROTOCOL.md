@@ -647,3 +647,14 @@ approval/question 응답, 멤버 interrupt/rehire. 로컬 관리자 기능·forc
 PC 또는 기기에서 해제하면 WS를 닫고 다음 서명을 거부한다.
 브라우저 offline 해제는 개인키 삭제 + 서명된 해제 요청을 저장해 재접속 때 동기화한다.
 외부 연결은 지정 HTTPS Origin/Host만 허용하고 요청·응답은 no-store다.
+
+## T61 실패 복구와 로컬 관리
+
+- workflow.discuss/start에 선택 requestId(영문·숫자·콜론·하이픈·밑줄, 1~128자)를 받는다.
+  같은 요청 ID와 내용은 기존 결과를 반환한다. 다른 내용으로 ID를 재사용하면 거부한다.
+  처리 실패는 작업·workflow 변경을 롤백하고, CLI 입력은 DB 저장 성공 후 큐에 넣는다.
+- department.update의 선택 cwd는 존재하는 폴더만 받는다. 살아 있는 세션·미종료 작업이 있으면 거부한다.
+  부서·팀·멤버 경로를 함께 변경하며 파일 자체를 이동하지 않는다.
+- 로컬 인증 클라이언트 전용 resources.get/set:
+  {maxLiveSessions:1..64,maxTeamsPerDepartment:1..32}, 정수만 허용. 기본 16/8, DB에 영속.
+  기존 실행은 보존하고 새 생성·재시작·복구에 적용한다.

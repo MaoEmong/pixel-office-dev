@@ -240,6 +240,13 @@ export class Store {
     const row = this.db.prepare("SELECT value FROM app_settings WHERE key='engines'").get() as {value:string}|undefined;
     return row ? JSON.parse(row.value) as Engine[] : null;
   }
+  resourceLimits(): {maxLiveSessions:number;maxTeamsPerDepartment:number} {
+    const row=this.db.prepare("SELECT value FROM app_settings WHERE key='resources'").get() as {value:string}|undefined;
+    return row ? JSON.parse(row.value) : {maxLiveSessions:16,maxTeamsPerDepartment:8};
+  }
+  setResourceLimits(value:{maxLiveSessions:number;maxTeamsPerDepartment:number}):void {
+    this.db.prepare("INSERT INTO app_settings(key,value) VALUES('resources',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").run(JSON.stringify(value));
+  }
   setEnginePolicy(engines: Engine[] | null): void {
     if (engines === null) this.db.prepare("DELETE FROM app_settings WHERE key='engines'").run();
     else this.db.prepare("INSERT INTO app_settings(key,value) VALUES('engines',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").run(JSON.stringify(engines));

@@ -2,6 +2,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../state/office_state.dart';
+import '../diagnostics/error_panel.dart';
 import '../topbar/selected_department.dart';
 
 typedef WorkflowData = Map<String, dynamic>;
@@ -138,7 +139,7 @@ class _WorkflowDialogState extends ConsumerState<WorkflowDialog> {
       if (method == 'workflow.discuss') _text.clear();
       ref.invalidate(workflowProvider(widget.departmentId));
     } catch (e) {
-      if (mounted) setState(() => _error = e.toString());
+      if (mounted) setState(() => _error = errorMessage(e));
     } finally {
       if (mounted) setState(() => _busy = false);
     }
@@ -218,7 +219,14 @@ class _WorkflowDialogState extends ConsumerState<WorkflowDialog> {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       if (async.hasError)
-                        section('연결 오류', Text('${async.error}')),
+                        section(
+                          '연결 오류',
+                          ErrorPanel(
+                            title: '작업 상태를 불러오지 못했어요',
+                            message: '${async.error}',
+                            compact: true,
+                          ),
+                        ),
                       if (w?['problem'] != null)
                         section(
                           '확인할 문제',
@@ -319,11 +327,10 @@ class _WorkflowDialogState extends ConsumerState<WorkflowDialog> {
               if (_error != null)
                 Padding(
                   padding: const EdgeInsets.only(top: 6),
-                  child: Text(
-                    _error!,
-                    style: TextStyle(
-                      color: Theme.of(context).colorScheme.error,
-                    ),
+                  child: ErrorPanel(
+                    title: '작업 요청을 완료하지 못했어요',
+                    message: _error!,
+                    compact: true,
                   ),
                 ),
               if (canDiscuss)

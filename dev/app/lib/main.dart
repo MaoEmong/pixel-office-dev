@@ -19,6 +19,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import 'diagnostics/error_panel.dart';
 import 'command/command_bar.dart';
 import 'workflow/workflow_panel.dart';
 import 'command/shortcuts.dart';
@@ -55,17 +56,22 @@ Future<void> main() async {
       MaterialApp(
         theme: pixelOfficeTheme(),
         home: Scaffold(
+          backgroundColor: const Color(0xFF111827),
           body: Center(
             child: Padding(
               padding: const EdgeInsets.all(24),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  const Text('앱 데이터 폴더에 잠금을 저장하지 못했습니다.'),
-                  const Text('폴더 쓰기 권한과 남은 디스크 공간을 확인한 뒤 다시 시도하세요.'),
-                  SelectableText(e.toString()),
-                  FilledButton(onPressed: () => unawaited(main()), child: const Text('다시 시도')),
-                ],
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 620),
+                child: SingleChildScrollView(
+                  child: RecoveryPanelFrame(
+                    child: ErrorPanel(
+                      title: '데이터 폴더에 접근할 수 없어요',
+                      message: '앱 실행에 필요한 잠금 파일을 저장하지 못했습니다.\n데이터 폴더의 쓰기 권한과 남은 디스크 공간을 확인한 뒤 다시 시도하세요.',
+                      details: e.toString(),
+                      onRetry: () => unawaited(main()),
+                    ),
+                  ),
+                ),
               ),
             ),
           ),
@@ -175,7 +181,12 @@ class OfficeShell extends ConsumerWidget {
             TopBar(selectedMemberId: selected),
             if (ref.watch(prefsSaveFailureProvider) case final String message)
               MaterialBanner(
-                content: Text('$message\n설정이 저장되지 않았습니다. 계속 일하기 설정은 이전 값으로 유지됩니다.'),
+                content: ErrorPanel(
+                  title: '설정을 저장하지 못했어요',
+                  message: '데이터 폴더의 쓰기 권한과 남은 공간을 확인하세요. 계속 일하기 설정은 이전 값으로 유지됩니다.',
+                  details: message,
+                  compact: true,
+                ),
                 actions: [
                   TextButton(
                     onPressed: () async {

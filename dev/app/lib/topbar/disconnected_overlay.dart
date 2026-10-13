@@ -15,6 +15,7 @@
 // 그 버튼이 유일한 시작 방법이므로 예전처럼 그대로 둔다.
 
 import 'dart:async';
+import '../diagnostics/error_panel.dart';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -144,14 +145,14 @@ class _DisconnectedOverlayState extends ConsumerState<DisconnectedOverlay> {
 
     return Positioned.fill(
       child: Container(
-        color: Colors.grey.shade900.withValues(alpha: 0.82),
+        color: const Color(0xFF0B1020).withValues(alpha: 0.48),
         alignment: Alignment.center,
         // 실패 화면은 로그 8줄 + 버튼 둘이라 세로로 길다 — 작은 창(패스 6 최소 1100×?)에서 잘리지 않게 스크롤.
         child: SizedBox(
-          width: 460,
+          width: 560,
           child: SingleChildScrollView(
             padding: const EdgeInsets.symmetric(vertical: 16),
-            child: body,
+            child: RecoveryPanelFrame(error: supervisor?.isFailed ?? false, child: body),
           ),
         ),
       ),
@@ -162,25 +163,29 @@ class _DisconnectedOverlayState extends ConsumerState<DisconnectedOverlay> {
 
   /// 한 줄 + 불확정 진행 바(여는 중 · 정리하는 중).
   Widget _simple({required IconData icon, required String label, required String key}) => Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Icon(icon, size: 48, color: Colors.white54),
-          const SizedBox(height: 12),
-          Text(label, key: Key(key), style: const TextStyle(fontSize: 20, color: Colors.white)),
-          const SizedBox(height: 14),
-          const SizedBox(
-            width: 260,
-            child: LinearProgressIndicator(
-              key: Key('overlay.progress'),
-              minHeight: 4,
-              backgroundColor: Colors.white12,
-              color: daemonBusyColor,
-            ),
-          ),
-          const SizedBox(height: 10),
-          _detailsToggle(),
-        ],
-      );
+    mainAxisSize: MainAxisSize.min,
+    children: [
+      Icon(icon, size: 48, color: Colors.white54),
+      const SizedBox(height: 12),
+      Text(
+        label,
+        key: Key(key),
+        style: const TextStyle(fontSize: 20, color: Colors.white),
+      ),
+      const SizedBox(height: 14),
+      const SizedBox(
+        width: 260,
+        child: LinearProgressIndicator(
+          key: Key('overlay.progress'),
+          minHeight: 4,
+          backgroundColor: Colors.white12,
+          color: daemonBusyColor,
+        ),
+      ),
+      const SizedBox(height: 10),
+      _detailsToggle(),
+    ],
+  );
 
   /// 죽어서 다시 띄우는 중 + 복구 진행(§4).
   Widget _restarting(DaemonNotice? recovery) {
@@ -237,11 +242,7 @@ class _DisconnectedOverlayState extends ConsumerState<DisconnectedOverlay> {
     return Column(
       mainAxisSize: MainAxisSize.min,
       children: [
-        Icon(
-          crashLoop || nodeMissing ? Icons.report_gmailerrorred : Icons.power_off,
-          size: 44,
-          color: daemonDownColor,
-        ),
+        Icon(crashLoop || nodeMissing ? Icons.report_gmailerrorred : Icons.power_off, size: 44, color: daemonDownColor),
         const SizedBox(height: 10),
         Text(
           title,
@@ -253,8 +254,12 @@ class _DisconnectedOverlayState extends ConsumerState<DisconnectedOverlay> {
         if (status.failure == SupervisorFailure.setupRequired && status.lastError != null)
           Padding(
             padding: const EdgeInsets.only(bottom: 12),
-            child: SelectableText(status.lastError!, key: const Key('overlay.repairHint'),
-              style: const TextStyle(color: Colors.white70, fontSize: 13), textAlign: TextAlign.center),
+            child: SelectableText(
+              status.lastError!,
+              key: const Key('overlay.repairHint'),
+              style: const TextStyle(color: Colors.white70, fontSize: 13),
+              textAlign: TextAlign.center,
+            ),
           ),
         // 마지막 8줄(수명주기 §1). 원인을 덮지 않는다 — 접지 않고 그대로 보여 준다.
         Container(
@@ -349,11 +354,7 @@ class _DisconnectedOverlayState extends ConsumerState<DisconnectedOverlay> {
           children: [
             const DaemonStartButton(), // 주 버튼
             const SizedBox(width: 12),
-            OutlinedButton(
-              key: const Key('overlay.retry'),
-              onPressed: client.retryNow,
-              child: const Text('다시 연결'),
-            ),
+            OutlinedButton(key: const Key('overlay.retry'), onPressed: client.retryNow, child: const Text('다시 연결')),
           ],
         ),
         const SizedBox(height: 8),
@@ -366,20 +367,20 @@ class _DisconnectedOverlayState extends ConsumerState<DisconnectedOverlay> {
   // ---- 공통: "자세히" ---------------------------------------------------------------------
 
   Widget _detailsToggle() => TextButton(
-        key: const Key('overlay.details'),
-        style: TextButton.styleFrom(
-          visualDensity: VisualDensity.compact,
-          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-          foregroundColor: Colors.white38,
-          textStyle: const TextStyle(fontSize: 12),
-        ),
-        onPressed: () => setState(() => _details = !_details),
-        child: Text(_details ? '$disconnectedDetailsLabel 접기' : '$disconnectedDetailsLabel ▸'),
-      );
+    key: const Key('overlay.details'),
+    style: TextButton.styleFrom(
+      visualDensity: VisualDensity.compact,
+      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+      foregroundColor: Colors.white38,
+      textStyle: const TextStyle(fontSize: 12),
+    ),
+    onPressed: () => setState(() => _details = !_details),
+    child: Text(_details ? '$disconnectedDetailsLabel 접기' : '$disconnectedDetailsLabel ▸'),
+  );
 
   List<Widget> _detailLines() {
-    final error = ref.watch(officeProvider.select((s) => s.lastError)) ??
-        ref.watch(supervisorStatusProvider)?.lastError;
+    final error =
+        ref.watch(officeProvider.select((s) => s.lastError)) ?? ref.watch(supervisorStatusProvider)?.lastError;
     return [
       if (error != null)
         Padding(

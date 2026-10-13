@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../state/office_state.dart';
+import 'error_panel.dart';
 import '../state/selection.dart';
 
 class EnvironmentDialog extends ConsumerStatefulWidget {
@@ -15,6 +16,7 @@ class _EnvironmentDialogState extends ConsumerState<EnvironmentDialog> {
   String? error;
   List<String>? allowedEngines;
   bool policyLoaded = false;
+  int maxLiveSessions = 16, maxTeamsPerDepartment = 8;
   @override
   void initState() {
     super.initState();
@@ -28,6 +30,10 @@ class _EnvironmentDialogState extends ConsumerState<EnvironmentDialog> {
     });
     try {
       if (!policyLoaded) {
+        final limits = await ref.read(rpcClientProvider).call('resources.get');
+        maxLiveSessions = (limits['maxLiveSessions'] as num?)?.toInt() ?? 16;
+        maxTeamsPerDepartment =
+            (limits['maxTeamsPerDepartment'] as num?)?.toInt() ?? 8;
         final policy = await ref.read(rpcClientProvider).call('engines.get');
         allowedEngines = (policy['allowedEngines'] as List?)?.cast<String>();
         policyLoaded = true;
@@ -38,7 +44,7 @@ class _EnvironmentDialogState extends ConsumerState<EnvironmentDialog> {
       );
       if (mounted) setState(() => result = value);
     } catch (e) {
-      if (mounted) setState(() => error = e.toString());
+      if (mounted) setState(() => error = errorMessage(e));
     } finally {
       if (mounted) setState(() => busy = false);
     }
@@ -60,11 +66,72 @@ class _EnvironmentDialogState extends ConsumerState<EnvironmentDialog> {
         );
       }
     } catch (e) {
-      if (mounted) setState(() => error = e.toString());
+      if (mounted) setState(() => error = errorMessage(e));
     } finally {
       if (mounted) setState(() => busy = false);
     }
   }
+
+  Future<void> saveLimits({int? sessions, int? teams}) async {
+    setState(() {
+      busy = true;
+      error = null;
+    });
+    try {
+      final value = await ref.read(rpcClientProvider).call('resources.set', {
+        'maxLiveSessions': sessions ?? maxLiveSessions,
+        'maxTeamsPerDepartment': teams ?? maxTeamsPerDepartment,
+      });
+      if (mounted) {
+        setState(() {
+          maxLiveSessions = (value['maxLiveSessions'] as num).toInt();
+          maxTeamsPerDepartment = (value['maxTeamsPerDepartment'] as num)
+              .toInt();
+        });
+      }
+    } catch (e) {
+      if (mounted) setState(() => error = errorMessage(e));
+    } finally {
+      if (mounted) setState(() => busy = false);
+    }
+  }
+
+  Widget limitPicker(
+    String label,
+    int value,
+    int maximum,
+    String key,
+    void Function(int?) change,
+  ) => SizedBox(
+    width: 264,
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          label,
+          style: const TextStyle(fontSize: 12, color: Colors.white60),
+        ),
+        DropdownButton<int>(
+          key: Key(key),
+          value: value,
+          isExpanded: true,
+          items:
+              ({
+                    1,
+                    4,
+                    8,
+                    16,
+                    32,
+                    maximum,
+                    value,
+                  }.where((n) => n <= maximum).toList()..sort())
+                  .map((n) => DropdownMenuItem(value: n, child: Text('$n개')))
+                  .toList(),
+          onChanged: busy ? null : change,
+        ),
+      ],
+    ),
+  );
 
   @override
   Widget build(BuildContext context) => AlertDialog(
@@ -115,12 +182,44 @@ class _EnvironmentDialogState extends ConsumerState<EnvironmentDialog> {
                       ),
               ),
             const Text('생성·재고용·복구에 적용됩니다. 이미 실행 중인 작업은 중단하지 않습니다.'),
+            const SizedBox(height: 16),
+            const Text(
+              '동시 작업 제한',
+              style: TextStyle(fontWeight: FontWeight.bold),
+            ),
+            if (policyLoaded)
+              Wrap(
+                spacing: 16,
+                runSpacing: 8,
+                children: [
+                  limitPicker(
+                    '전체 AI 세션 수',
+                    maxLiveSessions,
+                    64,
+                    'environment.sessionLimit',
+                    (n) => saveLimits(sessions: n),
+                  ),
+                  limitPicker(
+                    '부서별 팀 수',
+                    maxTeamsPerDepartment,
+                    32,
+                    'environment.teamLimit',
+                    (n) => saveLimits(teams: n),
+                  ),
+                ],
+              ),
+            const Text('이미 실행 중인 세션은 유지하며 새 생성·복구부터 제한합니다.'),
             if (busy)
               const Padding(
                 padding: EdgeInsets.all(12),
                 child: LinearProgressIndicator(),
               ),
-            if (error != null) SelectableText(error!),
+            if (error != null)
+              ErrorPanel(
+                title: '환경 점검을 완료하지 못했어요',
+                message: error!,
+                compact: true,
+              ),
             if (result != null) ...[
               Text('Node.js ${result!["nodeVersion"] ?? "확인 불가"}'),
               if (result!['memberName'] != null)

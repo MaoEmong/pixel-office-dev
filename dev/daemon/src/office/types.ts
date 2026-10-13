@@ -54,6 +54,7 @@ export interface CreateDepartmentParams {
 export interface UpdateDepartmentParams {
   departmentId: string;
   approvalPolicy?: ApprovalPolicy;
+  cwd?: string;
 }
 
 export interface CreateDepartmentResult {
@@ -300,8 +301,8 @@ export type OfficeEvents = {
 /** RpcServer 가 의존하는 Office 의 부분. 테스트에서는 이 인터페이스의 가짜를 넣는다. */
 export interface OfficeApi extends EventEmitter<OfficeEvents> {
   workflowGet?(departmentId: string): import('../workflow/types.js').Workflow | undefined;
-  workflowDiscuss?(departmentId: string, text: string): import('../workflow/types.js').Workflow;
-  workflowStart?(departmentId: string, brief?: string): import('../workflow/types.js').Workflow;
+  workflowDiscuss?(departmentId: string, text: string, requestId?:string): import('../workflow/types.js').Workflow;
+  workflowStart?(departmentId: string, brief?: string, requestId?:string): import('../workflow/types.js').Workflow;
   workflowResume?(departmentId: string): import('../workflow/types.js').Workflow;
   workflowCancel?(departmentId: string): import('../workflow/types.js').Workflow;
   workflowComplete?(departmentId: string): import('../workflow/types.js').Workflow;

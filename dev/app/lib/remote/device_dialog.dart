@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../state/office_state.dart';
+import '../diagnostics/error_panel.dart';
 import '../panel/ui_prefs.dart';
 
 class DeviceDialog extends ConsumerStatefulWidget {
@@ -13,6 +14,7 @@ class DeviceDialog extends ConsumerStatefulWidget {
 }
 
 class _DeviceDialogState extends ConsumerState<DeviceDialog> {
+  String get gatewayFailure => _status?['message']?.toString() ?? '원격 연결 사용 불가';
   Map<String, dynamic>? _status, _invite;
   String? _error;
   bool _busy = false;
@@ -48,7 +50,7 @@ class _DeviceDialogState extends ConsumerState<DeviceDialog> {
         _error = null;
       });
     } catch (e) {
-      if (mounted) setState(() => _error = e.toString());
+      if (mounted) setState(() => _error = errorMessage(e));
     }
   }
 
@@ -67,7 +69,7 @@ class _DeviceDialogState extends ConsumerState<DeviceDialog> {
       if (method == 'remote.configure') setState(() => _invite = null);
       await _load();
     } catch (e) {
-      if (mounted) setState(() => _error = e.toString());
+      if (mounted) setState(() => _error = errorMessage(e));
     } finally {
       if (mounted) setState(() => _busy = false);
     }
@@ -116,23 +118,25 @@ class _DeviceDialogState extends ConsumerState<DeviceDialog> {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       if (_status?['available'] == false) ...[
-                        SelectableText(
-                          _status?['message']?.toString() ?? '원격 연결 사용 불가',
+                        ErrorPanel(
+                          title: '원격 연결을 시작하지 못했어요',
+                          message: gatewayFailure.split(' Error:').first,
+                          details: gatewayFailure.contains(' Error:')
+                              ? gatewayFailure
+                              : null,
+                          compact: true,
+                          onRetry: _busy ? null : () => _run('remote.retry'),
+                          retryLabel: '원격 연결 다시 시작',
                         ),
                         const Text('로컬 작업은 계속 사용할 수 있습니다.'),
-                        TextButton(
-                          onPressed: _busy ? null : () => _run('remote.retry'),
-                          child: const Text('원격 연결 다시 시작'),
-                        ),
                       ],
                       if (_error != null)
                         Padding(
                           padding: const EdgeInsets.only(bottom: 12),
-                          child: SelectableText(
-                            _error!,
-                            style: TextStyle(
-                              color: Theme.of(context).colorScheme.error,
-                            ),
+                          child: ErrorPanel(
+                            title: '기기 연결 작업을 완료하지 못했어요',
+                            message: _error!,
+                            compact: true,
                           ),
                         ),
                       const Text(

@@ -4,6 +4,7 @@ import type { Member, Task } from '../store/types.js';
 import type { Workflow, WorkAssignment } from './types.js';
 
 export interface WorkflowHost {
+  atomic?(fn:()=>Workflow): Workflow;
   head(departmentId: string): Member;
   member(id: string): Member | undefined;
   busy(departmentId: string): boolean;
@@ -20,10 +21,26 @@ const live = (m: Member | undefined): m is Member => !!m && !['error','exited','
 export const WORKFLOW_PLANNING_MESSAGE = '지금은 작업 구체화·회의·검수 단계입니다. 계획 확정 전에는 구현하지 말고 의견을 제시하세요.';
 
 export class WorkflowCoordinator {
+  private pendingChange?: Workflow;
+  private batching = false;
   constructor(private readonly store: Store, private readonly host: WorkflowHost) {}
   current(departmentId: string): Workflow | undefined { return this.store.currentWorkflow(departmentId); }
   private save(w: Workflow): Workflow {
-    w.updatedAt = now(); this.store.saveWorkflow(w); this.host.changed(w); return w;
+    w.updatedAt = now(); this.store.saveWorkflow(w);
+    if (this.batching) this.pendingChange=w; else this.host.changed(w);
+    return w;
+  }
+  private atomic(fn:()=>Workflow): Workflow {
+    this.batching=true;
+    try {
+      const w=this.host.atomic ? this.host.atomic(fn) : this.store.transaction(fn);
+      this.batching=false;
+      if(this.pendingChange)this.host.changed(this.pendingChange);
+      return w;
+    } finally {this.batching=false;this.pendingChange=undefined;}
+  }
+  private checkRequestId(id?:string):void {
+    if(id!==undefined && !/^[a-zA-Z0-9:_-]{1,128}$/.test(id))throw new Error('요청 식별자가 올바르지 않습니다.');
   }
   private text(text: string): string {
     if (typeof text !== 'string' || !text.trim() || text.length > 30_000) throw new Error('내용은 1~30000자여야 합니다.');
@@ -34,7 +51,13 @@ export class WorkflowCoordinator {
     if (!w || (phase && w.phase !== phase)) throw new Error(`현재 ${phase ?? '작업'} 단계가 아닙니다.`);
     return w;
   }
-  discuss(departmentId: string, text: string, notify = true): Workflow {
+  discuss(departmentId: string, text: string, notify = true, requestId?:string): Workflow {
+    this.checkRequestId(requestId);
+    if(requestId)for(const w of this.store.listWorkflows().filter(w=>w.departmentId===departmentId)) {
+      const message=w.messages.find(m=>m.requestId===requestId);
+      if(message){if(message.text!==this.text(text))throw new Error('동일 요청 식별자로 다른 내용을 보낼 수 없습니다.');return w;}
+    }
+    return this.atomic(()=>{
     const head = this.host.head(departmentId);
     const message = this.text(text);
     let w = this.current(departmentId);
@@ -44,11 +67,12 @@ export class WorkflowCoordinator {
     }
     if (w.phase !== 'clarifying') throw new Error('진행 중인 회의·작업을 마치거나 취소한 뒤 논의하세요.');
     if (w.messages.length >= 100) throw new Error('대화가 길어졌습니다. 작업안을 정리하고 시작하세요.');
-    w.messages.push({role:'user',text:message,at:now()});
+    w.messages.push({role:'user',text:message,at:now(),...(requestId ? {requestId} : {})});
     w.brief = w.messages.filter(m=>m.role==='user').map(m=>m.text).join('\n').slice(-30_000);
     this.save(w);
     if (notify) this.host.send(head.id, `[WORKFLOW DISCUSS ${w.id}]\n사용자와 목표, 범위, 제약, 완료 기준을 구체화하는 대화다. 구현·위임·채용은 하지 마라. 부족한 정보는 사용자에게 질문하고 작업안을 요약해라.\n${message}`);
     return w;
+    });
   }
   headText(member: Member, text: string): void {
     const w = this.current(member.departmentId);
@@ -56,15 +80,22 @@ export class WorkflowCoordinator {
       w.messages.push({role:'head',text:text.slice(0,30_000),at:now()}); this.save(w);
     }
   }
-  start(departmentId: string, brief?: string): Workflow {
+  start(departmentId: string, brief?: string, requestId?:string): Workflow {
+    this.checkRequestId(requestId);
+    if(requestId) {
+      const previous=this.store.listWorkflows().find(w=>w.departmentId===departmentId && w.startRequestId===requestId);
+      if(previous){if(brief!==undefined && this.text(brief)!==previous.brief)throw new Error('동일 요청 식별자로 다른 작업을 시작할 수 없습니다.');return previous;}
+    }
+    return this.atomic(()=>{
     const w = this.active(departmentId,'clarifying');
     const head = this.host.head(departmentId);
     if (this.host.busy(departmentId)) throw new Error('열린 작업·질문·승인을 마친 뒤 시작하세요.');
     const outline=w.messages.filter(m=>m.role==='head').at(-1)?.text;
     w.brief = this.text(brief ?? [w.brief,outline ? `부장이 정리한 작업안:\n${outline}` : ''].filter(Boolean).join('\n'));
-    w.phase='meeting'; this.save(w);
+    w.phase='meeting'; w.startRequestId=requestId; this.save(w);
     w.rootTaskId = this.host.startTask(head.id, `[WORKFLOW START ${w.id}]\n${w.brief}\n먼저 필요한 팀장들을 create_team으로 구성하라. 전문가가 필요하면 팀장이 hire하게 협의하라. 살아 있는 팀장·전문가 ID로 meeting_open을 호출하고 결과를 기다려라. 회의 중 구현하거나 delegate하지 마라. 의견 두 차례가 끝나면 meeting_decide로 회의록, 담당 팀장, 업무, acceptance(완료 기준), dependsOn(선행 팀장 ID)을 확정하라. 도구 이름: mcp__team__meeting_open, mcp__team__meeting_speak, mcp__team__meeting_decide. 도구가 안 보이면 ToolSearch로 찾아라.`);
     return this.save(w);
+    });
   }
   open(head: Member, participants: string[]): Workflow {
     const w = this.active(head.departmentId,'meeting');

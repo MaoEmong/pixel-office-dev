@@ -25,7 +25,13 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../model/models.dart';
 import '../panel/inbox.dart' show inboxCountProvider;
 import '../panel/ui_prefs.dart'
-    show keepDaemonEnvProvider, keepDaemonEnvVar, keepDaemonHint, keepDaemonLabel, keepDaemonProvider, lastDepartmentDirProvider;
+    show
+        keepDaemonEnvProvider,
+        keepDaemonEnvVar,
+        keepDaemonHint,
+        keepDaemonLabel,
+        keepDaemonProvider,
+        lastDepartmentDirProvider;
 import '../panel/panel_tabs.dart' show RightPanelTab, panelTabRequestProvider;
 import '../panel/report_tab.dart' show reportUnreadProvider;
 import '../rpc/rpc_client.dart';
@@ -35,6 +41,7 @@ import '../state/selection.dart';
 import '../usage/usage_chips.dart';
 import '../remote/device_dialog.dart';
 import '../diagnostics/environment_dialog.dart';
+import 'relocate_department_dialog.dart';
 import 'daemon_pill.dart';
 import 'selected_department.dart';
 
@@ -42,7 +49,13 @@ export 'daemon_pill.dart' show DaemonPill, ReportCountBadge, daemonPillLabel, da
 export 'disconnected_overlay.dart';
 export 'selected_department.dart';
 export '../usage/usage_chips.dart'
-    show EngineUsageChip, EngineUsageChips, usageChipForm, usageChipsCompact, usageChipsCompactWidth, usageChipsMinimalWidth;
+    show
+        EngineUsageChip,
+        EngineUsageChips,
+        usageChipForm,
+        usageChipsCompact,
+        usageChipsCompactWidth,
+        usageChipsMinimalWidth;
 export '../usage/usage_popover.dart' show UsagePopover, showUsagePopover, usagePopoverTitle, usagePopoverWidth;
 
 /// `department.create` 에 `headName` 을 안 보냈을 때 데몬이 붙이는 기본 부장 이름(daemon `DEFAULT_HEAD_NAME`).
@@ -88,92 +101,98 @@ class TopBar extends ConsumerWidget {
       // 창이 좁으면(패스 6 최소 1100) 엔진 칩이 **넘치기 전에** 짧은 꼴로 줄어든다.
       child: LayoutBuilder(
         builder: (context, box) {
-        final tight = box.maxWidth < topBarTightWidth;
-        return Row(
-        children: [
-          // 좁으면 앱 이름부터 뺀다 — 창 제목이 이미 말해 주는, 이 줄에서 가장 덜 중요한 글자다.
-          if (!tight) ...[
-            Text('픽셀 오피스', style: style?.copyWith(fontWeight: FontWeight.bold)),
-            const SizedBox(width: 16),
-          ],
-          Expanded(
-            child: SingleChildScrollView(
-              scrollDirection: Axis.horizontal,
-              child: Row(
-                children: [
-                  if (departments.isEmpty)
-                    const Text('부서 없음', key: Key('topbar.noDepartments'), style: TextStyle(color: Colors.white38, fontSize: 13))
-                  else
-                    for (final d in departments)
-                      _DepartmentTab(
-                        key: Key('topbar.department.${d.id}'),
-                        department: d,
-                        active: d.id == activeDept,
-                        onTap: () => ref.read(selectedDepartmentIdProvider.notifier).select(d.id),
-                      ),
+          final tight = box.maxWidth < topBarTightWidth;
+          return Row(
+            children: [
+              // 좁으면 앱 이름부터 뺀다 — 창 제목이 이미 말해 주는, 이 줄에서 가장 덜 중요한 글자다.
+              if (!tight) ...[
+                Text('픽셀 오피스', style: style?.copyWith(fontWeight: FontWeight.bold)),
+                const SizedBox(width: 16),
+              ],
+              Expanded(
+                child: SingleChildScrollView(
+                  scrollDirection: Axis.horizontal,
+                  child: Row(
+                    children: [
+                      if (departments.isEmpty)
+                        const Text(
+                          '부서 없음',
+                          key: Key('topbar.noDepartments'),
+                          style: TextStyle(color: Colors.white38, fontSize: 13),
+                        )
+                      else
+                        for (final d in departments)
+                          _DepartmentTab(
+                            key: Key('topbar.department.${d.id}'),
+                            department: d,
+                            active: d.id == activeDept,
+                            onTap: () => ref.read(selectedDepartmentIdProvider.notifier).select(d.id),
+                          ),
+                    ],
+                  ),
+                ),
+              ),
+              if (selected != null) ...[
+                const SizedBox(width: 8),
+                if (selected.rank != MemberRank.member) ...[
+                  RankBadge(key: const Key('topbar.rankBadge'), rank: selected.rank),
+                  const SizedBox(width: 6),
                 ],
-              ),
-            ),
-          ),
-          if (selected != null) ...[
-            const SizedBox(width: 8),
-            if (selected.rank != MemberRank.member) ...[
-              RankBadge(key: const Key('topbar.rankBadge'), rank: selected.rank),
+                // 이름은 길이를 모른다 — 좁아지면 말줄임으로 양보한다(상단 바가 넘치지 않게, T43-2).
+                Flexible(
+                  child: Text(
+                    '${selected.name} [${selected.engine.wire}]',
+                    style: style?.copyWith(color: Colors.white70),
+                    maxLines: 1,
+                    softWrap: false,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+                const SizedBox(width: 2),
+                IconButton(
+                  key: const Key('topbar.clockOut'),
+                  tooltip: '퇴근 (비상용)',
+                  visualDensity: VisualDensity.compact,
+                  iconSize: 18,
+                  onPressed: connected && !selected.status.isGone
+                      ? () => confirmClockOut(context, ref, selected)
+                      : null,
+                  icon: const Icon(Icons.logout),
+                ),
+                const SizedBox(width: 8),
+              ],
+              // 엔진 칩(사용량) → 데몬 pill 순서(설계 §앱 1: "데몬 pill 왼쪽").
+              EngineUsageChips(form: usageChipForm(box.maxWidth)),
               const SizedBox(width: 6),
-            ],
-            // 이름은 길이를 모른다 — 좁아지면 말줄임으로 양보한다(상단 바가 넘치지 않게, T43-2).
-            Flexible(
-              child: Text(
-                '${selected.name} [${selected.engine.wire}]',
-                style: style?.copyWith(color: Colors.white70),
-                maxLines: 1,
-                softWrap: false,
-                overflow: TextOverflow.ellipsis,
+              const DaemonPill(),
+              const SizedBox(width: 12),
+              Text('멤버 ${members.length} · 대기 $pendingCount', key: const Key('topbar.counts'), style: style),
+              if (reportCount > 0) ...[
+                const SizedBox(width: 8),
+                // 보고는 답할 것이 없으므로 카드가 아니라 배지다(이슈 9). 누르면 부장 + 보고서 탭.
+                ReportCountBadge(
+                  count: reportCount,
+                  onTap: () {
+                    ref.read(selectedMemberIdProvider.notifier).select(head!.id);
+                    ref.read(panelTabRequestProvider.notifier).request(RightPanelTab.report);
+                  },
+                ),
+              ],
+              const SizedBox(width: 12),
+              Tooltip(
+                message: tight ? '부서 만들기' : '',
+                child: FilledButton.tonalIcon(
+                  key: const Key('topbar.createDepartment'),
+                  onPressed: connected ? () => showCreateDepartmentDialog(context) : null,
+                  style: FilledButton.styleFrom(visualDensity: VisualDensity.compact),
+                  icon: const Icon(Icons.add_business, size: 16),
+                  // 좁으면 글자를 빼고 아이콘만(툴팁이 뜻을 지킨다). 위젯 종류는 그대로 둔다.
+                  label: tight ? const SizedBox.shrink() : const Text('부서 만들기'),
+                ),
               ),
-            ),
-            const SizedBox(width: 2),
-            IconButton(
-              key: const Key('topbar.clockOut'),
-              tooltip: '퇴근 (비상용)',
-              visualDensity: VisualDensity.compact,
-              iconSize: 18,
-              onPressed: connected && !selected.status.isGone ? () => confirmClockOut(context, ref, selected) : null,
-              icon: const Icon(Icons.logout),
-            ),
-            const SizedBox(width: 8),
-          ],
-          // 엔진 칩(사용량) → 데몬 pill 순서(설계 §앱 1: "데몬 pill 왼쪽").
-          EngineUsageChips(form: usageChipForm(box.maxWidth)),
-          const SizedBox(width: 6),
-          const DaemonPill(),
-          const SizedBox(width: 12),
-          Text('멤버 ${members.length} · 대기 $pendingCount', key: const Key('topbar.counts'), style: style),
-          if (reportCount > 0) ...[
-            const SizedBox(width: 8),
-            // 보고는 답할 것이 없으므로 카드가 아니라 배지다(이슈 9). 누르면 부장 + 보고서 탭.
-            ReportCountBadge(
-              count: reportCount,
-              onTap: () {
-                ref.read(selectedMemberIdProvider.notifier).select(head!.id);
-                ref.read(panelTabRequestProvider.notifier).request(RightPanelTab.report);
-              },
-            ),
-          ],
-          const SizedBox(width: 12),
-          Tooltip(
-            message: tight ? '부서 만들기' : '',
-            child: FilledButton.tonalIcon(
-              key: const Key('topbar.createDepartment'),
-              onPressed: connected ? () => showCreateDepartmentDialog(context) : null,
-              style: FilledButton.styleFrom(visualDensity: VisualDensity.compact),
-              icon: const Icon(Icons.add_business, size: 16),
-              // 좁으면 글자를 빼고 아이콘만(툴팁이 뜻을 지킨다). 위젯 종류는 그대로 둔다.
-              label: tight ? const SizedBox.shrink() : const Text('부서 만들기'),
-            ),
-          ),
-          _DepartmentMenu(departmentId: activeDept, enabled: connected),
-        ],
-        );
+              _DepartmentMenu(departmentId: activeDept, enabled: connected),
+            ],
+          );
         },
       ),
     );
@@ -249,7 +268,10 @@ class RankBadge extends StatelessWidget {
           children: [
             Icon(rank == MemberRank.head ? Icons.workspace_premium : Icons.star, size: 12, color: color),
             const SizedBox(width: 4),
-            Text(rank.label, style: TextStyle(fontSize: 11, color: color, fontWeight: FontWeight.bold)),
+            Text(
+              rank.label,
+              style: TextStyle(fontSize: 11, color: color, fontWeight: FontWeight.bold),
+            ),
           ],
         ),
       ),
@@ -279,6 +301,12 @@ class _DepartmentMenu extends ConsumerWidget {
       enabled: true,
       iconSize: 18,
       onSelected: (v) {
+        if (v == 'relocate' && dept != null) {
+          showDialog<void>(
+            context: context,
+            builder: (_) => RelocateDepartmentDialog(departmentId: dept.id, cwd: dept.cwd),
+          );
+        }
         if (v == 'environment') showDialog<void>(context: context, builder: (_) => const EnvironmentDialog());
         if (v == 'remote') showDialog<void>(context: context, builder: (_) => const DeviceDialog());
         if (v == 'approvalPolicy' && dept != null) showApprovalPolicyDialog(context, ref, dept);
@@ -286,8 +314,24 @@ class _DepartmentMenu extends ConsumerWidget {
         if (v == 'keepDaemon') ref.read(keepDaemonProvider.notifier).toggle();
       },
       itemBuilder: (_) => [
-        PopupMenuItem(key: const Key('topbar.remote'), value: 'remote', enabled: enabled, child: const Text('기기 연결 · 원격 조작')),
-        PopupMenuItem(key: const Key('topbar.environment'), value: 'environment', enabled: enabled, child: const Text('환경 점검 · CLI 로그인')),
+        PopupMenuItem(
+          key: const Key('topbar.remote'),
+          value: 'remote',
+          enabled: enabled,
+          child: const Text('기기 연결 · 원격 조작'),
+        ),
+        PopupMenuItem(
+          key: const Key('topbar.environment'),
+          value: 'environment',
+          enabled: enabled,
+          child: const Text('환경 점검 · CLI 로그인'),
+        ),
+        PopupMenuItem(
+          key: const Key('topbar.relocate'),
+          value: 'relocate',
+          enabled: enabled && dept != null,
+          child: const Text('프로젝트 폴더 다시 연결'),
+        ),
         // U-02(D-51): 이 부서 멤버의 허가 요청을 어디까지 묻지 않고 넘길지. 지금 값을 메뉴에서 바로 보여 준다.
         PopupMenuItem(
           key: const Key('topbar.approvalPolicy'),
@@ -373,7 +417,10 @@ class ApprovalPolicyChooser extends StatelessWidget {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Text(p.label, style: TextStyle(fontSize: 13, fontWeight: p == value ? FontWeight.w600 : FontWeight.normal)),
+                        Text(
+                          p.label,
+                          style: TextStyle(fontSize: 13, fontWeight: p == value ? FontWeight.w600 : FontWeight.normal),
+                        ),
                         Text(p.hint, style: const TextStyle(fontSize: 11, color: Colors.white54)),
                       ],
                     ),
@@ -386,7 +433,10 @@ class ApprovalPolicyChooser extends StatelessWidget {
         Text(
           value == ApprovalPolicy.trust ? approvalTrustCaveat : approvalAlwaysAsksHint,
           key: const Key('approvalPolicy.note'),
-          style: TextStyle(fontSize: 11, color: value == ApprovalPolicy.trust ? Colors.amber.withValues(alpha: 0.9) : Colors.white38),
+          style: TextStyle(
+            fontSize: 11,
+            color: value == ApprovalPolicy.trust ? Colors.amber.withValues(alpha: 0.9) : Colors.white38,
+          ),
         ),
       ],
     );
@@ -394,7 +444,8 @@ class ApprovalPolicyChooser extends StatelessWidget {
 }
 
 /// 어느 방식에서도 묻는 것 — 고르는 자리 맨 아래에 늘 적어 둔다.
-const String approvalAlwaysAsksHint = '어느 방식이든 작업 폴더 밖, .git·.env 같은 보호 파일, 웹 요청은 늘 묻습니다. 자동으로 넘긴 것은 로그에 "자동 허가" 로 남습니다.';
+const String approvalAlwaysAsksHint =
+    '어느 방식이든 작업 폴더 밖, .git·.env 같은 보호 파일, 웹 요청은 늘 묻습니다. 자동으로 넘긴 것은 로그에 "자동 허가" 로 남습니다.';
 
 /// "허가 방식" 다이얼로그 → `department.update`. 살아 있는 세션에 바로 먹는다(다음 허가 요청부터).
 Future<void> showApprovalPolicyDialog(BuildContext context, WidgetRef ref, Department d) async {
@@ -437,7 +488,9 @@ Future<void> showApprovalPolicyDialog(BuildContext context, WidgetRef ref, Depar
     await ref.read(officeProvider.notifier).setApprovalPolicy(d.id, picked);
   } catch (e) {
     if (context.mounted) {
-      ScaffoldMessenger.maybeOf(context)?.showSnackBar(SnackBar(content: Text('허가 방식을 바꾸지 못했습니다: ${e is RpcException ? e.message : e}')));
+      ScaffoldMessenger.maybeOf(
+        context,
+      )?.showSnackBar(SnackBar(content: Text('허가 방식을 바꾸지 못했습니다: ${e is RpcException ? e.message : e}')));
     }
   }
 }
@@ -465,8 +518,9 @@ Future<void> confirmDeleteDepartment(BuildContext context, WidgetRef ref, Depart
     ref.read(selectedDepartmentIdProvider.notifier).select(null);
   } catch (e) {
     if (context.mounted) {
-      ScaffoldMessenger.maybeOf(context)
-          ?.showSnackBar(SnackBar(content: Text('부서 삭제 실패: ${e is RpcException ? e.message : e}')));
+      ScaffoldMessenger.maybeOf(
+        context,
+      )?.showSnackBar(SnackBar(content: Text('부서 삭제 실패: ${e is RpcException ? e.message : e}')));
     }
   }
 }
@@ -494,7 +548,11 @@ Future<void> confirmClockOut(BuildContext context, WidgetRef ref, Member m) asyn
       ),
       actions: [
         TextButton(onPressed: () => Navigator.of(ctx).pop(false), child: const Text('취소')),
-        FilledButton(key: const Key('clockOut.confirm'), onPressed: () => Navigator.of(ctx).pop(true), child: const Text('퇴근')),
+        FilledButton(
+          key: const Key('clockOut.confirm'),
+          onPressed: () => Navigator.of(ctx).pop(true),
+          child: const Text('퇴근'),
+        ),
       ],
     ),
   );
@@ -503,7 +561,9 @@ Future<void> confirmClockOut(BuildContext context, WidgetRef ref, Member m) asyn
     await ref.read(rpcClientProvider).call('member.clockOut', {'memberId': m.id});
   } catch (e) {
     if (context.mounted) {
-      ScaffoldMessenger.maybeOf(context)?.showSnackBar(SnackBar(content: Text('퇴근 실패: ${e is RpcException ? e.message : e}')));
+      ScaffoldMessenger.maybeOf(
+        context,
+      )?.showSnackBar(SnackBar(content: Text('퇴근 실패: ${e is RpcException ? e.message : e}')));
     }
   }
 }
@@ -511,7 +571,10 @@ Future<void> confirmClockOut(BuildContext context, WidgetRef ref, Member m) asyn
 // ---- 부서 만들기 --------------------------------------------------------------------
 
 Future<void> showCreateDepartmentDialog(BuildContext context, {DirectoryPicker pickDirectory = pickDepartmentFolder}) =>
-    showDialog<void>(context: context, builder: (_) => CreateDepartmentDialog(pickDirectory: pickDirectory));
+    showDialog<void>(
+      context: context,
+      builder: (_) => CreateDepartmentDialog(pickDirectory: pickDirectory),
+    );
 
 /// 폴더 선택기(T41). 테스트는 **절대** 네이티브 창을 열지 않으므로 가짜를 주입한다.
 /// 취소하면 null.
@@ -535,7 +598,10 @@ String departmentNameForPath(String path) {
 /// 파라미터로, 파일시스템 확인은 provider 로 갈아끼운다 — 테스트가 진짜 디스크를 건드릴 일이 없다.
 typedef DirectoryExists = Future<bool> Function(String path);
 
-final directoryExistsProvider = Provider<DirectoryExists>((_) => (path) => Directory(path).exists());
+final directoryExistsProvider = Provider<DirectoryExists>(
+  (_) =>
+      (path) => Directory(path).exists(),
+);
 
 /// 없는 폴더를 넣었을 때의 문구(선택기 대신 손으로 친 경우).
 const String createDepartmentMissingFolder = '그런 폴더가 없습니다 — "폴더 선택…" 으로 고르세요';
@@ -649,7 +715,9 @@ class _CreateDepartmentDialogState extends ConsumerState<CreateDepartmentDialog>
 
     setState(() => _busy = true);
     try {
-      final r = await ref.read(officeProvider.notifier).createDepartment(
+      final r = await ref
+          .read(officeProvider.notifier)
+          .createDepartment(
             name: name,
             cwd: cwd,
             headEngine: _headEngine,
@@ -672,152 +740,156 @@ class _CreateDepartmentDialogState extends ConsumerState<CreateDepartmentDialog>
 
   @override
   Widget build(BuildContext context) => AlertDialog(
-        title: const Text('부서 만들기'),
-        content: SizedBox(
-          width: 440,
-          child: SingleChildScrollView(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
+    title: const Text('부서 만들기'),
+    content: SizedBox(
+      width: 440,
+      child: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              '부서를 만들면 부장이 자동으로 출근합니다. 팀·팀원은 부장이 만듭니다 — 지시는 부장에게만 갑니다.',
+              key: Key('createDepartment.headHint'),
+              style: TextStyle(fontSize: 12, color: Colors.white54),
+            ),
+            const SizedBox(height: 12),
+            // 폴더가 먼저다 — 고르면 아래 이름 칸이 폴더 이름으로 채워진다(T41).
+            Row(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                const Text(
-                  '부서를 만들면 부장이 자동으로 출근합니다. 팀·팀원은 부장이 만듭니다 — 지시는 부장에게만 갑니다.',
-                  key: Key('createDepartment.headHint'),
-                  style: TextStyle(fontSize: 12, color: Colors.white54),
-                ),
-                const SizedBox(height: 12),
-                // 폴더가 먼저다 — 고르면 아래 이름 칸이 폴더 이름으로 채워진다(T41).
-                Row(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Expanded(
-                      child: TextField(
-                        key: const Key('createDepartment.cwd'),
-                        controller: _cwd,
-                        enabled: !_busy,
-                        decoration: InputDecoration(
-                          labelText: '작업 폴더 (cwd)',
-                          hintText: r'D:\myproject\...',
-                          helperText: '이 부서의 모든 팀이 이 폴더에서 일합니다 · 경로를 직접 붙여넣어도 됩니다',
-                          errorText: _cwdError,
-                          isDense: true,
-                        ),
-                      ),
-                    ),
-                    const SizedBox(width: 8),
-                    Padding(
-                      padding: const EdgeInsets.only(top: 2),
-                      child: OutlinedButton.icon(
-                        key: const Key('createDepartment.pickFolder'),
-                        onPressed: _busy || _picking ? null : _pick,
-                        icon: const Icon(Icons.folder_open, size: 16),
-                        label: const Text('폴더 선택…'),
-                      ),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 10),
-                TextField(
-                  key: const Key('createDepartment.name'),
-                  controller: _name,
-                  autofocus: true,
-                  enabled: !_busy,
-                  onChanged: (v) => setState(() => _nameEdited = v.trim().isNotEmpty),
-                  decoration: const InputDecoration(
-                    labelText: '부서 이름',
-                    hintText: 'alpha',
-                    helperText: '기본값 = 고른 폴더 이름',
-                    isDense: true,
-                  ),
-                ),
-                const SizedBox(height: 10),
-                TextField(
-                  key: const Key('createDepartment.headName'),
-                  controller: _headName,
-                  enabled: !_busy,
-                  decoration: const InputDecoration(labelText: '부장 이름', hintText: kDefaultHeadName, isDense: true),
-                ),
-                const SizedBox(height: 10),
-                Row(
-                  children: [
-                    const Text('부장 엔진', style: TextStyle(fontSize: 13)),
-                    const SizedBox(width: 12),
-                    _EngineChooser(
-                      key: const Key('createDepartment.headEngine'),
-                      value: _headEngine,
-                      enabled: !_busy,
-                      onChanged: (e) => setState(() => _headEngine = e),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 6),
-                // 세부 설정 — 접혀 있다. 기본 화면은 폴더만 고르면 끝나는 그대로 둔다(T41).
-                InkWell(
-                  key: const Key('createDepartment.advanced'),
-                  onTap: _busy ? null : () => setState(() => _advancedOpen = !_advancedOpen),
-                  borderRadius: BorderRadius.circular(6),
-                  child: Padding(
-                    padding: const EdgeInsets.symmetric(vertical: 6),
-                    child: Row(
-                      children: [
-                        Icon(_advancedOpen ? Icons.expand_more : Icons.chevron_right, size: 18, color: Colors.white70),
-                        const SizedBox(width: 4),
-                        const Text('세부 설정', style: TextStyle(fontSize: 13)),
-                        const SizedBox(width: 8),
-                        // 접혀 있어도 지금 값이 보인다 — 펼쳐 보지 않고 만들어도 무엇으로 만들어지는지 안다.
-                        Text(
-                          '허가 방식: ${_approvalPolicy.label}',
-                          key: const Key('createDepartment.advanced.summary'),
-                          style: const TextStyle(fontSize: 11, color: Colors.white54),
-                        ),
-                      ],
+                Expanded(
+                  child: TextField(
+                    key: const Key('createDepartment.cwd'),
+                    controller: _cwd,
+                    enabled: !_busy,
+                    decoration: InputDecoration(
+                      labelText: '작업 폴더 (cwd)',
+                      hintText: r'D:\myproject\...',
+                      helperText: '이 부서의 모든 팀이 이 폴더에서 일합니다 · 경로를 직접 붙여넣어도 됩니다',
+                      errorText: _cwdError,
+                      isDense: true,
                     ),
                   ),
                 ),
-                if (_advancedOpen) ...[
-                  const Padding(
-                    padding: EdgeInsets.only(left: 22, bottom: 2),
-                    child: Text('허가 방식', style: TextStyle(fontSize: 12, color: Colors.white70)),
+                const SizedBox(width: 8),
+                Padding(
+                  padding: const EdgeInsets.only(top: 2),
+                  child: OutlinedButton.icon(
+                    key: const Key('createDepartment.pickFolder'),
+                    onPressed: _busy || _picking ? null : _pick,
+                    icon: const Icon(Icons.folder_open, size: 16),
+                    label: const Text('폴더 선택…'),
                   ),
-                  Padding(
-                    padding: const EdgeInsets.only(left: 22),
-                    child: ApprovalPolicyChooser(
-                      key: const Key('createDepartment.approvalPolicy'),
-                      value: _approvalPolicy,
-                      enabled: !_busy,
-                      onChanged: (p) => setState(() => _approvalPolicy = p),
-                    ),
-                  ),
-                ],
-                if (_error != null) ...[
-                  const SizedBox(height: 12),
-                  Text(_error!, key: const Key('createDepartment.error'), style: TextStyle(color: Theme.of(context).colorScheme.error, fontSize: 12)),
-                ],
+                ),
               ],
             ),
-          ),
-        ),
-        actions: [
-          // 버튼이 꺼져 있는 이유를 옆에 적어 둔다 — 눌러 보고 나서야 알게 하지 않는다.
-          if (!_busy && !_cwdOk)
-            const Padding(
-              padding: EdgeInsets.only(right: 4),
-              child: Text(
-                createDepartmentPickFolderHint,
-                key: Key('createDepartment.submitHint'),
-                style: TextStyle(fontSize: 11, color: Colors.white38),
+            const SizedBox(height: 10),
+            TextField(
+              key: const Key('createDepartment.name'),
+              controller: _name,
+              autofocus: true,
+              enabled: !_busy,
+              onChanged: (v) => setState(() => _nameEdited = v.trim().isNotEmpty),
+              decoration: const InputDecoration(
+                labelText: '부서 이름',
+                hintText: 'alpha',
+                helperText: '기본값 = 고른 폴더 이름',
+                isDense: true,
               ),
             ),
-          TextButton(onPressed: _busy ? null : () => Navigator.of(context).pop(), child: const Text('취소')),
-          FilledButton(
-            key: const Key('createDepartment.submit'),
-            onPressed: _canSubmit ? _submit : null,
-            child: _busy
-                ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
-                : const Text('만들기'),
+            const SizedBox(height: 10),
+            TextField(
+              key: const Key('createDepartment.headName'),
+              controller: _headName,
+              enabled: !_busy,
+              decoration: const InputDecoration(labelText: '부장 이름', hintText: kDefaultHeadName, isDense: true),
+            ),
+            const SizedBox(height: 10),
+            Row(
+              children: [
+                const Text('부장 엔진', style: TextStyle(fontSize: 13)),
+                const SizedBox(width: 12),
+                _EngineChooser(
+                  key: const Key('createDepartment.headEngine'),
+                  value: _headEngine,
+                  enabled: !_busy,
+                  onChanged: (e) => setState(() => _headEngine = e),
+                ),
+              ],
+            ),
+            const SizedBox(height: 6),
+            // 세부 설정 — 접혀 있다. 기본 화면은 폴더만 고르면 끝나는 그대로 둔다(T41).
+            InkWell(
+              key: const Key('createDepartment.advanced'),
+              onTap: _busy ? null : () => setState(() => _advancedOpen = !_advancedOpen),
+              borderRadius: BorderRadius.circular(6),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(vertical: 6),
+                child: Row(
+                  children: [
+                    Icon(_advancedOpen ? Icons.expand_more : Icons.chevron_right, size: 18, color: Colors.white70),
+                    const SizedBox(width: 4),
+                    const Text('세부 설정', style: TextStyle(fontSize: 13)),
+                    const SizedBox(width: 8),
+                    // 접혀 있어도 지금 값이 보인다 — 펼쳐 보지 않고 만들어도 무엇으로 만들어지는지 안다.
+                    Text(
+                      '허가 방식: ${_approvalPolicy.label}',
+                      key: const Key('createDepartment.advanced.summary'),
+                      style: const TextStyle(fontSize: 11, color: Colors.white54),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            if (_advancedOpen) ...[
+              const Padding(
+                padding: EdgeInsets.only(left: 22, bottom: 2),
+                child: Text('허가 방식', style: TextStyle(fontSize: 12, color: Colors.white70)),
+              ),
+              Padding(
+                padding: const EdgeInsets.only(left: 22),
+                child: ApprovalPolicyChooser(
+                  key: const Key('createDepartment.approvalPolicy'),
+                  value: _approvalPolicy,
+                  enabled: !_busy,
+                  onChanged: (p) => setState(() => _approvalPolicy = p),
+                ),
+              ),
+            ],
+            if (_error != null) ...[
+              const SizedBox(height: 12),
+              Text(
+                _error!,
+                key: const Key('createDepartment.error'),
+                style: TextStyle(color: Theme.of(context).colorScheme.error, fontSize: 12),
+              ),
+            ],
+          ],
+        ),
+      ),
+    ),
+    actions: [
+      // 버튼이 꺼져 있는 이유를 옆에 적어 둔다 — 눌러 보고 나서야 알게 하지 않는다.
+      if (!_busy && !_cwdOk)
+        const Padding(
+          padding: EdgeInsets.only(right: 4),
+          child: Text(
+            createDepartmentPickFolderHint,
+            key: Key('createDepartment.submitHint'),
+            style: TextStyle(fontSize: 11, color: Colors.white38),
           ),
-        ],
-      );
+        ),
+      TextButton(onPressed: _busy ? null : () => Navigator.of(context).pop(), child: const Text('취소')),
+      FilledButton(
+        key: const Key('createDepartment.submit'),
+        onPressed: _canSubmit ? _submit : null,
+        child: _busy
+            ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
+            : const Text('만들기'),
+      ),
+    ],
+  );
 }
 
 class _EngineChooser extends StatelessWidget {
@@ -829,12 +901,10 @@ class _EngineChooser extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => SegmentedButton<Engine>(
-        segments: [
-          for (final e in Engine.values) ButtonSegment(value: e, label: Text(e.wire)),
-        ],
-        selected: {value},
-        showSelectedIcon: false,
-        style: const ButtonStyle(visualDensity: VisualDensity.compact),
-        onSelectionChanged: enabled ? (s) => onChanged(s.first) : null,
-      );
+    segments: [for (final e in Engine.values) ButtonSegment(value: e, label: Text(e.wire))],
+    selected: {value},
+    showSelectedIcon: false,
+    style: const ButtonStyle(visualDensity: VisualDensity.compact),
+    onSelectionChanged: enabled ? (s) => onChanged(s.first) : null,
+  );
 }

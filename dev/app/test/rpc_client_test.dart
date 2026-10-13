@@ -36,6 +36,30 @@ void main() {
     await daemon.stop();
   });
 
+  test('workflow timeout retry reuses request ID; next intentional send gets a new ID', () async {
+    await client.connect(daemon.url);
+    await client.hello('tok');
+    final accepted = <String>{};
+    daemon.handlers['workflow.discuss'] = (p) {
+      accepted.add(p['requestId'] as String);
+      return {
+        'workflow': {'id': 'w'},
+      };
+    };
+    daemon.dropReplies.add('workflow.discuss');
+    await expectLater(
+      client.call('workflow.discuss', {'departmentId': 'd', 'text': 'hello'}),
+      throwsA(isA<RpcException>()),
+    );
+    final first = daemon.paramsOf('workflow.discuss')!['requestId'];
+    daemon.dropReplies.clear();
+    await client.call('workflow.discuss', {'departmentId': 'd', 'text': 'hello'});
+    expect(daemon.paramsOf('workflow.discuss')!['requestId'], first);
+    expect(accepted.length, 1);
+    await client.call('workflow.discuss', {'departmentId': 'd', 'text': 'hello'});
+    expect(accepted.length, 2);
+  });
+
   test('hello: daemon 정보·snapshot 반환, lastSeq = snapshot.seq, 상태 connected', () async {
     daemon.snapshotSeq = 12;
     final states = <RpcConnectionState>[];
@@ -77,10 +101,7 @@ void main() {
       expect(e.message, 'bad state');
       expect(e.data, {'why': 'test'});
     }
-    await expectLater(
-      client.call('nope'),
-      throwsA(isA<RpcException>().having((e) => e.code, 'code', -32601)),
-    );
+    await expectLater(client.call('nope'), throwsA(isA<RpcException>().having((e) => e.code, 'code', -32601)));
     // 인증 후의 오류는 소켓을 끊지 않는다.
     expect(client.state, RpcConnectionState.connected);
   });
@@ -96,13 +117,19 @@ void main() {
   });
 
   test('call: 미접속 -1, 대기 중 끊김 -1, 응답 없음 -2(timeout)', () async {
-    await expectLater(client.call('echo'), throwsA(isA<RpcException>().having((e) => e.code, 'code', RpcException.closed)));
+    await expectLater(
+      client.call('echo'),
+      throwsA(isA<RpcException>().having((e) => e.code, 'code', RpcException.closed)),
+    );
     await client.connect(daemon.url);
     await client.hello('tok');
     final hung = client.call('hang');
     await expectLater(hung, throwsA(isA<RpcException>().having((e) => e.code, 'code', RpcException.timeout)));
     final pending = client.call('echo', {'delayMs': 400});
-    final closedCheck = expectLater(pending, throwsA(isA<RpcException>().having((e) => e.code, 'code', RpcException.closed)));
+    final closedCheck = expectLater(
+      pending,
+      throwsA(isA<RpcException>().having((e) => e.code, 'code', RpcException.closed)),
+    );
     await daemon.closeAll();
     await closedCheck;
   });
@@ -169,13 +196,16 @@ void main() {
     expect(daemon.helloParams[1]['since'], 5);
     await waitFor(() => hellos.length == 2);
     expect(hellos[1].snapshotSeq, 5);
-    expect(states, containsAllInOrder([
-      RpcConnectionState.connecting,
-      RpcConnectionState.connected,
-      RpcConnectionState.disconnected,
-      RpcConnectionState.connecting,
-      RpcConnectionState.connected,
-    ]));
+    expect(
+      states,
+      containsAllInOrder([
+        RpcConnectionState.connecting,
+        RpcConnectionState.connected,
+        RpcConnectionState.disconnected,
+        RpcConnectionState.connecting,
+        RpcConnectionState.connected,
+      ]),
+    );
 
     // 재접속 후 라이브 이벤트 계속 수신
     daemon.emitEvent(sampleEvent(6));

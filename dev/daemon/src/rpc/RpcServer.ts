@@ -240,7 +240,7 @@ export class RpcServer {
       },
       // U-02(D-51): 부서의 허가 방식을 바꾼다. 결과는 `{ department }`. 다음 허가 요청부터 바로 먹는다.
       'department.update': (_c, p) => ({
-        department: o.updateDepartment({ departmentId: reqStr(p, 'departmentId'), approvalPolicy: optApprovalPolicy(p, 'approvalPolicy') }),
+        department: o.updateDepartment({ departmentId: reqStr(p, 'departmentId'), approvalPolicy: optApprovalPolicy(p, 'approvalPolicy'),...(p.cwd!==undefined ? {cwd:optStr(p,'cwd')} : {}) }),
       }),
       'department.delete': async (_c, p) => {
         await o.deleteDepartment(reqStr(p, 'departmentId'));
@@ -248,8 +248,8 @@ export class RpcServer {
       },
       'department.tree': () => ({ departments: o.tree() }),
       'workflow.get': (_c,p) => ({workflow:workflow(()=>o.workflowGet!(reqStr(p,'departmentId'))) ?? null}),
-      'workflow.discuss': (_c,p) => ({workflow:workflow(()=>o.workflowDiscuss!(reqStr(p,'departmentId'),reqStr(p,'text')))}),
-      'workflow.start': (_c,p) => ({workflow:workflow(()=>o.workflowStart!(reqStr(p,'departmentId'),optStr(p,'brief')))}),
+      'workflow.discuss': (_c,p) => ({workflow:workflow(()=>o.workflowDiscuss!(reqStr(p,'departmentId'),reqStr(p,'text'),optStr(p,'requestId')))}),
+      'workflow.start': (_c,p) => ({workflow:workflow(()=>o.workflowStart!(reqStr(p,'departmentId'),optStr(p,'brief'),optStr(p,'requestId')))}),
       'workflow.resume': (_c,p) => ({workflow:workflow(()=>o.workflowResume!(reqStr(p,'departmentId')))}),
       'workflow.cancel': (_c,p) => ({workflow:workflow(()=>o.workflowCancel!(reqStr(p,'departmentId')))}),
       'workflow.complete': (_c,p) => ({workflow:workflow(()=>o.workflowComplete!(reqStr(p,'departmentId')))}),

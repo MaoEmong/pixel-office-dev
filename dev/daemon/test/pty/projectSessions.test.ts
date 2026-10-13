@@ -9,6 +9,7 @@ test('project sessions isolate histories, preserve existing login state and migr
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pixel-storage-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const cwd = path.join(root, 'project');
+  fs.mkdirSync(cwd);
   const homes = { claude: path.join(root, 'global-claude'), codex: path.join(root, 'global-codex'), claudeConfig: path.join(root, 'global-claude.json') };
   fs.mkdirSync(path.join(homes.claude, 'projects', 'old-project'), { recursive: true });
   fs.writeFileSync(path.join(homes.claude, '.credentials.json'), '{"test":"original"}');

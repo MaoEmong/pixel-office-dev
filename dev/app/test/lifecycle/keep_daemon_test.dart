@@ -26,10 +26,9 @@ void main() {
 
     test('토글하면 다른 값은 건드리지 않고 저장한다', () async {
       final store = MemoryUiPrefsStore({'panelWidth': 500});
-      final container = ProviderContainer(overrides: [
-        uiPrefsStoreProvider.overrideWithValue(store),
-        keepDaemonEnvProvider.overrideWithValue(false),
-      ]);
+      final container = ProviderContainer(
+        overrides: [uiPrefsStoreProvider.overrideWithValue(store), keepDaemonEnvProvider.overrideWithValue(false)],
+      );
       addTearDown(container.dispose);
       expect(container.read(keepDaemonProvider), isFalse);
       await container.read(keepDaemonProvider.notifier).toggle();
@@ -41,10 +40,9 @@ void main() {
 
     test('환경변수로 켜져 있으면 끌 수 없다', () async {
       final store = MemoryUiPrefsStore();
-      final container = ProviderContainer(overrides: [
-        uiPrefsStoreProvider.overrideWithValue(store),
-        keepDaemonEnvProvider.overrideWithValue(true),
-      ]);
+      final container = ProviderContainer(
+        overrides: [uiPrefsStoreProvider.overrideWithValue(store), keepDaemonEnvProvider.overrideWithValue(true)],
+      );
       addTearDown(container.dispose);
       expect(container.read(keepDaemonProvider), isTrue);
       await container.read(keepDaemonProvider.notifier).set(false);
@@ -60,14 +58,16 @@ void main() {
       tester.view.physicalSize = const Size(1400, 300);
       tester.view.devicePixelRatio = 1.0;
       addTearDown(tester.view.reset);
-      await tester.pumpWidget(ProviderScope(
-        overrides: [
-          ...fake.overrides,
-          uiPrefsStoreProvider.overrideWithValue(store),
-          keepDaemonEnvProvider.overrideWithValue(env),
-        ],
-        child: const MaterialApp(home: Scaffold(body: TopBar())),
-      ));
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            ...fake.overrides,
+            uiPrefsStoreProvider.overrideWithValue(store),
+            keepDaemonEnvProvider.overrideWithValue(env),
+          ],
+          child: const MaterialApp(home: Scaffold(body: TopBar())),
+        ),
+      );
       await tester.pumpAndSettle();
     }
 
@@ -86,6 +86,7 @@ void main() {
       await pumpTopBar(tester, store: store);
       await tester.tap(find.byKey(const Key('topbar.departmentMenu')));
       await tester.pumpAndSettle();
+      await tester.ensureVisible(find.byKey(const Key('topbar.keepDaemon')));
       await tester.tap(find.byKey(const Key('topbar.keepDaemon')));
       await tester.pumpAndSettle();
       expect(store.value[keepDaemonKey], isTrue);

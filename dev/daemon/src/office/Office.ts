@@ -25,7 +25,7 @@ import { PtyManager } from '../pty/PtyManager.js';
 import { WorkflowCoordinator } from '../workflow/Coordinator.js';
 import { workflowToolDenial } from '../workflow/guards.js';
 import type { Workflow, WorkAssignment } from '../workflow/types.js';
-import { ensureProjectDataDir, projectDataDir, projectMemberDir } from '../pty/projectSessions.js';
+import { assertProjectFolder, ensureProjectDataDir, projectDataDir, projectMemberDir } from '../pty/projectSessions.js';
 import { toForwardSlashes } from '../pty/hookSettings.js';
 import type { ExitInfo, PtySession } from '../pty/types.js';
 import { HookReceiver } from '../hooks/HookReceiver.js';
@@ -267,7 +267,7 @@ interface MemberRuntime {
   /** Stop 의 last_assistant_message. v1a 에서는 이것이 task 의 report_text(01 §TeamTools "사용자 지시도 task"). */
   lastText?: string;
   /** 데몬이 의도한 종료면 exit 시 error 이벤트를 내지 않는다. */
-  exitMode?: 'clockOut' | 'restart' | 'shutdown';
+  exitMode?: 'clockOut' | 'restart' | 'shutdown' | 'bootFailure';
   lastInterruptAt?: number;
   interruptWatch?: NodeJS.Timeout;
   /** Codex 부팅 감시(SessionStart 가 늦게 오는 엔진용). */
@@ -325,6 +325,7 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
 
   readonly store: Store;
   private readonly beforeHire: (engine: Engine) => Promise<void>;
+  private deferredWorkflowInputs?: Array<()=>void>;
   private readonly workflows: WorkflowCoordinator;
   readonly pty: PtyManagerLike;
   readonly receiver: HookReceiverLike;
@@ -404,11 +405,17 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
     );
     this.store = opts.store ?? new Store(path.join(this.cfg.dataDir, 'pixel-office.db'));
     this.workflows = new WorkflowCoordinator(this.store, {
+      atomic:fn=>this.workflowMutation(fn),
       head: (id) => { const head=this.store.liveHead(id); if (!head) throw badState('살아 있는 부장이 없습니다.'); return head; },
       member: (id) => this.store.getMember(id),
       busy: (id) => this.store.listTasks({departmentId:id}).some(t=>['queued','assigned'].includes(t.status))
         || this.store.snapshot().pending.some(p=>this.store.getMember(p.memberId)?.departmentId===id),
-      send: (id,text) => {const member=this.member(id);this.requireEngine(member.engine,member.departmentId);this.liveRuntime(member).queue.enqueue({kind:'system',text});},
+      send: (id,text) => {
+        const member=this.member(id);this.requireEngine(member.engine,member.departmentId);assertProjectFolder(member.cwd);
+        const rt=this.liveRuntime(member);
+        const send=()=>rt.queue.enqueue({kind:'system',text});
+        if(this.deferredWorkflowInputs)this.deferredWorkflowInputs.push(send);else send();
+      },
       startTask: (id,text) => this.instruct(id,text,{workflow:true}),
       delegate: (id,lead,text) => this.teamDelegate(id,lead,text).task.id,
       task: (id) => this.store.getTask(id),
@@ -867,14 +874,24 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
   // ---- 조회 ------------------------------------------------------------------------
 
   workflowGet(departmentId: string): Workflow | undefined { return this.workflows.current(departmentId); }
-  workflowDiscuss(departmentId: string, text: string): Workflow {
+  private workflowMutation(fn:()=>Workflow):Workflow {
+    const inputs:Array<()=>void>=[];
+    this.deferredWorkflowInputs=inputs;
+    try {
+      const result=this.store.transaction(fn);
+      this.deferredWorkflowInputs=undefined;
+      for(const input of inputs)input();
+      return result;
+    } finally {this.deferredWorkflowInputs=undefined;}
+  }
+  workflowDiscuss(departmentId: string, text: string, requestId?:string): Workflow {
     const head=this.store.liveHead(departmentId);
     const question=head && this.store.listOpenPending(head.id).find(p=>p.type==='question' && isAskUserPayload(p.payload));
-    const w=this.workflows.discuss(departmentId,text,!question);
+    const w=this.workflows.discuss(departmentId,text,!question,requestId);
     if (question && isAskUserPayload(question.payload)) this.respondQuestion(question.id,{[question.payload.question]:text});
     return w;
   }
-  workflowStart(departmentId: string, brief?: string): Workflow { return this.workflows.start(departmentId,brief); }
+  workflowStart(departmentId: string, brief?: string, requestId?:string): Workflow { return this.workflows.start(departmentId,brief,requestId); }
   workflowResume(departmentId: string): Workflow { return this.workflows.resume(departmentId); }
   workflowCancel(departmentId: string): Workflow { return this.workflows.cancel(departmentId); }
   workflowComplete(departmentId: string): Workflow { return this.workflows.complete(departmentId); }
@@ -959,9 +976,23 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
   updateDepartment(params: UpdateDepartmentParams): Department {
     const department = this.store.getDepartment(params.departmentId);
     if (!department) throw notFound('department', params.departmentId);
-    if (params.approvalPolicy === undefined) return department;
+    if(params.approvalPolicy!==undefined && !isApprovalPolicy(params.approvalPolicy))throw invalidParams('unknown approvalPolicy: '+String(params.approvalPolicy));
+    if(params.cwd!==undefined && path.resolve(params.cwd)!==department.cwd) {
+      if(!fs.existsSync(params.cwd) || !fs.statSync(params.cwd).isDirectory())throw invalidParams('존재하는 프로젝트 폴더를 선택하세요.');
+      const members=this.store.snapshot().members.filter(m=>m.departmentId===department.id);
+      if(members.some(m=>!GONE.has(m.status) && m.status!=='suspended' || this.runtimes.get(m.id)?.session.alive))throw badState('작업 폴더를 변경하기 전에 부서의 모든 멤버를 퇴근시키세요.');
+      if(this.store.listTasks({departmentId:department.id}).some(t=>OPEN_TASKS.includes(t.status)))throw badState('미종료 작업을 정리한 뒤 작업 폴더를 변경하세요.');
+      const cwd=path.resolve(params.cwd);
+      this.store.transaction(()=>{
+        this.store.updateDepartment(department.id,{cwd});
+        for(const team of this.store.snapshot().teams.filter(t=>t.departmentId===department.id))this.store.updateTeam(team.id,{cwd});
+        for(const member of members)this.store.updateMember(member.id,{cwd});
+      });
+      this.emit('tree','department.update');
+    }
+    if (params.approvalPolicy === undefined) return this.store.getDepartment(department.id)!;
     if (!isApprovalPolicy(params.approvalPolicy)) throw invalidParams(`unknown approvalPolicy: ${String(params.approvalPolicy)}`);
-    if (params.approvalPolicy === department.approvalPolicy) return department;
+    if (params.approvalPolicy === department.approvalPolicy) return this.store.getDepartment(department.id)!;
     const updated = this.store.updateDepartment(department.id, { approvalPolicy: params.approvalPolicy })!;
     this.notice('info', `부서 "${updated.name}" 허가 방식: ${department.approvalPolicy} → ${updated.approvalPolicy}`);
     this.emit('tree', 'department.update');
@@ -1044,6 +1075,7 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
     const head = this.store.liveHead(department.id);
     if (!head) throw badState(`부서 ${department.name} 에 살아 있는 부장이 없습니다 — 팀은 부장이 만든다`);
     const engine = params.leadEngine ?? head.engine;
+    if(this.store.snapshot().teams.filter(t=>t.departmentId===department.id).length>=this.resourceLimits().maxTeamsPerDepartment)throw badState('부서의 팀 수 제한에 도달했습니다. 기존 팀을 정리하거나 환경 점검에서 제한을 조정하세요.');
     if (engine !== 'claude' && engine !== 'codex') throw invalidParams(`unknown engine: ${String(engine)}`);
     if (params.allowedEngines && !params.allowedEngines.includes(engine)) {
       throw invalidParams(`leadEngine ${engine} is not in allowedEngines`);
@@ -1239,6 +1271,16 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
 
   /** `hireChild` 만 부르는 "멤버 행 + 지시문 + 스폰". 이름·엔진·정원 검사도 여기서. */
   enginePolicy(): {allowedEngines: Engine[] | null} { return {allowedEngines:this.store.enginePolicy()}; }
+  resourceLimits(){return this.store.resourceLimits();}
+  private requireSessionCapacity(replacingId?:string):void {
+    if([...this.runtimes.values()].filter(rt=>rt.memberId!==replacingId && rt.session.alive).length>=this.resourceLimits().maxLiveSessions)throw badState('전체 AI 세션 수 제한에 도달했습니다. 멤버를 퇴근시키거나 환경 점검에서 제한을 조정하세요.');
+  }
+  setResourceLimits(value:Record<string,unknown>){
+    const {maxLiveSessions,maxTeamsPerDepartment}=value;
+    if(!Number.isInteger(maxLiveSessions) || Number(maxLiveSessions)<1 || Number(maxLiveSessions)>64 || !Number.isInteger(maxTeamsPerDepartment) || Number(maxTeamsPerDepartment)<1 || Number(maxTeamsPerDepartment)>32)throw invalidParams('전체 세션 제한은 1~64, 부서 팀 수 제한은 1~32의 정수로 지정하세요.');
+    this.store.setResourceLimits({maxLiveSessions:Number(maxLiveSessions),maxTeamsPerDepartment:Number(maxTeamsPerDepartment)});
+    return this.resourceLimits();
+  }
   setEnginePolicy(value: unknown): {allowedEngines: Engine[] | null} {
     if (value !== null && (!Array.isArray(value) || !value.length || value.some(e=>e!=='claude' && e!=='codex'))) throw invalidParams('사용 엔진은 Claude, Codex 중 하나 이상 선택하세요.');
     this.store.setEnginePolicy(value === null ? null : [...new Set(value)] as Engine[]);
@@ -1262,6 +1304,7 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
     instructions?: string;
   }): Member {
     const { department, team } = input;
+    this.requireSessionCapacity();
     this.requireEngine(input.engine, department.id);
     if (input.engine !== 'claude' && input.engine !== 'codex') throw invalidParams(`unknown engine: ${String(input.engine)}`);
     if (team && !team.allowedEngines.includes(input.engine)) throw invalidParams(`engine ${input.engine} not allowed in team ${team.name}`);
@@ -1351,6 +1394,8 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
     this.ensureStarted();
     const member = this.member(memberId);
     this.requireEngine(member.engine, member.departmentId);
+    ensureProjectDataDir(member.cwd);
+    this.requireSessionCapacity(member.id);
     const rt = this.runtimes.get(memberId);
     if (rt?.session.alive) {
       rt.exitMode = 'restart';
@@ -1375,6 +1420,7 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
    */
   instruct(memberId: string, text: string, opts: InstructOptions = {}): number {
     const member = this.member(memberId);
+    assertProjectFolder(member.cwd);
     this.requireEngine(member.engine, member.departmentId);
     const phase=this.workflows.current(member.departmentId)?.phase;
     if (phase && !['executing','completed','cancelled'].includes(phase) && !opts.workflow && !opts.force) throw badState('진행 중인 작업 흐름에서 부장과 대화하거나 회의를 먼저 마치세요.');
@@ -1803,6 +1849,7 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
     const text = task.trim();
     if (!text) throw invalidParams('task 가 비었습니다');
     const target = this.requireChild(leader, toMemberId, '위임');
+    assertProjectFolder(target.cwd);
     this.requireEngine(target.engine, target.departmentId);
 
     const row = this.store.createTask({
@@ -2028,6 +2075,10 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
 
   /** 입력 큐에 task 를 넣고 inFlight 에 등록. 사용자 지시는 `instruct`, 위임은 `system` 항목이다. */
   private enqueueTask(rt: MemberRuntime, task: Task): void {
+    if(this.deferredWorkflowInputs) {
+      this.deferredWorkflowInputs.push(()=>this.enqueueTask(rt,task));
+      return;
+    }
     this.inFlight.add(task.id);
     const fromUser = task.fromMember === USER_ACTOR;
     const from = fromUser ? undefined : this.store.getMember(task.fromMember);
@@ -2107,6 +2158,7 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
   /** CLI 스폰 + ScreenModel + InputQueue. 이전 런타임(죽은 세션의 화면)은 버린다. */
   private spawnMember(member: Member, resume: boolean): MemberRuntime {
     this.requireEngine(member.engine, member.departmentId);
+    this.requireSessionCapacity(member.id);
     const old = this.runtimes.get(member.id);
     if (old?.session.alive) throw badState(`member ${member.id} already has a live session`);
     const attached = old?.attached ?? new Set<string>();
@@ -2161,7 +2213,7 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
       this.store.updateMember(member.id, { childPid: session.pid, status: 'starting' });
       this.emitStatus(member.id, 'starting');
       // Codex 는 SessionStart 가 첫 프롬프트 때 오므로(T20 실측) 화면으로 부팅 완료를 판정한다.
-      if (member.engine === 'codex') this.watchBootReady(rt);
+      this.watchBootReady(rt);
       // 턴 종료 hook 없이 프롬프트로 돌아오는 화면(T23 함정 1)의 idle 폴백. 엔진 공통, 세션 내내.
       this.watchScreenIdle(rt);
       return rt;
@@ -2197,8 +2249,17 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
       const member = this.store.getMember(rt.memberId);
       if (!member || !rt.session.alive || member.status !== 'starting') return stop();
       if (Date.now() > deadline) {
-        this.notice('warn', `${member.name}: CLI 가 준비 화면에 도달하지 못했습니다(터미널 탭을 확인하세요)`);
-        return stop();
+        stop();
+        const summary=`${member.name}: CLI 준비 시간이 초과됐습니다. 설치·로그인과 터미널 화면을 확인한 뒤 재고용하세요.`;
+        rt.resumeFallback=undefined;
+        rt.exitMode='bootFailure';
+        rt.queue.stop();rt.queue.clear();
+        this.settle(member.id,'error');
+        this.store.updateMember(member.id,{childPid:null});
+        this.appendEvent(member,'error',{summary});this.setStatus(member.id,'error');
+        this.notice('error',summary);
+        void this.pty.kill(member.id,{graceful:false}).catch(err=>this.notice('error','CLI 종료 실패: '+errMsg(err)));
+        return;
       }
       if (rt.screen.detectDialog().kind !== 'none' || !rt.screen.promptReady()) return;
       this.setStatus(member.id, 'idle');
@@ -2590,6 +2651,11 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
     this.disposeMcp(memberId);
     const mode = rt?.exitMode;
     if (mode === 'shutdown') return;
+    if (mode === 'bootFailure') {
+      this.store.updateMember(memberId,{childPid:null});
+      this.setStatus(memberId,'error');
+      return;
+    }
     if (rt && !mode && this.tryResumeFallback(rt, info)) return;
     this.store.updateMember(memberId, { childPid: null });
     if (mode === 'clockOut' || mode === 'restart') {

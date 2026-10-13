@@ -36,6 +36,40 @@ function setup() {
   return {store,d,head,leads,expert,sent,host,coord,begin,round,plan};
 }
 
+test('failed discussion delivery rolls back, and a successful request ID is never sent twice',t=> {
+  const f=setup();t.after(()=>f.store.close());
+  const send=f.host.send;let changes=0;
+  f.host.changed=()=>{changes++;};
+  f.host.send=()=>{throw new Error('injected send failure');};
+  assert.throws(()=>f.coord.discuss(f.d.id,'request',true,'retry-1'),/injected/);
+  assert.equal(f.coord.current(f.d.id),undefined);assert.equal(changes,0);
+  f.host.send=send;
+  f.coord.discuss(f.d.id,'request',true,'retry-1');
+  f.coord.discuss(f.d.id,'request',true,'retry-1');
+  assert.equal(f.sent.length,1);assert.equal(f.coord.current(f.d.id)?.messages.length,1);
+  assert.throws(()=>f.coord.discuss(f.d.id,'different',true,'retry-1'),/다른 내용/);
+});
+
+test('partial task creation rolls back meeting and task; retry succeeds exactly once',t=> {
+  const f=setup();t.after(()=>f.store.close());f.coord.discuss(f.d.id,'request');
+  const start=f.host.startTask;
+  f.host.startTask=(id,text)=>{start(id,text);throw new Error('injected start failure');};
+  assert.throws(()=>f.coord.start(f.d.id,undefined,'start-1'),/injected/);
+  assert.equal(f.coord.current(f.d.id)?.phase,'clarifying');assert.equal(f.store.listTasks().length,0);
+  f.host.startTask=start;
+  const first=f.coord.start(f.d.id,undefined,'start-1');
+  const retry=f.coord.start(f.d.id,undefined,'start-1');
+  assert.equal(first.rootTaskId,retry.rootTaskId);assert.equal(f.store.listTasks().length,1);
+});
+
+test('workflow save failure after task creation rolls back both records',t=> {
+  const f=setup();t.after(()=>f.store.close());f.coord.discuss(f.d.id,'request');
+  const save=f.store.saveWorkflow.bind(f.store);let count=0;
+  f.store.saveWorkflow=w=>{if(++count===2)throw new Error('injected disk failure');save(w);};
+  assert.throws(()=>f.coord.start(f.d.id),/injected disk/);
+  assert.equal(f.store.listTasks().length,0);assert.equal(f.coord.current(f.d.id)?.phase,'clarifying');
+});
+
 test('two-round meeting, expert participation, dependent work, final report and user review',t=> {
   const f=setup(); t.after(()=>f.store.close());
   const w=f.begin();
