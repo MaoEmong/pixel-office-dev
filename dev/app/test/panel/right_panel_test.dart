@@ -4,7 +4,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:pixel_office/model/models.dart';
 import 'package:pixel_office/panel/right_panel.dart';
-import 'package:pixel_office/panel/terminal_cache.dart';
 import 'package:xterm/xterm.dart';
 
 import 'panel_harness.dart';

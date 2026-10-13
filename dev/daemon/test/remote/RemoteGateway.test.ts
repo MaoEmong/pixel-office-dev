@@ -15,6 +15,10 @@ test('gateway approval, challenge replay, origin boundary, RPC filtering, duplic
  const url=`ws://127.0.0.1:${(upstream.address() as any).port}`;
  const make=()=>new RemoteGateway({port:0,dataDir:dir,upstreamUrl:()=>url,token:()=> 'master-secret'});let gateway=make();await gateway.listen();
  const sockets:WebSocket[]=[];
+ gateway.localHandlers()['remote.configure']({publicUrl:'https://office.example.ts.net'});
+ assert.equal(gateway.publicUrl,'https://office.example.ts.net');
+ gateway.localHandlers()['remote.configure']({publicUrl:''});assert.equal(gateway.publicUrl,gateway.localUrl);
+ assert.equal(gateway.registry.getMeta('publicUrl'),'');
  t.after(async()=>{for(const s of sockets)s.terminate();await gateway.close();for(const s of upstream.clients)s.terminate();await new Promise<void>(r=>upstream.close(()=>r()));fs.rmSync(dir,{recursive:true,force:true});});
  const {publicKey,privateKey}=generateKeyPairSync('ec',{namedCurve:'prime256v1'}),spki=publicKey.export({type:'spki',format:'der'}).toString('base64');
  const proof=(m:string)=>sign('sha256',Buffer.from(m),{key:privateKey,dsaEncoding:'ieee-p1363'}).toString('base64');

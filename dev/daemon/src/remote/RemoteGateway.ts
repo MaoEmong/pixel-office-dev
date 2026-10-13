@@ -156,6 +156,7 @@ export class RemoteGateway {
   localHandlers(){return {
     'remote.status':()=>({localUrl:this.localUrl,publicUrl:this.publicUrl,workstationId:this.registry.workstationId,devices:this.registry.list().map(({publicKey,...d})=>d)}),
     'remote.configure':(p:Record<string,unknown>)=>{
+      if(p.publicUrl===''){this.registry.setMeta('publicUrl','');return {publicUrl:this.localUrl};}
       const url=new URL(String(p.publicUrl));
       if(url.protocol!=='https:' || url.username || url.password || url.search || url.hash || url.pathname!=='/')throw new Error('외부 접속 주소는 HTTPS 주소여야 합니다.');
       this.registry.setMeta('publicUrl',url.origin);return {publicUrl:url.origin};

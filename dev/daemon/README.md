@@ -449,8 +449,9 @@ PC 앱의 상단 메뉴 → 기기 연결·원격 조작에서 5분 유효 QR/�
 원격 브라우저 요청의 이름·지문을 확인해 승인한다. 계정은 만들지 않는다.
 기기 공개키 등록은 PC remote-devices.db에, non-extractable 개인키는 해당 브라우저
 IndexedDB에 저장된다. 재시작·새로고침 후 등록을 재사용하고 해제된 키는 다시 접속할 수 없다.
-원격 화면 주소는 기본 http://127.0.0.1:7423. 외부 공개는 Cloudflare Tunnel과 HTTPS 도메인을 연결한 뒤
-PC 화면에서 외부 주소를 설정한다. 도메인 연결은 이번 구현에서 보류했다.
+원격 화면 주소는 기본 http://127.0.0.1:7423. 로컬 사용에는 외부 서비스 설정이 필요 없다.
+원하는 사용자만 Tailscale Serve/Funnel의 HTTPS 주소를 설정한다. 개발자 도메인·자체 중계 서버는 없다.
+설정 절차: [선택 원격 접속](../../docs/원격접속.md). 빈 remote.configure publicUrl은 로컬로 복귀한다.
 
 PIXEL_REMOTE_PORT로 gateway 포트를 바꾼다. 기존 wsPort가 테스트용 임시 포트이면
 remotePort도 0(빈 포트)로 잡아 데몬 통합 테스트끼리 충돌하지 않는다.

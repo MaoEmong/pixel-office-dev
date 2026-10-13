@@ -136,30 +136,71 @@ class _DeviceDialogState extends ConsumerState<DeviceDialog> {
                         'https://',
                       ))
                         const Text(
-                          '현재는 PC의 로컬 테스트 주소입니다. 외부 접속은 Cloudflare·도메인 연결 후 사용할 수 있습니다.',
+                          '기본은 이 PC에서 사용하는 로컬 모드입니다. 모바일·다른 PC 연결은 아래 선택 설정을 사용하세요.',
                         ),
                       const SizedBox(height: 8),
-                      TextField(
-                        controller: _url,
-                        enabled: !_busy,
-                        decoration: const InputDecoration(
-                          labelText: '외부 HTTPS 주소 (도메인 연결 후 설정)',
-                          hintText: 'https://office.example.com',
-                          border: OutlineInputBorder(),
-                        ),
+                      ExpansionTile(
+                        title: const Text('외부 접속 설정 · 선택 (Tailscale)'),
+                        children: [
+                          const Text(
+                            '로컬 사용에는 설치·가입·도메인이 필요 없습니다. 외출 중 연결할 사용자만 Tailscale을 설정하세요. 앱이 자동으로 설치하거나 연결을 공개하지 않습니다.',
+                          ),
+                          const SizedBox(height: 8),
+                          const Text(
+                            '1. 작업 PC와 접속할 기기에 Tailscale을 설치하고 같은 네트워크에 연결합니다.\n2. 작업 PC에서 아래 명령으로 HTTPS 주소를 만듭니다.\n3. 표시된 https://…ts.net 주소를 입력·저장한 뒤 QR로 기기를 등록합니다.',
+                          ),
+                          SelectableText(
+                            'tailscale serve --bg ${_status?["localUrl"] ?? "http://127.0.0.1:7423"}',
+                          ),
+                          const Text(
+                            'Serve는 Tailscale 네트워크 안에서만 접속됩니다. 일반 브라우저만으로 접속하려면 Serve 대신 tailscale funnel --bg <위 로컬 주소>를 사용하세요. Funnel은 인터넷에 접속 경로를 공개하지만 작업 조작에는 여전히 PC의 기기 승인이 필요합니다.',
+                          ),
+                          const SizedBox(height: 8),
+                          TextField(
+                            controller: _url,
+                            enabled: !_busy,
+                            decoration: const InputDecoration(
+                              labelText: '선택 연결의 HTTPS 주소',
+                              hintText: 'https://my-pc.example.ts.net',
+                              border: OutlineInputBorder(),
+                            ),
+                          ),
+                          const SizedBox(height: 8),
+                          Wrap(
+                            spacing: 8,
+                            children: [
+                              OutlinedButton(
+                                onPressed: _busy
+                                    ? null
+                                    : () => _run('remote.configure', {
+                                        'publicUrl': _url.text.trim(),
+                                      }),
+                                child: const Text('접속 주소 저장'),
+                              ),
+                              TextButton(
+                                onPressed: _busy
+                                    ? null
+                                    : () {
+                                        _url.clear();
+                                        unawaited(
+                                          _run('remote.configure', {
+                                            'publicUrl': '',
+                                          }),
+                                        );
+                                      },
+                                child: const Text('로컬 주소로 돌아가기'),
+                              ),
+                            ],
+                          ),
+                          const Text(
+                            '로컬 주소로 돌아가도 Tailscale 서비스는 종료되지 않습니다. 종료는 Tailscale에서 별도로 해 주세요. 접속 주소가 바뀌면 브라우저 기기 등록이 필요합니다.',
+                          ),
+                        ],
                       ),
                       const SizedBox(height: 8),
                       Wrap(
                         spacing: 8,
                         children: [
-                          OutlinedButton(
-                            onPressed: _busy
-                                ? null
-                                : () => _run('remote.configure', {
-                                    'publicUrl': _url.text.trim(),
-                                  }),
-                            child: const Text('접속 주소 저장'),
-                          ),
                           FilledButton.icon(
                             onPressed: _busy || _status == null
                                 ? null
