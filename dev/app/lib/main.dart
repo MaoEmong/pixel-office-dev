@@ -47,7 +47,33 @@ export 'topbar/disconnected_overlay.dart' show DisconnectedOverlay;
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
-  final lock = await AppLock.acquire();
+  AppLock? lock;
+  try {
+    lock = await AppLock.acquire();
+  } catch (e) {
+    runApp(
+      MaterialApp(
+        theme: pixelOfficeTheme(),
+        home: Scaffold(
+          body: Center(
+            child: Padding(
+              padding: const EdgeInsets.all(24),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Text('앱 데이터 폴더에 잠금을 저장하지 못했습니다.'),
+                  const Text('폴더 쓰기 권한과 남은 디스크 공간을 확인한 뒤 다시 시도하세요.'),
+                  SelectableText(e.toString()),
+                  FilledButton(onPressed: () => unawaited(main()), child: const Text('다시 시도')),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+    return;
+  }
   if (lock == null) {
     runApp(AlreadyRunningApp(onClose: () => exit(0), theme: pixelOfficeTheme()));
     return;
@@ -57,23 +83,27 @@ Future<void> main() async {
   final keepDaemon = await readKeepDaemon(prefs);
   final daemonDir = await findDaemonDir();
   final supervisor = DaemonSupervisor(
-          spawn: (env) async {
-            if(daemonDir==null)throw const DaemonSetupException('데몬 소스 폴더를 찾지 못했습니다. 실행 파일만 옮기지 말고 저장소 전체와 dev/daemon 폴더를 함께 두세요.');
-            return spawnDaemon(daemonDir: daemonDir, extraEnv: env);
-          },
-          probe: daemonReachable,
-          // 계속 일하기면 부모 pid 를 안 넘긴다 — 데몬이 앱을 지켜보지 않는다(§2·§3).
-          parentPid: keepDaemon ? null : selfPid,
-        );
+    spawn: (env) async {
+      if (daemonDir == null) {
+        throw const DaemonSetupException('데몬 소스 폴더를 찾지 못했습니다. 실행 파일만 옮기지 말고 저장소 전체와 dev/daemon 폴더를 함께 두세요.');
+      }
+      return spawnDaemon(daemonDir: daemonDir, extraEnv: env);
+    },
+    probe: daemonReachable,
+    // 계속 일하기면 부모 pid 를 안 넘긴다 — 데몬이 앱을 지켜보지 않는다(§2·§3).
+    parentPid: keepDaemon ? null : selfPid,
+  );
   unawaited(supervisor.start());
 
-  runApp(ProviderScope(
-    overrides: [
-      daemonSupervisorProvider.overrideWithValue(supervisor),
-      if (!keepDaemon) helloParentPidProvider.overrideWithValue(selfPid),
-    ],
-    child: PixelOfficeApp(appLock: lock),
-  ));
+  runApp(
+    ProviderScope(
+      overrides: [
+        daemonSupervisorProvider.overrideWithValue(supervisor),
+        if (!keepDaemon) helloParentPidProvider.overrideWithValue(selfPid),
+      ],
+      child: PixelOfficeApp(appLock: lock),
+    ),
+  );
 }
 
 // 선택 멤버 provider(`selectedMemberIdProvider`)는 T24b 에서 `lib/state/selection.dart` 로 옮겼다 —
@@ -120,15 +150,12 @@ class PixelOfficeApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => MaterialApp(
-        title: '픽셀 오피스',
-        debugShowCheckedModeBanner: false,
-        theme: pixelOfficeTheme(),
-        // 창 닫기를 가로채 데몬·세션을 같이 끈다(§2). 감시자가 없으면 아무것도 하지 않는다.
-        home: LifecycleGate(
-          onExited: (_) async => appLock?.release(),
-          child: const OfficeShell(),
-        ),
-      );
+    title: '픽셀 오피스',
+    debugShowCheckedModeBanner: false,
+    theme: pixelOfficeTheme(),
+    // 창 닫기를 가로채 데몬·세션을 같이 끈다(§2). 감시자가 없으면 아무것도 하지 않는다.
+    home: LifecycleGate(onExited: (_) async => appLock?.release(), child: const OfficeShell()),
+  );
 }
 
 /// 전체 레이아웃. 오버레이는 상단 바 아래 전부를 덮는다.
@@ -146,6 +173,24 @@ class OfficeShell extends ConsumerWidget {
         child: Column(
           children: [
             TopBar(selectedMemberId: selected),
+            if (ref.watch(prefsSaveFailureProvider) case final String message)
+              MaterialBanner(
+                content: Text('$message\n설정이 저장되지 않았습니다. 계속 일하기 설정은 이전 값으로 유지됩니다.'),
+                actions: [
+                  TextButton(
+                    onPressed: () async {
+                      final store = ref.read(uiPrefsStoreProvider);
+                      if (store is ReportingUiPrefsStore) {
+                        await store.retry();
+                        if (store.lastWriteSucceeded) {
+                          await ref.read(keepDaemonProvider.notifier).reload();
+                        }
+                      }
+                    },
+                    child: const Text('다시 저장'),
+                  ),
+                ],
+              ),
             Expanded(
               child: Stack(
                 children: [
@@ -186,6 +231,8 @@ class OfficeShell extends ConsumerWidget {
 /// `OfficeView.onSelectPending` 이 이것을 부른다(T40c 배선).
 void selectPendingFromOffice(WidgetRef ref, String pendingId) {
   final pending = ref.read(openPendingProvider)[pendingId];
-  if (pending != null) ref.read(selectedMemberIdProvider.notifier).select(pending.memberId);
+  if (pending != null) {
+    ref.read(selectedMemberIdProvider.notifier).select(pending.memberId);
+  }
   ref.read(inboxFocusProvider.notifier).focus(pendingId);
 }

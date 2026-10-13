@@ -22,7 +22,11 @@ void main() {
   Future<bool> neverAlive(int pid, {String? imageContains}) async => false;
 
   test('데이터 폴더 아래 app.lock', () {
-    expect(AppLock.defaultPath({'PIXEL_DATA_DIR': r'C:\data'}), r'C:\data' '${Platform.pathSeparator}app.lock');
+    expect(
+      AppLock.defaultPath({'PIXEL_DATA_DIR': r'C:\data'}),
+      r'C:\data'
+      '${Platform.pathSeparator}app.lock',
+    );
     expect(AppLock.defaultPath(const {}), isNull);
   });
 
@@ -88,11 +92,15 @@ void main() {
     expect(File(lockPath).existsSync(), isFalse);
   });
 
-  test('데이터 폴더가 없는 환경에서는 잠그지 않고 그냥 켠다', () async {
-    final lock = await AppLock.acquire(env: const {}, isAlive: alwaysAlive);
-    expect(lock, isNotNull);
-    expect(lock!.path, isEmpty);
-    await lock.release(); // 아무 일도 없어야 한다
+  test('데이터 폴더가 없으면 잠금 없이 실행하지 않는다', () async {
+    await expectLater(AppLock.acquire(env: const {}, isAlive: alwaysAlive), throwsA(isA<FileSystemException>()));
+  });
+  test('잠금 저장 실패를 호출자에게 알린다', () async {
+    final blocked = File('${tmp.path}/blocked')..writeAsStringSync('file');
+    await expectLater(
+      AppLock.acquire(path: '${blocked.path}/app.lock', isAlive: neverAlive),
+      throwsA(isA<FileSystemException>()),
+    );
   });
 
   testWidgets('두 번째 실행 창: 문구 + 이유 한 줄 + 닫기', (tester) async {

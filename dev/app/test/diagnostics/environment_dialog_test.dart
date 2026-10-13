@@ -5,6 +5,34 @@ import 'package:pixel_office/diagnostics/environment_dialog.dart';
 import '../command/fake_rpc_client.dart';
 
 void main() {
+  testWidgets('engine selection saves explicit policy', (tester) async {
+    final fake = FakeRpcClient();
+    List<String>? allowed;
+    fake.responder = (method, params) {
+      if (method == 'engines.set') {
+        allowed = (params['allowedEngines'] as List?)?.cast<String>();
+      }
+      return {'allowedEngines': allowed, 'engines': []};
+    };
+    addTearDown(() async {
+      await tester.pumpWidget(const SizedBox());
+      await fake.close();
+    });
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: fake.overrides,
+        child: const MaterialApp(home: Scaffold(body: EnvironmentDialog())),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('부장과 같은 엔진만 사용 (기본)'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Claude Code만 사용').last);
+    await tester.pumpAndSettle();
+    expect(allowed, ['claude']);
+    expect(fake.calls.where((c) => c.$1 == 'engines.set').length, 1);
+    expect(tester.takeException(), isNull);
+  });
   testWidgets(
     'repair instructions remain visible and recheck reads repaired authentication',
     (tester) async {

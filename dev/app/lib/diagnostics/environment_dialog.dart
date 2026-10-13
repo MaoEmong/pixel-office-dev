@@ -13,6 +13,8 @@ class _EnvironmentDialogState extends ConsumerState<EnvironmentDialog> {
   bool busy = false;
   Map<String, dynamic>? result;
   String? error;
+  List<String>? allowedEngines;
+  bool policyLoaded = false;
   @override
   void initState() {
     super.initState();
@@ -25,11 +27,38 @@ class _EnvironmentDialogState extends ConsumerState<EnvironmentDialog> {
       error = null;
     });
     try {
+      if (!policyLoaded) {
+        final policy = await ref.read(rpcClientProvider).call('engines.get');
+        allowedEngines = (policy['allowedEngines'] as List?)?.cast<String>();
+        policyLoaded = true;
+      }
       final value = await ref.read(rpcClientProvider).call(
         'environment.check',
         {'memberId': ?memberId},
       );
       if (mounted) setState(() => result = value);
+    } catch (e) {
+      if (mounted) setState(() => error = e.toString());
+    } finally {
+      if (mounted) setState(() => busy = false);
+    }
+  }
+
+  Future<void> savePolicy(List<String>? engines) async {
+    setState(() {
+      busy = true;
+      error = null;
+    });
+    try {
+      final value = await ref.read(rpcClientProvider).call('engines.set', {
+        'allowedEngines': engines,
+      });
+      if (mounted) {
+        setState(
+          () => allowedEngines = (value['allowedEngines'] as List?)
+              ?.cast<String>(),
+        );
+      }
     } catch (e) {
       if (mounted) setState(() => error = e.toString());
     } finally {
@@ -50,6 +79,42 @@ class _EnvironmentDialogState extends ConsumerState<EnvironmentDialog> {
             const Text(
               '사용할 엔진만 설치·로그인하면 됩니다. 점검은 CLI의 상태 명령을 읽으며 자동 설치나 로그인 변경을 하지 않습니다.',
             ),
+            const SizedBox(height: 12),
+            const Text('사용 엔진 · 결제 여부는 자동으로 판단하지 않습니다.'),
+            if (policyLoaded)
+              DropdownButton<String>(
+                value: allowedEngines == null
+                    ? 'head'
+                    : allowedEngines!.length == 2
+                    ? 'both'
+                    : allowedEngines!.first,
+                isExpanded: true,
+                items: const [
+                  DropdownMenuItem(
+                    value: 'head',
+                    child: Text('부장과 같은 엔진만 사용 (기본)'),
+                  ),
+                  DropdownMenuItem(
+                    value: 'claude',
+                    child: Text('Claude Code만 사용'),
+                  ),
+                  DropdownMenuItem(value: 'codex', child: Text('Codex만 사용')),
+                  DropdownMenuItem(
+                    value: 'both',
+                    child: Text('Claude Code + Codex 사용'),
+                  ),
+                ],
+                onChanged: busy
+                    ? null
+                    : (v) => savePolicy(
+                        v == 'head'
+                            ? null
+                            : v == 'both'
+                            ? ['claude', 'codex']
+                            : [v!],
+                      ),
+              ),
+            const Text('생성·재고용·복구에 적용됩니다. 이미 실행 중인 작업은 중단하지 않습니다.'),
             if (busy)
               const Padding(
                 padding: EdgeInsets.all(12),

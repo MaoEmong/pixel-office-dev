@@ -185,6 +185,7 @@ const COLS_RANGE = [20, 500] as const;
 const ROWS_RANGE = [5, 300] as const;
 
 export interface OfficeOptions {
+  beforeHire?: (engine: Engine) => Promise<void>;
   /** config.ts 기본값 위에 덮어쓴다(테스트 격리·임시 포트). */
   config?: Partial<Config>;
   /** 생략 시 `${dataDir}/pixel-office.db`. 테스트는 `new Store(':memory:')`. */
@@ -323,6 +324,7 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
   readonly usageProbe: UsageProbe;
 
   readonly store: Store;
+  private readonly beforeHire: (engine: Engine) => Promise<void>;
   private readonly workflows: WorkflowCoordinator;
   readonly pty: PtyManagerLike;
   readonly receiver: HookReceiverLike;
@@ -378,6 +380,7 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
 
   constructor(opts: OfficeOptions = {}) {
     super();
+    this.beforeHire = opts.beforeHire ?? (async () => {});
     this.cfg = { ...defaultConfig, ...opts.config };
     this.fallbackWindowMs = opts.recovery?.fallbackWindowMs ?? RESUME_FALLBACK_WINDOW_MS;
     this.orphanOps = opts.recovery?.orphanOps ?? defaultOrphanOps;
@@ -405,7 +408,7 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
       member: (id) => this.store.getMember(id),
       busy: (id) => this.store.listTasks({departmentId:id}).some(t=>['queued','assigned'].includes(t.status))
         || this.store.snapshot().pending.some(p=>this.store.getMember(p.memberId)?.departmentId===id),
-      send: (id,text) => this.liveRuntime(this.member(id)).queue.enqueue({kind:'system',text}),
+      send: (id,text) => {const member=this.member(id);this.requireEngine(member.engine,member.departmentId);this.liveRuntime(member).queue.enqueue({kind:'system',text});},
       startTask: (id,text) => this.instruct(id,text,{workflow:true}),
       delegate: (id,lead,text) => this.teamDelegate(id,lead,text).task.id,
       task: (id) => this.store.getTask(id),
@@ -473,7 +476,11 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
             const parentId = (pending.payload as { to?: string }).to ?? '';
             return { questionId: pending.id, parentName: this.store.getMember(parentId)?.name ?? '상사' };
           },
-          createTeam: (memberId, input) => {
+          createTeam: async (memberId, input) => {
+            const parent = this.member(memberId);
+            const engine = input.engine ?? parent.engine;
+            this.requireEngine(engine, parent.departmentId);
+            await this.beforeHire(engine);
             const r = this.teamCreateTeam(memberId, { ...input, engine: input.engine });
             return { teamId: r.team.id, teamName: r.team.name, leadName: r.lead.name, leadMemberId: r.lead.id };
           },
@@ -485,7 +492,13 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
             const r = this.teamReply(memberId, { toMember: input.to_member, text: input.text });
             return { name: r.to.name, questionId: r.questionId };
           },
-          hire: (memberId, input) => {
+          hire: async (memberId, input) => {
+            const parent = this.member(memberId);
+            const team = this.store.getTeam(parent.teamId ?? '');
+            if (!team) throw notFound('team', parent.teamId ?? '');
+            const engine = this.pickHireEngine(team, parent, input.engine);
+            this.requireEngine(engine, parent.departmentId);
+            await this.beforeHire(engine);
             const m = this.teamHire(memberId, input);
             return { memberId: m.id, name: m.name, engine: m.engine };
           },
@@ -1225,6 +1238,19 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
   }
 
   /** `hireChild` 만 부르는 "멤버 행 + 지시문 + 스폰". 이름·엔진·정원 검사도 여기서. */
+  enginePolicy(): {allowedEngines: Engine[] | null} { return {allowedEngines:this.store.enginePolicy()}; }
+  setEnginePolicy(value: unknown): {allowedEngines: Engine[] | null} {
+    if (value !== null && (!Array.isArray(value) || !value.length || value.some(e=>e!=='claude' && e!=='codex'))) throw invalidParams('사용 엔진은 Claude, Codex 중 하나 이상 선택하세요.');
+    this.store.setEnginePolicy(value === null ? null : [...new Set(value)] as Engine[]);
+    return this.enginePolicy();
+  }
+  private allowedEngines(departmentId: string, fallback: Engine): Engine[] {
+    return this.store.enginePolicy() ?? [this.store.snapshot().members.slice().reverse().find(m=>m.departmentId===departmentId && m.rank==='head')?.engine ?? fallback];
+  }
+  requireEngine(engine: Engine, departmentId: string): void {
+    if (!this.allowedEngines(departmentId, engine).includes(engine)) throw badState('사용 설정에서 '+engine+' 엔진이 허용되지 않았습니다. 환경 점검의 사용 엔진 설정을 확인하세요.');
+  }
+
   private spawnNewMember(input: {
     department: Department;
     team?: Team;
@@ -1236,6 +1262,7 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
     instructions?: string;
   }): Member {
     const { department, team } = input;
+    this.requireEngine(input.engine, department.id);
     if (input.engine !== 'claude' && input.engine !== 'codex') throw invalidParams(`unknown engine: ${String(input.engine)}`);
     if (team && !team.allowedEngines.includes(input.engine)) throw invalidParams(`engine ${input.engine} not allowed in team ${team.name}`);
     if (!input.name.trim()) throw invalidParams('name is empty');
@@ -1255,8 +1282,17 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
       hiredBy: input.hiredBy,
       status: 'starting',
     });
-    if (input.instructions !== undefined) this.setInstructions(member.id, input.instructions);
-    this.spawnMember(this.store.getMember(member.id)!, false);
+    try {
+      if (input.instructions !== undefined) this.setInstructions(member.id, input.instructions);
+      this.spawnMember(this.store.getMember(member.id)!, false);
+    } catch (err) {
+      this.disposeRuntime(member.id);
+      this.store.abortTasksFor(member.id);
+      this.store.updateMember(member.id, {childPid:null});
+      this.setStatus(member.id, 'error');
+      this.appendEvent(member, 'error', {summary:'출근 실패: '+errMsg(err)});
+      throw err;
+    }
     return this.store.getMember(member.id)!;
   }
 
@@ -1313,7 +1349,8 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
   /** 지시문 즉시 반영용: 종료 → --resume 재스폰 → [RESUMED] 를 큐에. */
   async restart(memberId: string): Promise<Member> {
     this.ensureStarted();
-    this.member(memberId);
+    const member = this.member(memberId);
+    this.requireEngine(member.engine, member.departmentId);
     const rt = this.runtimes.get(memberId);
     if (rt?.session.alive) {
       rt.exitMode = 'restart';
@@ -1338,6 +1375,7 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
    */
   instruct(memberId: string, text: string, opts: InstructOptions = {}): number {
     const member = this.member(memberId);
+    this.requireEngine(member.engine, member.departmentId);
     const phase=this.workflows.current(member.departmentId)?.phase;
     if (phase && !['executing','completed','cancelled'].includes(phase) && !opts.workflow && !opts.force) throw badState('진행 중인 작업 흐름에서 부장과 대화하거나 회의를 먼저 마치세요.');
     const rt = this.liveRuntime(member);
@@ -1450,10 +1488,10 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
   /** 기본 템플릿이 쓰는 범위(팀이 있으면 팀, 부장은 부서). 부서 행이 없으면 undefined. */
   private templateScope(member: Member): TemplateScope | undefined {
     const team = member.teamId ? this.store.getTeam(member.teamId) : undefined;
-    if (team) return { name: team.name, cwd: team.cwd, maxMembers: team.maxMembers, allowedEngines: team.allowedEngines };
+    if (team) return { name: team.name, cwd: team.cwd, maxMembers: team.maxMembers, allowedEngines: team.allowedEngines.filter(e=>this.allowedEngines(member.departmentId, member.engine).includes(e)) };
     const department = this.store.getDepartment(member.departmentId);
     if (!department) return undefined;
-    return { name: department.name, cwd: department.cwd, maxMembers: DEFAULT_MAX_MEMBERS, allowedEngines: ['claude', 'codex'] };
+    return { name: department.name, cwd: department.cwd, maxMembers: DEFAULT_MAX_MEMBERS, allowedEngines: this.allowedEngines(member.departmentId, member.engine) };
   }
 
   /**
@@ -1765,6 +1803,7 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
     const text = task.trim();
     if (!text) throw invalidParams('task 가 비었습니다');
     const target = this.requireChild(leader, toMemberId, '위임');
+    this.requireEngine(target.engine, target.departmentId);
 
     const row = this.store.createTask({
       departmentId: leader.departmentId,
@@ -2067,6 +2106,7 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
 
   /** CLI 스폰 + ScreenModel + InputQueue. 이전 런타임(죽은 세션의 화면)은 버린다. */
   private spawnMember(member: Member, resume: boolean): MemberRuntime {
+    this.requireEngine(member.engine, member.departmentId);
     const old = this.runtimes.get(member.id);
     if (old?.session.alive) throw badState(`member ${member.id} already has a live session`);
     const attached = old?.attached ?? new Set<string>();
@@ -2094,36 +2134,42 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
       mcpConfigPath: member.engine === 'claude' ? this.writeMcpConfig(member) : undefined,
       mcpUrl: member.engine === 'codex' ? this.mcpUrl(member) : undefined,
     });
-    const screen = new ScreenModel({ engine: member.engine, cols, rows });
-    const queue = new InputQueue({ session, screen, isIdle: () => this.isIdle(member.id) });
-    const rt: MemberRuntime = { memberId: member.id, session, screen, queue, attached, lastAttached };
-    this.runtimes.set(member.id, rt);
+    try {
+      const screen = new ScreenModel({ engine: member.engine, cols, rows });
+      const queue = new InputQueue({ session, screen, isIdle: () => this.isIdle(member.id) });
+      const rt: MemberRuntime = { memberId: member.id, session, screen, queue, attached, lastAttached };
+      this.runtimes.set(member.id, rt);
 
-    queue.on('flushed', (item) => {
-      // id 는 task 번호(instruct·위임 system) 또는 pending id(`[ANSWER q#…]`) — 숫자인 것만 task 다.
-      if ((item.kind !== 'instruct' && item.kind !== 'system') || !item.id) return;
-      const taskId = Number(item.id);
-      if (!Number.isInteger(taskId)) return;
-      this.inFlight.delete(taskId);
-      const task = this.store.getTask(taskId);
-      if (task?.status === 'queued') this.store.updateTask(task.id, { status: 'assigned' });
-    });
-    queue.on('dialogPassed', (kind) => this.notice('info', `${member.name}: passed first-run dialog (${kind})`));
-    // 통과할 수 없는 다이얼로그(CLI 자체 허가 프롬프트 등, D-26). InputQueue 가 kind 당 한 번만 내므로 알림도 한 번이다.
-    queue.on('dialogBlocked', (kind) => this.noticeDialogBlocked(member.id, kind));
-    // Enter 가 안 먹어 다시 보냈다(T42 — Codex resume 직후). 정보성: 큐는 스스로 회복한다.
-    queue.on('submitRetried', (_item, attempt) => this.notice('info', `${member.name}: 프롬프트가 안 들어가 Enter 를 다시 보냄 (${attempt})`));
-    // 재시도를 다 썼는데도 안 들어갔다 — 텍스트가 입력 상자에 남아 있다. 사용자가 터미널 탭에서 Enter 를 치면 된다.
-    queue.on('submitLost', () => this.notice('warn', `${member.name}: 지시가 입력 상자에 남아 제출되지 않았습니다 — 터미널 탭에서 Enter 를 쳐 주세요`));
-    queue.start();
+      queue.on('flushed', (item) => {
+        // id 는 task 번호(instruct·위임 system) 또는 pending id(`[ANSWER q#…]`) — 숫자인 것만 task 다.
+        if ((item.kind !== 'instruct' && item.kind !== 'system') || !item.id) return;
+        const taskId = Number(item.id);
+        if (!Number.isInteger(taskId)) return;
+        this.inFlight.delete(taskId);
+        const task = this.store.getTask(taskId);
+        if (task?.status === 'queued') this.store.updateTask(task.id, { status: 'assigned' });
+      });
+      queue.on('dialogPassed', (kind) => this.notice('info', `${member.name}: passed first-run dialog (${kind})`));
+      // 통과할 수 없는 다이얼로그(CLI 자체 허가 프롬프트 등, D-26). InputQueue 가 kind 당 한 번만 내므로 알림도 한 번이다.
+      queue.on('dialogBlocked', (kind) => this.noticeDialogBlocked(member.id, kind));
+      // Enter 가 안 먹어 다시 보냈다(T42 — Codex resume 직후). 정보성: 큐는 스스로 회복한다.
+      queue.on('submitRetried', (_item, attempt) => this.notice('info', `${member.name}: 프롬프트가 안 들어가 Enter 를 다시 보냄 (${attempt})`));
+      // 재시도를 다 썼는데도 안 들어갔다 — 텍스트가 입력 상자에 남아 있다. 사용자가 터미널 탭에서 Enter 를 치면 된다.
+      queue.on('submitLost', () => this.notice('warn', `${member.name}: 지시가 입력 상자에 남아 제출되지 않았습니다 — 터미널 탭에서 Enter 를 쳐 주세요`));
+      queue.start();
 
-    this.store.updateMember(member.id, { childPid: session.pid, status: 'starting' });
-    this.emitStatus(member.id, 'starting');
-    // Codex 는 SessionStart 가 첫 프롬프트 때 오므로(T20 실측) 화면으로 부팅 완료를 판정한다.
-    if (member.engine === 'codex') this.watchBootReady(rt);
-    // 턴 종료 hook 없이 프롬프트로 돌아오는 화면(T23 함정 1)의 idle 폴백. 엔진 공통, 세션 내내.
-    this.watchScreenIdle(rt);
-    return rt;
+      this.store.updateMember(member.id, { childPid: session.pid, status: 'starting' });
+      this.emitStatus(member.id, 'starting');
+      // Codex 는 SessionStart 가 첫 프롬프트 때 오므로(T20 실측) 화면으로 부팅 완료를 판정한다.
+      if (member.engine === 'codex') this.watchBootReady(rt);
+      // 턴 종료 hook 없이 프롬프트로 돌아오는 화면(T23 함정 1)의 idle 폴백. 엔진 공통, 세션 내내.
+      this.watchScreenIdle(rt);
+      return rt;
+    } catch (err) {
+      session.kill();
+      this.disposeRuntime(member.id);
+      throw err;
+    }
   }
 
   /** 자동 통과할 수 없는 다이얼로그가 떠 있다는 알림(D-26). 허가 프롬프트는 사용자가 카드나 터미널 탭에서 답해야 한다. */

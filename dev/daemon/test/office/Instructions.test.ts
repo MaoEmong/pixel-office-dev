@@ -38,6 +38,7 @@ describe('멤버 지시문 템플릿·주입 (T26b · T34)', () => {
   beforeEach(async () => {
     dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pixel-office-t26b-'));
     store = new Store(':memory:');
+    store.setEnginePolicy(['claude', 'codex']); // These fixtures intentionally exercise both engines.
     pty = new FakePty();
     receiver = new FakeReceiver();
     office = new Office({ config: { dataDir, hookPort: 0, wsPort: 0, mcpPort: 0 }, store, pty, receiver, version: 't26b' });

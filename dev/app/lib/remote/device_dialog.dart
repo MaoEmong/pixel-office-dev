@@ -115,6 +115,16 @@ class _DeviceDialogState extends ConsumerState<DeviceDialog> {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
+                      if (_status?['available'] == false) ...[
+                        SelectableText(
+                          _status?['message']?.toString() ?? '원격 연결 사용 불가',
+                        ),
+                        const Text('로컬 작업은 계속 사용할 수 있습니다.'),
+                        TextButton(
+                          onPressed: _busy ? null : () => _run('remote.retry'),
+                          child: const Text('원격 연결 다시 시작'),
+                        ),
+                      ],
                       if (_error != null)
                         Padding(
                           padding: const EdgeInsets.only(bottom: 12),
@@ -130,7 +140,9 @@ class _DeviceDialogState extends ConsumerState<DeviceDialog> {
                         style: TextStyle(fontWeight: FontWeight.bold),
                       ),
                       SelectableText(
-                        _status?['publicUrl']?.toString() ?? '불러오는 중',
+                        _status?['available'] == false
+                            ? '원격 연결 사용 불가'
+                            : _status?['publicUrl']?.toString() ?? '불러오는 중',
                       ),
                       if (!(_status?['publicUrl']?.toString() ?? '').startsWith(
                         'https://',
@@ -202,7 +214,10 @@ class _DeviceDialogState extends ConsumerState<DeviceDialog> {
                         spacing: 8,
                         children: [
                           FilledButton.icon(
-                            onPressed: _busy || _status == null
+                            onPressed:
+                                _busy ||
+                                    _status == null ||
+                                    _status?['available'] == false
                                 ? null
                                 : () => _run('remote.pair.create'),
                             icon: const Icon(Icons.qr_code),

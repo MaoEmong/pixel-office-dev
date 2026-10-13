@@ -145,11 +145,11 @@ export interface TeamToolsHost {
   /** ask_parent(팀장·팀원): pending(question) 등록 + 상사 큐에 `[QUESTION from …]`. */
   askParent(memberId: string, input: AskParentInput): { questionId: string; parentName: string };
   /** create_team(부장): 팀 + 팀장 출근. */
-  createTeam(memberId: string, input: CreateTeamToolInput): { teamId: string; teamName: string; leadName: string; leadMemberId: string };
+  createTeam(memberId: string, input: CreateTeamToolInput): { teamId: string; teamName: string; leadName: string; leadMemberId: string } | Promise<{ teamId: string; teamName: string; leadName: string; leadMemberId: string }>;
   /** dismiss_team(부장): 팀장·팀원 퇴근 + 팀 해산(프로세스 종료라 비동기). */
   dismissTeam(memberId: string, input: DismissTeamInput): Promise<{ teamName: string; dismissed: string[] }>;
   /** hire(팀장): 팀원을 출근시키고 그 멤버를 돌려준다. */
-  hire(memberId: string, input: HireInput): { memberId: string; name: string; engine: string };
+  hire(memberId: string, input: HireInput): { memberId: string; name: string; engine: string } | Promise<{ memberId: string; name: string; engine: string }>;
   /** dismiss(팀장): 직속 팀원을 퇴근시킨다(프로세스 종료라 비동기). */
   dismiss(memberId: string, input: DismissInput): Promise<{ memberId: string; name: string }>;
   /** delegate(부장·팀장): task 행을 만들고 대상이 유휴면 바로 배정(assigned), 아니면 queued. */
@@ -471,7 +471,7 @@ export class TeamToolsServer {
           const denied = gate('create_team');
           if (denied) return denied;
           try {
-            const r = this.host.createTeam(memberId, input);
+            const r = await this.host.createTeam(memberId, input);
             return ok(createTeamResultText(r.teamId, r.teamName, r.leadName, r.leadMemberId));
           } catch (err) {
             return fail('create_team', errText(err));
@@ -505,7 +505,7 @@ export class TeamToolsServer {
           const denied = gate('hire');
           if (denied) return denied;
           try {
-            const r = this.host.hire(memberId, input);
+            const r = await this.host.hire(memberId, input);
             return ok(hireResultText(r.name, r.memberId, r.engine));
           } catch (err) {
             return fail('hire', errText(err));

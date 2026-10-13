@@ -9,14 +9,15 @@ import { Office } from './office/Office.js';
 import { host, installShutdownSignals } from './platform.js';
 import { bindOrRefuse, DaemonStartRefusedError } from './office/singleton.js';
 import { RpcServer } from './rpc/RpcServer.js';
-import { RemoteGateway } from './remote/RemoteGateway.js';
+import { OptionalRemote } from './remote/OptionalRemote.js';
 import {EnvironmentDiagnostics} from './diagnostics/environment.js';
 
 // 첫 줄을 찍기 전에 로그 목적지를 정한다. 앱이 띄운 데몬(`PIXEL_DAEMON_LOG` 있음)은 **stdout 을 쓰지 않는다** —
 // 읽는 쪽(앱)이 사라진 파이프에 한 줄만 써도 이벤트 루프가 그 자리에서 멈춘다(까닭과 실측은 `log.ts` 머리말).
 installFileLog();
 
-const office = new Office();
+const environment=new EnvironmentDiagnostics();
+const office = new Office({beforeHire:engine=>environment.require(engine)});
 
 /**
  * 기동 거부는 스택 트레이스가 아니라 **한 문단 + exit 3**: 이미 도는 데몬(pid 확인, T30) 이든
@@ -36,21 +37,24 @@ try {
 } catch (err) {
   refuse(err);
 }
-const remote = new RemoteGateway({port:Number(process.env.PIXEL_REMOTE_PORT ?? (config.wsPort===7420 ? 7423 : 0)),dataDir:config.dataDir,upstreamUrl:()=>`ws://127.0.0.1:${rpc.port}`,token:()=>office.token});
-const environment=new EnvironmentDiagnostics();
+const remote = new OptionalRemote({port:Number(process.env.PIXEL_REMOTE_PORT ?? (config.wsPort===7420 ? 7423 : 0)),dataDir:config.dataDir,upstreamUrl:()=>`ws://127.0.0.1:${rpc.port}`,token:()=>office.token});
 const rpc = new RpcServer(office, { port: config.wsPort,
- localHandlers:{...remote.localHandlers(),'environment.check':p=>environment.check(office.snapshot().members.find(m=>m.id===p.memberId))},
+ localHandlers:{...remote.localHandlers(),'remote.retry':async()=>{const port=await remote.start();if(port)office.updateDaemonInfo({remotePort:port});return remote.status();},'engines.get':()=>office.enginePolicy(),'engines.set':p=>office.setEnginePolicy(p.allowedEngines),'environment.check':p=>environment.check(office.snapshot().members.find(m=>m.id===p.memberId))},
  beforeOperation:async(method,p)=>{
+  const head=office.store.liveHead(String(p.departmentId ?? ''));
   let engine:unknown;
   if(method==='department.create')engine=p.headEngine;
-  if(method==='team.create')engine=p.leadEngine;
+  if(method==='team.create')engine=p.leadEngine ?? head?.engine;
   if(method==='member.hire')engine=p.engine;
   if(['member.instruct','member.rehire','member.restart'].includes(method))engine=office.snapshot().members.find(m=>m.id===p.memberId)?.engine;
-  if(['workflow.discuss','workflow.start','workflow.resume'].includes(method))engine=office.snapshot().members.find(m=>m.departmentId===p.departmentId && m.rank==='head')?.engine;
+  if(['workflow.discuss','workflow.start','workflow.resume'].includes(method))engine=head?.engine;
   const target=['workflow.discuss','workflow.start','workflow.resume'].includes(method)
-   ?office.snapshot().members.find(m=>m.departmentId===p.departmentId&&m.rank==='head')
+   ?head
    :office.snapshot().members.find(m=>m.id===p.memberId);
-  if(engine==='claude'||engine==='codex')await environment.require(engine,target);
+  if(engine==='claude'||engine==='codex'){
+    office.requireEngine(engine,target?.departmentId ?? String(p.departmentId ?? ''));
+    await environment.require(engine,target);
+  }
  }
 });
 let wsPort: number;
@@ -62,9 +66,9 @@ try {
   refuse(err);
 }
 if (wsPort !== info.wsPort) office.updateDaemonInfo({ wsPort });
-try {office.updateDaemonInfo({remotePort:await remote.listen()});}
-catch(err){await remote.close();await office.shutdown();refuse(err);}
-console.log(`[daemon] remote    : ${remote.localUrl} (기기 등록 전용, 외부 HTTPS 연결은 별도 설정)`);
+const remotePort=await remote.start();
+if(remotePort)office.updateDaemonInfo({remotePort});
+console.log('[daemon] remote    : '+(remotePort ? 'http://127.0.0.1:'+remotePort : '사용 불가 — 로컬 작업은 계속 가능합니다'));
 
 console.log(`[daemon] pixel-office daemon v${office.version} pid=${office.pid}`);
 console.log(`[daemon] data dir : ${config.dataDir}`);

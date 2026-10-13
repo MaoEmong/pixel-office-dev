@@ -229,10 +229,20 @@ export class Store {
     if (dbPath !== ':memory:') this.db.exec('PRAGMA journal_mode = WAL;');
     this.db.exec('PRAGMA synchronous = NORMAL;');
     this.migrate();
+    this.db.exec("CREATE TABLE IF NOT EXISTS app_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
     this.db.exec(`CREATE TABLE IF NOT EXISTS workflows (
       id TEXT PRIMARY KEY, department_id TEXT NOT NULL REFERENCES departments(id) ON DELETE CASCADE,
       payload TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
     ); CREATE INDEX IF NOT EXISTS workflows_department ON workflows(department_id);`);
+  }
+
+  enginePolicy(): Engine[] | null {
+    const row = this.db.prepare("SELECT value FROM app_settings WHERE key='engines'").get() as {value:string}|undefined;
+    return row ? JSON.parse(row.value) as Engine[] : null;
+  }
+  setEnginePolicy(engines: Engine[] | null): void {
+    if (engines === null) this.db.prepare("DELETE FROM app_settings WHERE key='engines'").run();
+    else this.db.prepare("INSERT INTO app_settings(key,value) VALUES('engines',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").run(JSON.stringify(engines));
   }
 
   saveWorkflow(workflow: Workflow): void {

@@ -57,7 +57,7 @@ class AppLock {
     }
   }
 
-  /// `<데이터 폴더>/app.lock`. 데이터 폴더를 정할 수 없으면 null(그땐 잠그지 않고 그냥 켠다).
+  /// `<데이터 폴더>/app.lock`. 데이터 폴더를 정할 수 없으면 null. acquire는 저장 오류로 안내한다.
   static String? defaultPath([Map<String, String>? env, plat.AppPlatform? platform]) =>
       plat.dataFilePath(appLockName, platform: platform, env: env);
 
@@ -84,8 +84,8 @@ class AppLock {
     Map<String, String>? env,
   }) async {
     final p = path ?? defaultPath(env);
-    // 데이터 폴더가 없는 환경에서는 잠그지 못한다 — 막는 것보다 켜지는 게 낫다.
-    if (p == null) return const AppLock(path: '', pid: 0, startedAt: '', image: '');
+    // 잠금 저장 없이 실행하면 단일 실행 보장을 잃는다.
+    if (p == null) throw const FileSystemException('앱 잠금 저장 폴더를 찾지 못했습니다.');
     final me = myPid ?? selfPid;
     final img = image ?? _exeName();
     final existing = await read(path: p);
@@ -95,13 +95,9 @@ class AppLock {
       if (alive) return null;
     }
     final lock = AppLock(path: p, pid: me, startedAt: DateTime.now().toIso8601String(), image: img);
-    try {
-      final f = File(p);
-      await f.parent.create(recursive: true);
-      await f.writeAsString(jsonEncode(lock.toJson()));
-    } catch (_) {
-      // 못 써도 켜는 것을 막지 않는다(잠금은 편의지 안전장치가 아니다).
-    }
+    final f = File(p);
+    await f.parent.create(recursive: true);
+    await f.writeAsString(jsonEncode(lock.toJson()), flush: true);
     return lock;
   }
 

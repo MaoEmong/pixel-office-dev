@@ -39,6 +39,7 @@ describe('사용량 배선 (T43, D-45)', () => {
   beforeEach(async () => {
     dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pixel-office-usage-'));
     store = new Store(':memory:');
+    store.setEnginePolicy(['claude', 'codex']); // These fixtures intentionally exercise both engines.
     pty = new FakePty();
     receiver = new FakeReceiver();
     mcp = new FakeMcp();

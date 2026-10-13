@@ -8,7 +8,7 @@
 //                 (프로젝트들은 보통 한 부모 아래 나란히 있다 — `D:\myproject\pixel-office` 를 골랐으면
 //                  다음엔 `D:\myproject` 에서 시작하는 게 형제 프로젝트를 고르기 쉽다.)
 //
-// 저장은 실패해도 삼킨다 — 폭 하나 때문에 앱이 죽으면 안 된다. 테스트는 [uiPrefsStoreProvider] 를 덮어쓴다.
+// 저장 실패는 앱을 중단하지 않고 안내·재시도로 복구한다.
 
 import 'dart:async';
 import 'dart:convert';
@@ -65,14 +65,16 @@ class FileUiPrefsStore implements UiPrefsStore {
 
   @override
   Future<void> write(Map<String, dynamic> value) async {
+    final p = path ?? defaultPath();
+    if (p == null) throw const FileSystemException('설정 저장 폴더를 찾지 못했습니다.');
+    final f = File(p);
+    await f.parent.create(recursive: true);
+    final temporary = File('$p.$pid.${DateTime.now().microsecondsSinceEpoch}.tmp');
     try {
-      final p = path ?? defaultPath();
-      if (p == null) return;
-      final f = File(p);
-      await f.parent.create(recursive: true);
-      await f.writeAsString(jsonEncode(value));
-    } catch (_) {
-      // 삼킨다 — 창 설정 저장 실패로 앱이 흔들리면 안 된다.
+      await temporary.writeAsString(jsonEncode(value), flush: true);
+      await temporary.rename(p);
+    } finally {
+      if (await temporary.exists()) await temporary.delete();
     }
   }
 }
@@ -92,7 +94,59 @@ class MemoryUiPrefsStore implements UiPrefsStore {
   Future<void> write(Map<String, dynamic> value) async => _value = Map<String, dynamic>.from(value);
 }
 
-final uiPrefsStoreProvider = Provider<UiPrefsStore>((ref) => const FileUiPrefsStore());
+class PrefsSaveFailure extends Notifier<String?> {
+  @override
+  String? build() => null;
+  void set(String? message) => state = message;
+}
+
+final prefsSaveFailureProvider = NotifierProvider<PrefsSaveFailure, String?>(PrefsSaveFailure.new);
+
+class ReportingUiPrefsStore implements UiPrefsStore {
+  ReportingUiPrefsStore(this.inner, this.report);
+  final UiPrefsStore inner;
+  final void Function(String?) report;
+  Map<String, dynamic>? pending;
+  Future<void> _tail = Future.value();
+  bool lastWriteSucceeded = true;
+  @override
+  Future<Map<String, dynamic>> read() async => pending == null ? inner.read() : Map.of(pending!);
+  @override
+  Future<void> write(Map<String, dynamic> value) {
+    final copy = Map<String, dynamic>.of(value);
+    _tail = _tail.then((_) async {
+      pending = copy;
+      // Keep failed settings together until the user retries. A later panel resize
+      // must not silently save keepDaemon while its switch still shows rollback.
+      if (!lastWriteSucceeded) return;
+      try {
+        await inner.write(copy);
+        pending = null;
+        lastWriteSucceeded = true;
+        report(null);
+      } catch (e) {
+        lastWriteSucceeded = false;
+        report('설정 저장 실패: $e');
+      }
+    });
+    return _tail;
+  }
+
+  Future<void> retry() async {
+    await _tail;
+    if (pending != null) {
+      lastWriteSucceeded = true;
+      await write(pending!);
+    }
+  }
+}
+
+final uiPrefsStoreProvider = Provider<UiPrefsStore>(
+  (ref) => ReportingUiPrefsStore(
+    const FileUiPrefsStore(),
+    (message) => ref.read(prefsSaveFailureProvider.notifier).set(message),
+  ),
+);
 
 // ---- 패널 폭 -------------------------------------------------------------------------
 
@@ -225,8 +279,7 @@ class LastDepartmentDirNotifier extends Notifier<String?> {
   }
 }
 
-final lastDepartmentDirProvider =
-    NotifierProvider<LastDepartmentDirNotifier, String?>(LastDepartmentDirNotifier.new);
+final lastDepartmentDirProvider = NotifierProvider<LastDepartmentDirNotifier, String?>(LastDepartmentDirNotifier.new);
 
 // ---- 앱을 닫아도 계속 일하기(T46-2, 수명주기 §2) ----------------------------------------
 
@@ -251,6 +304,7 @@ Future<bool> readKeepDaemon(UiPrefsStore store, {Map<String, String>? env}) asyn
 
 /// `⋮` 메뉴의 토글. 환경변수가 켜져 있으면 **끌 수 없다**(그 세션 내내 켜진 것으로 본다).
 class KeepDaemonNotifier extends Notifier<bool> {
+  int _revision = 0;
   @override
   bool build() {
     if (ref.watch(keepDaemonEnvProvider)) return true;
@@ -259,18 +313,34 @@ class KeepDaemonNotifier extends Notifier<bool> {
   }
 
   Future<void> _load() async {
+    final revision = _revision;
     final stored = await ref.read(uiPrefsStoreProvider).read();
-    if (stored[keepDaemonKey] == true) state = true;
+    if (revision == _revision) state = stored[keepDaemonKey] == true;
   }
 
   /// 값을 바꾸고 바로 저장한다. 환경변수로 켜져 있으면 무시.
   Future<void> set(bool value) async {
     if (ref.read(keepDaemonEnvProvider)) return;
     if (state == value) return;
+    _revision++;
+    final previous = state;
     state = value;
     final store = ref.read(uiPrefsStoreProvider);
-    final current = await store.read();
-    await store.write({...current, keepDaemonKey: value});
+    try {
+      final current = await store.read();
+      await store.write({...current, keepDaemonKey: value});
+      if (store is ReportingUiPrefsStore && !store.lastWriteSucceeded) {
+        state = previous;
+      }
+    } catch (e) {
+      state = previous;
+      ref.read(prefsSaveFailureProvider.notifier).set('설정 저장 실패: $e');
+    }
+  }
+
+  Future<void> reload() {
+    _revision++;
+    return _load();
   }
 
   Future<void> toggle() => set(!state);
