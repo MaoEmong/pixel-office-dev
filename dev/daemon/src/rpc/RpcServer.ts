@@ -211,6 +211,7 @@ export class RpcServer {
       catch (err) { if (err instanceof OfficeError) throw err; throw new OfficeError(RPC_ERROR.BAD_STATE,err instanceof Error ? err.message : '작업 흐름 요청 실패'); }
     };
     return {
+      'remote.snapshot': () => ({snapshot:o.snapshot()}),
       'events.query': (_c, p) =>
         ({
           events: o.eventsQuery({

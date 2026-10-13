@@ -19,10 +19,12 @@ void main() {
         },
       ];
       fake.responder = (method, params) {
-        if (method == 'remote.device.approve')
+        if (method == 'remote.device.approve') {
           devices.single['status'] = 'approved';
-        if (method == 'remote.device.revoke')
+        }
+        if (method == 'remote.device.revoke') {
           devices.single['status'] = 'revoked';
+        }
         return {
           'localUrl': 'http://127.0.0.1:7423',
           'publicUrl': 'http://127.0.0.1:7423',

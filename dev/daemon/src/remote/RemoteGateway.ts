@@ -6,7 +6,7 @@ import QRCode from 'qrcode';
 import {DeviceRegistry,hash,validProof,revokeMessage} from './DeviceRegistry.js';
 
 type Reply={result?:unknown;error?:{code:number;message:string}};
-const READ=new Set(['events.query','department.tree','workflow.get','member.instructions.get']);
+const READ=new Set(['remote.snapshot','events.query','department.tree','workflow.get','member.instructions.get']);
 const WRITE=new Set(['workflow.discuss','workflow.start','workflow.resume','workflow.cancel','workflow.complete','approval.respond','question.respond','member.interrupt','member.rehire']);
 interface Connection {ws:WebSocket;upstream?:WebSocket;deviceId?:string;challenge?:{deviceId:string;message:string;expires:number};pending:Map<string,{resolve:(r:Reply)=>void;timer:NodeJS.Timeout}>;timer:NodeJS.Timeout;busy:boolean;}
 export interface RemoteOptions {port:number;dataDir:string;upstreamUrl:()=>string;token:()=>string;assetsDir?:string;}
@@ -19,6 +19,7 @@ export class RemoteGateway {
   private inflight=new Map<string,{hash:string;promise:Promise<Reply>}>();
   private attempts=new Map<string,{count:number;reset:number}>();
   private closed=false;
+  private heartbeat:NodeJS.Timeout;
   private assets:string;
   constructor(private options:RemoteOptions) {
     this.registry=new DeviceRegistry(path.join(options.dataDir,'remote-devices.db'));
@@ -28,6 +29,8 @@ export class RemoteGateway {
       if(req.url!=='/connect' || !this.originOK(req) || this.connections.size>=100){socket.destroy();return;}
       this.wss.handleUpgrade(req,socket,head,ws=>this.accept(ws));
     });
+    this.heartbeat=setInterval(()=>{for(const c of this.connections)if(c.ws.readyState===WebSocket.OPEN)c.ws.ping();},25000);
+    this.heartbeat.unref();
   }
   get port(){return (this.server.address() as import('node:net').AddressInfo|null)?.port ?? 0;}
   get localUrl(){return `http://127.0.0.1:${this.port}`;}
@@ -163,7 +166,7 @@ export class RemoteGateway {
   };}
   revoke(id:string){this.registry.revoke(id);for(const c of [...this.connections])if(c.deviceId===id || c.challenge?.deviceId===id)this.drop(c,'기기 연결이 해제되었습니다.');}
   async close(){
-    if(this.closed)return;this.closed=true;for(const c of [...this.connections])this.drop(c);
+    if(this.closed)return;this.closed=true;clearInterval(this.heartbeat);for(const c of [...this.connections])this.drop(c);
     for(const ws of this.wss.clients)ws.terminate();
     await new Promise<void>(resolve=>this.server.close(()=>resolve()));this.wss.close();this.registry.close();
   }
