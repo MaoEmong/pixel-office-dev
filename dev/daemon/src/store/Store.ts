@@ -33,6 +33,7 @@ import type {
   UpdateTeamInput,
 } from './types.js';
 import { DEFAULT_APPROVAL_POLICY, isApprovalPolicy } from './types.js';
+import type { Workflow } from '../workflow/types.js';
 
 // ---- node:sqlite ExperimentalWarning 억제 ----------------------------------
 // node:sqlite 는 로드 시 "SQLite is an experimental feature..." ExperimentalWarning 을 낸다.
@@ -228,6 +229,27 @@ export class Store {
     if (dbPath !== ':memory:') this.db.exec('PRAGMA journal_mode = WAL;');
     this.db.exec('PRAGMA synchronous = NORMAL;');
     this.migrate();
+    this.db.exec(`CREATE TABLE IF NOT EXISTS workflows (
+      id TEXT PRIMARY KEY, department_id TEXT NOT NULL REFERENCES departments(id) ON DELETE CASCADE,
+      payload TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+    ); CREATE INDEX IF NOT EXISTS workflows_department ON workflows(department_id);`);
+  }
+
+  saveWorkflow(workflow: Workflow): void {
+    this.db.prepare(`INSERT INTO workflows(id,department_id,payload,created_at,updated_at) VALUES(?,?,?,?,?)
+      ON CONFLICT(id) DO UPDATE SET payload=excluded.payload, updated_at=excluded.updated_at`)
+      .run(workflow.id, workflow.departmentId, JSON.stringify(workflow), workflow.createdAt, workflow.updatedAt);
+  }
+
+  currentWorkflow(departmentId: string): Workflow | undefined {
+    const row = this.db.prepare('SELECT payload FROM workflows WHERE department_id=? ORDER BY rowid DESC LIMIT 1')
+      .get(departmentId) as {payload: string} | undefined;
+    return row ? JSON.parse(row.payload) as Workflow : undefined;
+  }
+
+  listWorkflows(): Workflow[] {
+    return (this.db.prepare('SELECT payload FROM workflows ORDER BY rowid').all() as Array<{payload:string}>)
+      .map(row => JSON.parse(row.payload) as Workflow);
   }
 
   /**
