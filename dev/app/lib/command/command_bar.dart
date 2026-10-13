@@ -22,9 +22,11 @@ import '../platform/platform.dart' show shortcutModifierLabel;
 import '../rpc/rpc_client.dart';
 import '../state/office_state.dart';
 import '../topbar/selected_department.dart' show activeDepartmentIdProvider;
+import '../workflow/workflow_panel.dart';
 
 /// 입력 힌트(대상 이름별). T40-5(D11): 무슨 말을 해야 하는지 모르는 첫 5분을 위해 **예시 문장**을 쓴다.
-String commandBarHint(String targetName) => '$commandBarExample  (Enter 전송, Shift+Enter 줄바꿈)';
+String commandBarHint(String targetName) =>
+    '$commandBarExample  (Enter 전송, Shift+Enter 줄바꿈)';
 
 /// 지시 바 placeholder 예시 문장(패스 2 빈 상태 · 패스 3 스토리보드 5단계).
 const String commandBarExample = '예: 이 저장소 구조를 파악해서 보고해';
@@ -42,7 +44,8 @@ const String commandBarHeadOnlyTooltip = '지시는 부장에게만 갑니다';
 const Duration commandBarSpinnerMinimum = Duration(milliseconds: 200);
 
 /// 살아 있는 부장이 없을 때의 힌트(부서가 없거나 부장이 퇴근·오류).
-const String commandBarNoHeadHint = '이 부서에 살아 있는 부장이 없습니다 — 부서를 만들거나 부장을 다시 고용하세요';
+const String commandBarNoHeadHint =
+    '이 부서에 살아 있는 부장이 없습니다 — 부서를 만들거나 부장을 다시 고용하세요';
 
 /// 전송 후 "#n 전송됨" 배지를 보여 주는 시간.
 const Duration commandBarBadgeDuration = Duration(seconds: 3);
@@ -55,10 +58,17 @@ class CommandBarFocusNotifier extends Notifier<int> {
   void request() => state = state + 1;
 }
 
-final commandBarFocusProvider = NotifierProvider<CommandBarFocusNotifier, int>(CommandBarFocusNotifier.new);
+final commandBarFocusProvider = NotifierProvider<CommandBarFocusNotifier, int>(
+  CommandBarFocusNotifier.new,
+);
 
 class CommandBar extends ConsumerStatefulWidget {
-  const CommandBar({super.key, required this.selectedMemberId});
+  const CommandBar({
+    super.key,
+    required this.selectedMemberId,
+    this.meetingMode = false,
+  });
+  final bool meetingMode;
 
   /// 사무실/패널에서 고른 멤버. 대상 계산에는 쓰지 않고(대상은 부장 고정) 부서를 추정하는 데만 쓴다.
   final String? selectedMemberId;
@@ -69,7 +79,10 @@ class CommandBar extends ConsumerStatefulWidget {
 
 class _CommandBarState extends ConsumerState<CommandBar> {
   final TextEditingController _text = TextEditingController();
-  late final FocusNode _focus = FocusNode(debugLabel: 'commandBar', onKeyEvent: _onKey);
+  late final FocusNode _focus = FocusNode(
+    debugLabel: 'commandBar',
+    onKeyEvent: _onKey,
+  );
 
   bool _busy = false;
   int? _sentTaskId;
@@ -94,7 +107,9 @@ class _CommandBarState extends ConsumerState<CommandBar> {
   // ---- 키 처리 ------------------------------------------------------------------
 
   KeyEventResult _onKey(FocusNode node, KeyEvent e) {
-    final isEnter = e.logicalKey == LogicalKeyboardKey.enter || e.logicalKey == LogicalKeyboardKey.numpadEnter;
+    final isEnter =
+        e.logicalKey == LogicalKeyboardKey.enter ||
+        e.logicalKey == LogicalKeyboardKey.numpadEnter;
     if (!isEnter) return KeyEventResult.ignored;
     if (e is KeyUpEvent) return KeyEventResult.handled;
     if (HardwareKeyboard.instance.isShiftPressed) {
@@ -107,9 +122,14 @@ class _CommandBarState extends ConsumerState<CommandBar> {
 
   void _insertNewline() {
     final v = _text.value;
-    final sel = v.selection.isValid ? v.selection : TextSelection.collapsed(offset: v.text.length);
+    final sel = v.selection.isValid
+        ? v.selection
+        : TextSelection.collapsed(offset: v.text.length);
     final newText = v.text.replaceRange(sel.start, sel.end, '\n');
-    _text.value = TextEditingValue(text: newText, selection: TextSelection.collapsed(offset: sel.start + 1));
+    _text.value = TextEditingValue(
+      text: newText,
+      selection: TextSelection.collapsed(offset: sel.start + 1),
+    );
   }
 
   // ---- 대상 --------------------------------------------------------------------
@@ -131,30 +151,53 @@ class _CommandBarState extends ConsumerState<CommandBar> {
   }
 
   Member? _targetMember() => resolveTarget(
-        members: ref.read(membersProvider),
-        heads: ref.read(liveHeadsProvider),
-        chosenMemberId: widget.selectedMemberId,
-        activeDepartmentId: ref.read(activeDepartmentIdProvider),
-        override: _headOverride,
-      );
+    members: ref.read(membersProvider),
+    heads: ref.read(liveHeadsProvider),
+    chosenMemberId: widget.selectedMemberId,
+    activeDepartmentId: ref.read(activeDepartmentIdProvider),
+    override: _headOverride,
+  );
 
   /// -32004 응답의 `data:{headId}`(PROTOCOL `member.instruct`, T34).
-  static String? _headIdOf(Object? data) => data is Map ? data['headId'] as String? : null;
+  static String? _headIdOf(Object? data) =>
+      data is Map ? data['headId'] as String? : null;
 
   bool _canAct(Member? m) =>
-      ref.read(connectionStateProvider) == RpcConnectionState.connected && m != null && !m.status.isGone && !_busy;
+      ref.read(connectionStateProvider) == RpcConnectionState.connected &&
+      m != null &&
+      !m.status.isGone &&
+      !_busy;
 
   Future<void> _send() async {
     final m = _targetMember();
     final text = _text.text.trim();
     if (text.isEmpty || !_canAct(m)) return;
+    if (widget.meetingMode) {
+      final phase = ref
+          .read(workflowProvider(m!.departmentId))
+          .asData
+          ?.value?['phase'];
+      if (phase != null &&
+          !['clarifying', 'completed', 'cancelled'].contains(phase)) {
+        return;
+      }
+    }
     setState(() {
       _busy = true;
       _error = null;
     });
     final started = DateTime.now();
     try {
-      final taskId = await ref.read(officeProvider.notifier).instruct(m!.id, text);
+      int? taskId;
+      if (widget.meetingMode) {
+        await ref.read(rpcClientProvider).call('workflow.discuss', {
+          'departmentId': m!.departmentId,
+          'text': text,
+        });
+        ref.invalidate(workflowProvider(m.departmentId));
+      } else {
+        taskId = await ref.read(officeProvider.notifier).instruct(m!.id, text);
+      }
       _text.clear();
       _badgeTimer?.cancel();
       _badgeTimer = Timer(commandBarBadgeDuration, () {
@@ -166,13 +209,16 @@ class _CommandBarState extends ConsumerState<CommandBar> {
         setState(() {
           _error = e is RpcException ? e.message : e.toString();
           // -32004 "부장에게만 지시할 수 있습니다 (head: …)" — 앱이 아직 모르는 부장이 있다는 뜻이니 대상을 그리로.
-          final headId = e is RpcException && e.code == RpcException.rankRule ? _headIdOf(e.data) : null;
+          final headId = e is RpcException && e.code == RpcException.rankRule
+              ? _headIdOf(e.data)
+              : null;
           if (headId != null) _headOverride = headId;
         });
       }
     } finally {
       // 스피너가 깜빡 하고 사라지지 않게 최소 200ms 는 보여 준다(패스 2 상태표).
-      final left = commandBarSpinnerMinimum - DateTime.now().difference(started);
+      final left =
+          commandBarSpinnerMinimum - DateTime.now().difference(started);
       void done() {
         if (!mounted) return;
         setState(() => _busy = false);
@@ -196,9 +242,13 @@ class _CommandBarState extends ConsumerState<CommandBar> {
       _error = null;
     });
     try {
-      await ref.read(rpcClientProvider).call('member.interrupt', {'memberId': m!.id});
+      await ref.read(rpcClientProvider).call('member.interrupt', {
+        'memberId': m!.id,
+      });
     } catch (e) {
-      if (mounted) setState(() => _error = e is RpcException ? e.message : e.toString());
+      if (mounted) {
+        setState(() => _error = e is RpcException ? e.message : e.toString());
+      }
     } finally {
       if (mounted) setState(() => _busy = false);
     }
@@ -212,7 +262,8 @@ class _CommandBarState extends ConsumerState<CommandBar> {
     ref.listen<int>(commandBarFocusProvider, (prev, next) {
       if (prev != next && mounted) _focus.requestFocus();
     });
-    final connected = ref.watch(connectionStateProvider) == RpcConnectionState.connected;
+    final connected =
+        ref.watch(connectionStateProvider) == RpcConnectionState.connected;
     final members = ref.watch(membersProvider);
     final heads = ref.watch(liveHeadsProvider);
     final targetMember = resolveTarget(
@@ -222,7 +273,23 @@ class _CommandBarState extends ConsumerState<CommandBar> {
       activeDepartmentId: ref.watch(activeDepartmentIdProvider),
       override: _headOverride,
     );
-    final enabled = connected && targetMember != null && !targetMember.status.isGone && !_busy;
+    final enabled =
+        connected &&
+        targetMember != null &&
+        !targetMember.status.isGone &&
+        !_busy;
+    WorkflowData? workflow;
+    if (widget.meetingMode && targetMember != null) {
+      workflow = ref
+          .watch(workflowProvider(targetMember.departmentId))
+          .asData
+          ?.value;
+    }
+    final phase = workflow?['phase'];
+    final canDiscuss =
+        !widget.meetingMode ||
+        phase == null ||
+        ['clarifying', 'completed', 'cancelled'].contains(phase);
     final scheme = Theme.of(context).colorScheme;
 
     return Container(
@@ -239,7 +306,7 @@ class _CommandBarState extends ConsumerState<CommandBar> {
               key: const Key('commandBar.input'),
               controller: _text,
               focusNode: _focus,
-              enabled: enabled,
+              enabled: enabled && canDiscuss,
               minLines: 1,
               maxLines: 4,
               keyboardType: TextInputType.multiline,
@@ -251,10 +318,14 @@ class _CommandBarState extends ConsumerState<CommandBar> {
                 hintText: !connected
                     ? '데몬 연결 안 됨'
                     : targetMember == null
-                        ? commandBarNoHeadHint
-                        : targetMember.status.isGone
-                            ? '${targetMember.name} 은(는) 퇴근했습니다'
-                            : commandBarHint(targetMember.name),
+                    ? commandBarNoHeadHint
+                    : targetMember.status.isGone
+                    ? '${targetMember.name} 은(는) 퇴근했습니다'
+                    : widget.meetingMode
+                    ? (canDiscuss
+                          ? '부장과 목표를 이야기하세요. 회의 보기에서 작업을 시작합니다.'
+                          : '회의 보기에서 진행 상황과 보고를 확인하세요.')
+                    : commandBarHint(targetMember.name),
                 hintStyle: const TextStyle(fontSize: 13, color: Colors.white38),
               ),
             ),
@@ -262,15 +333,17 @@ class _CommandBarState extends ConsumerState<CommandBar> {
           const SizedBox(width: 8),
           OutlinedButton(
             key: const Key('commandBar.interrupt'),
-            onPressed: enabled ? _interrupt : null,
-            style: OutlinedButton.styleFrom(visualDensity: VisualDensity.compact),
+            onPressed: enabled && !widget.meetingMode ? _interrupt : null,
+            style: OutlinedButton.styleFrom(
+              visualDensity: VisualDensity.compact,
+            ),
             child: const Text('중단'),
           ),
           const SizedBox(width: 4),
           IconButton(
             key: const Key('commandBar.send'),
             tooltip: '전송 (Enter · $shortcutModifierLabel+K 로 여기 포커스)',
-            onPressed: enabled ? _send : null,
+            onPressed: enabled && canDiscuss ? _send : null,
             icon: _busy
                 ? const SizedBox(
                     key: Key('commandBar.spinner'),
@@ -295,12 +368,15 @@ class _CommandBarState extends ConsumerState<CommandBar> {
                     ),
                   )
                 : _sentTaskId != null
-                    ? Text(
-                        '#$_sentTaskId 전송됨',
-                        key: const Key('commandBar.badge'),
-                        style: const TextStyle(fontSize: 12, color: Colors.greenAccent),
-                      )
-                    : const SizedBox.shrink(),
+                ? Text(
+                    '#$_sentTaskId 전송됨',
+                    key: const Key('commandBar.badge'),
+                    style: const TextStyle(
+                      fontSize: 12,
+                      color: Colors.greenAccent,
+                    ),
+                  )
+                : const SizedBox.shrink(),
           ),
         ],
       ),
@@ -321,7 +397,9 @@ class TargetChip extends StatelessWidget {
     final gold = const Color(0xFFFFD166);
     final color = m == null ? Colors.white38 : gold;
     return Tooltip(
-      message: m == null ? commandBarNoHeadHint : '$commandBarHeadOnlyTooltip · ${m.engine.wire}',
+      message: m == null
+          ? commandBarNoHeadHint
+          : '$commandBarHeadOnlyTooltip · ${m.engine.wire}',
       child: Container(
         key: const Key('commandBar.target'),
         constraints: const BoxConstraints(maxWidth: 180),
@@ -332,7 +410,11 @@ class TargetChip extends StatelessWidget {
         ),
         child: Text(
           m == null ? commandBarNoHeadChip : commandBarTargetChip(m.name),
-          style: TextStyle(fontSize: 13, color: color, fontWeight: m == null ? FontWeight.normal : FontWeight.bold),
+          style: TextStyle(
+            fontSize: 13,
+            color: color,
+            fontWeight: m == null ? FontWeight.normal : FontWeight.bold,
+          ),
           overflow: TextOverflow.ellipsis,
           maxLines: 1,
         ),

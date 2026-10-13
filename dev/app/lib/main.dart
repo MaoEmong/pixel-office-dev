@@ -20,6 +20,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'command/command_bar.dart';
+import 'workflow/workflow_panel.dart';
 import 'command/shortcuts.dart';
 import 'lifecycle/already_running_app.dart';
 import 'lifecycle/app_lock.dart';
@@ -163,7 +164,8 @@ class OfficeShell extends ConsumerWidget {
                           panel: RightPanel(memberId: selected),
                         ),
                       ),
-                      CommandBar(selectedMemberId: selected),
+                      const WorkflowBar(),
+                      CommandBar(selectedMemberId: selected, meetingMode: true),
                     ],
                   ),
                   if (overlay) const DisconnectedOverlay(),

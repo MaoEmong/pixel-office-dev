@@ -6,6 +6,7 @@ export interface WorkAssignment {
   taskId?: number; status?: 'queued' | 'assigned' | 'done' | 'blocked' | 'aborted';
 }
 export interface Meeting {
+  participantNames?: Record<string, string>;
   round: 1 | 2; state: 'collecting' | 'reviewing' | 'deciding';
   participants: string[]; contributions: MeetingContribution[]; minutes?: string;
 }

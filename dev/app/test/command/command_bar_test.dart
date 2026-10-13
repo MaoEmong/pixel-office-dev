@@ -49,6 +49,21 @@ void main() {
 
   tearDown(() async => fake.close());
 
+  testWidgets('meeting mode sends discussion rather than an implementation task and locks during execution', (tester) async {
+    await tester.pumpWidget(ProviderScope(overrides: fake.overrides, child: const MaterialApp(home: Scaffold(body: CommandBar(selectedMemberId: 'mH', meetingMode: true)))));
+    await connect(tester, fake);
+    await tester.enterText(input, '목표 구체화');
+    await tester.tap(sendBtn);
+    await tester.pump(commandBarSpinnerMinimum);
+    await tester.pump();
+    expect(fake.calls.where((c) => c.$1 == 'member.instruct'), isEmpty);
+    expect(fake.calls.where((c) => c.$1 == 'workflow.discuss').single.$2, {'departmentId':'d1','text':'목표 구체화'});
+    fake.pushNotification('workflow.changed', {'departmentId':'d1','phase':'executing'});
+    await pump2(tester);
+    expect(tester.widget<TextField>(input).enabled, isFalse);
+    expect(tester.widget<IconButton>(sendBtn).onPressed, isNull);
+  });
+
   testWidgets('Enter → member.instruct(부장, 입력 텍스트) 후 입력 비움, 배지 표시', (tester) async {
     await tester.pumpWidget(app(fake));
     await connect(tester, fake);

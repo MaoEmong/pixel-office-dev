@@ -39,6 +39,7 @@ function setup() {
 test('two-round meeting, expert participation, dependent work, final report and user review',t=> {
   const f=setup(); t.after(()=>f.store.close());
   const w=f.begin();
+  assert.equal(w.meeting!.participantNames![f.leads[0]!.id],'lead1','meeting names survive dismissal');
   assert.equal(f.store.listTasks().length,1,'meeting opinions are not implementation tasks');
   assert.throws(()=>f.coord.decide(f.head,w.id,'early',f.plan()),/두 차례/);
   f.round(w,1);

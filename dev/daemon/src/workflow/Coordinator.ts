@@ -76,7 +76,7 @@ export class WorkflowCoordinator {
       if (!live(m) || m.departmentId!==head.departmentId || m.rank==='head') throw new Error('같은 부서의 살아 있는 팀장·팀원만 초대할 수 있습니다.');
     }
     if (!participants.some(id=>this.host.member(id)!.rank==='lead')) throw new Error('최소 한 명의 팀장이 참석해야 합니다.');
-    w.meeting={round:1,state:'collecting',participants,contributions:[]}; this.save(w);
+    w.meeting={round:1,state:'collecting',participants,participantNames:Object.fromEntries(participants.map(id=>[id,this.host.member(id)!.name])),contributions:[]}; this.save(w);
     this.requestMissing(w); return w;
   }
   private requestMissing(w: Workflow): void {
