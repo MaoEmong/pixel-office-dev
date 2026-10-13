@@ -33,6 +33,7 @@ import '../state/office_state.dart';
 // 부서를 만든 직후 부장을 고르려고 쓴다(T24 함정 4 — 상태는 상태 층에).
 import '../state/selection.dart';
 import '../usage/usage_chips.dart';
+import '../remote/device_dialog.dart';
 import 'daemon_pill.dart';
 import 'selected_department.dart';
 
@@ -277,11 +278,13 @@ class _DepartmentMenu extends ConsumerWidget {
       enabled: true,
       iconSize: 18,
       onSelected: (v) {
+        if (v == 'remote') showDialog<void>(context: context, builder: (_) => const DeviceDialog());
         if (v == 'approvalPolicy' && dept != null) showApprovalPolicyDialog(context, ref, dept);
         if (v == 'delete' && dept != null) confirmDeleteDepartment(context, ref, dept);
         if (v == 'keepDaemon') ref.read(keepDaemonProvider.notifier).toggle();
       },
       itemBuilder: (_) => [
+        PopupMenuItem(key: const Key('topbar.remote'), value: 'remote', enabled: enabled, child: const Text('기기 연결 · 원격 조작')),
         // U-02(D-51): 이 부서 멤버의 허가 요청을 어디까지 묻지 않고 넘길지. 지금 값을 메뉴에서 바로 보여 준다.
         PopupMenuItem(
           key: const Key('topbar.approvalPolicy'),
