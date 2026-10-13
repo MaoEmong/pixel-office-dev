@@ -14,7 +14,7 @@ import { reapOrphan, type OrphanOps } from '../../src/office/orphans.js';
 import { Store } from '../../src/store/Store.js';
 import type { Member, OfficeEvent, Pending, Task, Team } from '../../src/store/types.js';
 import { loadFixture } from '../screen/helpers.js';
-import { FakePty, FakeReceiver, fakeReq, seedDeptTeam } from './fakes.js';
+import { acknowledgeInputs, FakePty, FakeReceiver, fakeReq, seedDeptTeam } from './fakes.js';
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const readyScreen = () => loadFixture('claude-ready.txt').join('\r\n');
@@ -114,7 +114,7 @@ describe('Office restart recovery (T09)', () => {
   test('start(): A respawned with --resume, [RESUMED] then queued task; approval/TUI question expired; B → error; C untouched; notice', async () => {
     const s = seed(store, dataDir);
     newOffice();
-    await office.start();
+    acknowledgeInputs(office); await office.start();
 
     // 결과 요약
     const r = office.recoveryResult!;
@@ -215,7 +215,7 @@ describe('Office restart recovery (T09)', () => {
     const tui = store.createPending({ memberId: m.id, type: 'question', payload: { questions: [], tool_input: {} } });
     const approval = store.createPending({ memberId: m.id, type: 'approval', payload: { tool_name: 'Write', tool_input: {} } });
     newOffice();
-    await office.start();
+    acknowledgeInputs(office); await office.start();
     assert.equal(store.getPending(askUser.id)!.status, 'open');
     assert.equal(store.getPending(tui.id)!.status, 'expired');
     assert.equal(store.getPending(approval.id)!.status, 'expired');
@@ -230,7 +230,7 @@ describe('Office restart recovery (T09)', () => {
   test('fallback: resumed process exits non-zero within the window → fresh spawn without --resume, error event, same [RESUMED] + queued requeued', async () => {
     const s = seed(store, dataDir);
     newOffice();
-    await office.start();
+    acknowledgeInputs(office); await office.start();
     const first = pty.session(s.a.id);
     const eventsBefore = events.length;
 
@@ -278,7 +278,7 @@ describe('Office restart recovery (T09)', () => {
   test('fallback does not apply after the window or on exit code 0', async () => {
     const s = seed(store, dataDir);
     newOffice({ fallbackWindowMs: 50 });
-    await office.start();
+    acknowledgeInputs(office); await office.start();
     await sleep(120);
     pty.exit(s.a.id, 1);
     assert.equal(pty.spawns.length, 1, 'no second spawn after the window');
@@ -294,7 +294,7 @@ describe('Office restart recovery (T09)', () => {
     receiver = new FakeReceiver();
     const s2 = seed(store2, dataDir);
     newOffice({ fallbackWindowMs: 60_000 });
-    await office.start();
+    acknowledgeInputs(office); await office.start();
     pty.exit(s2.a.id, 0);
     assert.equal(pty.spawns.length, 1);
     assert.equal(store2.getMember(s2.a.id)!.status, 'exited');
@@ -306,7 +306,7 @@ describe('Office restart recovery (T09)', () => {
     store.createTask({ departmentId: s.team.departmentId, fromMember: 'user', toMember: d.id, instruction: 'd queued', status: 'queued' });
     pty.failSpawnFor.add(s.a.id);
     newOffice();
-    await office.start(); // throw 하지 않는다
+    acknowledgeInputs(office); await office.start(); // throw 하지 않는다
     const r = office.recoveryResult!;
     assert.deepEqual(r.resumed, [d.id]);
     assert.deepEqual(r.failed.sort(), [s.a.id, s.b.id].sort());
@@ -325,7 +325,7 @@ describe('Office restart recovery (T09)', () => {
     orphans.names.set(4242, 'claude.exe');
     orphans.names.set(4343, 'node.exe'); // B 의 pid 가 다른 프로세스에 재사용된 경우
     newOffice();
-    await office.start();
+    acknowledgeInputs(office); await office.start();
     assert.deepEqual(orphans.kills, [4242]);
     assert.deepEqual(office.recoveryResult!.orphansKilled, [4242]);
     assert.ok(notices.includes(`warn: 복구: A 의 이전 프로세스(pid 4242)가 살아 있어 종료함`), notices.join('\n'));
@@ -346,7 +346,7 @@ describe('Office restart recovery (T09)', () => {
 
   test('fresh daemon (no rows): no notice, no spawn', async () => {
     newOffice();
-    await office.start();
+    acknowledgeInputs(office); await office.start();
     assert.deepEqual(office.recoveryResult, { resumed: [], failed: [], expired: [], requeued: [], orphansKilled: [], silent: [], total: 0 });
     assert.equal(notices.length, 0);
     assert.equal(pty.spawns.length, 0);

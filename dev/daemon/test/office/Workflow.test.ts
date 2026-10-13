@@ -70,6 +70,29 @@ test('workflow save failure after task creation rolls back both records',t=> {
   assert.equal(f.store.listTasks().length,0);assert.equal(f.coord.current(f.d.id)?.phase,'clarifying');
 });
 
+test('meeting delivery failure rolls back open and the last opinion; retries remain possible',t=>{
+  const f=setup();t.after(()=>f.store.close());f.coord.discuss(f.d.id,'audit');f.coord.start(f.d.id);
+  const send=f.host.send;f.host.send=()=>{throw new Error('delivery failed');};
+  assert.throws(()=>f.coord.open(f.head,[f.leads[0]!.id]),/delivery failed/);assert.equal(f.coord.current(f.d.id)?.meeting,undefined);
+  f.host.send=send;const w=f.coord.open(f.head,[f.leads[0]!.id]);
+  f.host.send=()=>{throw new Error('round delivery failed');};
+  assert.throws(()=>f.coord.speak(f.leads[0]!,w.id,1,'opinion'),/round delivery failed/);
+  assert.equal(f.coord.current(f.d.id)?.meeting?.round,1);assert.equal(f.coord.current(f.d.id)?.meeting?.contributions.length,0);
+  f.host.send=send;assert.equal(f.coord.speak(f.leads[0]!,w.id,1,'opinion').meeting?.round,2);
+});
+
+test('dispatch failure blocks the plan and retry assigns once; failed save leaves no orphan task',t=>{
+  const f=setup();t.after(()=>f.store.close());const w=f.begin();f.round(w,1);f.round(w,2);
+  const delegate=f.host.delegate;f.host.delegate=()=>{throw new Error('CLI unavailable');};
+  const blocked=f.coord.decide(f.head,w.id,'minutes',f.plan());assert.equal(blocked.phase,'blocked');assert.match(blocked.problem!,/CLI unavailable/);
+  assert.equal(f.store.listTasks().length,1);
+  f.host.delegate=delegate;const save=f.store.saveWorkflow.bind(f.store);let writes=0;
+  f.store.saveWorkflow=w=>{if(++writes===2)throw new Error('disk write failed');save(w);};
+  assert.equal(f.coord.resume(f.d.id).phase,'blocked');assert.equal(f.store.listTasks().length,1);assert.equal(f.coord.current(f.d.id)?.assignments[0]?.taskId,undefined);
+  f.store.saveWorkflow=save;const resumed=f.coord.resume(f.d.id);assert.equal(resumed.phase,'executing');assert.ok(resumed.assignments[0]?.taskId);
+  f.coord.resume(f.d.id);assert.equal(f.store.listTasks().length,2);
+});
+
 test('two-round meeting, expert participation, dependent work, final report and user review',t=> {
   const f=setup(); t.after(()=>f.store.close());
   const w=f.begin();

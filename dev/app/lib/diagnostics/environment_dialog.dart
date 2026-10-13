@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../state/office_state.dart';
+import '../rpc/rpc_client.dart';
 import 'error_panel.dart';
 import '../state/selection.dart';
 
@@ -17,6 +18,8 @@ class _EnvironmentDialogState extends ConsumerState<EnvironmentDialog> {
   List<String>? allowedEngines;
   bool policyLoaded = false;
   int maxLiveSessions = 16, maxTeamsPerDepartment = 8;
+  List<Map> storageErrors = [];
+  String? backupPath;
   @override
   void initState() {
     super.initState();
@@ -42,6 +45,14 @@ class _EnvironmentDialogState extends ConsumerState<EnvironmentDialog> {
         'environment.check',
         {'memberId': ?memberId},
       );
+      try {
+        final health = await ref.read(rpcClientProvider).call('storage.get');
+        storageErrors = (health['failures'] as List? ?? [])
+            .whereType<Map>()
+            .toList();
+      } on RpcException catch (e) {
+        if (e.code != -32601) rethrow;
+      }
       if (mounted) setState(() => result = value);
     } catch (e) {
       if (mounted) setState(() => error = errorMessage(e));
@@ -65,6 +76,21 @@ class _EnvironmentDialogState extends ConsumerState<EnvironmentDialog> {
               ?.cast<String>(),
         );
       }
+    } catch (e) {
+      if (mounted) setState(() => error = errorMessage(e));
+    } finally {
+      if (mounted) setState(() => busy = false);
+    }
+  }
+
+  Future<void> backup() async {
+    setState(() {
+      busy = true;
+      error = null;
+    });
+    try {
+      final value = await ref.read(rpcClientProvider).call('storage.backup');
+      if (mounted) setState(() => backupPath = value['path']?.toString());
     } catch (e) {
       if (mounted) setState(() => error = errorMessage(e));
     } finally {
@@ -209,6 +235,26 @@ class _EnvironmentDialogState extends ConsumerState<EnvironmentDialog> {
                 ],
               ),
             const Text('이미 실행 중인 세션은 유지하며 새 생성·복구부터 제한합니다.'),
+            const SizedBox(height: 16),
+            const Text(
+              '저장 상태 · DB 백업',
+              style: TextStyle(fontWeight: FontWeight.bold),
+            ),
+            if (storageErrors.isEmpty)
+              const Text('확인된 저장 오류가 없습니다. 로그는 파일당 5MB, 이전 파일 3개까지 보관합니다.'),
+            for (final issue in storageErrors)
+              ErrorPanel(
+                title: '저장 상태 확인 필요',
+                message: issue['message'].toString(),
+                details: issue['file'].toString(),
+                compact: true,
+              ),
+            TextButton.icon(
+              onPressed: busy ? null : backup,
+              icon: const Icon(Icons.save_outlined),
+              label: const Text('지금 DB 백업'),
+            ),
+            if (backupPath != null) SelectableText('백업 완료: $backupPath'),
             if (busy)
               const Padding(
                 padding: EdgeInsets.all(12),

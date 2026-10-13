@@ -155,6 +155,7 @@ export interface Pending {
 }
 
 export interface Task {
+  delivery?: 'waiting' | 'submitting' | 'accepted' | 'failed';
   id: number;
   departmentId: string;
   /** 'user' 또는 멤버 id. */

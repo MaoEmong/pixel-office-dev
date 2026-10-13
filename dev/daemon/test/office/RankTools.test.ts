@@ -17,7 +17,7 @@ import { ASK_USER_HEAD_ONLY_MESSAGE } from '../../src/mcp/TeamToolsServer.js';
 import { Store } from '../../src/store/Store.js';
 import type { Department, Member, OfficeEvent, Team } from '../../src/store/types.js';
 import { loadFixture } from '../screen/helpers.js';
-import { FakePty, FakeReceiver, fakeReq } from './fakes.js';
+import { acknowledgeInputs, FakePty, FakeReceiver, fakeReq } from './fakes.js';
 
 const SID = 'sess-t35';
 const base = (event: string) => ({ session_id: SID, hook_event_name: event, cwd: 'D:\\x' });
@@ -52,7 +52,7 @@ describe('직급별 도구 (T35 rev 3)', () => {
     office.on('event', (e) => events.push(e));
     office.on('status', (id, s, d) => statuses.push([id, s, d]));
     office.on('notice', (l, m) => notices.push(`${l}: ${m}`));
-    await office.start();
+    acknowledgeInputs(office); await office.start();
     const created = office.createDepartment({ name: 'alpha', cwd: dataDir, headEngine: 'claude', headName: '국장' });
     department = created.department;
     head = await ready(created.head);

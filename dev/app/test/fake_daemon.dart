@@ -37,9 +37,9 @@ class FakeDaemon {
   final Set<String> dropReplies = {};
 
   /// 마지막으로 받은 그 메서드의 params(없으면 null).
-  Map<String, dynamic>? paramsOf(String method) {
+  Map<String, dynamic>? paramsOf(String method, {bool includeRequestId=false}) {
     for (final r in requests.reversed) {
-      if (r.$1 == method) return r.$2;
+      if (r.$1 == method) return includeRequestId ? r.$2 : (Map<String,dynamic>.from(r.$2)..remove('requestId'));
     }
     return null;
   }

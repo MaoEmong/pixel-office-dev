@@ -5,6 +5,8 @@ const statuses={starting:'출근 중',working:'작업 중',idle:'한가함',wait
 let db,info,identity,socket,retryTimer,connected=false,stopped=false,seq=0,selected='',memberId='',workflow=null;
 let snapshot={departments:[],members:[],pending:[],tasks:[]},events=[],inboxVersion='',deptVersion='',renderTimer;
 const requests=new Map();
+const mutations=new Map();
+function canonical(value){if(Array.isArray(value))return value.map(canonical);if(value && typeof value==='object')return Object.fromEntries(Object.keys(value).sort().map(k=>[k,canonical(value[k])]));return value;}
 function clearWorkView(){snapshot={departments:[],members:[],pending:[],tasks:[]};events=[];workflow=null;selected='';memberId='';seq=0;inboxVersion='';deptVersion='';$('task-text').value='';$('device-details').textContent='';$('fingerprint').textContent='';render();$('workspace').hidden=true;$('device-panel').hidden=true;}
 const b64=buffer=>btoa(String.fromCharCode(...new Uint8Array(buffer)));
 const error=e=>{$('error').textContent=e?.message??String(e);};
@@ -66,7 +68,7 @@ function connect(){
     if(!snapshot.departments.some(d=>d.id===selected))selected=snapshot.departments[0]?.id??'';
     render();await refresh();return;
    }
-   if(m.id!==undefined){const r=requests.get(m.id);if(r){requests.delete(m.id);clearTimeout(r.timer);m.error?r.reject(new Error(m.error.message)):r.resolve(m.result);}return;}
+   if(m.id!==undefined){const r=requests.get(m.id);if(r){requests.delete(m.id);clearTimeout(r.timer);m.error?r.reject(Object.assign(new Error(m.error.message),{definitive:m.error.code!==-32009})):r.resolve(m.result);}return;}
    if(m.method==='snapshot'){snapshot=m.params;render();if(!snapshot.departments.some(d=>d.id===selected)){selected=snapshot.departments[0]?.id??'';void refresh().catch(error);}return;}
    if(m.method==='member.status'){
     if(m.params.member){const i=snapshot.members.findIndex(x=>x.id===m.params.member.id);if(i<0)snapshot.members.push(m.params.member);else snapshot.members[i]=m.params.member;}
@@ -95,7 +97,19 @@ function rpc(method,params={},requestId){
  const id=crypto.randomUUID();return new Promise((resolve,reject)=>{const timer=setTimeout(()=>{requests.delete(id);reject(new Error('PC 응답 시간이 지났습니다. 작업 상태를 확인하세요.'));},35000);requests.set(id,{resolve,reject,timer});socket.send(JSON.stringify({jsonrpc:'2.0',id,method,params,...(requestId?{requestId}:{})}));});
 }
 async function mutate(method,params={}){
- const result=await rpc(method,params,crypto.randomUUID());$('error').textContent='';await refresh();return result;
+ const fingerprint=b64(await crypto.subtle.digest('SHA-256',encoder.encode(JSON.stringify(canonical({method,params})))));
+ const key=`retry:${info.workstationId}:${identity.deviceId}:${fingerprint}`;
+ if(mutations.has(key))return mutations.get(key);
+ const operation=(async()=>{
+   let record=await get(key);if(record && (!record.createdAt || Date.now()-record.createdAt>7*86400000))throw new Error('오래된 미확정 요청입니다. 작업 화면에서 실행 결과를 먼저 확인하세요.');
+   if(!record){record={kind:'retry',requestId:crypto.randomUUID(),createdAt:Date.now()};await put(key,record);}
+   let result;
+   try{result=await rpc(method,params,record.requestId);}catch(e){if(e.definitive)await remove(key);throw e;}
+   await remove(key);$('error').textContent='';
+   // The command succeeded even if refreshing the view fails.
+   try{await refresh();}catch(e){error(new Error(`요청은 처리됐습니다. 상태 갱신 실패: ${e.message}`));}
+   return result;
+ })();mutations.set(key,operation);try{return await operation;}finally{mutations.delete(key);}
 }
 async function refreshSnapshot(){
  const result=await rpc('remote.snapshot');snapshot=result.snapshot;
@@ -147,6 +161,12 @@ function renderInbox(){
 function section(title,text){const box=node('div',undefined,'item');box.append(node('h3',title));paragraphs(box,text);return box;}
 function renderWorkflow(){
  $('phase').textContent=phases[workflow?.phase]??'작업 구체화부터 시작';const body=$('workflow-body');body.replaceChildren();
+ for(const task of snapshot.tasks??[]){
+  if(!['failed','submitting'].includes(task.delivery) || snapshot.members.find(m=>m.id===task.toMember)?.departmentId!==selected)continue;
+  const card=section(`작업 #${task.id} · ${task.delivery==='failed'?'제출 확인 필요':'CLI 제출 확인 중'}`,task.delivery==='failed'?'기존 입력에 Enter만 다시 보냅니다. 입력을 수정했다면 PC 터미널에서 확인하세요.':'CLI가 지시를 받았는지 확인하고 있습니다.');
+  if(task.delivery==='failed')card.append(button('지시 재제출',()=>mutate('task.retrySubmit',{taskId:task.id}),'primary'));
+  body.append(card);
+ }
  if(!workflow){body.append(node('p','부장과 목표·완료 기준을 정리한 뒤 작업을 시작하세요.','muted'));return;}
  if(workflow.problem)body.append(section('확인할 문제',workflow.problem));
  const shared=node('details');shared.append(node('summary','공유 작업안'));paragraphs(shared,workflow.brief);body.append(shared);
@@ -163,6 +183,7 @@ function renderActions(){
  const add=(label,method,cls)=>{const el=button(label,()=>mutate(method,{departmentId:selected}),cls);el.disabled=!connected;actions.append(el);};
  if(phase==='clarifying')add('작업 시작 · 회의 소집','workflow.start','primary');
  if(['meeting','blocked'].includes(phase) && workflow.meeting && !workflow.assignments.length)add('회의 재개','workflow.resume');
+ if(['executing','blocked'].includes(phase) && workflow.assignments.length)add('업무 배정 재시도','workflow.resume');
  if(phase==='review')add('검수 완료','workflow.complete','primary');
  if(phase && !['completed','cancelled'].includes(phase))add('작업 취소','workflow.cancel','danger');
 }

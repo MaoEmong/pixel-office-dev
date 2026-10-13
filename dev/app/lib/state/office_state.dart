@@ -26,6 +26,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../model/models.dart';
 import '../rpc/daemon_info.dart';
 import '../rpc/rpc_client.dart';
+import '../rpc/retry_store.dart';
 
 /// 이벤트 링버퍼 크기(전역·멤버별 각각).
 const int eventRingCapacity = 2000;
@@ -57,7 +58,8 @@ final helloParentPidProvider = Provider<int?>((_) => null);
 
 final rpcClientProvider = Provider<RpcClient>((ref) {
   // 못 붙을 때의 문구에 **찾아본 daemon.json 경로**와 환경변수 유무를 싣는다(T41 실기 사고).
-  final client = RpcClient(noDaemonInfoMessage: daemonJsonMissingMessage());
+  final store = FileRpcRetryStore();
+  final client = RpcClient(noDaemonInfoMessage: daemonJsonMissingMessage(), loadRetries: store.read, saveRetries: store.write);
   client.parentPid = ref.watch(helloParentPidProvider);
   ref.onDispose(() => client.close());
   return client;

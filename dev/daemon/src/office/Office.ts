@@ -15,6 +15,7 @@
 //   respondQuestion(ask_user)     → answerPending(게이트 해제) → 큐에 `[ANSWER q#<id>]\n<답>`(system) — 답이 열린 pending 을
 //                                   먼저 닫으므로 isIdle 게이트를 그대로 통과한다(bypass 플래그 없음, 아래 answerAskUser)
 import { EventEmitter } from 'node:events';
+import {appendLog,writeJson,storageResult} from '../storage/files.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { randomBytes } from 'node:crypto';
@@ -410,10 +411,10 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
       member: (id) => this.store.getMember(id),
       busy: (id) => this.store.listTasks({departmentId:id}).some(t=>['queued','assigned'].includes(t.status))
         || this.store.snapshot().pending.some(p=>this.store.getMember(p.memberId)?.departmentId===id),
-      send: (id,text) => {
+      send: (id,text,deliveryId) => {
         const member=this.member(id);this.requireEngine(member.engine,member.departmentId);assertProjectFolder(member.cwd);
         const rt=this.liveRuntime(member);
-        const send=()=>rt.queue.enqueue({kind:'system',text});
+        const send=()=>rt.queue.enqueue({kind:'system',text,id:deliveryId});
         if(this.deferredWorkflowInputs)this.deferredWorkflowInputs.push(send);else send();
       },
       startTask: (id,text) => this.instruct(id,text,{workflow:true}),
@@ -421,15 +422,8 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
       task: (id) => this.store.getTask(id),
       interrupt: (id) => this.interrupt(id),
       changed: (w) => {
-        const department=this.store.getDepartment(w.departmentId);
-        if (department) {
-          try {
-            ensureProjectDataDir(department.cwd);
-            const dir=path.join(projectDataDir(department.cwd),'workflows'); fs.mkdirSync(dir,{recursive:true});
-            fs.writeFileSync(path.join(dir,`${w.id}.json`),JSON.stringify(w,null,2));
-          } catch (err) { this.notice('warn',`작업안 저장 실패: ${errMsg(err)}`); }
-        }
-        this.emit('workflow',w);
+        if(this.deferredWorkflowInputs){this.deferredWorkflowInputs.push(()=>this.publishWorkflow(w));return;}
+        this.publishWorkflow(w);
       },
     });
     this.usage =
@@ -666,6 +660,21 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
   runRetention(): RetentionResult {
     try {
       const pruned = this.store.pruneRetention();
+      this.store.pruneWorkflows();
+      const current=new Set(this.store.currentWorkflows().map(w=>w.id));
+      for(const department of this.store.snapshot().departments){
+        const dir=path.join(projectDataDir(department.cwd),'workflows');
+        if(!fs.existsSync(dir))continue;
+        try{
+          for(const name of fs.readdirSync(dir)){
+            if(!/^w_[a-zA-Z0-9_-]+\.json$/.test(name) || current.has(name.slice(0,-5)))continue;
+            const file=path.join(dir,name),w=JSON.parse(fs.readFileSync(file,'utf8')) as Workflow;
+            if(['completed','cancelled'].includes(w.phase) && Date.parse(w.updatedAt)<Date.now()-90*86400000)fs.unlinkSync(file);
+          }
+          storageResult(`workflow-retention:${department.id}`);
+        }catch(err){storageResult(`workflow-retention:${department.id}`,err);}
+      }
+      try{this.store.backup();}catch(err){storageResult('database-backup',err);}
       if (pruned.events || pruned.pending || pruned.tasks) {
         console.log(`[office] retention: events ${pruned.events} · pending ${pruned.pending} · tasks ${pruned.tasks} 삭제`);
       }
@@ -874,7 +883,17 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
   // ---- 조회 ------------------------------------------------------------------------
 
   workflowGet(departmentId: string): Workflow | undefined { return this.workflows.current(departmentId); }
-  private workflowMutation(fn:()=>Workflow):Workflow {
+  private publishWorkflow(w:Workflow):void {
+    const department=this.store.getDepartment(w.departmentId);
+    if(department)try{
+      ensureProjectDataDir(department.cwd);
+      const dir=path.join(projectDataDir(department.cwd),'workflows');fs.mkdirSync(dir,{recursive:true});
+      writeJson(path.join(dir,`${w.id}.json`),w);storageResult(`workflow:${department.id}`);
+    }catch(err){storageResult(`workflow:${department.id}`,err);}
+    this.emit('workflow',w);
+  }
+  private workflowMutation<T>(fn:()=>T):T {
+    if(this.deferredWorkflowInputs)return this.store.transaction(fn);
     const inputs:Array<()=>void>=[];
     this.deferredWorkflowInputs=inputs;
     try {
@@ -883,6 +902,13 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
       for(const input of inputs)input();
       return result;
     } finally {this.deferredWorkflowInputs=undefined;}
+  }
+
+  retryTaskSubmit(taskId: number): void {
+    const task=this.store.getTask(taskId);
+    if(!task || !OPEN_TASKS.includes(task.status) || task.delivery!=='failed')throw badState('재제출할 작업이 없습니다. 작업 상태를 다시 확인하세요.');
+    const member=this.member(task.toMember);assertProjectFolder(member.cwd);
+    this.liveRuntime(member).queue.retrySubmit(String(task.id));
   }
   workflowDiscuss(departmentId: string, text: string, requestId?:string): Workflow {
     const head=this.store.liveHead(departmentId);
@@ -1877,6 +1903,7 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
    * 이 도구로 닫힌 task 는 `reported` 가 되므로 턴 종료(`Stop`)의 v1a 보고 승격이 같은 task 를 두 번 보고하지 않는다.
    */
   teamReport(memberId: string, input: TeamReportInput): { task: Task; to: 'user' | 'parent' } {
+    return this.workflowMutation(()=>{
     const workflow=this.workflows.current(this.member(memberId).departmentId);
     if (workflow && input.taskId===workflow.rootTaskId && (workflow.phase!=='executing' || workflow.assignments.some(a=>a.status!=='done'))) throw badState('회의와 담당 업무를 모두 마친 뒤 최종 보고하세요.');
     const member = this.requireToolRank(memberId, 'report');
@@ -1895,17 +1922,18 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
 
     const body = reportBody(summary, input.files);
     this.store.updateTask(task.id, { status: 'reported', reportStatus: input.status, reportText: body });
-    this.inFlight.delete(task.id);
+    this.deferredWorkflowInputs!.push(()=>this.inFlight.delete(task.id));
     const detail: OfficeEvent['detail'] = { summary: truncate(body, 300), status: input.status };
     if (input.files?.length) detail.files = input.files;
     this.appendEvent(member, 'reporting', detail, { taskId: task.id });
     this.workflows.report(member, task.id, input.status, body);
 
     const to = task.fromMember === USER_ACTOR ? 'user' : 'parent';
-    if (to === 'parent') this.bufferReport(task.fromMember, { taskId: task.id, name: member.name, status: input.status, body });
+    if (to === 'parent') this.deferredWorkflowInputs!.push(()=>this.bufferReport(task.fromMember, { taskId: task.id, name: member.name, status: input.status, body }));
     // 보고가 끝나면 내(=보고자) 파생 상태도 바뀐다(배정 task 0 → free).
     this.emitStatus(member.id, this.store.getMember(member.id)?.status ?? member.status);
     return { task: this.store.getTask(task.id)!, to };
+    });
   }
 
   /**
@@ -2100,10 +2128,11 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
 
   /** A readable member identity next to its project-local logs; never include the hook token. */
   private writeProjectSession(member: Member): void {
+    assertProjectFolder(member.cwd);
     const dir = projectMemberDir(member.cwd, member.id);
     fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
     const { id, name, rank, engine, sessionId, departmentId, parentId, createdAt } = member;
-    fs.writeFileSync(path.join(dir, 'session.json'), JSON.stringify({ id, name, rank, engine, sessionId, departmentId, parentId, createdAt }, null, 2));
+    writeJson(path.join(dir, 'session.json'), { id, name, rank, engine, sessionId, departmentId, parentId, createdAt });
   }
 
   /** `<project>/.pixel-office/sessions/<memberId>/mcp.json`. */
@@ -2199,7 +2228,14 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
         if (!Number.isInteger(taskId)) return;
         this.inFlight.delete(taskId);
         const task = this.store.getTask(taskId);
-        if (task?.status === 'queued') this.store.updateTask(task.id, { status: 'assigned' });
+        if (task && OPEN_TASKS.includes(task.status)) {
+          this.store.updateTask(task.id, { status: 'assigned', delivery: 'submitting' });
+          this.emit('tree','task.delivery');
+        }
+      });
+      queue.on('submitted',item=>{
+        const task=item.id && this.store.getTask(Number(item.id));
+        if(task && OPEN_TASKS.includes(task.status)){this.store.updateTask(task.id,{delivery:'accepted'});this.emit('tree','task.delivery');}
       });
       queue.on('dialogPassed', (kind) => this.notice('info', `${member.name}: passed first-run dialog (${kind})`));
       // 통과할 수 없는 다이얼로그(CLI 자체 허가 프롬프트 등, D-26). InputQueue 가 kind 당 한 번만 내므로 알림도 한 번이다.
@@ -2207,7 +2243,11 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
       // Enter 가 안 먹어 다시 보냈다(T42 — Codex resume 직후). 정보성: 큐는 스스로 회복한다.
       queue.on('submitRetried', (_item, attempt) => this.notice('info', `${member.name}: 프롬프트가 안 들어가 Enter 를 다시 보냄 (${attempt})`));
       // 재시도를 다 썼는데도 안 들어갔다 — 텍스트가 입력 상자에 남아 있다. 사용자가 터미널 탭에서 Enter 를 치면 된다.
-      queue.on('submitLost', () => this.notice('warn', `${member.name}: 지시가 입력 상자에 남아 제출되지 않았습니다 — 터미널 탭에서 Enter 를 쳐 주세요`));
+      queue.on('submitLost', item => {
+        const task=item.id && this.store.getTask(Number(item.id));
+        if(task && OPEN_TASKS.includes(task.status)){this.store.updateTask(task.id,{delivery:'failed'});this.emit('tree','task.delivery');}
+        this.notice('error', `${member.name}: 지시 제출을 확인하지 못했습니다 — 재제출하거나 터미널에서 입력 상자를 확인하세요`);
+      });
       queue.start();
 
       this.store.updateMember(member.id, { childPid: session.pid, status: 'starting' });
@@ -2816,9 +2856,10 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
       if (ev.kind==='text' && typeof ev.detail.text==='string') this.workflows.headText(member,ev.detail.text);
       try {
         this.writeProjectSession(member);
-        fs.appendFileSync(path.join(projectMemberDir(member.cwd, member.id), 'events.jsonl'), JSON.stringify(ev) + '\n');
+        appendLog(path.join(projectMemberDir(member.cwd, member.id), 'events.jsonl'), JSON.stringify(ev) + '\n');
+        storageResult(`project:${member.departmentId}`);
       } catch (err) {
-        this.notice('warn', `프로젝트 세션 기록 저장 실패: ${errMsg(err)}`);
+        storageResult(`project:${member.departmentId}`,err);
       }
     });
     // 엔진 어댑터는 같은 이벤트를 낸다(HooksAdapterEvents) — 배선도 같다.
@@ -2948,6 +2989,7 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
     // 발행한 미종료 task 가 하나라도 있으면 건너뛴다 — `[ALL_REPORTS_IN]` 뒤 턴에서 닫히거나 `report` 도구가 닫는다.
     if (this.store.openTasksIssuedBy(ev.memberId).length > 0) return;
     for (const task of this.store.listTasks({ toMember: ev.memberId, status: 'assigned' })) {
+      this.workflowMutation(()=>{
       const reportText = rt?.lastText ?? null;
       this.store.updateTask(task.id, { status: 'reported', reportStatus: 'done', reportText });
       this.appendEvent(member, 'reporting', { summary: reportText ? truncate(reportText, 300) : `task#${task.id} done` }, { taskId: task.id });
@@ -2955,8 +2997,9 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
       // T25: 위임받은 task 를 `report` 도구 없이 턴만 끝낸 경우에도 팀장에게는 보고가 올라가야 한다 — 같은 버퍼를 탄다.
       // (팀장이 `[ALL_REPORTS_IN]` 을 영영 못 받고 굳는 것을 막는 안전망. `report` 로 이미 닫힌 task 는 여기 오지 않는다.)
       if (task.fromMember !== USER_ACTOR) {
-        this.bufferReport(task.fromMember, { taskId: task.id, name: member.name, status: 'done', body: reportText ?? `task#${task.id} done` });
+        this.deferredWorkflowInputs!.push(()=>this.bufferReport(task.fromMember, { taskId: task.id, name: member.name, status: 'done', body: reportText ?? `task#${task.id} done` }));
       }
+      });
     }
   }
 
@@ -2995,6 +3038,7 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
   }
 
   private emitStatus(memberId: string, status: MemberStatus): void {
+    if(this.deferredWorkflowInputs){this.deferredWorkflowInputs.push(()=>this.emitStatus(memberId,status));return;}
     if (!this.stopping && (status === 'error' || status === 'exited')) {
       const member = this.store.getMember(memberId);
       if (member) this.workflows.memberGone(member);
@@ -3032,7 +3076,7 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
 
   private appendEvent(member: Member, kind: OfficeEvent['kind'], detail: OfficeEvent['detail'], ref: OfficeEvent['ref'] = {}): void {
     const ev = this.store.appendEvent({ departmentId: member.departmentId, teamId: member.teamId, memberId: member.id, kind, detail, ref });
-    this.emit('event', ev);
+    if(this.deferredWorkflowInputs)this.deferredWorkflowInputs.push(()=>this.emit('event',ev));else this.emit('event', ev);
   }
 
   /** `extra` 는 기계가 읽는 꼬리표(T46-1 — `parent-gone`·`recovering`). 없으면 예전 모양 그대로다. */

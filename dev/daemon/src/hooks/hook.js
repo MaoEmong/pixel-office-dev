@@ -24,7 +24,11 @@ const logPath = process.env.PIXEL_HOOK_LOG || '';
 function jot(kind, data) {
   if (!logPath) return;
   try {
-    fs.appendFileSync(logPath, JSON.stringify({ at: new Date().toISOString(), member, event, kind, data }) + '\n');
+    const text=JSON.stringify({ at: new Date().toISOString(), member, event, kind, data }) + '\n';
+    if(fs.existsSync(logPath) && fs.statSync(logPath).size+Buffer.byteLength(text)>5*1024*1024){
+      for(let n=3;n>=1;n--){const to=logPath+'.'+n,from=n===1?logPath:logPath+'.'+(n-1);if(fs.existsSync(to))fs.unlinkSync(to);if(fs.existsSync(from))fs.renameSync(from,to);}
+    }
+    fs.appendFileSync(logPath,text.length>1024*1024?text.slice(0,1024*1024)+'\n[truncated]\n':text);
   } catch {
     // 진단용이므로 실패해도 hook 흐름을 막지 않는다
   }

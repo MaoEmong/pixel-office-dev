@@ -1,6 +1,7 @@
 // Office 가 던지는 오류. RpcServer 가 JSON-RPC 에러 코드로 그대로 옮긴다(PROTOCOL.md "에러 코드").
 
 export const RPC_ERROR = {
+  UNKNOWN_OUTCOME: -32009,
   /** 인증 실패(hello 토큰 불일치, 미인증 호출). */
   UNAUTHORIZED: -32001,
   /** 없는 멤버·팀·pending. */

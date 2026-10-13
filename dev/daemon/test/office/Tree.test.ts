@@ -1,3 +1,4 @@
+import {acknowledgeInputs} from './fakes.js';
 // T34 — 트리 동작(구조는 TeamRank.test.ts, 여기서는 **움직임**). D-32 직무 체계 rev 3.
 //   ① 부서 생성 → 부장 출근 → 사용자 지시는 부장에게만(-32004) → 부장이 낸 일은 팀장에게로
 //   ② 파생 상태 `waiting_reports` 는 직급을 가리지 않는다 — 부장도 팀장도 부하 보고를 기다리면 같은 상태
@@ -49,7 +50,7 @@ describe('직무 체계 rev 3 — 트리 동작 (T34)', () => {
     office = new Office({ config: { dataDir, hookPort: 0, wsPort: 0, mcpPort: 0 }, store, pty, receiver, mcp, version: 't34' });
     statuses = [];
     office.on('status', (id, s, d) => statuses.push([id, s, d]));
-    await office.start();
+    acknowledgeInputs(office); await office.start();
     const t = makeTree(office, { name: 'alpha', cwd: dataDir, headName: '국장', leadName: '반장', maxMembers: 4 });
     department = t.department;
     head = t.head;

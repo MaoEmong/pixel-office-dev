@@ -8,7 +8,7 @@ export interface WorkflowHost {
   head(departmentId: string): Member;
   member(id: string): Member | undefined;
   busy(departmentId: string): boolean;
-  send(memberId: string, text: string): void;
+  send(memberId: string, text: string, deliveryId?: string): void;
   startTask(memberId: string, text: string): number;
   delegate(headId: string, leadId: string, text: string): number;
   task(id: number): Task | undefined;
@@ -98,6 +98,7 @@ export class WorkflowCoordinator {
     });
   }
   open(head: Member, participants: string[]): Workflow {
+    return this.atomic(()=>{
     const w = this.active(head.departmentId,'meeting');
     if (head.rank!=='head' || this.host.head(head.departmentId).id!==head.id) throw new Error('부장만 회의를 소집할 수 있습니다.');
     if (w.meeting) throw new Error('이미 소집된 회의가 있습니다.');
@@ -109,20 +110,22 @@ export class WorkflowCoordinator {
     if (!participants.some(id=>this.host.member(id)!.rank==='lead')) throw new Error('최소 한 명의 팀장이 참석해야 합니다.');
     w.meeting={round:1,state:'collecting',participants,participantNames:Object.fromEntries(participants.map(id=>[id,this.host.member(id)!.name])),contributions:[]}; this.save(w);
     this.requestMissing(w); return w;
+    });
   }
   private requestMissing(w: Workflow): void {
     const meeting=w.meeting!;
     const history=meeting.contributions.map(c=>`${this.host.member(c.memberId)?.name ?? c.memberId} (${c.round}차): ${c.text}`).join('\n');
     if (meeting.state==='deciding') {
-      this.host.send(this.host.head(w.departmentId).id, `[MEETING DECIDE ${w.id}]\n작업안: ${w.brief}\n${history}\n두 차례 의견이 모두 모였다. 쟁점을 조정하고 meeting_decide로 minutes와 팀장별 assignments를 확정하라. 아직 실행·delegate하지 마라.`);
+      this.host.send(this.host.head(w.departmentId).id, `[MEETING DECIDE ${w.id}]\n작업안: ${w.brief}\n${history}\n두 차례 의견이 모두 모였다. 쟁점을 조정하고 meeting_decide로 minutes와 팀장별 assignments를 확정하라. 아직 실행·delegate하지 마라.`, `${w.id}:decide`);
       return;
     }
     for (const id of meeting.participants) {
       if (meeting.contributions.some(c=>c.memberId===id && c.round===meeting.round)) continue;
-      this.host.send(id, `[MEETING ${w.id} ROUND ${meeting.round}]\n작업안: ${w.brief}\n${meeting.round===2 ? `다른 참가자의 의견:\n${history}\n다른 의견과 충돌·의존성·위험을 검토하라.` : '접근 방법, 담당 범위, 위험, 완료 기준에 대한 의견을 제시하라.'}\n구현·delegate하지 마라. mcp__team__meeting_speak(workflowId="${w.id}",round=${meeting.round},text=의견)으로 한 번 제출하고 턴을 끝내라. 도구가 안 보이면 ToolSearch로 찾아라.`);
+      this.host.send(id, `[MEETING ${w.id} ROUND ${meeting.round}]\n작업안: ${w.brief}\n${meeting.round===2 ? `다른 참가자의 의견:\n${history}\n다른 의견과 충돌·의존성·위험을 검토하라.` : '접근 방법, 담당 범위, 위험, 완료 기준에 대한 의견을 제시하라.'}\n구현·delegate하지 마라. mcp__team__meeting_speak(workflowId="${w.id}",round=${meeting.round},text=의견)으로 한 번 제출하고 턴을 끝내라. 도구가 안 보이면 ToolSearch로 찾아라.`, `${w.id}:${meeting.round}:${id}`);
     }
   }
   speak(member: Member, workflowId: string, round: number, text: string): Workflow {
+    return this.atomic(()=>{
     const w=this.active(member.departmentId,'meeting');
     if (w.id!==workflowId || !w.meeting || w.meeting.state==='deciding' || w.meeting.round!==round || !w.meeting.participants.includes(member.id)) throw new Error('초대된 참석자의 현재 회의 차례만 제출할 수 있습니다.');
     if (!live(member)) throw new Error('퇴근한 참석자는 의견을 제출할 수 없습니다.');
@@ -134,6 +137,7 @@ export class WorkflowCoordinator {
       else w.meeting.state='deciding';
     }
     this.save(w); if (complete) this.requestMissing(w); return w;
+    });
   }
   decide(head: Member, workflowId: string, minutes: string, assignments: WorkAssignment[]): Workflow {
     const w=this.active(head.departmentId,'meeting');
@@ -158,20 +162,32 @@ export class WorkflowCoordinator {
       ready.forEach(a=>settled.add(a.leadId));
     }
     w.meeting!.minutes=this.text(minutes); w.assignments=clean; w.phase='executing'; this.save(w);
-    this.dispatch(w); return w;
+    return this.dispatch(w);
   }
-  private dispatch(w: Workflow): void {
-    for (const a of w.assignments) {
+  private dispatch(w: Workflow): Workflow {
+    for (const pending of w.assignments) {
+      const a=w.assignments.find(a=>a.leadId===pending.leadId)!;
       if (a.taskId || !(a.dependsOn ?? []).every(id=>w.assignments.find(other=>other.leadId===id)?.status==='done')) continue;
       const lead=this.host.member(a.leadId);
-      if (!live(lead)) { w.phase='blocked'; w.problem='담당 팀장이 퇴근하거나 오류 상태입니다.'; this.save(w); return; }
-      a.taskId=this.host.delegate(this.host.head(w.departmentId).id,a.leadId,`${a.task}\n완료 기준:\n${a.acceptance.join('\n')}\n회의 결정:\n${w.meeting!.minutes}`);
-      a.status='assigned'; this.save(w);
+      try {
+        w=this.atomic(()=>{
+          const fresh=this.current(w.departmentId)!;
+          const assignment=fresh.assignments.find(row=>row.leadId===a.leadId)!;
+          if (!live(lead)) throw new Error('담당 팀장이 퇴근하거나 오류 상태입니다.');
+          assignment.taskId=this.host.delegate(this.host.head(w.departmentId).id,a.leadId,`${a.task}\n완료 기준:\n${a.acceptance.join('\n')}\n회의 결정:\n${fresh.meeting!.minutes}`);
+          assignment.status='assigned'; return this.save(fresh);
+        });
+      } catch(err) {
+        w=this.current(w.departmentId)!;
+        w.phase='blocked'; w.problem=`업무 배정 실패: ${err instanceof Error ? err.message : String(err)}. 원인을 해결하고 업무 배정 재시도를 누르세요.`;
+        return this.save(w);
+      }
     }
+    return w;
   }
   report(member: Member, taskId: number | undefined, status: string, summary: string): void {
     const w=this.current(member.departmentId);
-    if (!w || w.phase!=='executing' || !taskId) return;
+    if (!w || !['executing','blocked'].includes(w.phase) || !taskId) return;
     const a=w.assignments.find(a=>a.taskId===taskId);
     if (a) {
       a.status=status==='done' ? 'done' : 'blocked';
@@ -196,11 +212,19 @@ export class WorkflowCoordinator {
   }
   resume(departmentId: string): Workflow {
     const w=this.active(departmentId);
+    if(w.assignments.length && ['executing','blocked'].includes(w.phase)) {
+      this.host.head(departmentId);
+      if(w.assignments.some(a=>a.taskId && ['blocked','aborted'].includes(a.status ?? ''))) throw new Error('실행한 업무의 보고에 문제가 있습니다. 작업을 취소하고 보완 논의를 시작하세요.');
+      for(const a of w.assignments) if(a.status!=='done' && !live(this.host.member(a.leadId)))throw new Error('퇴근·오류 담당자를 먼저 재고용하세요.');
+      w.phase='executing';delete w.problem;this.save(w);return this.dispatch(w);
+    }
+    return this.atomic(()=>{
     if (!w.meeting || !['meeting','blocked'].includes(w.phase)) throw new Error('재개할 회의가 없습니다.');
     if (w.assignments.length) throw new Error('실행 중 문제가 생겼습니다. 작업을 취소하고 보완 논의를 시작하세요.');
     this.host.head(departmentId);
     if (w.meeting.participants.some(id=>!live(this.host.member(id)))) throw new Error('퇴근·오류 참석자를 먼저 재고용하세요.');
     w.phase='meeting'; delete w.problem; this.save(w); this.requestMissing(w); return w;
+    });
   }
   cancel(departmentId: string): Workflow {
     const w=this.active(departmentId);

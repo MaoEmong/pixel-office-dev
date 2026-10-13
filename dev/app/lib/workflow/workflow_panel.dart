@@ -390,6 +390,15 @@ class _WorkflowDialogState extends ConsumerState<WorkflowDialog> {
                       onPressed: _busy ? null : () => run('workflow.complete'),
                       child: const Text('검수 완료'),
                     ),
+                  if (assignments.isNotEmpty &&
+                      ['executing', 'blocked'].contains(phase))
+                    OutlinedButton.icon(
+                      onPressed: _busy || !hasHead
+                          ? null
+                          : () => run('workflow.resume'),
+                      icon: const Icon(Icons.refresh),
+                      label: const Text('업무 배정 재시도'),
+                    ),
                   if (w != null && !['completed', 'cancelled'].contains(phase))
                     TextButton(
                       onPressed: _busy ? null : () => run('workflow.cancel'),

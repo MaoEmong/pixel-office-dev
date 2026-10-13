@@ -47,6 +47,16 @@ test('session and team limits reject before adding rows; retirement frees capaci
   assert.ok(f.store.getTeam(team.id));
 });
 
+test('event logging never recreates a moved project and resumes when the folder returns',async t=>{
+  const f=await setup();t.after(()=>f.close());
+  const moved=path.join(f.root,'moved');fs.renameSync(f.cwd,moved);
+  const event={seq:1,memberId:f.head.id,kind:'running',detail:{},ref:{},ts:new Date().toISOString(),teamId:'',departmentId:f.department.id} as const;
+  f.office.emit('event',event);f.office.emit('event',event);
+  assert.equal(fs.existsSync(f.cwd),false);
+  fs.renameSync(moved,f.cwd);f.office.emit('event',event);
+  assert.ok(fs.existsSync(path.join(f.cwd,'.pixel-office','sessions',f.head.id,'events.jsonl')));
+});
+
 test('boot timeout becomes error, aborts waiting task and kills CLI; rehire can recover', async t=> {
   const f=await setup('codex');t.after(()=>f.close());
   const task=f.office.instruct(f.head.id,'pending task');
@@ -66,4 +76,16 @@ test('failed workflow final save never queues a rolled back task to a real Offic
   assert.throws(()=>f.office.workflowStart(f.department.id),/injected final save/);
   assert.equal(runtimes.get(f.head.id)!.queue.size(),n);assert.equal(f.store.listTasks().length,0);
   assert.equal(f.office.workflowGet(f.department.id)?.phase,'clarifying');
+});
+
+test('report and workflow completion roll back together; failed reports publish no completion event',async t=>{
+  const f=await setup();t.after(()=>f.close());const {lead}=f.office.createTeam({departmentId:f.department.id,name:'lead'});
+  const task=f.store.createTask({departmentId:f.department.id,fromMember:f.head.id,toMember:lead.id,instruction:'work',status:'assigned'});
+  f.store.saveWorkflow({id:'w_report',departmentId:f.department.id,phase:'executing',brief:'work',messages:[],assignments:[{leadId:lead.id,task:'work',acceptance:['done'],taskId:task.id,status:'assigned'}],createdAt:new Date().toISOString(),updatedAt:new Date().toISOString()});
+  let reports=0;f.office.on('event',ev=>{if(ev.kind==='reporting')reports++;});
+  const save=f.store.saveWorkflow.bind(f.store);f.store.saveWorkflow=()=>{throw new Error('workflow disk failure');};
+  assert.throws(()=>f.office.teamReport(lead.id,{taskId:task.id,status:'done',summary:'result'}),/workflow disk failure/);
+  assert.equal(f.store.getTask(task.id)?.status,'assigned');assert.equal(f.office.workflowGet(f.department.id)?.assignments[0]?.status,'assigned');assert.equal(reports,0);
+  f.store.saveWorkflow=save;f.office.teamReport(lead.id,{taskId:task.id,status:'done',summary:'result'});
+  assert.equal(f.store.getTask(task.id)?.status,'reported');assert.equal(f.office.workflowGet(f.department.id)?.assignments[0]?.status,'done');assert.equal(reports,1);
 });

@@ -46,6 +46,18 @@ function harness(opts: { graceMs?: number; useRealClock?: boolean } = {}): Harne
 
 const instruct = (text: string, id?: string): InputItem => ({ kind: 'instruct', text, id });
 
+test('lost submission freezes later input; retry sends only Enter and deduplicates the pending ID',()=>{
+  const h=harness();let accepted=0;h.q.on('submitted',()=>accepted++);
+  h.q.enqueue(instruct('one','1'));h.advance(TIMING.enterDelayMs);h.q.tick();
+  h.q.enqueue(instruct('one','1'));h.q.enqueue(instruct('two','2'));assert.equal(h.q.size(),1);
+  for(let i=0;i<=SUBMIT_RETRY_MAX;i++){h.advance(TIMING.submitCheckMs);h.q.tick();}
+  assert.deepEqual(h.calls.filter(x=>x.startsWith('paste')),['paste:one']);
+  h.q.retrySubmit('1');assert.equal(h.calls.at(-1),'key:enter');
+  h.state.idle=false;h.q.tick();assert.equal(accepted,1);
+  h.state.idle=true;h.advance(TIMING.busyAfterFlushMs);h.q.tick();
+  assert.deepEqual(h.calls.filter(x=>x.startsWith('paste')),['paste:one','paste:two']);
+});
+
 describe('flush gate', () => {
   test('flushes only when isIdle && promptReady && no recent user typing (all three)', () => {
     const h = harness();
@@ -113,6 +125,7 @@ describe('flush gate', () => {
     // 큐가 비어(이미 paste 됨) 새 항목을 넣고 사용자가 계속 친다
     h.advance(TIMING.enterDelayMs);
     h.q.tick(); // enter
+    h.state.idle=false;h.q.tick();h.state.idle=true; // CLI accepted the first instruction
     h.state.idle = false; // UserPromptSubmit — 제출 확정. 여기서 임계 구간이 닫힌다(T44)
     h.q.tick();
     h.state.idle = true; // 턴 종료
@@ -154,6 +167,7 @@ describe('flush gate', () => {
     h.advance(TIMING.enterDelayMs);
     h.q.tick(); // enter
     h.q.enqueue(instruct('b'));
+    h.state.idle=false;h.q.tick();h.state.idle=true;
     h.state.ready = false;
     h.advance(TIMING.busyAfterFlushMs);
     h.q.tick();
@@ -389,6 +403,7 @@ describe('ordering and busy window', () => {
     for (let i = 0; i < 20; i++) {
       h.advance(500);
       h.q.tick();
+      if(h.flushed.length>0){h.state.idle=false;h.q.tick();h.state.idle=true;}
     }
     assert.deepEqual(pastes(), ['paste:A', 'paste:B', 'paste:C']);
     assert.deepEqual(
@@ -396,8 +411,7 @@ describe('ordering and busy window', () => {
       ['1', '2', '3'],
     );
     // 각 항목은 paste → enter 순서로 붙어 있다.
-    // (뒤에 붙는 여분 'key:enter' 는 제출 확인 재시도다 — 이 가짜 세션은 Enter 를 받아도 idle 을 안 풀기 때문.
-    //  실제 CLI 는 UserPromptSubmit 으로 idle 이 풀려 재시도가 멈춘다. 아래 'submit 확인' 절 참고.)
+    // The fake CLI acknowledges each instruction before accepting the next one.
     assert.deepEqual(
       h.calls.slice(0, 6),
       ['paste:A', 'key:enter', 'paste:B', 'key:enter', 'paste:C', 'key:enter'],
@@ -424,6 +438,7 @@ describe('ordering and busy window', () => {
     assert.deepEqual(h.calls, ['paste:one', 'key:enter']);
     const tEnter = h.now();
     assert.equal(tEnter, t0 + TIMING.enterDelayMs);
+    h.state.idle=false;h.q.tick();h.state.idle=true;
 
     // Enter 후 1500ms 미만: 대기(조용히 — blocked 도 안 냄)
     h.advance(TIMING.busyAfterFlushMs - 1);
@@ -497,7 +512,7 @@ describe('keys, interrupt, clear', () => {
 describe('poll loop (real timers)', () => {
   test('start() drives paste → Enter → next item without manual ticks; stop() halts', async () => {
     const h = harness({ useRealClock: true });
-    const flushedTwo = new Promise<void>((resolve) => h.q.on('flushed', () => h.flushed.length === 2 && resolve()));
+    const flushedTwo = new Promise<void>((resolve) => h.q.on('flushed', () => {h.state.idle=false;setTimeout(()=>{h.q.tick();h.state.idle=true;},30);if(h.flushed.length===2)resolve();}));
     h.q.enqueue(instruct('r1'));
     h.q.enqueue(instruct('r2'));
     assert.deepEqual(h.calls, ['paste:r1']); // enqueue 는 즉시 평가

@@ -4,6 +4,7 @@ import path from 'node:path';
 import fs from 'node:fs';
 import { randomUUID, randomBytes } from 'node:crypto';
 import { DatabaseSync, type SQLInputValue } from 'node:sqlite';
+import {storageResult} from '../storage/files.js';
 import { config } from '../config.js';
 import { MEMBERS_V5_SQL, PENDING_FK_REPAIR_SQL, SCHEMA_SQL, SCHEMA_VERSION, V1_DROP_SQL, V1_RENAME_SQL } from './schema.js';
 import type {
@@ -184,6 +185,7 @@ function rowToTask(r: Row): Task {
     toMember: r.to_member as string,
     instruction: r.instruction as string,
     status: r.status as TaskStatus,
+    delivery: (r.delivery as Task['delivery']) ?? (r.status==='assigned' ? 'accepted' : 'waiting'),
     reportText: (r.report_text as string | null) ?? null,
     reportStatus: (r.report_status as Task['reportStatus']) ?? null,
     createdAt: r.created_at as string,
@@ -218,6 +220,7 @@ const OPEN_TASK_STATUSES: TaskStatus[] = ['queued', 'assigned'];
 export class Store {
   readonly path: string;
   private db: DatabaseSync;
+  private transactionDepth=0;
 
   /**
    * @param dbPath 파일 경로. 생략 시 `${config.dataDir}/pixel-office.db`. 테스트는 ':memory:'.
@@ -226,10 +229,15 @@ export class Store {
     this.path = dbPath;
     if (dbPath !== ':memory:') fs.mkdirSync(path.dirname(dbPath), { recursive: true });
     this.db = new DatabaseSync(dbPath, { enableForeignKeyConstraints: true });
+    const check=this.db.prepare('PRAGMA quick_check').all();
+    if(check.some(row=>Object.values(row)[0]!=='ok')){this.db.close();throw new Error('사무실 DB 무결성 검사에 실패했습니다. 데이터 폴더의 backups에서 복구하세요. 원본 DB는 보존했습니다.');}
     if (dbPath !== ':memory:') this.db.exec('PRAGMA journal_mode = WAL;');
     this.db.exec('PRAGMA synchronous = NORMAL;');
+    if(dbPath!==':memory:' && this.db.prepare("SELECT 1 FROM sqlite_master WHERE name='schema_version'").get())try{this.backup();}catch(err){storageResult('database-backup',err);}
     this.migrate();
+    if(!(this.db.prepare('PRAGMA table_info(tasks)').all() as Array<{name:string}>).some(row=>row.name==='delivery'))this.db.exec('ALTER TABLE tasks ADD COLUMN delivery TEXT');
     this.db.exec("CREATE TABLE IF NOT EXISTS app_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
+    this.db.exec('CREATE TABLE IF NOT EXISTS rpc_requests (id TEXT PRIMARY KEY, hash TEXT NOT NULL, reply TEXT, created_at TEXT NOT NULL)');
     this.db.exec(`CREATE TABLE IF NOT EXISTS workflows (
       id TEXT PRIMARY KEY, department_id TEXT NOT NULL REFERENCES departments(id) ON DELETE CASCADE,
       payload TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
@@ -433,19 +441,47 @@ export class Store {
 
   /** 여러 쓰기를 한 트랜잭션으로. 예외 시 롤백 후 재throw. */
   transaction<T>(fn: () => T): T {
-    this.db.exec('BEGIN');
+    const depth=this.transactionDepth++,savepoint=`office_${depth}`;
+    try{this.db.exec(depth ? `SAVEPOINT ${savepoint}` : 'BEGIN');}catch(err){this.transactionDepth--;throw err;}
     try {
       const out = fn();
-      this.db.exec('COMMIT');
+      this.db.exec(depth ? `RELEASE ${savepoint}` : 'COMMIT');
       return out;
     } catch (e) {
-      this.db.exec('ROLLBACK');
+      this.db.exec(depth ? `ROLLBACK TO ${savepoint}; RELEASE ${savepoint}` : 'ROLLBACK');
       throw e;
-    }
+    }finally{this.transactionDepth--;}
   }
 
   close(): void {
     this.db.close();
+  }
+
+  requestRecord(id:string): {hash:string;reply?:unknown} | undefined {
+    const row=this.db.prepare('SELECT hash,reply FROM rpc_requests WHERE id=?').get(id) as {hash:string;reply:string|null}|undefined;
+    return row ? {hash:row.hash,...(row.reply ? {reply:JSON.parse(row.reply)} : {})} : undefined;
+  }
+  reserveRequest(id:string,hash:string){this.db.prepare('INSERT INTO rpc_requests VALUES(?,?,NULL,?)').run(id,hash,nowIso());}
+  finishRequest(id:string,reply:unknown){this.db.prepare('UPDATE rpc_requests SET reply=? WHERE id=?').run(JSON.stringify(reply),id);}
+
+  /** SQLite snapshot includes committed WAL changes; keep three daily backups. */
+  backup(force=false): string | undefined {
+    if(this.path===':memory:')return;
+    const dir=path.join(path.dirname(this.path),'backups');fs.mkdirSync(dir,{recursive:true});
+    const stamp=new Date().toISOString();
+    const file=path.join(dir,`office-${stamp.slice(0,10)}${force ? '-'+stamp.slice(11,23).replaceAll(':','').replace('.','') : ''}.db`);
+    if(!fs.existsSync(file))this.db.exec(`VACUUM INTO '${file.replaceAll("'","''")}'`);
+    const files=fs.readdirSync(dir).filter(name=>/^office-\d{4}-\d{2}-\d{2}(-\d{9})?\.db$/.test(name)).sort().reverse();
+    for(const name of files.slice(3))fs.unlinkSync(path.join(dir,name));
+    storageResult('database-backup');return file;
+  }
+
+  pruneWorkflows(days=90,now=Date.now()): number {
+    const current=new Set(this.currentWorkflows().map(w=>w.id));let count=0;
+    for(const w of this.listWorkflows())if(!current.has(w.id) && ['completed','cancelled'].includes(w.phase) && w.updatedAt<cutoffIso(days,now)){
+      count+=Number(this.db.prepare('DELETE FROM workflows WHERE id=?').run(w.id).changes);
+    }
+    return count;
   }
 
   // ---- departments (T34) -----------------------------------------------------
@@ -764,6 +800,7 @@ export class Store {
    */
   pruneRetention(opts: RetentionOptions = {}): RetentionResult {
     const now = opts.now ?? Date.now();
+    this.db.prepare('DELETE FROM rpc_requests WHERE created_at < ?').run(cutoffIso(90,now));
     return {
       events: this.pruneEvents({ keepPerTeam: opts.keepPerTeam ?? DEFAULT_RETENTION.keepPerTeam }),
       pending: this.prunePending(opts.pendingDays ?? DEFAULT_RETENTION.pendingDays, now),
@@ -787,9 +824,11 @@ export class Store {
   /** 끝난 task(reported/aborted) 중 `days` 일보다 오래된 행을 지운다. 삭제 건수 반환. */
   pruneTasks(days: number = DEFAULT_RETENTION.taskDays, now: number = Date.now()): number {
     if (!(days > 0)) return 0;
+    const protectedIds=this.currentWorkflows().filter(w=>!['completed','cancelled'].includes(w.phase))
+      .flatMap(w=>[w.rootTaskId,...w.assignments.map(a=>a.taskId)]).filter((id):id is number=>typeof id==='number');
     const res = this.db
-      .prepare("DELETE FROM tasks WHERE status IN ('reported','aborted') AND updated_at < ?")
-      .run(cutoffIso(days, now));
+      .prepare("DELETE FROM tasks WHERE status IN ('reported','aborted') AND updated_at < ?"+(protectedIds.length ? ` AND id NOT IN (${protectedIds.map(()=>'?').join(',')})` : ''))
+      .run(cutoffIso(days, now),...protectedIds);
     return toNum(res.changes);
   }
 
@@ -865,10 +904,10 @@ export class Store {
     const ts = nowIso();
     const res = this.db
       .prepare(
-        `INSERT INTO tasks(department_id, from_member, to_member, instruction, status, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO tasks(department_id, from_member, to_member, instruction, status, created_at, updated_at, delivery)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       )
-      .run(input.departmentId, input.fromMember, input.toMember, input.instruction, input.status ?? 'queued', ts, ts);
+      .run(input.departmentId, input.fromMember, input.toMember, input.instruction, input.status ?? 'queued', ts, ts, input.status==='assigned' ? 'accepted' : 'waiting');
     return this.getTask(toNum(res.lastInsertRowid))!;
   }
 
@@ -882,6 +921,7 @@ export class Store {
       fromMember: { col: 'from_member' },
       toMember: { col: 'to_member' },
       instruction: { col: 'instruction' },
+      delivery: { col: 'delivery' },
       status: { col: 'status' },
       reportText: { col: 'report_text', encode: nullable },
       reportStatus: { col: 'report_status', encode: nullable },

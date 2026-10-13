@@ -7,6 +7,22 @@ import { gracefulQuit } from '../../src/pty/PtyManager.js';
 import type { DecisionHandle, HookReceiverEvents, HookRequest } from '../../src/hooks/HookReceiver.js';
 import type { HookEvent, HookPayload } from '../../src/hooks/types.js';
 import type { Department, Engine, Member, Team } from '../../src/store/types.js';
+import type {Office} from '../../src/office/Office.js';
+import type {InputQueue,QueueDeps} from '../../src/input/InputQueue.js';
+
+/** Queue-only fixtures acknowledge submission without inventing a model turn/report. */
+export function acknowledgeInputs(office:Office){
+  const wired=new WeakSet<InputQueue>();
+  office.on('status',id=>{
+    const rt=(office as unknown as {runtimes:Map<string,{queue:InputQueue}>}).runtimes.get(id);
+    if(!rt || wired.has(rt.queue))return;wired.add(rt.queue);
+    rt.queue.on('flushed',()=>queueMicrotask(()=>{
+      const deps=(rt.queue as unknown as {deps:QueueDeps}).deps;
+      const idle=deps.isIdle;
+      try{deps.isIdle=()=>false;rt.queue.tick();}finally{deps.isIdle=idle;}
+    }));
+  });
+}
 
 export class FakeSession implements PtySession {
   alive = true;

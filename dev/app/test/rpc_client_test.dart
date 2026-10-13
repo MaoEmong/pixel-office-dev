@@ -51,15 +51,32 @@ void main() {
       client.call('workflow.discuss', {'departmentId': 'd', 'text': 'hello'}),
       throwsA(isA<RpcException>()),
     );
-    final first = daemon.paramsOf('workflow.discuss')!['requestId'];
+    final first = daemon.paramsOf('workflow.discuss', includeRequestId: true)!['requestId'];
     daemon.dropReplies.clear();
     await client.call('workflow.discuss', {'departmentId': 'd', 'text': 'hello'});
-    expect(daemon.paramsOf('workflow.discuss')!['requestId'], first);
+    expect(daemon.paramsOf('workflow.discuss', includeRequestId: true)!['requestId'], first);
     expect(accepted.length, 1);
     await client.call('workflow.discuss', {'departmentId': 'd', 'text': 'hello'});
     expect(accepted.length, 2);
   });
 
+  test('an instruction retry survives client recreation and reordered arguments', () async {
+    var stored=<String,String>{};
+    RpcClient create()=>RpcClient(callTimeout:const Duration(milliseconds:60),loadRetries:() async=>stored,saveRetries:(value) async{stored={...value};});
+    await client.close();client=create();await client.connect(daemon.url);await client.hello('tok');
+    final ids=<String>{};daemon.handlers['member.instruct']=(p){ids.add(p['requestId'] as String);return {'taskId':1};};daemon.dropReplies.add('member.instruct');
+    await expectLater(client.call('member.instruct',{'memberId':'m','text':'one'}),throwsA(isA<RpcException>()));expect(stored.length,1);
+    await client.close();client=create();await client.connect(daemon.url);await client.hello('tok');daemon.dropReplies.clear();
+    await client.call('member.instruct',{'text':'one','memberId':'m'});expect(ids.length,1);expect(stored,isEmpty);
+    await client.call('member.instruct',{'memberId':'m','text':'one'});expect(ids.length,2);
+  });
+
+  test('expired unresolved instruction is never transmitted as a new request',() async {
+    await client.close();final oldId='${DateTime.now().subtract(const Duration(days:91)).microsecondsSinceEpoch}-1';
+    client=RpcClient(loadRetries:() async=>{'member.instruct:{"memberId":"m","text":"one"}':oldId});
+    await client.connect(daemon.url);await client.hello('tok');
+    await expectLater(client.call('member.instruct',{'memberId':'m','text':'one'}),throwsStateError);expect(daemon.countOf('member.instruct'),0);
+  });
   test('hello: daemon 정보·snapshot 반환, lastSeq = snapshot.seq, 상태 connected', () async {
     daemon.snapshotSeq = 12;
     final states = <RpcConnectionState>[];

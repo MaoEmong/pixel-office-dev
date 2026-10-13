@@ -45,11 +45,13 @@ class ErrorPanel extends StatelessWidget {
     this.onRetry,
     this.retryLabel = '다시 시도',
     this.compact = false,
+    this.actions = const [],
   });
   final String title, message, retryLabel;
   final String? details;
   final VoidCallback? onRetry;
   final bool compact;
+  final List<Widget> actions;
   @override
   Widget build(BuildContext context) => Container(
     width: double.infinity,
@@ -125,6 +127,7 @@ class ErrorPanel extends StatelessWidget {
               label: Text(retryLabel),
             ),
           ),
+        if (actions.isNotEmpty) Wrap(spacing: 8, children: actions),
       ],
     ),
   );

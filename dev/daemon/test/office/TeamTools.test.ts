@@ -19,7 +19,7 @@ import { RPC_ERROR } from '../../src/office/errors.js';
 import { Store } from '../../src/store/Store.js';
 import type { Member, OfficeEvent, Team } from '../../src/store/types.js';
 import { loadFixture } from '../screen/helpers.js';
-import { FakePty, FakeReceiver, fakeReq, seedDeptTeam } from './fakes.js';
+import { acknowledgeInputs, FakePty, FakeReceiver, fakeReq, seedDeptTeam } from './fakes.js';
 
 const SID = 'sess-0001';
 const base = (event: string) => ({ session_id: SID, hook_event_name: event, cwd: 'D:\\x' });
@@ -54,7 +54,7 @@ describe('TeamTools 오케스트레이션 (T25)', () => {
     office.on('event', (e) => events.push(e));
     office.on('status', (id, s, d) => statuses.push([id, s, d]));
     office.on('notice', (l, m) => notices.push(`${l}: ${m}`));
-    await office.start();
+    acknowledgeInputs(office); await office.start();
     // 팀장은 아래 leaderIn() 으로 직접 출근시킨다(team.create 는 TeamRank.test.ts 담당).
     team = seedDeptTeam(store, { name: 'alpha', cwd: dataDir, maxMembers: 4, allowedEngines: ['claude'] }).team;
   });

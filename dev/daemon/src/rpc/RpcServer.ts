@@ -2,10 +2,11 @@
 // Office(OfficeApi)의 메서드를 그대로 노출하고, Office 이벤트를 알림으로 흘린다:
 //   event → 'event'(전 클라이언트), status → 'member.status', term → 'term'(attach 한 클라이언트만), notice → 'daemon.notice'.
 // 첫 요청은 반드시 hello{token}. 그 전의 다른 요청은 -32001 후 소켓 종료.
-import { randomUUID } from 'node:crypto';
+import { randomUUID, createHash } from 'node:crypto';
+import type {Store} from '../store/Store.js';
 import type { AddressInfo } from 'node:net';
 import { WebSocketServer, WebSocket, type RawData } from 'ws';
-import { OfficeError, RPC_ERROR } from '../office/errors.js';
+import { OfficeError, RPC_ERROR, type RpcErrorCode } from '../office/errors.js';
 import type { OfficeApi, OfficeEvents } from '../office/types.js';
 import { isApprovalPolicy, type ApprovalPolicy, type Engine, type MemberRank } from '../store/types.js';
 
@@ -16,6 +17,7 @@ export interface RpcServerOptions {
   /** Management methods for locally authenticated desktop clients only. */
   localHandlers?: Record<string,(params:Record<string,unknown>)=>unknown>;
   beforeOperation?: (method:string,params:Record<string,unknown>)=>Promise<void>;
+  journal?: Pick<Store,'requestRecord'|'reserveRequest'|'finishRequest'>;
 }
 
 interface Client {
@@ -41,6 +43,12 @@ export const CLOSE_UNAUTHORIZED = 4001;
 export const CLOSE_SHUTDOWN = 1001;
 
 type Handler = (client: Client, params: Record<string, unknown>) => unknown;
+const JOURNALED=new Set(['department.create','team.create','member.hire','member.instruct','member.rehire','member.restart','workflow.resume','workflow.cancel','workflow.complete','approval.respond','question.respond','task.retrySubmit']);
+function canonical(value:unknown):unknown {
+  if(Array.isArray(value))return value.map(canonical);
+  if(value && typeof value==='object')return Object.fromEntries(Object.entries(value).sort(([a],[b])=>a.localeCompare(b)).map(([key,v])=>[key,canonical(v)]));
+  return value;
+}
 
 export class RpcServer {
   private readonly office: OfficeApi;
@@ -48,12 +56,15 @@ export class RpcServer {
   private wss?: WebSocketServer;
   private readonly clients = new Map<string, Client>();
   private readonly handlers: Record<string, Handler>;
+  private readonly journal?: RpcServerOptions['journal'];
+  private readonly requests=new Map<string,{hash:string;promise:Promise<unknown>}>();
   private readonly officeListeners: Array<[keyof OfficeEvents, (...args: never[]) => void]> = [];
 
   constructor(office: OfficeApi, opts: RpcServerOptions) {
     this.office = office;
     this.opts = { port: opts.port, host: opts.host ?? '127.0.0.1',beforeOperation:opts.beforeOperation };
     this.handlers = this.buildHandlers();
+    this.journal=opts.journal;
     for(const [method,handler] of Object.entries(opts.localHandlers ?? {}))this.handlers[method]=(_c,p)=>handler(p);
     this.subscribeOffice();
   }
@@ -151,10 +162,39 @@ export class RpcServer {
       return;
     }
     try {
-      await this.opts.beforeOperation?.(msg.method,params);
-      if(client.ws.readyState!==WebSocket.OPEN)return;
-      const result = await handler(client, params);
-      this.send(client, { jsonrpc: '2.0', id, result: result ?? {} });
+      const execute=async()=>{
+        await this.opts.beforeOperation?.(msg.method,params);
+        if(client.ws.readyState!==WebSocket.OPEN)throw new OfficeError(RPC_ERROR.BAD_STATE,'연결이 끊겨 요청을 실행하지 않았습니다.');
+        return await handler(client,params) ?? {};
+      };
+      const requestId=params.requestId;
+      let result:unknown;
+      if(this.journal && typeof requestId==='string' && JOURNALED.has(msg.method)){
+        if(!/^[a-zA-Z0-9:_-]{1,128}$/.test(requestId))throw new OfficeError(RPC_ERROR.INVALID_PARAMS,'요청 식별자가 올바르지 않습니다.');
+        const hash=createHash('sha256').update(JSON.stringify(canonical({method:msg.method,params}))).digest('hex');
+        const saved=this.journal.requestRecord(requestId),running=this.requests.get(requestId);
+        if((saved && saved.hash!==hash) || (running && running.hash!==hash))throw new OfficeError(RPC_ERROR.INVALID_PARAMS,'동일 요청 식별자로 다른 명령을 보낼 수 없습니다.');
+        if(running)result=await running.promise;
+        else if(saved){
+          if(!saved.reply)throw new OfficeError(RPC_ERROR.UNKNOWN_OUTCOME,'이 요청은 재시작 전에 전송됐습니다. 작업 화면에서 실행 결과를 확인하세요.');
+          const reply=saved.reply as {result?:unknown;error?:ReturnType<typeof toRpcError>};
+          if(reply.error)throw new OfficeError(reply.error.code as RpcErrorCode,reply.error.message,reply.error.data);
+          result=reply.result;
+        }else{
+          this.journal.reserveRequest(requestId,hash);
+          const promise=(async()=>{
+            let reply;
+            try{reply={result:await execute()};}catch(err){reply={error:toRpcError(err)};}
+            try{this.journal!.finishRequest(requestId,reply);}
+            catch{throw new OfficeError(RPC_ERROR.UNKNOWN_OUTCOME,'요청 결과를 저장하지 못했습니다. 저장 공간을 복구하고 작업 상태에서 실행 결과를 확인하세요.');}
+            if('error' in reply)throw new OfficeError(reply.error.code as RpcErrorCode,reply.error.message,reply.error.data);
+            return reply.result;
+          })();
+          this.requests.set(requestId,{hash,promise});
+          try{result=await promise;}finally{this.requests.delete(requestId);}
+        }
+      }else result=await execute();
+      this.send(client, { jsonrpc: '2.0', id, result });
     } catch (err) {
       const { code, message, data } = toRpcError(err);
       if (code === RPC_ERROR.INTERNAL) console.error(`[rpc] ${msg.method} failed:`, err);
@@ -294,6 +334,7 @@ export class RpcServer {
       'member.restart': async (_c, p) => ({ member: await o.restart(reqStr(p, 'memberId')) }),
       // `force:true` 는 "부장에게만 지시" 게이트(-32004)를 넘는 디버그 탈출구(T34) — 앱은 보내지 않는다.
       'member.instruct': (_c, p) => ({ taskId: o.instruct(reqStr(p, 'memberId'), reqStr(p, 'text'), { force: p.force === true }) }),
+      'task.retrySubmit': (_c,p)=>{o.retryTaskSubmit?.(reqNum(p,'taskId'));return {};},
       'member.type': (_c, p) => {
         o.typeRaw(reqStr(p, 'memberId'), reqStr(p, 'data', true));
         return {};

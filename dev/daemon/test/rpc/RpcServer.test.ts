@@ -5,6 +5,7 @@ import { EventEmitter } from 'node:events';
 import WebSocket from 'ws';
 import { RpcServer, CLOSE_UNAUTHORIZED } from '../../src/rpc/RpcServer.js';
 import { OfficeError, RPC_ERROR } from '../../src/office/errors.js';
+import {Store} from '../../src/store/Store.js';
 import type {
   ApprovalRespondParams,
   AttachResult,
@@ -725,4 +726,23 @@ describe('RpcServer', () => {
     await c.call('hello', { token: TOKEN, parentPid: -1, activeDepartmentId: '', client: { name: 'app' } });
     assert.deepEqual(office.calls.filter((x) => x.method === 'watchParent' || x.method === 'prioritizeRecovery'), []);
   });
+});
+
+test('durable request receipts deduplicate concurrent retries and reconnects, reject changed payload and unknown outcome',async t=>{
+ const store=new Store(':memory:');const office=new FakeOffice();let checks=0;
+ const server=new RpcServer(office,{port:0,journal:store,beforeOperation:async()=>{checks++;await new Promise(r=>setTimeout(r,15));}});const port=await server.listen();
+ const c=await TestClient.connect(port);await c.hello();
+ t.after(async()=>{c.close();await server.close();store.close();});
+ const p={memberId:'m1',text:'one',requestId:'durable-test-1'};
+ const [first,second]=await Promise.all([c.call('member.instruct',p),c.call('member.instruct',p)]);
+ assert.deepEqual(first,second);assert.equal(office.calls.filter(x=>x.method==='instruct').length,1);assert.equal(checks,1);
+ c.close();await c.closed;const other=await TestClient.connect(port);await other.hello();
+  try{
+  assert.deepEqual(await other.call('member.instruct',p),first);assert.equal(checks,1);await expectError(other.call('member.instruct',{...p,text:'different'}),RPC_ERROR.INVALID_PARAMS);
+  const unknown={...p,requestId:'unknown-reply'};const finish=store.finishRequest.bind(store);
+  try{store.finishRequest=()=>{throw Error('disk full');};await expectError(other.call('member.instruct',unknown),RPC_ERROR.UNKNOWN_OUTCOME);}finally{store.finishRequest=finish;}
+  await expectError(other.call('member.instruct',unknown),RPC_ERROR.UNKNOWN_OUTCOME);
+  assert.equal(office.calls.filter(x=>x.method==='instruct').length,2,'an unrecorded outcome must never be executed again');
+ }finally{other.close();}
+ store.reserveRequest('unknown','hash');assert.equal(store.requestRecord('unknown')?.reply,undefined);
 });

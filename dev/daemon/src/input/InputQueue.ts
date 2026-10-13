@@ -52,6 +52,7 @@ export interface QueueDeps {
 }
 
 export type InputQueueEvents = {
+  submitted: [item: TextItem];
   /** 항목이 pty 에 완전히 들어감(paste + Enter 까지). */
   flushed: [item: InputItem];
   /**
@@ -145,11 +146,13 @@ export class InputQueue extends EventEmitter<InputQueueEvents> {
   private blockedDialogNoticed = false;
   /** Enter 를 보내고 "프롬프트가 실제로 들어갔는지" 를 확인하는 중인 항목(T42). 들어가면(= idle 이 풀리면) 지운다. */
   private awaitingSubmit: { item: TextItem; enterAt: number; attempt: number } | undefined;
+  private failedSubmit?: TextItem;
+  private retryAllowed = true;
   /**
    * 붙여넣기 ↔ Enter 임계 구간(T44). paste 부터 제출 확정(또는 포기·다이얼로그·중단)까지 열려 있고,
    * 그 사이 사용자가 친 키를 순서대로 모아 둔다. 구간이 끝나면 모은 것을 그대로 pty 에 흘린다.
    */
-  private critical: { buffer: string[] } | undefined;
+  private critical: { buffer: string[]; id?:string } | undefined;
 
   constructor(deps: QueueDeps) {
     super();
@@ -165,6 +168,7 @@ export class InputQueue extends EventEmitter<InputQueueEvents> {
       this.sendKeySequence(item.keys);
       return;
     }
+    if(item.id && (this.queue.some(row=>row.id===item.id) || this.critical?.id===item.id || this.awaitingSubmit?.item.id===item.id || this.failedSubmit?.id===item.id))return;
     this.queue.push(item);
     this.tick();
   }
@@ -184,6 +188,7 @@ export class InputQueue extends EventEmitter<InputQueueEvents> {
       this.critical.buffer.push(data);
       return;
     }
+    if(this.failedSubmit && data !== '\r')this.retryAllowed=false;
     this.lastUserTypingAt = this.now();
     this.deps.session.write(data);
   }
@@ -204,6 +209,17 @@ export class InputQueue extends EventEmitter<InputQueueEvents> {
 
   size(): number {
     return this.queue.length;
+  }
+
+  /** Retry only the existing input box. Never paste another copy of the task. */
+  retrySubmit(id: string): void {
+    if(this.failedSubmit?.id!==id || !this.retryAllowed)throw new Error('입력 상자가 변경됐거나 재제출할 지시가 없습니다. 터미널에서 확인하거나 작업을 중단하세요.');
+    if(!this.deps.isIdle() || this.deps.screen.detectDialog().kind!=='none')throw new Error('CLI가 작업 중이거나 확인 창을 기다리고 있습니다. 터미널에서 먼저 확인하세요.');
+    const item=this.failedSubmit;this.failedSubmit=undefined;
+    this.deps.session.sendKeys('enter');
+    this.awaitingSubmit={item,enterAt:this.now(),attempt:0};
+    this.busyUntil=this.now()+TIMING.busyAfterFlushMs;
+    this.emit('flushed',item);
   }
 
   peek(): InputItem | undefined {
@@ -258,6 +274,9 @@ export class InputQueue extends EventEmitter<InputQueueEvents> {
 
     const dialog = this.deps.screen.detectDialog();
     this.checkSubmit(now, dialog.kind !== 'none');
+    if(this.failedSubmit && !this.deps.isIdle()) {
+      const item=this.failedSubmit;this.failedSubmit=undefined;this.emit('submitted',item);
+    }
     if (dialog.kind === 'none') this.forgetBlockedDialog();
     if (dialog.kind !== 'none') {
       // 권장 키가 없는 다이얼로그(= CLI 자체 허가 프롬프트, D-23)는 통과 대상이 아니다. 키도 안 보내고 "통과했다"고도 하지 않는다.
@@ -294,6 +313,7 @@ export class InputQueue extends EventEmitter<InputQueueEvents> {
       return;
     }
 
+    if (this.awaitingSubmit || this.failedSubmit || this.critical) return;
     if (this.queue.length === 0) return;
     if (now < this.busyUntil) return; // 방금 넣은 입력을 CLI 가 소화하는 중 — 조용히 대기
     if (!this.deps.isIdle()) return this.block('not-idle', now);
@@ -330,7 +350,7 @@ export class InputQueue extends EventEmitter<InputQueueEvents> {
   private flushHead(now: number): void {
     const item = this.queue.shift();
     if (!item) return;
-    this.critical = { buffer: [] };
+    this.critical = { buffer: [], id:item.id };
     this.deps.session.paste(item.text);
     this.busyUntil = now + TIMING.enterDelayMs; // Enter 가 나가기 전엔 다음 항목을 절대 붙이지 않는다
     this.schedule(
@@ -362,6 +382,8 @@ export class InputQueue extends EventEmitter<InputQueueEvents> {
       if (this.scheduled[i].tag === 'submit-enter') this.scheduled.splice(i, 1);
     }
     this.awaitingSubmit = undefined;
+    this.failedSubmit=undefined;
+    this.retryAllowed=true;
   }
 
   /**
@@ -383,17 +405,20 @@ export class InputQueue extends EventEmitter<InputQueueEvents> {
       // 프롬프트가 들어갔다 — **여기서 재시도가 끝난다**(이미 들어간 Enter 를 또 보내 두 번 제출하지 않는다).
       this.awaitingSubmit = undefined;
       this.endCritical(now);
+      this.emit('submitted',a.item);
       return;
     }
     if (dialogUp || this.userTyping(now)) {
       this.awaitingSubmit = undefined;
       this.endCritical(now); // 화면을 다이얼로그·사용자가 쥐었다 — 모아 둔 키를 돌려준다
+      this.failedSubmit=a.item;this.retryAllowed=!this.userTyping(now);this.emit('submitLost',a.item);
       return;
     }
     if (now - a.enterAt < TIMING.submitCheckMs) return;
     if (a.attempt >= SUBMIT_RETRY_MAX) {
       this.awaitingSubmit = undefined;
       this.endCritical(now);
+      this.failedSubmit=a.item;this.retryAllowed=true;
       this.emit('submitLost', a.item);
       return;
     }

@@ -18,7 +18,7 @@ import { TeamToolsServer, askUserResultText } from '../../src/mcp/TeamToolsServe
 import { Store } from '../../src/store/Store.js';
 import type { Member, OfficeEvent, Team } from '../../src/store/types.js';
 import { loadFixture } from '../screen/helpers.js';
-import { FakePty, FakeReceiver, fakeReq, seedDeptTeam } from './fakes.js';
+import { acknowledgeInputs, FakePty, FakeReceiver, fakeReq, seedDeptTeam } from './fakes.js';
 
 const SID = 'sess-0001';
 const base = (event: string) => ({ session_id: SID, hook_event_name: event, cwd: 'D:\\x' });
@@ -54,7 +54,7 @@ describe('Office ask_user (T17)', () => {
     statuses = [];
     office.on('event', (e) => events.push(e));
     office.on('status', (id, s, d) => statuses.push([id, s, d]));
-    await office.start();
+    acknowledgeInputs(office); await office.start();
     // 팀장 없는 팀(store 직접 생성) — 이 파일은 clockIn/ask_user 를 보므로 team.create 의 팀장 자동 출근(T24)을 끼우지 않는다.
     const seeded = seedDeptTeam(store, { name: 'alpha', cwd: dataDir, maxMembers: 3 });
     team = seeded.team;
@@ -204,6 +204,8 @@ describe('Office ask_user (T17)', () => {
     assert.equal(session.keys.at(-1), 'enter');
     await sleep(1800);
     assert.deepEqual(session.pastes, [`[ANSWER q#${p.id}]\n파랑`, `[TASK#${taskId} from user]\n다음 일`]);
+    const submittedBy=Date.now()+5000;
+    while(store.getTask(taskId)!.status==='queued' && Date.now()<submittedBy)await sleep(20);
     assert.equal(store.getTask(taskId)!.status, 'assigned');
   });
 
@@ -277,7 +279,7 @@ describe('Office ask_user (T17)', () => {
       recovery: { orphanOps: { alive: () => false, name: () => undefined, kill: () => {} } },
     });
     try {
-      await office2.start();
+      acknowledgeInputs(office2); await office2.start();
       assert.deepEqual(office2.recoveryResult!.resumed, [prev.id]);
       assert.deepEqual(office2.recoveryResult!.expired, []);
       assert.equal(seededStore.getPending(q.id)!.status, 'open', 'ask_user question survives the restart');

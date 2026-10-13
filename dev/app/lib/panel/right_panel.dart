@@ -34,6 +34,7 @@ import 'panel_splitter.dart';
 import 'panel_tabs.dart';
 import 'pending_card.dart';
 import 'report_tab.dart';
+import 'delivery_cards.dart';
 import 'terminal_tab.dart';
 import 'ui_prefs.dart';
 
@@ -161,6 +162,7 @@ class RightPanel extends ConsumerWidget {
                     crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [
                       RecoveryHint(memberId: id),
+                      DeliveryCards(memberId: id),
                       // 이 멤버 패널에만 남는 카드 = `ask_parent` 안내("대신 답하기"). 인박스 카드 뒤 · 탭 위.
                       PendingCards(memberId: id),
                     ],

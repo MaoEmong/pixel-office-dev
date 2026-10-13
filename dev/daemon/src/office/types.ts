@@ -284,7 +284,7 @@ export type OfficeEvents = {
    * 다른 클라이언트가 재접속할 때까지 지운 부서·팀이 화면에 남아 있었다(T37 함정 ①).
    * `reason` 은 로그·테스트용 꼬리표다.
    */
-  tree: [reason: 'department.create' | 'department.update' | 'department.delete' | 'team.create' | 'team.delete'];
+  tree: [reason: 'department.create' | 'department.update' | 'department.delete' | 'team.create' | 'team.delete' | 'task.delivery'];
   /**
    * 엔진 사용량이 **바뀌었다** → `usage.engine` 알림(비영속·seq 없음, T43). 값이 그대로면 오지 않는다.
    * 연결 여부·요금제·주간/5시간 한도·마지막 확인 시각이 한 덩어리로 온다.
@@ -338,6 +338,7 @@ export interface OfficeApi extends EventEmitter<OfficeEvents> {
   restart(memberId: string): Promise<Member>;
   /** 부서에 살아 있는 부장이 있으면 부장 외 지시는 -32004 — `opts.force` 로만 넘는다(T34). */
   instruct(memberId: string, text: string, opts?: InstructOptions): number;
+  retryTaskSubmit?(taskId: number): void;
   typeRaw(memberId: string, data: string): void;
   attach(clientId: string, memberId: string, cols: number, rows: number): AttachResult;
   detach(clientId: string, memberId: string): void;

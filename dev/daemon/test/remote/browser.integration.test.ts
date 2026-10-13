@@ -9,14 +9,15 @@ test('real mobile-width browser: pairing, persistent non-exportable key, approva
  const errors:string[]=[];page.on('pageerror',e=>errors.push(e.message));
  const dir=fs.mkdtempSync(path.join(os.tmpdir(),'remote-browser-')),target=path.join(dir,'result.txt');
  const upstream=new WebSocketServer({port:0,host:'127.0.0.1'});await new Promise(r=>upstream.once('listening',r));
- const snapshot:any={seq:0,departments:[{id:'d',name:'모바일 테스트'}],members:[{id:'h',departmentId:'d',rank:'head',name:'부장',status:'idle',memberToken:'secret'}],pending:[],tasks:[]};
- let workflow:any=null,writes=0;
+ const snapshot:any={seq:0,departments:[{id:'d',name:'모바일 테스트'}],members:[{id:'h',departmentId:'d',rank:'head',name:'부장',status:'idle',memberToken:'secret'}],pending:[],tasks:[{id:1,toMember:'h',status:'assigned',delivery:'failed'}]};
+ let workflow:any=null,writes=0,discussions=0,retries=0;
  upstream.on('connection',ws=>ws.on('message',raw=>{
   const p=JSON.parse(raw.toString());let result:any={};
   if(p.method==='hello' || p.method==='remote.snapshot')result={snapshot};
   if(p.method==='events.query')result={events:[]};
   if(p.method==='workflow.get')result={workflow};
-  if(p.method==='workflow.discuss'){workflow={id:'w',departmentId:'d',phase:'clarifying',brief:p.params.text,messages:[{role:'user',text:p.params.text}],assignments:[]};result={workflow};}
+  if(p.method==='task.retrySubmit'){assert.equal(p.params.taskId,1);retries++;snapshot.tasks[0].delivery='accepted';}
+  if(p.method==='workflow.discuss'){discussions++;workflow={id:'w',departmentId:'d',phase:'clarifying',brief:p.params.text,messages:[{role:'user',text:p.params.text}],assignments:[]};result={workflow};}
   if(p.method==='workflow.start'){
    workflow={...workflow,phase:'executing',meeting:{participants:['lead'],participantNames:{lead:'작성팀장'},contributions:[{memberId:'lead',round:1,text:'쓰기 제안'},{memberId:'lead',round:2,text:'검토 완료'}],minutes:'파일 생성'},assignments:[{leadId:'lead',task:'파일 생성',acceptance:['REMOTE_OK'],status:'assigned'}]};
    snapshot.pending=[{id:'a',memberId:'h',status:'open',type:'approval',payload:{tool_name:'Write',tool_input:{file_path:target,content:'REMOTE_OK'}}}];result={workflow};
@@ -33,8 +34,17 @@ test('real mobile-width browser: pairing, persistent non-exportable key, approva
  gateway.registry.approve(d.id);await page.locator('#workspace').waitFor({state:'visible'});
  await page.reload();await page.locator('#workspace').waitFor({state:'visible'});assert.equal(gateway.registry.list().length,1,'refresh reuses approved device');
  assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true,'390px viewport has no horizontal overflow');
+ await page.getByRole('button',{name:'지시 재제출',exact:true}).click();await page.getByRole('button',{name:'지시 재제출',exact:true}).waitFor({state:'hidden'});assert.equal(retries,1);
+ // Lose a successful reply, reload, and retry the same intent: the persisted key must survive.
+ const sending=gateway as unknown as {send:(connection:unknown,value:any)=>void};const originalSend=sending.send.bind(gateway);let dropped=false;
+ sending.send=(connection,value)=>{if(!dropped && value.result?.workflow){dropped=true;return;}originalSend(connection,value);};
+ await page.getByLabel('부장에게 이야기하기').fill('파일 한 개를 작성하고 검토해 주세요');await page.getByRole('button',{name:'대화 보내기',exact:true}).click();
+ for(let n=0;n<30 && !dropped;n++)await new Promise(r=>setTimeout(r,50));assert.equal(dropped,true);assert.equal(discussions,1);
+ await page.reload();await page.locator('#workspace').waitFor({state:'visible'});
  await page.getByLabel('부장에게 이야기하기').fill('파일 한 개를 작성하고 검토해 주세요');await page.getByRole('button',{name:'대화 보내기',exact:true}).click();
  await page.getByRole('button',{name:'작업 시작 · 회의 소집'}).waitFor();assert.equal(writes,0);
+ for(let n=0;n<30 && await page.getByLabel('부장에게 이야기하기').inputValue();n++)await new Promise(r=>setTimeout(r,50));
+ assert.equal(discussions,1,'reply-loss retry after reload does not repeat the discussion');
  await page.getByRole('button',{name:'작업 시작 · 회의 소집'}).click();await page.getByRole('button',{name:'허가',exact:true}).waitFor();assert.equal(fs.existsSync(target),false);
  await page.getByRole('button',{name:'허가',exact:true}).click();await page.getByRole('button',{name:'검수 완료',exact:true}).waitFor();assert.equal(fs.readFileSync(target,'utf8'),'REMOTE_OK');assert.equal(writes,1);
  await page.getByRole('button',{name:'검수 완료',exact:true}).click();await page.locator('#phase').filter({hasText:'검수 완료'}).waitFor();

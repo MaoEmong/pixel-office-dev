@@ -10,12 +10,12 @@ enum TaskStatus {
   aborted;
 
   static TaskStatus parse(String s) => switch (s) {
-        'queued' => TaskStatus.queued,
-        'assigned' => TaskStatus.assigned,
-        'reported' => TaskStatus.reported,
-        'aborted' => TaskStatus.aborted,
-        _ => throw FormatException('unknown task status: $s'),
-      };
+    'queued' => TaskStatus.queued,
+    'assigned' => TaskStatus.assigned,
+    'reported' => TaskStatus.reported,
+    'aborted' => TaskStatus.aborted,
+    _ => throw FormatException('unknown task status: $s'),
+  };
 
   bool get isOpen => this == queued || this == assigned;
 }
@@ -26,11 +26,11 @@ enum ReportStatus {
   aborted;
 
   static ReportStatus parse(String s) => switch (s) {
-        'done' => ReportStatus.done,
-        'blocked' => ReportStatus.blocked,
-        'aborted' => ReportStatus.aborted,
-        _ => throw FormatException('unknown report status: $s'),
-      };
+    'done' => ReportStatus.done,
+    'blocked' => ReportStatus.blocked,
+    'aborted' => ReportStatus.aborted,
+    _ => throw FormatException('unknown report status: $s'),
+  };
 }
 
 class Task {
@@ -45,6 +45,7 @@ class Task {
     required this.reportStatus,
     required this.createdAt,
     required this.updatedAt,
+    this.delivery = 'waiting',
   });
 
   final int id;
@@ -57,23 +58,29 @@ class Task {
   final String toMember;
   final String instruction;
   final TaskStatus status;
+  final String delivery;
   final String? reportText;
   final ReportStatus? reportStatus;
   final String createdAt;
   final String updatedAt;
 
   factory Task.fromJson(Map<String, dynamic> j) => Task(
-        id: (j['id'] as num).toInt(),
-        departmentId: (j['departmentId'] ?? j['teamId']) as String? ?? '',
-        fromMember: j['fromMember'] as String,
-        toMember: j['toMember'] as String,
-        instruction: j['instruction'] as String,
-        status: TaskStatus.parse(j['status'] as String),
-        reportText: j['reportText'] as String?,
-        reportStatus: j['reportStatus'] == null ? null : ReportStatus.parse(j['reportStatus'] as String),
-        createdAt: j['createdAt'] as String,
-        updatedAt: j['updatedAt'] as String,
-      );
+    id: (j['id'] as num).toInt(),
+    departmentId: (j['departmentId'] ?? j['teamId']) as String? ?? '',
+    fromMember: j['fromMember'] as String,
+    toMember: j['toMember'] as String,
+    instruction: j['instruction'] as String,
+    status: TaskStatus.parse(j['status'] as String),
+    delivery:
+        j['delivery'] as String? ??
+        (j['status'] == 'assigned' ? 'accepted' : 'waiting'),
+    reportText: j['reportText'] as String?,
+    reportStatus: j['reportStatus'] == null
+        ? null
+        : ReportStatus.parse(j['reportStatus'] as String),
+    createdAt: j['createdAt'] as String,
+    updatedAt: j['updatedAt'] as String,
+  );
 
   @override
   String toString() => 'Task(#$id $fromMember→$toMember ${status.name})';

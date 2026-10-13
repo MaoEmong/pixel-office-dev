@@ -35,7 +35,8 @@ class RpcException implements Exception {
   static const int invalidParams = -32602;
 
   @override
-  String toString() => 'RpcException($code: $message${data == null ? '' : ', data=$data'})';
+  String toString() =>
+      'RpcException($code: $message${data == null ? '' : ', data=$data'})';
 }
 
 class RpcNotification {
@@ -50,7 +51,11 @@ class RpcNotification {
 
 /// `hello` 결과. snapshot 은 원본 JSON — 모델 파싱은 state 층(`Snapshot.fromJson`)에서.
 class HelloResult {
-  const HelloResult({required this.daemonVersion, required this.daemonPid, required this.snapshot});
+  const HelloResult({
+    required this.daemonVersion,
+    required this.daemonPid,
+    required this.snapshot,
+  });
 
   final String daemonVersion;
   final int daemonPid;
@@ -84,6 +89,8 @@ class RpcClient {
     this.clientName = 'pixel-office',
     this.clientVersion = '0.1.0',
     this.noDaemonInfoMessage = defaultNoDaemonInfoMessage,
+    this.loadRetries,
+    this.saveRetries,
   }) : _connector = connector ?? _defaultConnector;
 
   /// url/token 을 못 구했을 때(= daemon.json 없음) 쓰는 기본 문구. 앱은 찾아본 경로까지 담은 문구를
@@ -99,6 +106,18 @@ class RpcClient {
 
   /// daemon.json 을 못 읽었을 때의 오류 문구(오버레이 "자세히" 에 그대로 나온다).
   final String noDaemonInfoMessage;
+  final Future<Map<String, String>> Function()? loadRetries;
+  final Future<void> Function(Map<String, String>)? saveRetries;
+  Future<void>? _retryLoaded;
+  Future<void> _retryWrites = Future.value();
+  Future<void> _persistRetries() {
+    final value = Map<String, String>.from(_workflowRetries);
+    final operation = _retryWrites.catchError((_) {}).then((_) async {
+      await saveRetries?.call(value);
+    });
+    _retryWrites = operation;
+    return operation;
+  }
 
   /// `hello` 에 실어 보낼 **앱 pid**(T46 · 수명주기 §3). 데몬은 이 pid 를 2초마다 보다가 사라지면
   /// 스스로 정리하고 끝낸다. **null 이면 파라미터를 아예 넣지 않는다** — 설정 "앱을 닫아도 계속 일하기"
@@ -222,7 +241,12 @@ class RpcClient {
     _pending.clear();
     for (final p in pend) {
       if (!p.completer.isCompleted) {
-        p.completer.completeError(RpcException(RpcException.closed, 'connection closed during ${p.method}'));
+        p.completer.completeError(
+          RpcException(
+            RpcException.closed,
+            'connection closed during ${p.method}',
+          ),
+        );
       }
     }
     _setState(RpcConnectionState.disconnected);
@@ -241,8 +265,10 @@ class RpcClient {
       'client': {'name': clientName, 'version': clientVersion},
     };
     final result = await _send('hello', params, isHello: true);
-    final daemon = (result['daemon'] as Map?)?.cast<String, dynamic>() ?? const {};
-    final snapshot = (result['snapshot'] as Map?)?.cast<String, dynamic>() ?? const {};
+    final daemon =
+        (result['daemon'] as Map?)?.cast<String, dynamic>() ?? const {};
+    final snapshot =
+        (result['snapshot'] as Map?)?.cast<String, dynamic>() ?? const {};
     final hr = HelloResult(
       daemonVersion: daemon['version']?.toString() ?? '?',
       daemonPid: (daemon['pid'] as num?)?.toInt() ?? 0,
@@ -257,37 +283,102 @@ class RpcClient {
 
   /// 요청 하나. 에러 응답은 `RpcException(code, message, data)` 로 throw.
   final Map<String, String> _workflowRetries = {};
-  Future<Map<String, dynamic>> call(String method, [Map<String, dynamic> params = const {}]) async {
-    if (!['workflow.discuss', 'workflow.start'].contains(method) || params.containsKey('requestId')) {
+  Future<Map<String, dynamic>> call(
+    String method, [
+    Map<String, dynamic> params = const {},
+  ]) async {
+    if (![
+          'workflow.discuss',
+          'workflow.start',
+          'department.create',
+          'team.create',
+          'member.hire',
+          'member.instruct',
+          'member.rehire',
+          'member.restart',
+          'workflow.resume',
+          'workflow.cancel',
+          'workflow.complete',
+          'approval.respond',
+          'question.respond',
+          'task.retrySubmit',
+        ].contains(method) ||
+        params.containsKey('requestId')) {
       return _send(method, params);
     }
-    final key = '$method:${jsonEncode(params)}';
+    try {
+      await (_retryLoaded ??= () async {
+        _workflowRetries.addAll(await loadRetries?.call() ?? {});
+      }());
+    } catch (_) {
+      _retryLoaded = null;
+      rethrow;
+    }
+    final key = '$method:${jsonEncode(_canonical(params))}';
     if (_workflowRetries.length >= 100 && !_workflowRetries.containsKey(key)) {
-      _workflowRetries.remove(_workflowRetries.keys.first);
+      throw StateError('미확정 요청이 너무 많습니다. 작업 상태를 먼저 확인하세요.');
     }
     final requestId = _workflowRetries.putIfAbsent(
       key,
-      () => '${DateTime.now().microsecondsSinceEpoch}-${math.Random.secure().nextInt(1 << 32)}',
+      () =>
+          '${DateTime.now().microsecondsSinceEpoch}-${math.Random.secure().nextInt(1 << 32)}',
     );
-    final result = await _send(method, {...params, 'requestId': requestId});
-    _workflowRetries.remove(key);
-    return result;
+    final created=int.tryParse(requestId.split('-').first);
+    if(created!=null && DateTime.now().microsecondsSinceEpoch-created>const Duration(days:90).inMicroseconds){
+      throw StateError('오래된 미확정 요청입니다. 작업 화면에서 실행 결과를 먼저 확인하세요.');
+    }
+    await _persistRetries();
+    try {
+      final result = await _send(method, {...params, 'requestId': requestId});
+      _workflowRetries.remove(key);
+      try {
+        await _persistRetries();
+      } catch (_) {
+        _workflowRetries[key] = requestId;
+        rethrow;
+      }
+      return result;
+    } on RpcException catch (e) {
+      if (e.code != RpcException.closed &&
+          e.code != RpcException.timeout &&
+          e.code != -32009) {
+        _workflowRetries.remove(key);
+        await _persistRetries();
+      }
+      rethrow;
+    }
   }
 
-  Future<Map<String, dynamic>> _send(String method, Map<String, dynamic> params, {bool isHello = false}) {
+  Future<Map<String, dynamic>> _send(
+    String method,
+    Map<String, dynamic> params, {
+    bool isHello = false,
+  }) {
     final ch = _channel;
     if (ch == null) {
-      return Future.error(RpcException(RpcException.closed, 'not connected ($method)'));
+      return Future.error(
+        RpcException(RpcException.closed, 'not connected ($method)'),
+      );
     }
     final id = _nextId++;
     final completer = Completer<Map<String, dynamic>>();
     _pending[id] = _PendingCall(method, completer);
-    ch.sink.add(jsonEncode({'jsonrpc': '2.0', 'id': id, 'method': method, 'params': params}));
+    ch.sink.add(
+      jsonEncode({
+        'jsonrpc': '2.0',
+        'id': id,
+        'method': method,
+        'params': params,
+      }),
+    );
     return completer.future.timeout(
       callTimeout,
       onTimeout: () {
         _pending.remove(id);
-        throw RpcException(RpcException.timeout, 'timeout after ${callTimeout.inMilliseconds}ms ($method)');
+        throw RpcException(
+          RpcException.timeout,
+          'timeout after ${callTimeout.inMilliseconds}ms ($method)',
+        );
       },
     );
   }
@@ -308,7 +399,9 @@ class RpcClient {
     }
     final method = msg['method'];
     if (method is! String) return;
-    final params = (msg['params'] as Map?)?.cast<String, dynamic>() ?? const <String, dynamic>{};
+    final params =
+        (msg['params'] as Map?)?.cast<String, dynamic>() ??
+        const <String, dynamic>{};
     _onNotification(method, params);
   }
 
@@ -320,12 +413,18 @@ class RpcClient {
     if (err is Map) {
       final e = err.cast<String, dynamic>();
       p.completer.completeError(
-        RpcException((e['code'] as num?)?.toInt() ?? -32000, e['message']?.toString() ?? 'error', e['data']),
+        RpcException(
+          (e['code'] as num?)?.toInt() ?? -32000,
+          e['message']?.toString() ?? 'error',
+          e['data'],
+        ),
       );
       return;
     }
     final res = msg['result'];
-    final map = res is Map ? res.cast<String, dynamic>() : <String, dynamic>{'value': res};
+    final map = res is Map
+        ? res.cast<String, dynamic>()
+        : <String, dynamic>{'value': res};
     if (p.method == 'hello') {
       // replay 가 이 응답 바로 뒤에 오므로 여기서 동기적으로 반영.
       final seq = ((map['snapshot'] as Map?)?['seq'] as num?)?.toInt();
@@ -353,7 +452,10 @@ class RpcClient {
   // ---- 자동 재접속 ----------------------------------------------------------
 
   /// 재접속 루프 시작(이미 돌고 있으면 무시). 끊길 때마다 backoff 후 다시 connect+hello.
-  void start({required UrlProvider urlProvider, required TokenProvider tokenProvider}) {
+  void start({
+    required UrlProvider urlProvider,
+    required TokenProvider tokenProvider,
+  }) {
     if (_running || _disposed) return;
     _running = true;
     unawaited(_loop(urlProvider, tokenProvider));
@@ -372,7 +474,10 @@ class RpcClient {
     if (w != null && !w.isCompleted) w.complete();
   }
 
-  Future<void> _loop(UrlProvider urlProvider, TokenProvider tokenProvider) async {
+  Future<void> _loop(
+    UrlProvider urlProvider,
+    TokenProvider tokenProvider,
+  ) async {
     var backoff = minBackoff;
     while (_running && !_disposed) {
       try {
@@ -415,4 +520,13 @@ class RpcClient {
     await _helloCtl.close();
     await _attemptCtl.close();
   }
+}
+
+Object? _canonical(Object? value) {
+  if (value is Map) {
+    final keys = value.keys.cast<String>().toList()..sort();
+    return {for (final key in keys) key: _canonical(value[key])};
+  }
+  if (value is List) return value.map(_canonical).toList();
+  return value;
 }

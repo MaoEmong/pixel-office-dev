@@ -7,7 +7,7 @@ import {DeviceRegistry,hash,validProof,revokeMessage} from './DeviceRegistry.js'
 
 type Reply={result?:unknown;error?:{code:number;message:string}};
 const READ=new Set(['remote.snapshot','events.query','department.tree','workflow.get','member.instructions.get']);
-const WRITE=new Set(['workflow.discuss','workflow.start','workflow.resume','workflow.cancel','workflow.complete','approval.respond','question.respond','member.interrupt','member.rehire']);
+const WRITE=new Set(['workflow.discuss','workflow.start','workflow.resume','workflow.cancel','workflow.complete','approval.respond','question.respond','member.interrupt','member.rehire','task.retrySubmit']);
 interface Connection {ws:WebSocket;upstream?:WebSocket;deviceId?:string;challenge?:{deviceId:string;message:string;expires:number};pending:Map<string,{resolve:(r:Reply)=>void;timer:NodeJS.Timeout}>;timer:NodeJS.Timeout;busy:boolean;}
 export interface RemoteOptions {port:number;dataDir:string;upstreamUrl:()=>string;token:()=>string;assetsDir?:string;}
 
@@ -81,7 +81,7 @@ export class RemoteGateway {
   private send(c:Connection,value:unknown){if(c.ws.readyState===WebSocket.OPEN)c.ws.send(JSON.stringify(value,(key,item)=>['memberToken','member_token','token'].includes(key)?undefined:item));}
   private drop(c:Connection,reason='연결 종료'){
     clearTimeout(c.timer);c.upstream?.terminate();
-    for(const p of c.pending.values()){clearTimeout(p.timer);p.resolve({error:{code:-32003,message:'연결이 끊겼습니다. 작업 상태를 확인하세요.'}});}c.pending.clear();
+    for(const p of c.pending.values()){clearTimeout(p.timer);p.resolve({error:{code:-32009,message:'연결이 끊겼습니다. 작업 상태를 확인하세요.'}});}c.pending.clear();
     if(c.ws.readyState===WebSocket.OPEN)c.ws.close(4001,reason);this.connections.delete(c);
   }
   private accept(ws:WebSocket){
@@ -139,7 +139,7 @@ export class RemoteGateway {
       const running=this.inflight.get(key),saved=this.registry.remembered(c.deviceId,p.requestId);
       if(running && running.hash===inputHash)reply=await running.promise;
       else if(saved){
-        reply=saved.hash!==inputHash?{error:{code:-32602,message:'같은 요청 ID를 다른 작업에 사용할 수 없습니다.'}}:saved.reply ?? {error:{code:-32003,message:'이 요청은 이미 전송됐습니다. 재시작 전 실행 결과를 작업 화면에서 확인하세요.'}};
+        reply=saved.hash!==inputHash?{error:{code:-32602,message:'같은 요청 ID를 다른 작업에 사용할 수 없습니다.'}}:saved.reply ?? {error:{code:-32009,message:'이 요청은 이미 전송됐습니다. 재시작 전 실행 결과를 작업 화면에서 확인하세요.'}};
       }else{
         this.registry.remember(c.deviceId,p.requestId,{hash:inputHash});
         const promise=this.forward(c,p.method,params);this.inflight.set(key,{hash:inputHash,promise});
@@ -150,7 +150,7 @@ export class RemoteGateway {
     if(!this.closed && this.registry.get(c.deviceId)?.status==='approved')this.send(c,{jsonrpc:'2.0',id:p.id,...reply});
   }
   private forward(c:Connection,method:string,params:unknown):Promise<Reply>{
-    return new Promise(resolve=>{const id=randomUUID();const timer=setTimeout(()=>{c.pending.delete(id);resolve({error:{code:-32003,message:'PC 응답을 기다리는 중 연결이 끊겼습니다. 작업 상태를 확인하세요.'}});},30000);
+    return new Promise(resolve=>{const id=randomUUID();const timer=setTimeout(()=>{c.pending.delete(id);resolve({error:{code:-32009,message:'PC 응답을 기다리는 중 연결이 끊겼습니다. 작업 상태를 확인하세요.'}});},30000);
       c.pending.set(id,{resolve,timer});c.upstream!.send(JSON.stringify({jsonrpc:'2.0',id,method,params}));});
   }
   localHandlers(){return {

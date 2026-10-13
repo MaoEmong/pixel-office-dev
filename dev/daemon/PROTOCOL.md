@@ -658,3 +658,23 @@ PC 또는 기기에서 해제하면 WS를 닫고 다음 서명을 거부한다.
 - 로컬 인증 클라이언트 전용 resources.get/set:
   {maxLiveSessions:1..64,maxTeamsPerDepartment:1..32}, 정수만 허용. 기본 16/8, DB에 영속.
   기존 실행은 보존하고 새 생성·재시작·복구에 적용한다.
+
+## T63 전달 확인·재시도·저장
+
+- task의 delivery: waiting | submitting | accepted | failed. status와 별도로 실제 CLI 전달 확인을 표시한다.
+  과거 DB 행에는 status에서 추론한 기본값을 적용한다. task.delivery 변경은 snapshot 알림으로 동기화한다.
+- task.retrySubmit{taskId}: 기존 세션의 실패한 입력에 Enter만 다시 전송한다. 입력 변경·확인 창·살아 있지 않은 세션은 거부한다.
+  로컬과 승인된 원격 기기에서 사용할 수 있다.
+- workflow.resume: 회의 재개 외에 executing/blocked 계획의 미배정 업무를 재시도한다.
+  기존 taskId가 있는 업무는 중복 생성하지 않는다. 실패 보고된 업무는 취소/보완이 필요하다.
+- 로컬 변경 RPC의 선택 requestId 보호: department.create, team.create, member.hire/instruct/rehire/restart,
+  workflow.resume/cancel/complete, approval.respond, question.respond, task.retrySubmit.
+  동일 ID/내용은 저장된 결과를 반환한다. ID가 같고 내용이 다르면 -32602.
+  진행 중 같은 ID 요청은 같은 Promise를 기다린다. 실행 전 영속 기록을 남기며 결과 불명확은 -32009(자동 재실행 금지).
+  workflow.discuss/start는 기존 workflow의 영속 식별자 보호를 사용한다.
+- 로컬 전용 storage.get → {failures:[{file,message}]} / storage.backup → {path}.
+  백업은 SQLite snapshot을 저장하며 최근 3개를 유지한다. memory Store는 path가 없을 수 있다.
+- 원격 브라우저의 retry 식별자는 해시+UUID로 IndexedDB에 저장한다. 작업 본문은 저장하지 않는다.
+  연결 끊김/응답 유실/결과 불명확(-32009)은 키를 유지하고 명확한 오류·성공 뒤에는 제거한다.
+
+로컬 변경 요청 영수증은 90일 보존한다. 원격 Gateway 기록은 7일 보존하며 양쪽 UI는 보존 기간을 넘긴 미확정 요청을 자동으로 재전송하지 않는다.

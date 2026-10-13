@@ -29,6 +29,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { formatWithOptions } from 'node:util';
+import {appendLog,storageResult} from './storage/files.js';
 
 /** 앱이 데몬에게 "로그는 여기에 직접 써라" 고 알려 주는 환경변수. */
 export const DAEMON_LOG_ENV = 'PIXEL_DAEMON_LOG';
@@ -39,15 +40,15 @@ export function formatLogLine(args: unknown[]): string {
 }
 
 /** 파일에 이어 쓰는 sink 하나. 실패는 삼킨다 — 로그 때문에 데몬이 멈추면 안 된다. */
-export function fileSink(filePath: string): (args: unknown[]) => void {
-  let broken = false;
+export function fileSink(filePath: string, now=Date.now): (args: unknown[]) => void {
+  let retryAt=0;
   return (args: unknown[]) => {
-    if (broken) return;
+    if (now()<retryAt) return;
     try {
-      fs.appendFileSync(filePath, formatLogLine(args) + '\n', 'utf8');
-    } catch {
-      // 한 번 실패하면 더 시도하지 않는다(폴더가 사라졌거나 권한이 없다).
-      broken = true;
+      appendLog(filePath, formatLogLine(args) + '\n');
+      retryAt=0;storageResult(filePath);
+    } catch(err) {
+      retryAt=now()+30000;storageResult(filePath,err);
     }
   };
 }

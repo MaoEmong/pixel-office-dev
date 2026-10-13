@@ -45,8 +45,9 @@ class PanelFakeDaemon {
   int get helloCount => requests.where((r) => r.$1 == 'hello').length;
   Uri get url => Uri.parse('ws://127.0.0.1:${_server.port}');
 
+  /// Business arguments; full transport envelopes remain in requests.
   List<Map<String, dynamic>> paramsOf(String method) =>
-      requests.where((r) => r.$1 == method).map((r) => r.$2).toList(growable: false);
+      requests.where((r) => r.$1 == method).map((r) => Map<String,dynamic>.from(r.$2)..remove('requestId')).toList(growable: false);
 
   int countOf(String method) => requests.where((r) => r.$1 == method).length;
 
