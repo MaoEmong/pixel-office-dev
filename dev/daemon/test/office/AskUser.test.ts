@@ -88,9 +88,17 @@ describe('Office ask_user (T17)', () => {
   test('clockIn(claude): writes sessions/<id>/mcp.json pointing at /mcp/<token> and passes mcpConfigPath; codex gets none', () => {
     const m = clockIn();
     const opts = pty.spawns[0]!;
-    const file = path.join(dataDir, 'sessions', m.id, 'mcp.json');
+    const file = path.join(dataDir, '.pixel-office', 'sessions', m.id, 'mcp.json');
     assert.equal(opts.mcpConfigPath, file);
     assert.equal(office.mcpConfigPath(m.id), file);
+    assert.equal(opts.sessionDataDir, path.join(dataDir, '.pixel-office'));
+    const sessionDir = path.dirname(file);
+    const identity = JSON.parse(fs.readFileSync(path.join(sessionDir, 'session.json'), 'utf8'));
+    assert.equal(identity.id, m.id);
+    assert.equal(identity.memberToken, undefined, 'readable session metadata must not expose hook credentials');
+    hook(m, 'UserPromptSubmit', { prompt: 'project storage event' });
+    const storedEvents = fs.readFileSync(path.join(sessionDir, 'events.jsonl'), 'utf8').trim().split('\n').map(line => JSON.parse(line));
+    assert.ok(storedEvents.some(e => e.kind === 'thinking' && e.detail.text === 'project storage event'));
     const json = JSON.parse(fs.readFileSync(file, 'utf8'));
     assert.deepEqual(json, { mcpServers: { team: { type: 'http', url: `http://127.0.0.1:${office.mcp.port}/mcp/${m.memberToken}` } } });
     assert.ok(office.mcp.port > 0);

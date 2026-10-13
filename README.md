@@ -54,6 +54,48 @@ pixel-office/
 
 ## 실행
 
+### 셸 자동 승인
+
+자동 승인 판단은 실행 셸의 문법을 따른다. Windows에서 실행하는 Bash도 역슬래시를
+이스케이프로 해석하므로 `c\url`처럼 명령 이름을 가린 요청은 자동 승인하지 않는다.
+PowerShell·CMD의 정상적인 폴더 안 경로는 경로로 검사하고, CMD의 caret·환경 변수로
+명령 이름을 가리는 요청은 승인을 묻는다.
+Codex가 실제 셸 정보 없이 합성한 `Bash` hook이나 일반 `shell` 도구 요청은
+셸을 추측하지 않고 승인 카드를 띄운다. 파일 편집 자동 승인 규칙은 유지하며,
+`.pixel-office` 등 인증·세션 설정 폴더 접근은 자동 승인하지 않는다.
+
+### 프로젝트별 세션 저장
+
+부서의 작업 폴더 안에 `.pixel-office/sessions/<멤버 ID>/`를 자동 생성한다.
+사용자가 환경변수를 설정할 필요는 없다.
+
+```text
+프로젝트/.pixel-office/
+  .gitignore
+  sessions/<멤버 ID>/
+    session.json            이름·직급·엔진·CLI 세션 ID
+    events.jsonl            작업·승인·보고 이벤트
+    claude-settings.json    Claude hooks·사용량 설정
+    mcp.json                Claude 팀 도구 연결 설정
+    claude/                 Claude의 대화 기록·설정
+    codex/                  Codex의 대화 기록·설정·SQLite 상태
+```
+
+실제 CLI 기록은 해당 멤버 폴더에 직접 저장한다. 기존 세션을 재개할 때는
+그 세션의 기존 대화 기록만 복사하고 원본은 보존한다. 로그인·사용자 설정을 최초 실행 시
+기존 CLI 홈에서 초기화하므로 이 폴더에는 인증 정보도 포함될 수 있다.
+`.pixel-office/.gitignore`가 폴더 내용 전체를 Git에서 제외한다.
+멤버별로 갱신된 로그인 정보는 다시 덮어쓰지 않는다.
+
+부서 목록과 앱의 공통 DB·포트·로그는 `%LOCALAPPDATA%/pixel-office`에 유지한다.
+사용량 확인용 숨은 세션은 프로젝트 세션이 아니므로 기존 공통 저장 위치를 사용한다.
+Windows Codex hooks는 공백 있는 Node 실행 경로도 호출할 수 있게 PowerShell로 실행한다.
+실제 Codex 0.162.0-alpha.17.2에서 프로젝트 저장, 작업 승인·보고, 재시작 후 대화 복구를 검증했다.
+Claude의 파일 기반 로그인 상태가 없는 환경에서는 프로젝트 전용 CLI 홈에서 로그인이 필요할 수 있다.
+
+저장 위치 지정은 CLI가 지원하는 [Claude 구성 디렉터리](https://code.claude.com/docs/en/env-vars)와
+[Codex 구성](https://developers.openai.com/codex/config-advanced)을 세션 실행 환경에만 적용한다.
+
 사전 조건: **Node 24+**(데몬이 `node:sqlite` 를 쓴다), **Flutter**(Windows 데스크탑), `claude` 실행 파일 + 로그인, (선택) `codex` + 로그인.
 
 `claude` 는 `npm install -g @anthropic-ai/claude-code` 로 설치하고 한 번 실행해 로그인해 둔다. 데몬은 실행 파일을

@@ -142,7 +142,20 @@ export function buildClaudeSessionSettings(
 
 /** `<cwd>/.codex/hooks.json` 내용. description 마커로 우리 파일임을 표시. */
 export function buildCodexHooksFile(hookScriptPath: string, hookPort: number): CodexHooksFile {
-  return { description: PIXEL_OFFICE_MARKER, hooks: buildHooksMap(CODEX_HOOK_EVENTS, hookScriptPath, hookPort) };
+  const hooks = buildHooksMap(CODEX_HOOK_EVENTS, hookScriptPath, hookPort);
+  if (process.platform === 'win32') {
+    for (const event of CODEX_HOOK_EVENTS) hooks[event][0].hooks[0].command = buildWindowsCodexHookCommand(hookScriptPath, hookPort, event);
+  }
+  return { description: PIXEL_OFFICE_MARKER, hooks };
+}
+
+/** Codex's Windows shell is PowerShell, where a quoted executable needs the call operator.
+ * EncodedCommand also keeps paths containing spaces, apostrophes or dollar signs literal.
+ */
+export function buildWindowsCodexHookCommand(hookScriptPath: string, hookPort: number, event: string, nodeExe = nodeExeForHooks()): string {
+  const literal = (s: string) => `'${s.replace(/'/g, "''")}'`;
+  const script = `& ${literal(nodeExe)} ${literal(hookScriptPath)} ${hookPort} ${literal(event)}; exit $LASTEXITCODE`;
+  return `powershell.exe -NoProfile -NonInteractive -EncodedCommand ${Buffer.from(script, 'utf16le').toString('base64')}`;
 }
 
 /**

@@ -13,6 +13,8 @@ export interface SpawnOptions {
   engine: Engine;
   /** CLI 작업 디렉토리(팀 프로젝트 폴더). */
   cwd: string;
+  /** Project-local member storage, supplied by Office; bare probes retain their global home. */
+  sessionDataDir?: string;
   /** 있으면 `claude --resume <id>` / `codex resume <id>` 로 재개 (D-07). */
   resumeSessionId?: string;
   cols?: number;

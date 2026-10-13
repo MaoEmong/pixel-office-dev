@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { spawnSync } from 'node:child_process';
 import {
   CLAUDE_HOOK_EVENTS,
   CODEX_HOOK_EVENTS,
@@ -12,6 +13,7 @@ import {
   buildClaudeSessionSettings,
   buildCodexHooksFile,
   buildHookCommand,
+  buildWindowsCodexHookCommand,
   buildStatusLineCommand,
   claudeSettingsPath,
   codexHooksPath,
@@ -120,8 +122,22 @@ describe('buildCodexHooksFile', () => {
 
   test('uses the same hook shape as Claude', () => {
     const h = file.hooks.Interrupt[0].hooks[0];
-    assert.deepEqual(h, { type: 'command', command: `${NODE} D:/myproject/pixel-office/dev/daemon/src/hooks/hook.js ${PORT} Interrupt`, timeout: HOOK_TIMEOUT_SEC });
+    const command = process.platform === 'win32'
+      ? buildWindowsCodexHookCommand(HOOK, PORT, 'Interrupt')
+      : `${NODE} D:/myproject/pixel-office/dev/daemon/src/hooks/hook.js ${PORT} Interrupt`;
+    assert.deepEqual(h, { type: 'command', command, timeout: HOOK_TIMEOUT_SEC });
   });
+});
+
+test('Windows Codex hook runs through PowerShell with literal spaces, apostrophes and dollar signs in paths', { skip: process.platform !== 'win32' }, (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pixel hook '$-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const hook = path.join(dir, "hook '$.js");
+  fs.writeFileSync(hook, 'process.stdout.write(JSON.stringify(process.argv.slice(2)));');
+  const command = buildWindowsCodexHookCommand(hook, 7421, 'SessionStart');
+  const result = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', command], { encoding: 'utf8', windowsHide: true });
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(JSON.parse(result.stdout), ['7421', 'SessionStart']);
 });
 
 describe('isPixelOfficeHooksFile', () => {
@@ -180,7 +196,7 @@ describe('file writers (temp dir, no spawn)', () => {
     // 우리 파일은 다른 포트로 덮어쓴다
     const second = ensureCodexHooksFile(cwd, HOOK, 9999);
     assert.equal(second.written, true);
-    assert.match(fs.readFileSync(second.path, 'utf8'), /hook\.js 9999 SessionStart/);
+    assert.deepEqual(JSON.parse(fs.readFileSync(second.path, 'utf8')), buildCodexHooksFile(HOOK, 9999));
 
     // 남의 파일은 건드리지 않는다
     const foreign = '{"description":"user hooks","hooks":{"Stop":[]}}';
@@ -226,7 +242,9 @@ describe('공백이 든 경로 인용 — 맥 `Application Support` (T48-1)', ()
   test('Codex `.codex/hooks.json` 도 같은 인용을 쓴다', () => {
     const file = buildCodexHooksFile(MAC_HOOK, PORT);
     for (const event of CODEX_HOOK_EVENTS) {
-      assert.equal(file.hooks[event]![0]!.hooks[0]!.command, `${NODE} "${MAC_HOOK}" ${PORT} ${event}`, event);
+      assert.equal(file.hooks[event]![0]!.hooks[0]!.command, process.platform === 'win32'
+        ? buildWindowsCodexHookCommand(MAC_HOOK, PORT, event)
+        : `${NODE} "${MAC_HOOK}" ${PORT} ${event}`, event);
     }
   });
 
@@ -251,7 +269,9 @@ describe('공백이 든 경로 인용 — 맥 `Application Support` (T48-1)', ()
       const codexJson = JSON.parse(fs.readFileSync(res.path, 'utf8')) as {
         hooks: Record<string, Array<{ hooks: Array<{ command: string }> }>>;
       };
-      assert.equal(codexJson.hooks.SessionStart![0]!.hooks[0]!.command, `${NODE} "${MAC_HOOK}" ${PORT} SessionStart`);
+      assert.equal(codexJson.hooks.SessionStart![0]!.hooks[0]!.command, process.platform === 'win32'
+        ? buildWindowsCodexHookCommand(MAC_HOOK, PORT, 'SessionStart')
+        : `${NODE} "${MAC_HOOK}" ${PORT} SessionStart`);
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }

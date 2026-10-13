@@ -22,6 +22,7 @@ import pkg from '../../package.json' with { type: 'json' };
 import { config as defaultConfig, type Config } from '../config.js';
 import { Store, type RetentionResult } from '../store/Store.js';
 import { PtyManager } from '../pty/PtyManager.js';
+import { ensureProjectDataDir, projectDataDir, projectMemberDir } from '../pty/projectSessions.js';
 import { toForwardSlashes } from '../pty/hookSettings.js';
 import type { ExitInfo, PtySession } from '../pty/types.js';
 import { HookReceiver } from '../hooks/HookReceiver.js';
@@ -916,7 +917,7 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
   private autoApprove(member: Member, tool: string, input: unknown): AutoApprovalDecision | undefined {
     const department = this.store.getDepartment(member.departmentId);
     if (!department || department.approvalPolicy === 'ask') return undefined;
-    return decideAutoApproval(department.approvalPolicy, { toolName: tool, toolInput: input, cwd: department.cwd });
+    return decideAutoApproval(department.approvalPolicy, { toolName: tool, toolInput: input, cwd: department.cwd, engine: member.engine });
   }
 
   /**
@@ -1951,9 +1952,18 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
     rt.queue.enqueue({ kind: 'system', text });
   }
 
-  /** `${dataDir}/sessions/<memberId>/mcp.json` — Claude `--mcp-config` 용. 스폰 때마다 다시 쓴다(포트·토큰이 바뀔 수 있다). */
+  /** A readable member identity next to its project-local logs; never include the hook token. */
+  private writeProjectSession(member: Member): void {
+    const dir = projectMemberDir(member.cwd, member.id);
+    fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+    const { id, name, rank, engine, sessionId, departmentId, parentId, createdAt } = member;
+    fs.writeFileSync(path.join(dir, 'session.json'), JSON.stringify({ id, name, rank, engine, sessionId, departmentId, parentId, createdAt }, null, 2));
+  }
+
+  /** `<project>/.pixel-office/sessions/<memberId>/mcp.json`. */
   mcpConfigPath(memberId: string): string {
-    return path.join(this.cfg.dataDir, 'sessions', memberId, 'mcp.json');
+    const member = this.store.getMember(memberId);
+    return path.join(member ? projectDataDir(member.cwd) : this.cfg.dataDir, 'sessions', memberId, 'mcp.json');
   }
 
   /** 그 멤버의 TeamTools MCP 엔드포인트. Claude 는 mcp.json 안에, Codex 는 `-c mcp_servers.team.url=` 인자에 들어간다. */
@@ -2009,11 +2019,14 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
 
     const cols = this.cfg.cols;
     const rows = this.cfg.rows;
+    ensureProjectDataDir(member.cwd);
+    this.writeProjectSession(member);
     const session = this.pty.spawn({
       memberId: member.id,
       memberToken: member.memberToken,
       engine: member.engine,
       cwd: member.cwd,
+      sessionDataDir: projectDataDir(member.cwd),
       resumeSessionId: resume && member.sessionId ? member.sessionId : undefined,
       cols,
       rows,
@@ -2628,6 +2641,17 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
   // ---- 내부: 배선 -------------------------------------------------------------------------
 
   private wire(): void {
+    // Capture adapter events and Office-generated delegation/report events alike.
+    this.on('event', (ev) => {
+      const member = this.store.getMember(ev.memberId);
+      if (!member) return;
+      try {
+        this.writeProjectSession(member);
+        fs.appendFileSync(path.join(projectMemberDir(member.cwd, member.id), 'events.jsonl'), JSON.stringify(ev) + '\n');
+      } catch (err) {
+        this.notice('warn', `프로젝트 세션 기록 저장 실패: ${errMsg(err)}`);
+      }
+    });
     // 엔진 어댑터는 같은 이벤트를 낸다(HooksAdapterEvents) — 배선도 같다.
     for (const adapter of this.allAdapters()) {
       adapter.on('event', (ev) => {
@@ -2635,6 +2659,13 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
         this.afterOfficeEvent(ev);
       });
       adapter.on('status', (memberId, status) => this.emitStatus(memberId, status));
+      adapter.on('sessionId', (memberId) => {
+        const member = this.store.getMember(memberId);
+        if (member) {
+          try { this.writeProjectSession(member); }
+          catch (err) { this.notice('warn', `프로젝트 세션 정보 저장 실패: ${errMsg(err)}`); }
+        }
+      });
       adapter.on('pendingCreated', (p) => this.maybeAutoAllow(p));
       // T27: 도구 완료(PostToolUse / PostToolUseFailure) = 셸 락 해제 조건 1번(01 §해제 표).
       adapter.on('toolDone', (memberId, info) => this.releaseShellLock(memberId, info.toolUseId));

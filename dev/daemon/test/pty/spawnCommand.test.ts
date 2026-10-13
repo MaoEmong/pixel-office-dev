@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { prepareSpawnCommand } from '../../src/pty/PtyManager.js';
-import { PIXEL_OFFICE_MARKER, codexHooksPath, CODEX_HOOK_EVENTS } from '../../src/pty/hookSettings.js';
+import { PIXEL_OFFICE_MARKER, codexHooksPath, CODEX_HOOK_EVENTS, buildWindowsCodexHookCommand } from '../../src/pty/hookSettings.js';
 import type { SpawnOptions } from '../../src/pty/types.js';
 
 const cfg = { claudeExe: 'C:\\claude.exe', codexExe: 'C:\\codex.exe', dataDir: '' };
@@ -52,7 +52,9 @@ describe('prepareSpawnCommand', () => {
     assert.equal(parsed.description, PIXEL_OFFICE_MARKER);
     assert.deepEqual(Object.keys(parsed.hooks).sort(), [...CODEX_HOOK_EVENTS].sort());
     assert.ok(parsed.hooks.Interrupt, 'Codex 는 Interrupt hook 이 있다');
-    assert.equal(parsed.hooks.PreToolUse![0]!.hooks[0]!.command, `${NODE} D:/daemon/src/hooks/hook.js 7421 PreToolUse`);
+    assert.equal(parsed.hooks.PreToolUse![0]!.hooks[0]!.command, process.platform === 'win32'
+      ? buildWindowsCodexHookCommand(opts().hookScriptPath, 7421, 'PreToolUse')
+      : `${NODE} D:/daemon/src/hooks/hook.js 7421 PreToolUse`);
   });
 
   test('codex: mcpUrl 이 있으면 -c mcp_servers.team.url="…" 이 붙는다 (T22, 실측: codex mcp add --url 이 쓰는 키)', () => {
@@ -96,7 +98,9 @@ describe('prepareSpawnCommand', () => {
     const cmd = prepareSpawnCommand({ ...cfg, dataDir: dir }, opts({ hookPort: 9999 }));
     assert.equal(cmd.warn, undefined);
     const parsed = JSON.parse(fs.readFileSync(file, 'utf8')) as { hooks: Record<string, Array<{ hooks: Array<{ command: string }> }>> };
-    assert.match(parsed.hooks.SessionStart![0]!.hooks[0]!.command, /9999 SessionStart$/);
+    assert.equal(parsed.hooks.SessionStart![0]!.hooks[0]!.command, process.platform === 'win32'
+      ? buildWindowsCodexHookCommand(opts().hookScriptPath, 9999, 'SessionStart')
+      : `${NODE} D:/daemon/src/hooks/hook.js 9999 SessionStart`);
   });
 
   test('claude: --settings 세션 파일 + --permission-mode default (+mcp-config)', () => {

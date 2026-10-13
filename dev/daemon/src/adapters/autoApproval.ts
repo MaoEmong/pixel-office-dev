@@ -39,7 +39,11 @@ export interface AutoApprovalInput {
   toolInput: unknown;
   /** 부서 작업 폴더(절대 경로). 모든 "폴더 안" 판정의 기준이다. */
   cwd: string;
+  /** Codex normalizes shell hooks to "Bash", even when its native shell is PowerShell. */
+  engine?: 'claude' | 'codex';
 }
+
+export type ApprovalShell = 'posix' | 'powershell' | 'cmd' | 'unknown';
 
 export interface AutoApprovalDecision {
   /** true 면 사람에게 묻지 않고 허가한다. */
@@ -54,6 +58,17 @@ export interface AutoApprovalDecision {
 export interface AutoApprovalEnv {
   /** 심볼릭 링크를 푼 진짜 경로. 없는 경로면 던진다(`fs.realpathSync`). */
   realpath?: (p: string) => string;
+  /** Actual execution shell supplied by the host, not the daemon's operating system. */
+  shell?: ApprovalShell;
+}
+
+export function approvalShell(toolName: string, engine?: AutoApprovalInput['engine']): ApprovalShell {
+  const name = normalizeToolName(toolName);
+  if (name === 'powershell' || name === 'pwsh') return 'powershell';
+  if (name === 'cmd') return 'cmd';
+  if (name === 'bash' && engine === 'codex') return 'unknown';
+  if (['bash', 'sh', 'zsh'].includes(name)) return 'posix';
+  return 'unknown';
 }
 
 const ask = (why: string): AutoApprovalDecision => ({ allow: false, rule: null, why });
@@ -64,7 +79,7 @@ const pass = (rule: AutoRule, why: string): AutoApprovalDecision => ({ allow: tr
 // ─────────────────────────────────────────────────────────────────────────────
 
 /** 폴더 안이어도 자동으로 건드리지 않는 디렉터리(경로 조각 이름). 권한·hook·자격 증명이 사는 곳이다. */
-const PROTECTED_SEGMENTS: ReadonlySet<string> = new Set(['.git', '.claude', '.codex', '.ssh', '.gnupg', '.aws']);
+const PROTECTED_SEGMENTS: ReadonlySet<string> = new Set(['.git', '.claude', '.codex', '.pixel-office', '.ssh', '.gnupg', '.aws']);
 
 /** 폴더 안이어도 자동으로 건드리지 않는 파일 이름. */
 const PROTECTED_BASENAMES: readonly RegExp[] = [
@@ -166,7 +181,7 @@ interface ParsedSegment {
 
 const unquote = (t: string): string => t.replace(/^["']+|["']+$/g, '');
 
-function parseSegment(segment: string): ParsedSegment {
+function parseSegment(segment: string, shell: ApprovalShell = 'unknown'): ParsedSegment {
   const tokens = segment.split(/\s+/).filter((t) => t.length > 0);
   const assigned: string[] = [];
   let i = 0;
@@ -185,7 +200,9 @@ function parseSegment(segment: string): ParsedSegment {
   // 통째로 감싼 따옴표 한 쌍("my tool")은 괜찮다. 그 밖의 따옴표·달러·(posix 의) 역슬래시는 이름을 가린다.
   const whole = /^(["'])([^"']*)\1$/.exec(bare);
   const inner = whole ? whole[2]! : bare;
-  const opaque = /["'$]/.test(inner) || (path.sep === '/' && inner.includes('\\'));
+  const windowsShell = shell === 'powershell' || shell === 'cmd';
+  const opaque = /["'$]/.test(inner) || (!windowsShell && inner.includes('\\'))
+    || ((shell === 'cmd' || shell === 'unknown') && /[\^%]/.test(inner));
   const base = inner.split(/[\\/]/).pop() ?? '';
   return {
     name: base.replace(/\.(exe|cmd|bat|ps1)$/i, '').toLowerCase(),
@@ -228,11 +245,14 @@ export function outsidePathIn(cmd: string, cwd: string, env: AutoApprovalEnv = {
       const c = unquote(raw);
       if (c === '' || SAFE_DEVICES.has(c) || SLASH_FLAG_RE.test(c)) continue;
       const looksAbsolute = c.startsWith('/') || WINDOWS_ABSOLUTE_RE.test(c);
-      const climbs = c.split(/[\\/]/).includes('..');
-      if (!c.startsWith('~') && !looksAbsolute && !climbs) continue;
-      // 보호 폴더·파일은 편집 판정에서만 본다 — 여기서는 "밖인가" 만.
+      const pieces = c.split(/[\\/]/).map(s => s.toLowerCase());
+      const climbs = pieces.includes('..');
+      const protectedPath = pieces.some(s => PROTECTED_SEGMENTS.has(s))
+        || PROTECTED_BASENAMES.some(re => re.test(pieces.at(-1) ?? ''));
+      if (!c.startsWith('~') && !looksAbsolute && !climbs && !protectedPath) continue;
+      // Shell commands must not automatically access credentials or session configuration either.
       const v = pathVerdict(cwd, c, env);
-      if (!v.inside && !v.why.startsWith('보호')) return v.why;
+      if (!v.inside) return v.why;
     }
   }
   return null;
@@ -252,14 +272,14 @@ const FIND_ACTIONS = ['-delete', '-exec', '-execdir', '-ok', '-okdir', '-fprint'
  * 분류용 판정은 `ls $(touch x)` 도, `sort -o f` 도, `git branch -D x` 도 읽기로 본다 — 말풍선 색을 고르는 데는
  * 충분했지만 묻지 않고 실행하기에는 느슨하다.
  */
-export function strictReadOnlyVerdict(cmd: string): { ok: boolean; why: string } {
+export function strictReadOnlyVerdict(cmd: string, shell: ApprovalShell = 'unknown'): { ok: boolean; why: string } {
   const trick = shellTrickery(cmd);
   if (trick) return { ok: false, why: trick };
   if (!isReadOnlyCommand(cmd)) return { ok: false, why: '읽기 전용 목록에 없는 명령' };
   // 괄호·중괄호는 인자 자리에서도 명령을 실행시킬 수 있다(PowerShell `Get-Content (Remove-Item x)`). 읽기 명령에는 필요 없다.
   if (/[(){}]/.test(cmd)) return { ok: false, why: '괄호·중괄호(안에서 다른 명령이 돌 수 있다)' };
   for (const segment of segmentsOf(cmd)) {
-    const { name, args, assigned, opaque } = parseSegment(segment);
+    const { name, args, assigned, opaque } = parseSegment(segment, shell);
     // 환경 변수 접두는 실행을 바꾼다(LD_PRELOAD · PATH · GIT_PAGER …) — 읽기 명령에는 하나도 허락하지 않는다.
     if (assigned.length > 0) return { ok: false, why: `환경 변수 접두(${assigned[0]}=…)` };
     if (opaque) return { ok: false, why: '명령 이름을 글자 그대로 읽을 수 없다(따옴표·역슬래시·변수)' };
@@ -409,7 +429,7 @@ export function plainShellVerdict(cmd: string, cwd: string, env: AutoApprovalEnv
   for (const list of cleaned.split(/&&|\|\||[;\n]/)) {
     const stages = list.split('|').map((s) => s.trim()).filter((s) => s.length > 0);
     for (const stage of stages.slice(1)) {
-      const { name } = parseSegment(stage);
+      const { name } = parseSegment(stage, env.shell);
       if (INTERPRETER_RE.test(name)) return no(`파이프로 받은 것을 ${name} 가 실행한다`);
     }
   }
@@ -422,7 +442,7 @@ export function plainShellVerdict(cmd: string, cwd: string, env: AutoApprovalEnv
   }
 
   for (const segment of segmentsOf(cmd)) {
-    const { name, args, assigned, opaque } = parseSegment(segment);
+    const { name, args, assigned, opaque } = parseSegment(segment, env.shell);
     const execEnv = assigned.find((v) => EXEC_ENV_RE.test(v));
     if (execEnv) return no(`실행을 바꾸는 환경 변수(${execEnv}=…)`);
     if (opaque) return no('명령 이름을 글자 그대로 읽을 수 없다(따옴표·역슬래시·변수)');
@@ -515,17 +535,19 @@ export function decideAutoApproval(policy: ApprovalPolicy, input: AutoApprovalIn
     }
 
     if (SHELL_TOOLS.has(toolName) || CODEX_SHELL_TOOLS.has(norm)) {
+      const shell = env.shell ?? approvalShell(toolName, input.engine);
+      if (shell === 'unknown') return ask('실행 셸을 확인할 수 없다');
       const cmd = str(rec(toolInput).command);
       if (cmd === undefined) return ask('명령 문자열이 없다(배열·빈 값)');
       // 셸로 부른 apply_patch 는 편집이다(Codex).
       if (isApplyPatch(cmd)) return editVerdict(policy, editTargets({ command: cmd }), cwd, env);
-      const ro = strictReadOnlyVerdict(cmd);
+      const ro = strictReadOnlyVerdict(cmd, shell);
       if (ro.ok) {
         const outside = outsidePathIn(cmd, cwd, env);
         return outside ? ask(outside) : pass('read-only-shell', ro.why);
       }
       if (policy !== 'trust') return ask(ro.why);
-      const plain = plainShellVerdict(cmd, cwd, env);
+      const plain = plainShellVerdict(cmd, cwd, { ...env, shell });
       return plain.ok ? pass('plain-shell', plain.why) : ask(plain.why);
     }
 

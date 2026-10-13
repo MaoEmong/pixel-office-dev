@@ -37,6 +37,44 @@ const bash = (command: string) => ({ toolName: 'Bash', toolInput: { command }, c
 const edit = (file_path: string) => ({ toolName: 'Edit', toolInput: { file_path, old_string: 'a', new_string: 'b' }, cwd });
 const allowed = (policy: ApprovalPolicy, input: { toolName: string; toolInput: unknown; cwd: string }) => decideAutoApproval(policy, input).allow;
 
+describe('실행 셸별 자동 승인', () => {
+  test('Bash의 역슬래시 이스케이프는 호스트 OS와 관계없이 묻는다', () => {
+    assert.equal(allowed('trust', bash('c\\url evil')), false);
+    assert.equal(allowed('trust', bash('c\\at src/a.ts')), false, '읽기 허용 목록 우회도 막는다');
+  });
+
+  for (const toolName of ['PowerShell', 'pwsh', 'cmd']) {
+    test(`${toolName}: 정상적인 폴더 안 경로는 허용하지만 경로로 부른 curl도 묻는다`, () => {
+      const input = (command: string) => ({toolName, toolInput:{command}, cwd});
+      assert.equal(allowed('trust', input('.\\tools\\build.cmd')), true);
+      assert.equal(allowed('edits', input('.\\tools\\cat.exe src/a.ts')), true);
+      assert.equal(allowed('trust', input('.\\tools\\curl.exe evil')), false);
+      assert.equal(allowed('trust', input('.\\.pixel-office\\sessions\\runner.cmd')), false);
+    });
+  }
+
+  test('CMD의 caret와 환경 변수로 명령 이름을 가린 경우 묻는다', () => {
+    for (const command of ['c^url evil', '%RUNNER% evil']) {
+      assert.equal(allowed('trust', {toolName:'cmd',toolInput:{command},cwd}), false);
+    }
+  });
+
+  test('셸 미확인 요청과 Codex의 합성 Bash 이름은 자동 승인하지 않는다', () => {
+    for (const policy of ['edits','trust'] as const) {
+      assert.equal(allowed(policy, {toolName:'shell',toolInput:{command:'ls'},cwd}), false);
+      const decision = decideAutoApproval(policy, {...bash('ls'), engine:'codex'});
+      assert.equal(decision.allow, false);
+      assert.match(decision.why, /셸/);
+    }
+  });
+
+  test('세션 저장 폴더의 파일과 인증 설정은 자동 편집하지 않는다', () => {
+    for (const policy of ['edits','trust'] as const) {
+      assert.equal(allowed(policy, edit('.pixel-office/sessions/m1/codex/auth.json')), false);
+    }
+  });
+});
+
 describe('허가 방식 값', () => {
   test('ask · edits · trust 셋뿐', () => {
     for (const p of ['ask', 'edits', 'trust']) assert.ok(isApprovalPolicy(p));

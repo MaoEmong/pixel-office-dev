@@ -40,6 +40,7 @@ export const CODEX_SHELL_TOOLS: ReadonlySet<string> = new Set([
   'exec',
   'powershell',
   'pwsh',
+  'cmd',
   'container.exec',
 ]);
 

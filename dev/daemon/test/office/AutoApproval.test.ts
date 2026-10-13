@@ -62,6 +62,18 @@ describe('허가 방식 배선 (U-02, D-51)', () => {
   const eventsOf = (m: Member) => events.filter((e) => e.memberId === m.id);
   const setPolicy = (p: 'ask' | 'edits' | 'trust') => office.updateDepartment({ departmentId: department.id, approvalPolicy: p });
 
+  test('Codex의 합성 Bash hook은 셸을 추측하지 않고 승인 카드를 만든다', () => {
+    const codexCwd = path.join(dataDir, 'codex-project');
+    fs.mkdirSync(codexCwd);
+    const {head: codex} = office.createDepartment({name:'codex',cwd:codexCwd,headEngine:'codex',approvalPolicy:'trust'});
+    const ambiguous = perm(codex, 'Bash', {command:'ls'});
+    assert.deepEqual(ambiguous.sent, []);
+    assert.equal(openApprovals(codex).length, 1);
+    assert.equal(eventsOf(codex).at(-1)!.kind, 'waiting_approval');
+    const explicit = perm(codex, 'PowerShell', {command:'Get-Location'});
+    assert.deepEqual(explicit.sent, [allow()], '실제 셸 이름을 알면 기존 읽기 전용 자동 승인을 유지한다');
+  });
+
   test('기본은 ask — 폴더 안 편집도 예전처럼 카드가 뜬다', () => {
     assert.equal(department.approvalPolicy, 'ask');
     const f = perm(lead, 'Edit', { file_path: 'src/a.ts', old_string: 'a', new_string: 'b' });

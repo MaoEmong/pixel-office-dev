@@ -3,12 +3,14 @@
 // 여기서는 바이트만 다룬다. 화면 재구성은 ScreenModel(T02), 입력 시점 판단은 InputQueue(T05),
 // hook 수신은 HookReceiver(T03)가 맡는다. 이 클래스는 "누가 떠 있고, 뭘 쓰고, 언제 죽었나"만 안다.
 import { EventEmitter } from 'node:events';
+import path from 'node:path';
 import * as pty from 'node-pty';
 import { config as defaultConfig } from '../config.js';
 import { host } from '../platform.js';
 import { buildClaudeArgs, buildCodexArgs } from './args.js';
 import { CHILD_TERM, sanitizeEnv, stripDaemonEnv } from './env.js';
 import { ensureCodexHooksFile, writeClaudeSessionSettings } from './hookSettings.js';
+import { prepareProjectSession } from './projectSessions.js';
 import type { Engine, ExitInfo, KeyName, PtySession, SpawnOptions } from './types.js';
 
 export type { Engine, ExitInfo, KeyName, PtySession, SpawnOptions } from './types.js';
@@ -195,6 +197,9 @@ export class PtyManager extends EventEmitter<PtyManagerEvents> {
 
     const { file, args } = this.prepareCommand(opts);
     const env = sanitizeEnv(process.env, opts.memberToken);
+    if (opts.sessionDataDir) {
+      Object.assign(env, prepareProjectSession(opts.cwd, opts.memberId, opts.engine, opts.resumeSessionId));
+    }
     return this.spawnRaw(opts.memberId, opts.engine, file, args, opts.cwd, env, opts.cols, opts.rows);
   }
 
@@ -296,7 +301,7 @@ export interface SpawnCommand {
 
 /**
  * 엔진별 실행 파일·인자 + hook 설정 파일 준비(부작용: 설정 파일 쓰기). spawn 없이 검증할 수 있게 밖으로 뺐다.
- *   claude: `<dataDir>/sessions/<memberId>/claude-settings.json` 을 쓰고 `--settings …`(+ --resume, --mcp-config).
+ *   claude: `<sessionDataDir 또는 dataDir>/sessions/<memberId>/claude-settings.json` 을 쓰고 `--settings …`(+ --resume, --mcp-config).
  *           `statusLineScriptPath` 가 있으면 그 파일에 `statusLine` 도 같이 들어간다(T43 사용량).
  *   codex : `<cwd>/.codex/hooks.json`(pixel-office 마커, 남의 파일이면 건드리지 않고 warn) +
  *           `[resume <id>] --dangerously-bypass-hook-trust -c approval_policy="on-request" -c sandbox_mode="workspace-write"` (실측 ④)
@@ -304,14 +309,17 @@ export interface SpawnCommand {
  */
 export function prepareSpawnCommand(cfg: Pick<PtyManagerConfig, 'claudeExe' | 'codexExe' | 'dataDir'>, opts: SpawnOptions): SpawnCommand {
   if (opts.engine === 'claude') {
-    const settingsPath = writeClaudeSessionSettings(cfg.dataDir, opts.memberId, opts.hookScriptPath, opts.hookPort, opts.statusLineScriptPath);
+    const settingsPath = writeClaudeSessionSettings(opts.sessionDataDir ?? cfg.dataDir, opts.memberId, opts.hookScriptPath, opts.hookPort, opts.statusLineScriptPath);
     return {
       file: cfg.claudeExe,
       args: buildClaudeArgs(settingsPath, opts.resumeSessionId, opts.extraArgs, { mcpConfigPath: opts.mcpConfigPath }),
     };
   }
   const result = ensureCodexHooksFile(opts.cwd, opts.hookScriptPath, opts.hookPort);
-  const cmd: SpawnCommand = { file: cfg.codexExe, args: buildCodexArgs(opts.resumeSessionId, opts.extraArgs, { mcpUrl: opts.mcpUrl }) };
+  const extraArgs = opts.sessionDataDir
+    ? [...(opts.extraArgs ?? []), '-c', `sqlite_home=${JSON.stringify(path.join(opts.sessionDataDir, 'sessions', opts.memberId, 'codex'))}`]
+    : opts.extraArgs;
+  const cmd: SpawnCommand = { file: cfg.codexExe, args: buildCodexArgs(opts.resumeSessionId, extraArgs, { mcpUrl: opts.mcpUrl }) };
   if (!result.written) cmd.warn = result.reason ?? `did not write ${result.path}`;
   return cmd;
 }

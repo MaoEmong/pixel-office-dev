@@ -94,7 +94,7 @@ test('real daemon + real Claude head: create_team → delegate → lead hire →
       client.waitEvent(lead.id, 'thinking', seq0, 480_000, (e) => unwrapPasted(e.detail.text).startsWith(`[TASK#${leadTaskId} from `)),
     );
     console.log(`[IT] lead got: ${JSON.stringify(leadGot.detail.text)} (${el()})`);
-    assert.match(String(leadGot.detail.text), new RegExp(`^\\[TASK#${leadTaskId} from ${head.name}\\(부장\\)\\]`));
+    assert.match(unwrapPasted(leadGot.detail.text), new RegExp(`^\\[TASK#${leadTaskId} from ${head.name}\\(부장\\)\\]`));
 
     // ---- 팀장 hire → 팀원 위임 -------------------------------------------------------------------
     const memberJoined = await race(client.waitFor(
@@ -114,11 +114,11 @@ test('real daemon + real Claude head: create_team → delegate → lead hire →
     // ---- 보고가 올라온다: 팀원 → 팀장 → 부장 ------------------------------------------------------
     const toLead = await race(client.waitEvent(lead.id, 'thinking', leadDelegating.seq, 600_000, (e) => unwrapPasted(e.detail.text).startsWith('[REPORTS ')));
     console.log(`[IT] lead got reports (${el()}):\n${String(toLead.detail.text)}`);
-    assert.match(String(toLead.detail.text), new RegExp(`^\\[REPORTS task#${workTaskId} ${worker.name} status=(done|blocked|aborted)\\]`));
+    assert.match(unwrapPasted(toLead.detail.text), new RegExp(`^\\[REPORTS task#${workTaskId} ${worker.name} status=(done|blocked|aborted)\\]`));
 
     const toHead = await race(client.waitEvent(head.id, 'thinking', toLead.seq, 600_000, (e) => unwrapPasted(e.detail.text).startsWith('[REPORTS ')));
     console.log(`[IT] head got reports (${el()}):\n${String(toHead.detail.text)}`);
-    assert.match(String(toHead.detail.text), new RegExp(`^\\[REPORTS task#${leadTaskId} ${lead.name} status=(done|blocked|aborted)\\]`));
+    assert.match(unwrapPasted(toHead.detail.text), new RegExp(`^\\[REPORTS task#${leadTaskId} ${lead.name} status=(done|blocked|aborted)\\]`));
     // `[ALL_REPORTS_IN]` 은 여기서 단언하지 않는다 — `thinking.text` 는 MAX_THINKING_CHARS(200자)로 잘리므로
     // 긴 보고에서는 꼬리가 이벤트에 안 남는다(큐에 들어간 본문에는 있다). 그 규칙은 단위 테스트가 본다.
 
