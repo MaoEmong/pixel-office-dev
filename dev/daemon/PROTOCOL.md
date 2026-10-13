@@ -588,3 +588,29 @@ D-02 는 데몬을 "앱과 분리된 상주 프로세스" 로 두었다. D-47 �
 | **새 메서드** | **`daemon.stopWatchingParent`** → `{ stopped: boolean }`(T46-3, §3 을 끈다 — "계속 일하기" 를 앱 실행 중에 켠 경우) |
 | `member.status` · `snapshot` 의 `status` | **`suspended`** 가 올 수 있다(`derived` 에도 그대로) |
 | `daemon.notice` params | `{level, message}` 에 **선택 꼬리표** `kind` 가 붙을 수 있다: `'parent-gone'`(§3) · `'recovering'`(+`total`, `done`). 꼬리표가 없는 알림은 예전 그대로다 |
+
+## 회의 작업 흐름 (T54, 추가 계약)
+
+모든 메서드는 인증된 연결에서 사용한다. 응답은 `{workflow: Workflow|null}`.
+
+| RPC | params | 동작 |
+|---|---|---|
+| workflow.get | departmentId | 현재 작업 또는 null |
+| workflow.discuss | departmentId, text | 작업안 대화 시작·추가, 구현 없음 |
+| workflow.start | departmentId, brief? | 구체화 → 회의, 부장 root task 발행 |
+| workflow.resume | departmentId | 누락된 의견·미확정 결정만 재요청 |
+| workflow.cancel | departmentId | 취소 기록 후 부서 작업 중단 |
+| workflow.complete | departmentId | 최종 보고 검수 대기 → 완료 |
+
+단계/입력 조건 불충족은 -32003, 필수 RPC 인자 누락은 -32602.
+`workflow.changed` 알림 params는 Workflow 전문이다. hello/snapshot의 선택 필드
+`workflows`에는 부서별 최신 작업이 포함된다. 이력은 SQLite와 프로젝트 export에 남는다.
+Workflow 구조와 단계는 `../../docs/design/회의-작업흐름.md` 참조.
+
+추가 TeamTools: 부장 meeting_open{participants:string[]},
+meeting_decide{workflowId,minutes,assignments:[{leadId,task,acceptance:string[],dependsOn?:string[]}]};
+팀장·팀원 meeting_speak{workflowId,round:1|2,text}.
+같은 부서의 초대된 살아 있는 참석자만 현재 차례를 한 번 제출할 수 있다.
+전원이 두 차례 제출해야 부장이 모든 참석 팀장의 업무를 확정할 수 있다.
+자기 의존성·없는 팀장·순환 의존성은 배정 전에 거부한다.
+회의 중 구현·delegate·조기 최종 보고는 거부된다.

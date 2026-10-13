@@ -252,6 +252,11 @@ export class Store {
       .map(row => JSON.parse(row.payload) as Workflow);
   }
 
+  currentWorkflows(): Workflow[] {
+    return (this.db.prepare('SELECT payload FROM workflows WHERE rowid IN (SELECT MAX(rowid) FROM workflows GROUP BY department_id)').all() as Array<{payload:string}>)
+      .map(row=>JSON.parse(row.payload) as Workflow);
+  }
+
   /**
    * 열 때마다 한 번. 없는 테이블을 만들고(`CREATE TABLE IF NOT EXISTS`), 옛 버전이면 스텝을 태운다.
    *

@@ -117,7 +117,7 @@ describe('Office ask_user (T17)', () => {
     // T35: `ask_user` 는 부장 전용이다. 부장 도구 6종이 보인다(팀원은 report·ask_parent 뿐).
     assert.deepEqual(
       tools.map((t) => t.name).sort(),
-      ['ask_user', 'create_team', 'delegate', 'dismiss_team', 'reply', 'report'],
+      ['ask_user', 'create_team', 'delegate', 'dismiss_team', 'meeting_decide', 'meeting_open', 'reply', 'report'],
     );
 
     const seqBefore = events.length;

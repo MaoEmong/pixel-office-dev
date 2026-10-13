@@ -422,3 +422,23 @@ Stop/화면 idle ─▶ transcript·rollout 꼬리 64KB ─▶ UsageTracker(누�
 ## 설계·결정
 
 `../../docs/01-설계문서.md`, `../../docs/04-결정기록.md`, 태스크별 기록 `../../docs/worklog/`. 프로토콜 `PROTOCOL.md`.
+
+## 회의 기반 작업 흐름 (T54)
+
+일반 앱 입력은 `workflow.discuss`로 부장과 목표·범위·완료 기준을 구체화한다.
+사용자가 명시적으로 시작하면 부장이 팀을 구성하고 `meeting_open`을 호출한다.
+참석 팀장·전문가는 `meeting_speak`로 1차 제안과 2차 상호 검토를 제출한다.
+부장은 `meeting_decide`로 회의록, 담당 업무, 완료 기준, 선행 담당을 확정한다.
+데몬이 선행 보고가 완료된 업무부터 기존 delegate/report 체계로 배정한다.
+최종 부장 보고는 검수 대기로 남고 사용자의 완료 버튼으로 종료된다.
+
+`src/workflow/Coordinator.ts`는 단계·참석자·계획 검증, `guards.ts`는 계획 단계의
+쓰기 도구 차단을 담당한다. 상태는 SQLite workflows와 프로젝트
+`.pixel-office/workflows/<workflowId>.json`에 저장된다. 정상 종료는 회의를 막힘으로
+바꾸지 않는다. 회의 재개는 아직 제출하지 않은 의견만 다시 요청한다.
+실행 중 담당자가 사라지거나 blocked로 보고하면 작업을 취소하고 새 논의를 시작한다.
+기존 직접 지시 RPC는 콘솔·호환용으로 남고 활성 계획 단계에서는 거부된다.
+
+검증: `node --import tsx --test test/office/Workflow.test.ts`.
+실기: `PIXEL_IT=1`로 `test/office/workflow.integration.test.ts` 실행.
+`PIXEL_WORKFLOW_ENGINE=codex`면 Codex 부장 + Claude 팀장으로 같은 경로를 검사한다.

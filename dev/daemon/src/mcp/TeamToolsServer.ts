@@ -41,6 +41,9 @@ export const ALL_TEAM_TOOLS = [
   'report',
   'ask_user',
   'ask_parent',
+  'meeting_open',
+  'meeting_speak',
+  'meeting_decide',
 ] as const;
 export type TeamToolName = (typeof ALL_TEAM_TOOLS)[number];
 
@@ -54,9 +57,9 @@ export type ReportToolStatus = 'done' | 'blocked' | 'aborted';
  * PROTOCOL.md 의 표가 이 표를 그대로 읽는다.
  */
 export const RANK_TOOLS: Record<TeamToolRank, readonly TeamToolName[]> = {
-  head: ['create_team', 'dismiss_team', 'delegate', 'reply', 'report', 'ask_user'],
-  lead: ['hire', 'dismiss', 'delegate', 'reply', 'report', 'ask_parent'],
-  member: ['report', 'ask_parent'],
+  head: ['create_team', 'dismiss_team', 'delegate', 'reply', 'report', 'ask_user', 'meeting_open', 'meeting_decide'],
+  lead: ['hire', 'dismiss', 'delegate', 'reply', 'report', 'ask_parent', 'meeting_speak'],
+  member: ['report', 'ask_parent', 'meeting_speak'],
 };
 
 /** 직급 한글 라벨. instructions/templates.ts 의 RANK_LABEL 과 같은 말(import 순환을 피하려고 여기 둔다). */
@@ -132,6 +135,9 @@ export interface TeamToolsMember {
 
 /** 데몬(Office)이 MCP 서버에 넘기는 연결점. 테스트에서는 가짜. 실패는 throw(→ 도구 결과 isError). */
 export interface TeamToolsHost {
+  meetingOpen?(memberId: string, input: {participants:string[]}): unknown;
+  meetingSpeak?(memberId: string, input: {workflowId:string;round:number;text:string}): unknown;
+  meetingDecide?(memberId: string, input: {workflowId:string;minutes:string;assignments:import('../workflow/types.js').WorkAssignment[]}): unknown;
   /** URL 의 memberToken → 멤버. 모르는 토큰·이미 종료된 멤버면 undefined(→ 404). */
   resolveMember(memberToken: string): TeamToolsMember | undefined;
   /** ask_user(부장 전용): pending(question) 등록 후 id 반환. */
@@ -443,6 +449,19 @@ export class TeamToolsServer {
       return undefined;
     };
     const has = (tool: TeamToolName): boolean => canUseTool(member.rank, tool);
+
+    if (has('meeting_open')) server.registerTool('meeting_open', {
+      title:'회의 소집', description:'[부장 전용] 작업 시작 후 살아 있는 같은 부서 팀장·전문가 ID를 초대한다. 부장은 제외. 참석자 전원이 두 차례 의견을 제출하면 결정 요청이 온다. 호출 후 턴을 끝내고 기다려라.',
+      inputSchema:{participants:z.array(z.string().min(1)).min(1).max(12)}, annotations,
+    }, async input => { const d=gate('meeting_open'); if(d)return d; try { return ok(JSON.stringify(this.host.meetingOpen!(memberId,input))+'\n참석자 의견을 기다려라.'); } catch(e){return fail('meeting_open',errText(e));} });
+    if (has('meeting_speak')) server.registerTool('meeting_speak', {
+      title:'회의 의견 제출', description:'초대된 현재 회의의 차례에 의견을 한 번 제출한다. 1차 접근 방법·위험, 2차 다른 참가자 의견의 검토·의존성. 구현하거나 delegate하지 말고 호출 뒤 턴을 끝내 다음 회의 메시지를 기다려라.',
+      inputSchema:{workflowId:z.string().min(1),round:z.number().int().min(1).max(2),text:z.string().min(1).max(30000)}, annotations,
+    }, async input => { const d=gate('meeting_speak'); if(d)return d; try { return ok(JSON.stringify(this.host.meetingSpeak!(memberId,input))+'\n의견 접수됨. 지금 턴을 끝내고 다음 메시지를 기다려라.'); } catch(e){return fail('meeting_speak',errText(e));} });
+    if (has('meeting_decide')) server.registerTool('meeting_decide', {
+      title:'회의 계획 확정', description:'[부장 전용] 두 차례 의견이 모인 뒤 회의록과 참석한 직속 팀장별 업무·완료 기준·선행 팀장 ID를 확정한다. 데몬이 계획대로 delegate한다. 중복·순환 계획은 거절된다. 받은 rootTaskId는 최종 보고용이다. 팀장 보고를 기다리고 report로 최종 결과를 보고하라.',
+      inputSchema:{workflowId:z.string().min(1),minutes:z.string().min(1).max(30000),assignments:z.array(z.object({leadId:z.string().min(1),task:z.string().min(1).max(30000),acceptance:z.array(z.string().min(1)).min(1).max(20),dependsOn:z.array(z.string()).optional()})).min(1).max(12)},annotations,
+    }, async input => { const d=gate('meeting_decide'); if(d)return d; try { return ok(JSON.stringify(this.host.meetingDecide!(memberId,input))+'\n업무 배정됨. 담당 팀장들의 완료 보고를 기다려라.'); } catch(e){return fail('meeting_decide',errText(e));} });
 
     if (has('create_team')) {
       server.registerTool(

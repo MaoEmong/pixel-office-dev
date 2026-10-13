@@ -203,6 +203,10 @@ export class RpcServer {
 
   private buildHandlers(): Record<string, Handler> {
     const o = this.office;
+    const workflow = <T>(run:()=>T): T => {
+      try { return run(); }
+      catch (err) { if (err instanceof OfficeError) throw err; throw new OfficeError(RPC_ERROR.BAD_STATE,err instanceof Error ? err.message : '작업 흐름 요청 실패'); }
+    };
     return {
       'events.query': (_c, p) =>
         ({
@@ -236,6 +240,12 @@ export class RpcServer {
         return {};
       },
       'department.tree': () => ({ departments: o.tree() }),
+      'workflow.get': (_c,p) => ({workflow:workflow(()=>o.workflowGet!(reqStr(p,'departmentId'))) ?? null}),
+      'workflow.discuss': (_c,p) => ({workflow:workflow(()=>o.workflowDiscuss!(reqStr(p,'departmentId'),reqStr(p,'text')))}),
+      'workflow.start': (_c,p) => ({workflow:workflow(()=>o.workflowStart!(reqStr(p,'departmentId'),optStr(p,'brief')))}),
+      'workflow.resume': (_c,p) => ({workflow:workflow(()=>o.workflowResume!(reqStr(p,'departmentId')))}),
+      'workflow.cancel': (_c,p) => ({workflow:workflow(()=>o.workflowCancel!(reqStr(p,'departmentId')))}),
+      'workflow.complete': (_c,p) => ({workflow:workflow(()=>o.workflowComplete!(reqStr(p,'departmentId')))}),
 
       // T34 부터 **디버그 전용**(`force:true`) — 정식 경로는 부장의 `create_team` 도구(T35). 결과는 `{ team, lead }`.
       'team.create': (_c, p) => {
@@ -357,6 +367,7 @@ export class RpcServer {
       this.officeListeners.push([name, l as (...args: never[]) => void]);
     };
     on('event', (ev) => this.broadcast('event', ev));
+      on('workflow', (w) => this.broadcast('workflow.changed',w));
     on('status', (memberId, status, derived) => {
       this.broadcast('member.status', { memberId, status, derived, member: this.office.getMember(memberId) });
     });

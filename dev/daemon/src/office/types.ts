@@ -126,6 +126,8 @@ export interface HireByLeaderParams {
 /** `member.instruct` 옵션. `force` 는 "부장에게만 지시" 게이트를 넘는 디버그 탈출구. */
 export interface InstructOptions {
   force?: boolean;
+  /** Internal workflow start; never accepted from ordinary member.instruct RPC. */
+  workflow?: boolean;
 }
 
 // ---- TeamTools 오케스트레이션(T25) — RPC 가 아니라 MCP 도구가 부르는 Office 메서드의 입력 -----------
@@ -227,6 +229,7 @@ export interface SnapshotMember extends Member {
 
 /** `hello` 가 돌려주는 스냅샷. store 의 Snapshot 과 같고 멤버 행에 `derived`, 끝에 `usage` 가 더 있다. */
 export interface OfficeSnapshot extends Omit<Snapshot, 'members'> {
+  workflows?: import('../workflow/types.js').Workflow[];
   members: SnapshotMember[];
   /** 엔진·멤버 사용량(T43, D-45). 엔진은 항상 둘 다 실린다. */
   usage: UsageSnapshot;
@@ -264,6 +267,7 @@ export interface NoticeExtra {
 // ---- Office 이벤트 -------------------------------------------------------------
 
 export type OfficeEvents = {
+  workflow: [workflow: import('../workflow/types.js').Workflow];
   /** store 에 적힌 오피스 이벤트(seq 포함) → `event` 알림(전 클라이언트). */
   event: [event: OfficeEvent];
   /** 멤버 status 변경 → `member.status` 알림. */
@@ -294,6 +298,12 @@ export type OfficeEvents = {
 
 /** RpcServer 가 의존하는 Office 의 부분. 테스트에서는 이 인터페이스의 가짜를 넣는다. */
 export interface OfficeApi extends EventEmitter<OfficeEvents> {
+  workflowGet?(departmentId: string): import('../workflow/types.js').Workflow | undefined;
+  workflowDiscuss?(departmentId: string, text: string): import('../workflow/types.js').Workflow;
+  workflowStart?(departmentId: string, brief?: string): import('../workflow/types.js').Workflow;
+  workflowResume?(departmentId: string): import('../workflow/types.js').Workflow;
+  workflowCancel?(departmentId: string): import('../workflow/types.js').Workflow;
+  workflowComplete?(departmentId: string): import('../workflow/types.js').Workflow;
   /** 이번 기동의 인증 토큰(daemon.json 과 동일). */
   readonly token: string;
   readonly version: string;

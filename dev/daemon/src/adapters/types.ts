@@ -20,6 +20,8 @@ export interface AdapterDeps {
    * 팀 도구(즉시 허가, D-22)와 질문 도구(AskUserQuestion)에는 부르지 않는다.
    */
   autoApprove?(member: Member, tool: string, input: unknown): AutoApprovalDecision | undefined;
+  /** A synchronous workflow restriction checked before tools execute or permission cards appear. */
+  toolPolicy?(member: Member, tool: string, input: unknown): string | undefined;
   /** 이벤트 ts 용 시각(epoch ms). 테스트에서 고정. 기본 Date.now. */
   now?(): number;
 }

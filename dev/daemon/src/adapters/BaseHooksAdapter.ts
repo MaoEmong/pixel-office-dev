@@ -64,6 +64,7 @@ export abstract class BaseHooksAdapter extends EventEmitter<HooksAdapterEvents> 
   private readonly getInstructions: AdapterDeps['getInstructions'];
   private readonly toolGate: AdapterDeps['toolGate'];
   private readonly autoApprove: AdapterDeps['autoApprove'];
+  private readonly toolPolicy: AdapterDeps['toolPolicy'];
   private readonly now: () => number;
   /** 사용자 답을 기다리는 hook 보류. pendingId → handle. */
   private readonly held = new Map<string, HeldPending>();
@@ -76,6 +77,7 @@ export abstract class BaseHooksAdapter extends EventEmitter<HooksAdapterEvents> 
     this.getInstructions = deps.getInstructions;
     this.toolGate = deps.toolGate;
     this.autoApprove = deps.autoApprove;
+    this.toolPolicy = deps.toolPolicy;
     this.now = deps.now ?? Date.now;
   }
 
@@ -339,6 +341,12 @@ export abstract class BaseHooksAdapter extends EventEmitter<HooksAdapterEvents> 
 
   private onPreToolUse(req: HookRequest, member: Member): void {
     const toolName = toolNameOf(req.payload);
+    const reason = this.toolPolicy?.(member, toolName, req.payload.tool_input);
+    if (reason) {
+      this.appendEvent(member, 'error', {tool:toolName,summary:reason});
+      req.respond({hookSpecificOutput:{hookEventName:'PreToolUse',permissionDecision:'deny',permissionDecisionReason:reason}});
+      return;
+    }
     const mapped = this.mapTool(toolName, req.payload.tool_input);
     // 도구 이벤트를 **게이트보다 먼저** 남긴다: 게이트(셸 뮤텍스)가 대기 이벤트를 낼 수 있고(T27), 그러면
     // 마지막 이벤트 = "대기 중" 이어야 말풍선이 맞다.
@@ -375,6 +383,8 @@ export abstract class BaseHooksAdapter extends EventEmitter<HooksAdapterEvents> 
     const { payload } = req;
     const toolName = toolNameOf(payload);
     const toolInput = payload.tool_input;
+    const reason = this.toolPolicy?.(member, toolName, toolInput);
+    if (reason) { req.respond(deny(reason)); return; }
 
     // D-22: TeamTools MCP 도구(mcp__team__*)는 보류하지 않고 즉시 허가한다. pending/waiting_approval 이벤트 없음
     // (PreToolUse 가 이미 running{tool} 을 남겼다).

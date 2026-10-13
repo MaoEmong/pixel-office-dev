@@ -420,7 +420,7 @@ describe('TeamTools 오케스트레이션 (T25)', () => {
     const wc = new Client({ name: 't25-worker', version: '0' });
     await wc.connect(new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${office.mcp.port}/mcp/${worker.memberToken}`)));
     clients.push(wc);
-    assert.deepEqual((await wc.listTools()).tools.map((t) => t.name).sort(), ['ask_parent', 'report']);
+    assert.deepEqual((await wc.listTools()).tools.map((t) => t.name).sort(), ['ask_parent', 'meeting_speak', 'report']);
     const rep = await wc.callTool({ name: 'report', arguments: { taskId, summary: '썼습니다', status: 'done' } });
     assert.equal(rep.isError ?? false, false);
     assert.equal(store.getTask(taskId)!.status, 'reported');

@@ -255,15 +255,15 @@ describe('TeamToolsServer (T17)', () => {
 
   // ---- T35: 직급별 도구 목록(3종) · 직급 전용 도구 --------------------------------------------
 
-  test('T35 tools/list: 부장 6개 / 팀장 6개 / 팀원 2개 — RANK_TOOLS 와 정확히 같다', async () => {
+  test('T35 tools/list: 부장 8개 / 팀장 7개 / 팀원 3개 — RANK_TOOLS 와 정확히 같다', async () => {
     const asMember = await connect(port, TOKEN);
     const asLeader = await connect(port, LEAD);
     const asHead = await connect(port, HEAD);
     try {
       const names = async (c: Client) => (await c.listTools()).tools.map((t) => t.name).sort();
-      assert.deepEqual(await names(asMember.client), ['ask_parent', 'report']);
-      assert.deepEqual(await names(asLeader.client), ['ask_parent', 'delegate', 'dismiss', 'hire', 'reply', 'report']);
-      assert.deepEqual(await names(asHead.client), ['ask_user', 'create_team', 'delegate', 'dismiss_team', 'reply', 'report']);
+      assert.deepEqual(await names(asMember.client), ['ask_parent', 'meeting_speak', 'report']);
+      assert.deepEqual(await names(asLeader.client), ['ask_parent', 'delegate', 'dismiss', 'hire', 'meeting_speak', 'reply', 'report']);
+      assert.deepEqual(await names(asHead.client), ['ask_user', 'create_team', 'delegate', 'dismiss_team', 'meeting_decide', 'meeting_open', 'reply', 'report']);
       // 표 자체가 단일 출처다 — 지시문 템플릿의 도구 이름 줄도 이것을 읽는다.
       assert.deepEqual(await names(asMember.client), [...RANK_TOOLS.member].sort());
       assert.deepEqual(await names(asLeader.client), [...RANK_TOOLS.lead].sort());
@@ -455,7 +455,7 @@ describe('TeamToolsServer (T17)', () => {
       // 문구 자체는 export 되어 PROTOCOL·Office 와 같은 문장을 쓴다.
       assert.equal(
         rankToolMessage('hire', 'member'),
-        'hire 는 팀원이(가) 쓸 수 있는 도구가 아닙니다. 팀원의 도구: report, ask_parent.',
+        'hire 는 팀원이(가) 쓸 수 있는 도구가 아닙니다. 팀원의 도구: report, ask_parent, meeting_speak.',
       );
       assert.equal(rankToolMessage('ask_user', 'lead'), ASK_USER_HEAD_ONLY_MESSAGE);
     } finally {
