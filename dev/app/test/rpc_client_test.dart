@@ -36,6 +36,29 @@ void main() {
     await daemon.stop();
   });
 
+  test('failed calls notify the app while retaining their original exception; successful calls stay quiet', () async {
+    final failures = <RpcCallFailure>[];
+    final sub = client.failures.listen(failures.add);
+    addTearDown(sub.cancel);
+    await client.connect(daemon.url);
+    await client.hello('tok');
+    await client.call('echo', {'text': 'ok'});
+    await expectLater(client.call('fail'), throwsA(isA<RpcException>().having((e) => e.code, 'code', -32003)));
+    await expectLater(client.call('hang'), throwsA(isA<RpcException>().having((e) => e.code, 'code', RpcException.timeout)));
+    await client.disconnect();
+    await expectLater(client.call('member.type'), throwsA(isA<RpcException>().having((e) => e.code, 'code', RpcException.closed)));
+    await waitFor(() => failures.length == 3);
+    expect(failures.map((e) => e.method), ['fail', 'hang', 'member.type']);
+  });
+
+  test('failure to save an outgoing request is announced before any network action', () async {
+    final other = RpcClient(saveRetries: (_) async => throw StateError('요청 기록을 저장하지 못했어요'));
+    addTearDown(other.close);
+    final failure = other.failures.first;
+    await expectLater(other.call('workflow.discuss', {'text': '질문'}), throwsStateError);
+    expect((await failure).method, 'workflow.discuss');
+  });
+
   test('workflow timeout retry reuses request ID; next intentional send gets a new ID', () async {
     await client.connect(daemon.url);
     await client.hello('tok');

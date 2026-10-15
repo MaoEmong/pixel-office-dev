@@ -15,6 +15,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:pixel_office/panel/ui_prefs.dart';
 import 'package:pixel_office/diagnostics/error_panel.dart';
 import 'package:pixel_office/rpc/rpc_client.dart';
+import 'package:pixel_office/model/models.dart';
 import 'package:pixel_office/topbar/top_bar.dart';
 
 import 'fake_rpc_client.dart';
@@ -85,6 +86,16 @@ Future<void> tapPick(WidgetTester tester) async {
 }
 
 void main() {
+  for(final engine in Engine.values) {
+    testWidgets('a single selected AI becomes the department default and the other AI is disabled: ${engine.wire}', (tester)async{
+      final fake=FakeRpcClient();addTearDown(fake.close);
+      await tester.pumpWidget(ProviderScope(overrides:fake.overrides,child:MaterialApp(home:Scaffold(body:CreateDepartmentDialog(allowedEngines:[engine])))));
+      await tester.pumpAndSettle();
+      final chooser=tester.widget<SegmentedButton<Engine>>(find.byType(SegmentedButton<Engine>));
+      expect(chooser.selected,{engine});
+      expect(chooser.segments.firstWhere((s)=>s.value!=engine).enabled,false);
+    });
+  }
   test('departmentNameForPath: 마지막 조각, 꼬리 구분자·드라이브 루트·슬래시', () {
     expect(departmentNameForPath(r'D:\myproject\pixel-office'), 'pixel-office');
     expect(departmentNameForPath(r'D:\myproject\pixel-office\'), 'pixel-office');

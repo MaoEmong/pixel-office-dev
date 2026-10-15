@@ -523,6 +523,7 @@ class OfficeScene {
     Set<String> expandedTeamIds = const {},
     Map<String, int> reportCounts = const {},
     Map<String, MemberUsage> usage = const {},
+    Map<String,String> activityLabels = const {},
   }) {
     if (departmentId != null) {
       members = {for (final e in members.entries) if (e.value.departmentId == departmentId) e.key: e.value};
@@ -651,7 +652,7 @@ class OfficeScene {
           rank: ordered[i].rank,
           teamId: ordered[i].teamId,
           deskIndex: i,
-          summary: summarize(
+          summary: activityLabels[ordered[i].id] ?? summarize(
             ordered[i].status,
             latestEvents[ordered[i].id],
             derived: derived[ordered[i].id],

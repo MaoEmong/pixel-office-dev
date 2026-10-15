@@ -23,7 +23,12 @@ import 'terminal_cache.dart';
 export 'terminal_cache.dart' show terminalMaxLines;
 
 class TerminalTab extends ConsumerStatefulWidget {
-  const TerminalTab({super.key, required this.memberId, this.fontSize = 13, this.autofocus = true});
+  const TerminalTab({
+    super.key,
+    required this.memberId,
+    this.fontSize = 13,
+    this.autofocus = true,
+  });
 
   final String memberId;
   final double fontSize;
@@ -39,6 +44,8 @@ class _TerminalTabState extends ConsumerState<TerminalTab> {
   ProviderSubscription<RpcConnectionState>? _connSub;
 
   bool _attaching = false;
+  bool _commandBusy = false;
+  final _command = TextEditingController();
 
   /// 배너 문구(attach 오류·연결 끊김). null 이면 배너 없음.
   String? _notice;
@@ -61,7 +68,10 @@ class _TerminalTabState extends ConsumerState<TerminalTab> {
     _entry = _cache.of(widget.memberId);
     _cache.markDetached(_entry);
     _termSub = _client.notifications.listen(_onNotification);
-    _connSub = ref.listenManual<RpcConnectionState>(connectionStateProvider, (prev, next) {
+    _connSub = ref.listenManual<RpcConnectionState>(connectionStateProvider, (
+      prev,
+      next,
+    ) {
       if (next == RpcConnectionState.connected) {
         if (prev != RpcConnectionState.connected) _attach();
       } else {
@@ -90,6 +100,7 @@ class _TerminalTabState extends ConsumerState<TerminalTab> {
 
   @override
   void dispose() {
+    _command.dispose();
     _generation++;
     _termSub?.cancel();
     _connSub?.close();
@@ -101,10 +112,13 @@ class _TerminalTabState extends ConsumerState<TerminalTab> {
 
   /// 결과가 필요 없는 호출. 실패는 조용히 삼킨다(끊김 중 등).
   void _send(String method, Map<String, dynamic> params) {
-    unawaited(_client.call(method, params).then((_) {}, onError: (Object _) {}));
+    unawaited(
+      _client.call(method, params).then((_) {}, onError: (Object _) {}),
+    );
   }
 
-  void _detach(String memberId) => _send('member.detach', {'memberId': memberId});
+  void _detach(String memberId) =>
+      _send('member.detach', {'memberId': memberId});
 
   Future<void> _attach() async {
     if (!mounted || _attaching) return;
@@ -122,7 +136,11 @@ class _TerminalTabState extends ConsumerState<TerminalTab> {
       // 레이아웃 전이면 xterm 기본값(80x24). PROTOCOL 허용 범위(cols 20~500, rows 5~300) 안으로.
       final cols = terminalCols(terminal);
       final rows = terminalRows(terminal);
-      final r = await _client.call('member.attach', {'memberId': memberId, 'cols': cols, 'rows': rows});
+      final r = await _client.call('member.attach', {
+        'memberId': memberId,
+        'cols': cols,
+        'rows': rows,
+      });
       if (!mounted || gen != _generation) {
         // 그 사이 멤버가 바뀌었거나 탭이 닫혔다 — 데몬 쪽 attach 를 되돌린다.
         _detach(memberId);
@@ -153,7 +171,10 @@ class _TerminalTabState extends ConsumerState<TerminalTab> {
     if (!render.attached || !render.hasSize) return;
     final cell = render.getCellOffset(render.globalToLocal(globalPosition));
     // 패키지는 행을 버퍼 줄 수로만 자른다 — 보이는 화면 안으로 한 번 더 자른다.
-    _entry.pointerCell = CellOffset(cell.x, cell.y.clamp(0, _entry.terminal.viewHeight - 1));
+    _entry.pointerCell = CellOffset(
+      cell.x,
+      cell.y.clamp(0, _entry.terminal.viewHeight - 1),
+    );
   }
 
   void _onNotification(RpcNotification n) {
@@ -162,63 +183,183 @@ class _TerminalTabState extends ConsumerState<TerminalTab> {
     if (data is String && data.isNotEmpty) _entry.terminal.write(data);
   }
 
+  Future<void> _runCommand(String method, {String? command}) async {
+    if (_commandBusy) return;
+    setState(() => _commandBusy = true);
+    try {
+      await _client.call(method, {
+        'memberId': widget.memberId,
+        'command': ?command,
+      });
+      if (!mounted) return;
+      if (method == 'member.terminalCommand') _command.clear();
+      await _attach();
+    } catch (_) {
+      // ActionErrorPopups reports the operation and reason.
+    } finally {
+      if (mounted) setState(() => _commandBusy = false);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final status = ref.watch(memberStatusProvider(widget.memberId));
     final gone = status?.isGone ?? false;
-    final banner = _notice ?? (gone ? '${memberStatusLabel(status!)}한 멤버 — 마지막 화면' : null);
+    final banner =
+        _notice ?? (gone ? '${memberStatusLabel(status!)}한 멤버 — 마지막 화면' : null);
     // 배너는 터미널 위에 띄운다(Stack). Column 에 넣으면 배너가 생기고 사라질 때마다 터미널 rows 가 바뀌어
     // attach 시점의 크기와 실제 크기가 어긋난다(연결 전 배너 → 연결 후 attach → 배너 제거 → resize).
-    return Stack(
-      fit: StackFit.expand,
+    return Column(
       children: [
-        ColoredBox(
-          color: Colors.black,
-          // 포인터 위치를 먼저 적는다 — 이 Listener 는 안쪽 스크롤 처리기보다 먼저 이벤트를 받는다(휠 · 트랙패드 둘 다).
-          child: Listener(
-            onPointerHover: (e) => _trackPointer(e.position),
-            onPointerDown: (e) => _trackPointer(e.position),
-            onPointerMove: (e) => _trackPointer(e.position),
-            onPointerSignal: (e) => _trackPointer(e.position),
-            onPointerPanZoomStart: (e) => _trackPointer(e.position),
-            child: TerminalView(
-              _entry.terminal,
-              key: _viewKey,
-              textStyle: TerminalStyle(fontSize: widget.fontSize, fontFamily: panelMonoFamily, fontFamilyFallback: panelMonoFallback),
-              autofocus: widget.autofocus,
-              padding: const EdgeInsets.all(4),
-            ),
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+          child: Wrap(
+            spacing: 8,
+            runSpacing: 4,
+            children: [
+              OutlinedButton.icon(
+                key: const Key('terminal.login'),
+                onPressed: _commandBusy
+                    ? null
+                    : () => _runCommand('member.login'),
+                icon: const Icon(Icons.login, size: 16),
+                label: const Text('로그인'),
+              ),
+              OutlinedButton.icon(
+                key: const Key('terminal.recoverAuth'),
+                onPressed: _commandBusy
+                    ? null
+                    : () => _runCommand('member.auth.recover'),
+                icon: const Icon(Icons.sync, size: 16),
+                label: const Text('로그인 연결 · 요청 재시도'),
+              ),
+            ],
           ),
         ),
-        if (banner != null)
-          Positioned(
-            left: 0,
-            right: 0,
-            top: 0,
-            child: Material(
-              color: _notice != null ? const Color(0xE6512020) : const Color(0xCC303030),
-              child: Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-                child: Row(
-                  children: [
-                    Icon(_notice != null ? Icons.error_outline : Icons.info_outline, size: 14, color: Colors.white70),
-                    const SizedBox(width: 6),
-                    Expanded(child: Text(banner, style: const TextStyle(fontSize: 12, color: Colors.white70))),
-                    if (_notice != null && !_attaching)
-                      TextButton(
-                        onPressed: _attach,
-                        style: TextButton.styleFrom(
-                          visualDensity: VisualDensity.compact,
-                          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                          padding: const EdgeInsets.symmetric(horizontal: 8),
+        const Padding(
+          padding: EdgeInsets.symmetric(horizontal: 10),
+          child: Text(
+            '터미널에서 로그인했다면 연결을 갱신하세요. 새 로그인은 이 화면에서 진행하며 브라우저 인증이 열릴 수 있습니다.',
+            style: TextStyle(fontSize: 12, color: Colors.white60),
+          ),
+        ),
+        Padding(
+          padding: const EdgeInsets.all(8),
+          child: Row(
+            children: [
+              Expanded(
+                child: TextField(
+                  controller: _command,
+                  key: const Key('terminal.command'),
+                  decoration: const InputDecoration(
+                    isDense: true,
+                    labelText: '터미널 명령',
+                    hintText: '/help, /status 등 · 실행 결과는 아래에 표시됩니다',
+                  ),
+                  onSubmitted: _commandBusy
+                      ? null
+                      : (value) => _runCommand(
+                          'member.terminalCommand',
+                          command: value.trim(),
                         ),
-                        child: const Text('다시 붙이기', style: TextStyle(fontSize: 12)),
-                      ),
-                  ],
                 ),
               ),
-            ),
+              IconButton(
+                tooltip: '터미널 명령 실행',
+                icon: const Icon(Icons.send, size: 18),
+                onPressed: _commandBusy
+                    ? null
+                    : () => _runCommand(
+                        'member.terminalCommand',
+                        command: _command.text.trim(),
+                      ),
+              ),
+            ],
           ),
+        ),
+        if (_commandBusy) const LinearProgressIndicator(),
+        Expanded(
+          child: Stack(
+            fit: StackFit.expand,
+            children: [
+              ColoredBox(
+                color: Colors.black,
+                // 포인터 위치를 먼저 적는다 — 이 Listener 는 안쪽 스크롤 처리기보다 먼저 이벤트를 받는다(휠 · 트랙패드 둘 다).
+                child: Listener(
+                  onPointerHover: (e) => _trackPointer(e.position),
+                  onPointerDown: (e) => _trackPointer(e.position),
+                  onPointerMove: (e) => _trackPointer(e.position),
+                  onPointerSignal: (e) => _trackPointer(e.position),
+                  onPointerPanZoomStart: (e) => _trackPointer(e.position),
+                  child: TerminalView(
+                    _entry.terminal,
+                    key: _viewKey,
+                    textStyle: TerminalStyle(
+                      fontSize: widget.fontSize,
+                      fontFamily: panelMonoFamily,
+                      fontFamilyFallback: panelMonoFallback,
+                    ),
+                    autofocus: widget.autofocus,
+                    padding: const EdgeInsets.all(4),
+                  ),
+                ),
+              ),
+              if (banner != null)
+                Positioned(
+                  left: 0,
+                  right: 0,
+                  top: 0,
+                  child: Material(
+                    color: _notice != null
+                        ? const Color(0xE6512020)
+                        : const Color(0xCC303030),
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 12,
+                        vertical: 4,
+                      ),
+                      child: Row(
+                        children: [
+                          Icon(
+                            _notice != null
+                                ? Icons.error_outline
+                                : Icons.info_outline,
+                            size: 14,
+                            color: Colors.white70,
+                          ),
+                          const SizedBox(width: 6),
+                          Expanded(
+                            child: Text(
+                              banner,
+                              style: const TextStyle(
+                                fontSize: 12,
+                                color: Colors.white70,
+                              ),
+                            ),
+                          ),
+                          if (_notice != null && !_attaching)
+                            TextButton(
+                              onPressed: _attach,
+                              style: TextButton.styleFrom(
+                                visualDensity: VisualDensity.compact,
+                                tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 8,
+                                ),
+                              ),
+                              child: const Text(
+                                '다시 붙이기',
+                                style: TextStyle(fontSize: 12),
+                              ),
+                            ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+            ],
+          ),
+        ),
       ],
     );
   }
@@ -226,10 +367,11 @@ class _TerminalTabState extends ConsumerState<TerminalTab> {
 
 /// attach 오류 → 배너 문구.
 String describeAttachError(RpcException e) => switch (e.code) {
-      RpcException.badState => '이 데몬 세션에서 스폰되지 않은 멤버라 터미널을 붙일 수 없습니다 (재출근/재고용 필요)',
-      RpcException.notFound => '멤버를 찾을 수 없습니다',
-      RpcException.invalidParams => '터미널 크기가 허용 범위(20~500 × 5~300) 밖입니다: ${e.message}',
-      RpcException.closed => '데몬 연결 안 됨',
-      RpcException.timeout => '데몬 응답 없음(타임아웃)',
-      _ => 'attach 실패: ${e.message}',
-    };
+  RpcException.badState => '이 데몬 세션에서 스폰되지 않은 멤버라 터미널을 붙일 수 없습니다 (재출근/재고용 필요)',
+  RpcException.notFound => '멤버를 찾을 수 없습니다',
+  RpcException.invalidParams =>
+    '터미널 크기가 허용 범위(20~500 × 5~300) 밖입니다: ${e.message}',
+  RpcException.closed => '데몬 연결 안 됨',
+  RpcException.timeout => '데몬 응답 없음(타임아웃)',
+  _ => 'attach 실패: ${e.message}',
+};

@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../state/office_state.dart';
 import '../rpc/rpc_client.dart';
 import 'error_panel.dart';
+import 'engine_policy.dart';
 import '../state/selection.dart';
 
 class EnvironmentDialog extends ConsumerStatefulWidget {
@@ -71,6 +72,7 @@ class _EnvironmentDialogState extends ConsumerState<EnvironmentDialog> {
         'allowedEngines': engines,
       });
       if (mounted) {
+        ref.invalidate(enginePolicyProvider);
         setState(
           () => allowedEngines = (value['allowedEngines'] as List?)
               ?.cast<String>(),
@@ -173,7 +175,7 @@ class _EnvironmentDialogState extends ConsumerState<EnvironmentDialog> {
               '사용할 엔진만 설치·로그인하면 됩니다. 점검은 CLI의 상태 명령을 읽으며 자동 설치나 로그인 변경을 하지 않습니다.',
             ),
             const SizedBox(height: 12),
-            const Text('사용 엔진 · 결제 여부는 자동으로 판단하지 않습니다.'),
+            const Text('사용할 AI · 로그인 표시와 별도로 적용됩니다.'),
             if (policyLoaded)
               DropdownButton<String>(
                 value: allowedEngines == null

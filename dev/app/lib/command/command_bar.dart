@@ -87,6 +87,7 @@ class _CommandBarState extends ConsumerState<CommandBar> {
 
   bool _busy = false;
   int? _sentTaskId;
+  bool _discussionSent = false;
   String? _error;
 
   /// -32004 응답이 알려 준 부장 id(앱 상태가 낡았을 때의 폴백 대상).
@@ -173,16 +174,6 @@ class _CommandBarState extends ConsumerState<CommandBar> {
     final m = _targetMember();
     final text = _text.text.trim();
     if (text.isEmpty || !_canAct(m)) return;
-    if (widget.meetingMode) {
-      final phase = ref
-          .read(workflowProvider(m!.departmentId))
-          .asData
-          ?.value?['phase'];
-      if (phase != null &&
-          !['clarifying', 'completed', 'cancelled'].contains(phase)) {
-        return;
-      }
-    }
     setState(() {
       _busy = true;
       _error = null;
@@ -202,9 +193,19 @@ class _CommandBarState extends ConsumerState<CommandBar> {
       _text.clear();
       _badgeTimer?.cancel();
       _badgeTimer = Timer(commandBarBadgeDuration, () {
-        if (mounted) setState(() => _sentTaskId = null);
+        if (mounted) {
+          setState(() {
+            _sentTaskId = null;
+            _discussionSent = false;
+          });
+        }
       });
-      if (mounted) setState(() => _sentTaskId = taskId);
+      if (mounted) {
+        setState(() {
+          _sentTaskId = taskId;
+          _discussionSent = widget.meetingMode;
+        });
+      }
     } catch (e) {
       if (mounted) {
         setState(() {
@@ -243,9 +244,19 @@ class _CommandBarState extends ConsumerState<CommandBar> {
       _error = null;
     });
     try {
-      await ref.read(rpcClientProvider).call('member.interrupt', {
-        'memberId': m!.id,
-      });
+      final current = widget.meetingMode
+          ? ref.read(workflowProvider(m!.departmentId)).asData?.value
+          : null;
+      final phase = current?['phase'];
+      if (phase != null && !['completed', 'cancelled'].contains(phase)) {
+        await ref.read(rpcClientProvider).call('workflow.cancel', {
+          'departmentId': m!.departmentId,
+        });
+      } else {
+        await ref.read(rpcClientProvider).call('member.interrupt', {
+          'memberId': m!.id,
+        });
+      }
     } catch (e) {
       if (mounted) {
         setState(() => _error = e is RpcException ? e.message : e.toString());
@@ -286,11 +297,6 @@ class _CommandBarState extends ConsumerState<CommandBar> {
           .asData
           ?.value;
     }
-    final phase = workflow?['phase'];
-    final canDiscuss =
-        !widget.meetingMode ||
-        phase == null ||
-        ['clarifying', 'completed', 'cancelled'].contains(phase);
     final scheme = Theme.of(context).colorScheme;
 
     return Container(
@@ -307,7 +313,7 @@ class _CommandBarState extends ConsumerState<CommandBar> {
               key: const Key('commandBar.input'),
               controller: _text,
               focusNode: _focus,
-              enabled: enabled && canDiscuss,
+              enabled: enabled,
               minLines: 1,
               maxLines: 4,
               keyboardType: TextInputType.multiline,
@@ -323,9 +329,9 @@ class _CommandBarState extends ConsumerState<CommandBar> {
                     : targetMember.status.isGone
                     ? '${targetMember.name} 은(는) 퇴근했습니다'
                     : widget.meetingMode
-                    ? (canDiscuss
+                    ? (workflow == null || workflow['phase'] == 'clarifying'
                           ? '부장과 목표를 이야기하세요. 회의 보기에서 작업을 시작합니다.'
-                          : '회의 보기에서 진행 상황과 보고를 확인하세요.')
+                          : '작업 중에도 부장에게 질문하거나 변경 지시를 보낼 수 있어요.')
                     : commandBarHint(targetMember.name),
                 hintStyle: const TextStyle(fontSize: 13, color: Colors.white38),
               ),
@@ -334,17 +340,23 @@ class _CommandBarState extends ConsumerState<CommandBar> {
           const SizedBox(width: 8),
           OutlinedButton(
             key: const Key('commandBar.interrupt'),
-            onPressed: enabled && !widget.meetingMode ? _interrupt : null,
+            onPressed: enabled ? _interrupt : null,
             style: OutlinedButton.styleFrom(
               visualDensity: VisualDensity.compact,
             ),
-            child: const Text('중단'),
+            child: Text(
+              widget.meetingMode &&
+                      workflow != null &&
+                      !['completed', 'cancelled'].contains(workflow['phase'])
+                  ? '작업 취소'
+                  : '중단',
+            ),
           ),
           const SizedBox(width: 4),
           IconButton(
             key: const Key('commandBar.send'),
             tooltip: '전송 (Enter · $shortcutModifierLabel+K 로 여기 포커스)',
-            onPressed: enabled && canDiscuss ? _send : null,
+            onPressed: enabled ? _send : null,
             icon: _busy
                 ? const SizedBox(
                     key: Key('commandBar.spinner'),
@@ -380,6 +392,15 @@ class _CommandBarState extends ConsumerState<CommandBar> {
                           overflow: TextOverflow.ellipsis,
                         ),
                       ),
+                    ),
+                  )
+                : _discussionSent
+                ? const Tooltip(
+                    message: '부장이 응답 중이면 현재 응답을 마친 뒤 이어서 전달됩니다.',
+                    child: Text(
+                      '메시지 접수됨',
+                      key: Key('commandBar.discussionSent'),
+                      style: TextStyle(fontSize: 12, color: Colors.greenAccent),
                     ),
                   )
                 : _sentTaskId != null

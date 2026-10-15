@@ -19,13 +19,17 @@ import 'member_log.dart';
 import 'redo_card.dart' show isTurnBoundary;
 
 /// 마지막 턴 경계(idle / 본문 있는 text) 뒤의 pendingId 없는 error 이벤트(오래된 순).
-final memberFailureEventsProvider = Provider.family<List<OfficeEvent>, String>((ref, memberId) {
+final memberFailureEventsProvider = Provider.family<List<OfficeEvent>, String>((
+  ref,
+  memberId,
+) {
   final log = ref.watch(memberLogProvider(memberId));
   var out = <OfficeEvent>[];
   for (final ev in log) {
     if (isTurnBoundary(ev)) {
       out = [];
-    } else if (ev.kind == OfficeEventKind.error && ev.detail.pendingId == null) {
+    } else if (ev.kind == OfficeEventKind.error &&
+        ev.detail.pendingId == null) {
       out.add(ev);
     }
   }
@@ -33,13 +37,18 @@ final memberFailureEventsProvider = Provider.family<List<OfficeEvent>, String>((
 });
 
 /// 마지막 턴 경계 뒤의 `재지시 필요` error 건수.
-final recoveryExpiredCountProvider = Provider.family<int, String>((ref, memberId) {
+final recoveryExpiredCountProvider = Provider.family<int, String>((
+  ref,
+  memberId,
+) {
   final log = ref.watch(memberLogProvider(memberId));
   final ids = <String>{};
   for (final ev in log) {
     if (isTurnBoundary(ev)) {
       ids.clear();
-    } else if (ev.kind == OfficeEventKind.error && ev.detail.pendingId != null && (ev.detail.summary ?? '').startsWith('재지시 필요')) {
+    } else if (ev.kind == OfficeEventKind.error &&
+        ev.detail.pendingId != null &&
+        (ev.detail.summary ?? '').startsWith('재지시 필요')) {
       ids.add(ev.detail.pendingId!);
     }
   }
@@ -59,17 +68,26 @@ class _MemberGoneBannerState extends ConsumerState<MemberGoneBanner> {
   bool _busy = false;
   String? _error;
 
-  Future<void> _rehire() async {
+  Future<void> _rehire({bool authentication = false}) async {
     if (_busy) return;
     setState(() {
       _busy = true;
       _error = null;
     });
     try {
-      await ref.read(rpcClientProvider).call('member.rehire', {'memberId': widget.member.id});
+      await ref.read(rpcClientProvider).call(
+        authentication ? 'member.auth.recover' : 'member.rehire',
+        {'memberId': widget.member.id},
+      );
       // 성공: member.status{starting} 가 오면 status 가 바뀌어 배너가 내려간다.
     } on RpcException catch (e) {
-      if (mounted) setState(() => _error = e.code == RpcException.badState ? '재고용 실패: ${e.message}' : '재고용 실패: ${e.message} (${e.code})');
+      if (mounted) {
+        setState(
+          () => _error = e.code == RpcException.badState
+              ? '재고용 실패: ${e.message}'
+              : '재고용 실패: ${e.message} (${e.code})',
+        );
+      }
     } catch (e) {
       if (mounted) setState(() => _error = '재고용 실패: $e');
     } finally {
@@ -81,7 +99,8 @@ class _MemberGoneBannerState extends ConsumerState<MemberGoneBanner> {
   Widget build(BuildContext context) {
     final m = widget.member;
     if (!m.status.isGone) return const SizedBox.shrink();
-    final connected = ref.watch(connectionStateProvider) == RpcConnectionState.connected;
+    final connected =
+        ref.watch(connectionStateProvider) == RpcConnectionState.connected;
     final failures = ref.watch(memberFailureEventsProvider(m.id));
     int? exitCode;
     final extra = <String>[];
@@ -94,7 +113,13 @@ class _MemberGoneBannerState extends ConsumerState<MemberGoneBanner> {
       }
     }
     final isError = m.status == MemberStatus.error;
-    final title = isError ? '⚠ 오류로 종료됨${exitCode == null ? '' : ' (code $exitCode)'}' : '퇴근함';
+    final authentication =
+        isError && extra.any((s) => s.contains('로그인') && s.contains('인증'));
+    final title = authentication
+        ? '⚠ 로그인 확인 필요 · 작업 보존됨'
+        : isError
+        ? '⚠ 오류로 종료됨${exitCode == null ? '' : ' (code $exitCode)'}'
+        : '퇴근함';
     final color = isError ? const Color(0xFF5A2323) : const Color(0xFF3A3A3A);
     return Container(
       key: const Key('panel.goneBanner'),
@@ -107,39 +132,75 @@ class _MemberGoneBannerState extends ConsumerState<MemberGoneBanner> {
         children: [
           Row(
             children: [
-              Expanded(child: Text(title, style: const TextStyle(fontSize: 12.5, color: Colors.white, fontWeight: FontWeight.w600))),
+              Expanded(
+                child: Text(
+                  title,
+                  style: const TextStyle(
+                    fontSize: 12.5,
+                    color: Colors.white,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ),
               if (_busy)
-                const SizedBox(width: 12, height: 12, child: CircularProgressIndicator(strokeWidth: 1.5, color: Colors.white54))
+                const SizedBox(
+                  width: 12,
+                  height: 12,
+                  child: CircularProgressIndicator(
+                    strokeWidth: 1.5,
+                    color: Colors.white54,
+                  ),
+                )
               else
                 FilledButton.tonal(
                   key: const Key('panel.rehire'),
                   style: ButtonStyle(
                     visualDensity: VisualDensity.compact,
-                    padding: const WidgetStatePropertyAll(EdgeInsets.symmetric(horizontal: 10, vertical: 2)),
+                    padding: const WidgetStatePropertyAll(
+                      EdgeInsets.symmetric(horizontal: 10, vertical: 2),
+                    ),
                     minimumSize: const WidgetStatePropertyAll(Size(0, 28)),
                     tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                    textStyle: const WidgetStatePropertyAll(TextStyle(fontSize: 12)),
-                    shape: WidgetStatePropertyAll(RoundedRectangleBorder(borderRadius: BorderRadius.circular(3))),
+                    textStyle: const WidgetStatePropertyAll(
+                      TextStyle(fontSize: 12),
+                    ),
+                    shape: WidgetStatePropertyAll(
+                      RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(3),
+                      ),
+                    ),
                   ),
-                  onPressed: connected ? _rehire : null,
-                  child: const Text('재고용'),
+                  onPressed: connected
+                      ? () => _rehire(authentication: authentication)
+                      : null,
+                  child: Text(authentication ? '로그인 연결 · 요청 재시도' : '재고용'),
                 ),
             ],
           ),
           for (final line in extra)
             Padding(
               padding: const EdgeInsets.only(top: 2),
-              child: Text(line, style: const TextStyle(fontSize: 11, color: Colors.white70)),
+              child: Text(
+                line,
+                style: const TextStyle(fontSize: 11, color: Colors.white70),
+              ),
             ),
           if (!connected)
             const Padding(
               padding: EdgeInsets.only(top: 2),
-              child: Text('데몬 연결 안 됨 — 재접속되면 재고용할 수 있습니다', style: TextStyle(fontSize: 11, color: Colors.white54)),
+              child: Text(
+                '데몬 연결 안 됨 — 재접속되면 재고용할 수 있습니다',
+                style: TextStyle(fontSize: 11, color: Colors.white54),
+              ),
             ),
           if (_error != null)
             Padding(
               padding: const EdgeInsets.only(top: 2),
-              child: Text(_error!, key: const Key('panel.rehire.error'), style: const TextStyle(fontSize: 11, color: Colors.redAccent)),
+              child: Text(
+                _error!,
+                key: const Key('panel.rehire.error'),
+                style: const TextStyle(fontSize: 11, color: Colors.redAccent),
+              ),
             ),
         ],
       ),
@@ -165,7 +226,12 @@ class RecoveryHint extends ConsumerWidget {
         children: [
           const Icon(Icons.restart_alt, size: 14, color: Colors.amber),
           const SizedBox(width: 6),
-          Expanded(child: Text('데몬이 재시작됐어요 — 만료된 요청 $n건', style: const TextStyle(fontSize: 11.5, color: Colors.white70))),
+          Expanded(
+            child: Text(
+              '데몬이 재시작됐어요 — 만료된 요청 $n건',
+              style: const TextStyle(fontSize: 11.5, color: Colors.white70),
+            ),
+          ),
         ],
       ),
     );

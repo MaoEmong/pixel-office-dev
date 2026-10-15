@@ -26,6 +26,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../model/models.dart';
 import '../state/office_state.dart';
+import '../workflow/workflow_panel.dart' show meetingActivityLabelsProvider;
 import 'office_layout.dart';
 import 'office_motion.dart';
 import 'office_painter.dart';
@@ -105,6 +106,7 @@ final officeSceneProvider = Provider.family<OfficeScene, String?>(
     expandedTeamIds: ref.watch(expandedExitedTeamsProvider),
     reportCounts: ref.watch(officeReportCountsProvider),
     usage: ref.watch(officeMemberUsageProvider),
+    activityLabels: departmentId==null ? const {} : ref.watch(meetingActivityLabelsProvider(departmentId)),
   ),
 );
 

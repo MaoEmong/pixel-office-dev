@@ -20,6 +20,9 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'diagnostics/error_panel.dart';
+import 'diagnostics/action_error_popups.dart';
+import 'diagnostics/engine_policy.dart';
+import 'diagnostics/environment_dialog.dart';
 import 'command/command_bar.dart';
 import 'workflow/workflow_panel.dart';
 import 'command/shortcuts.dart';
@@ -160,7 +163,7 @@ class PixelOfficeApp extends StatelessWidget {
     debugShowCheckedModeBanner: false,
     theme: pixelOfficeTheme(),
     // 창 닫기를 가로채 데몬·세션을 같이 끈다(§2). 감시자가 없으면 아무것도 하지 않는다.
-    home: LifecycleGate(onExited: (_) async => appLock?.release(), child: const OfficeShell()),
+    home: LifecycleGate(onExited: (_) async => appLock?.release(), child: const ActionErrorPopups(child: OfficeShell())),
   );
 }
 
@@ -178,7 +181,8 @@ class OfficeShell extends ConsumerWidget {
       body: AppShortcuts(
         child: Column(
           children: [
-            TopBar(selectedMemberId: selected),
+            TopBar(selectedMemberId: selected,allowedEngines:ref.watch(enginePolicyProvider).asData?.value),
+            EnginePolicyBanner(onEdit:()=>showDialog<void>(context:context,builder:(_)=>const EnvironmentDialog())),
             if (ref.watch(prefsSaveFailureProvider) case final String message)
               MaterialBanner(
                 content: ErrorPanel(
@@ -217,11 +221,12 @@ class OfficeShell extends ConsumerWidget {
                             // 내 책상 슬롯 클릭 = 그 멤버 선택 + 인박스에서 그 카드로 스크롤(D6).
                             onSelectPending: (pendingId) => selectPendingFromOffice(ref, pendingId),
                             // 부서 0 개일 때 캔버스 가운데 큰 버튼 → 상단 바와 같은 다이얼로그(패스 2 이슈 7).
-                            onCreateDepartment: () => showCreateDepartmentDialog(context),
+                            onCreateDepartment: () => showCreateDepartmentDialog(context,allowedEngines:ref.read(enginePolicyProvider).asData?.value),
                           ),
                           panel: RightPanel(memberId: selected),
                         ),
                       ),
+                      const ActiveProblemsBanner(),
                       const WorkflowBar(),
                       CommandBar(selectedMemberId: selected, meetingMode: true),
                     ],

@@ -140,6 +140,20 @@ class RpcClient {
   final _eventCtl = StreamController<Map<String, dynamic>>.broadcast();
   final _helloCtl = StreamController<HelloResult>.broadcast();
   final _attemptCtl = StreamController<int>.broadcast();
+  final _failureCtl = StreamController<RpcCallFailure>.broadcast();
+  final _successCtl = StreamController<String>.broadcast();
+
+  /// Failures remain exceptions for the caller and are also visible to the app.
+  Stream<RpcCallFailure> get failures => _failureCtl.stream;
+  Stream<String> get successes => _successCtl.stream;
+
+  void reportSuccess(String method) {
+    if (!_disposed) _successCtl.add(method);
+  }
+
+  void reportFailure(String method, Object error) {
+    if (!_disposed) _failureCtl.add(RpcCallFailure(method, error));
+  }
 
   int _lastSeq = 0;
   bool _synced = false;
@@ -287,6 +301,20 @@ class RpcClient {
     String method, [
     Map<String, dynamic> params = const {},
   ]) async {
+    try {
+      final result = await _call(method, params);
+      reportSuccess(method);
+      return result;
+    } catch (error) {
+      reportFailure(method, error);
+      rethrow;
+    }
+  }
+
+  Future<Map<String, dynamic>> _call(
+    String method,
+    Map<String, dynamic> params,
+  ) async {
     if (![
           'workflow.discuss',
           'workflow.start',
@@ -519,7 +547,15 @@ class RpcClient {
     await _eventCtl.close();
     await _helloCtl.close();
     await _attemptCtl.close();
+    await _failureCtl.close();
+    await _successCtl.close();
   }
+}
+
+class RpcCallFailure {
+  const RpcCallFailure(this.method, this.error);
+  final String method;
+  final Object error;
 }
 
 Object? _canonical(Object? value) {

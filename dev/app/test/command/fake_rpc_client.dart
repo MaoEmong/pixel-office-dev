@@ -73,7 +73,14 @@ class FakeRpcClient extends RpcClient {
     calls.add((method, params));
     final r = responder;
     if (r == null) return {};
-    return await r(method, params);
+    try {
+      final result = await r(method, params);
+      reportSuccess(method);
+      return result;
+    } catch (error) {
+      reportFailure(method, error);
+      rethrow;
+    }
   }
 
   /// 스냅샷 hello → connected 순서(실제 클라이언트와 같음).
@@ -86,6 +93,7 @@ class FakeRpcClient extends RpcClient {
     List<Map<String, dynamic>> members = const [],
     List<Map<String, dynamic>> pending = const [],
     List<Map<String, dynamic>> tasks = const [],
+    List<Map<String, dynamic>> workflows = const [],
     Map<String, dynamic>? usage,
   }) {
     _fakeSeq = seq;
@@ -99,6 +107,7 @@ class FakeRpcClient extends RpcClient {
         'members': members,
         'pending': pending,
         'tasks': tasks,
+        'workflows': workflows,
         // T43: 옛 데몬에는 없는 키라 기본은 **안 싣는다**(없을 때의 길도 테스트가 지나가게).
         'usage': ?usage,
       },
@@ -113,6 +122,8 @@ class FakeRpcClient extends RpcClient {
   }
 
   void pushNotification(String method, Map<String, dynamic> params) => _notifCtl.add(RpcNotification(method, params));
+
+  void pushEvent(Map<String, dynamic> event) => _eventCtl.add(event);
 
   @override
   Future<void> close() async {

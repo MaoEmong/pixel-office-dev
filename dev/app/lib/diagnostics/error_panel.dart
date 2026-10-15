@@ -137,30 +137,36 @@ Future<void> showErrorPanel(
   BuildContext context, {
   required String title,
   required String message,
+  void Function(BuildContext dialogContext)? onOpened,
+  List<Widget> actions = const [],
 }) => showDialog<void>(
   context: context,
-  builder: (context) => Dialog(
-    backgroundColor: Colors.transparent,
-    child: ConstrainedBox(
-      constraints: const BoxConstraints(maxWidth: 560),
-      child: SingleChildScrollView(
-        child: RecoveryPanelFrame(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              ErrorPanel(title: title, message: message),
-              const SizedBox(height: 12),
-              Align(
-                alignment: Alignment.centerRight,
-                child: TextButton(
-                  onPressed: () => Navigator.pop(context),
-                  child: const Text('닫기'),
+  builder: (context) {
+    onOpened?.call(context);
+    return Dialog(
+      backgroundColor: Colors.transparent,
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 560),
+        child: SingleChildScrollView(
+          child: RecoveryPanelFrame(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                ErrorPanel(title: title, message: message),
+                const SizedBox(height: 12),
+                if (actions.isNotEmpty) Wrap(spacing: 8, children: actions),
+                Align(
+                  alignment: Alignment.centerRight,
+                  child: TextButton(
+                    onPressed: () => Navigator.pop(context),
+                    child: const Text('닫기'),
+                  ),
                 ),
-              ),
-            ],
+              ],
+            ),
           ),
         ),
       ),
-    ),
-  ),
+    );
+  },
 );

@@ -14,6 +14,21 @@ class FailingPrefs extends MemoryUiPrefsStore {
 }
 
 void main() {
+  test('missing preferences are normal, but unreadable or malformed preferences are reported', () async {
+    final dir = Directory.systemTemp.createTempSync('prefs-read-fail-');
+    addTearDown(() => dir.deleteSync(recursive: true));
+    final file = File('${dir.path}/app-ui.json');
+    final errors = <Object>[];
+    final store = FileUiPrefsStore(path: file.path, onReadError: errors.add);
+    expect(await store.read(), isEmpty);
+    expect(errors, isEmpty);
+    file.writeAsStringSync('{broken');
+    expect(await store.read(), isEmpty);
+    expect(errors, hasLength(1));
+    file.writeAsStringSync('[]');
+    expect(await store.read(), isEmpty);
+    expect(errors, hasLength(2));
+  });
   test('file save reports real storage failure', () async {
     final dir = Directory.systemTemp.createTempSync('prefs-fail-');
     addTearDown(() => dir.deleteSync(recursive: true));

@@ -75,7 +75,8 @@ const String clockOutEmergencyWarning = '비상용: 부장/팀장 퇴근 시 하
 const double topBarTightWidth = 1200;
 
 class TopBar extends ConsumerWidget {
-  const TopBar({super.key, this.selectedMemberId});
+  const TopBar({super.key, this.selectedMemberId, this.allowedEngines});
+  final List<Engine>? allowedEngines;
 
   /// 사무실/패널에서 고른 멤버(있으면 이름 + 비상 퇴근 버튼 표시).
   final String? selectedMemberId;
@@ -184,7 +185,7 @@ class TopBar extends ConsumerWidget {
                 message: tight ? '부서 만들기' : '',
                 child: FilledButton.tonalIcon(
                   key: const Key('topbar.createDepartment'),
-                  onPressed: connected ? () => showCreateDepartmentDialog(context) : null,
+                  onPressed: connected ? () => showCreateDepartmentDialog(context, allowedEngines:allowedEngines) : null,
                   style: FilledButton.styleFrom(visualDensity: VisualDensity.compact),
                   icon: const Icon(Icons.add_business, size: 16),
                   // 좁으면 글자를 빼고 아이콘만(툴팁이 뜻을 지킨다). 위젯 종류는 그대로 둔다.
@@ -571,10 +572,10 @@ Future<void> confirmClockOut(BuildContext context, WidgetRef ref, Member m) asyn
 
 // ---- 부서 만들기 --------------------------------------------------------------------
 
-Future<void> showCreateDepartmentDialog(BuildContext context, {DirectoryPicker pickDirectory = pickDepartmentFolder}) =>
+Future<void> showCreateDepartmentDialog(BuildContext context, {DirectoryPicker pickDirectory = pickDepartmentFolder,List<Engine>? allowedEngines}) =>
     showDialog<void>(
       context: context,
-      builder: (_) => CreateDepartmentDialog(pickDirectory: pickDirectory),
+      builder: (_) => CreateDepartmentDialog(pickDirectory: pickDirectory,allowedEngines:allowedEngines),
     );
 
 /// 폴더 선택기(T41). 테스트는 **절대** 네이티브 창을 열지 않으므로 가짜를 주입한다.
@@ -612,7 +613,8 @@ const String createDepartmentPickFolderHint = '작업 폴더를 골라야 만들
 
 /// 부서 만들기 = 부장 임명(D-32). 폴더 선택 + 이름·부장 이름·부장 엔진 기본값(T41).
 class CreateDepartmentDialog extends ConsumerStatefulWidget {
-  const CreateDepartmentDialog({super.key, this.pickDirectory = pickDepartmentFolder});
+  const CreateDepartmentDialog({super.key, this.pickDirectory = pickDepartmentFolder,this.allowedEngines});
+  final List<Engine>? allowedEngines;
 
   /// "폴더 선택…" 이 부르는 것. 기본은 네이티브 대화상자([pickDepartmentFolder]).
   final DirectoryPicker pickDirectory;
@@ -650,6 +652,7 @@ class _CreateDepartmentDialogState extends ConsumerState<CreateDepartmentDialog>
   void initState() {
     super.initState();
     // 선택기로 고르든 손으로 치든 **같은 길**을 탄다: 이름 기본값 + 폴더 존재 확인.
+    if(widget.allowedEngines?.length==1)_headEngine=widget.allowedEngines!.single;
     _cwd.addListener(_onCwdChanged);
   }
 
@@ -827,6 +830,7 @@ class _CreateDepartmentDialogState extends ConsumerState<CreateDepartmentDialog>
                 const Text('부장 엔진', style: TextStyle(fontSize: 13)),
                 const SizedBox(width: 12),
                 _EngineChooser(
+                  allowedEngines:widget.allowedEngines,
                   key: const Key('createDepartment.headEngine'),
                   value: _headEngine,
                   enabled: !_busy,
@@ -901,7 +905,8 @@ class _CreateDepartmentDialogState extends ConsumerState<CreateDepartmentDialog>
 }
 
 class _EngineChooser extends StatelessWidget {
-  const _EngineChooser({super.key, required this.value, required this.onChanged, this.enabled = true});
+  const _EngineChooser({super.key, required this.value, required this.onChanged, this.enabled = true,this.allowedEngines});
+  final List<Engine>? allowedEngines;
 
   final Engine value;
   final ValueChanged<Engine> onChanged;
@@ -909,7 +914,7 @@ class _EngineChooser extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => SegmentedButton<Engine>(
-    segments: [for (final e in Engine.values) ButtonSegment(value: e, label: Text(e.wire))],
+    segments: [for (final e in Engine.values) ButtonSegment(value: e, label: Text(e.wire),enabled:allowedEngines?.contains(e) ?? true)],
     selected: {value},
     showSelectedIcon: false,
     style: const ButtonStyle(visualDensity: VisualDensity.compact),

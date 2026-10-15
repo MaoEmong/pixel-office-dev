@@ -39,9 +39,10 @@ abstract class UiPrefsStore {
 /// 데이터 폴더의 `app-ui.json`(`%LOCALAPPDATA%\pixel-office` · 맥 `~/Library/Application Support/pixel-office`
 /// · `PIXEL_DATA_DIR`). 데몬이 쓰는 `daemon.json` 과 같은 폴더 — 규칙은 `platform/platform.dart` 한 곳에 있다.
 class FileUiPrefsStore implements UiPrefsStore {
-  const FileUiPrefsStore({this.path});
+  const FileUiPrefsStore({this.path, this.onReadError});
 
   final String? path;
+  final void Function(Object)? onReadError;
 
   /// 파일 이름(데이터 폴더 안).
   static const String fileName = 'app-ui.json';
@@ -57,8 +58,10 @@ class FileUiPrefsStore implements UiPrefsStore {
       final f = File(p);
       if (!await f.exists()) return const {};
       final v = jsonDecode(await f.readAsString());
-      return v is Map ? Map<String, dynamic>.from(v) : const {};
-    } catch (_) {
+      if (v is! Map) throw const FormatException('저장된 화면 설정의 형식이 올바르지 않습니다.');
+      return Map<String, dynamic>.from(v);
+    } catch (error) {
+      onReadError?.call(error);
       return const {};
     }
   }
@@ -101,6 +104,7 @@ class PrefsSaveFailure extends Notifier<String?> {
 }
 
 final prefsSaveFailureProvider = NotifierProvider<PrefsSaveFailure, String?>(PrefsSaveFailure.new);
+final prefsReadFailureProvider = NotifierProvider<PrefsSaveFailure, String?>(PrefsSaveFailure.new);
 
 class ReportingUiPrefsStore implements UiPrefsStore {
   ReportingUiPrefsStore(this.inner, this.report);
@@ -143,7 +147,7 @@ class ReportingUiPrefsStore implements UiPrefsStore {
 
 final uiPrefsStoreProvider = Provider<UiPrefsStore>(
   (ref) => ReportingUiPrefsStore(
-    const FileUiPrefsStore(),
+    FileUiPrefsStore(onReadError: (error) => ref.read(prefsReadFailureProvider.notifier).set(error.toString())),
     (message) => ref.read(prefsSaveFailureProvider.notifier).set(message),
   ),
 );

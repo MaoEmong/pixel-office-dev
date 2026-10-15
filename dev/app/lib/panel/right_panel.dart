@@ -24,6 +24,7 @@ import '../model/models.dart';
 import '../office/office_painter.dart' show legendColor;
 import '../office/office_scene.dart' show LegendSlot, legendSlotFor;
 import '../state/office_state.dart';
+import '../workflow/workflow_panel.dart' show meetingActivityLabelsProvider;
 import '../usage/usage_line.dart';
 import 'inbox.dart';
 import 'instructions_tab.dart';
@@ -333,9 +334,10 @@ class PanelHeader extends ConsumerWidget {
     final parent = ref.watch(parentProvider(member.id));
     final children = ref.watch(childrenProvider(member.id));
     final derived = ref.watch(derivedStatusProvider(member.id));
-    final statusLabel = derived != null && derived.wire != member.status.wire
+    final activity=ref.watch(meetingActivityLabelsProvider(member.departmentId))[member.id];
+    final statusLabel = activity ?? (derived != null && derived.wire != member.status.wire
         ? derivedStatusLabel(derived)
-        : memberStatusLabel(member.status);
+        : memberStatusLabel(member.status));
     // 상태 점은 범례 7칸 매핑을 쓴다(D-42 3) — 사무실 링 색·하단 범례와 같은 색.
     // `ask_parent` 로 상사 답을 기다리는 중이면 "내 차례" 가 아니라 "대기" 다.
     final askingParent = ref.watch(openPendingProvider).values.any((p) => p.isAskParent && p.memberId == member.id);
@@ -380,7 +382,7 @@ class PanelHeader extends ConsumerWidget {
                 ),
               ),
               const SizedBox(width: 4),
-              Text(statusLabel, style: const TextStyle(fontSize: 12, color: Colors.white70)),
+              Flexible(flex:2,child:Tooltip(message:statusLabel,child:Text(statusLabel,overflow:TextOverflow.ellipsis,style:const TextStyle(fontSize:12,color:Colors.white70)))),
               const Spacer(),
               if (hired != null) ElapsedSince(since: hired),
             ],

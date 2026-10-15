@@ -21,6 +21,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../model/models.dart';
 import '../state/office_state.dart';
+import '../diagnostics/error_panel.dart';
 import 'labels.dart';
 import 'member_log.dart';
 import 'panel_tabs.dart';
@@ -128,10 +129,16 @@ class RedoCard extends ConsumerWidget {
     final instruction = ref.read(redoInstructionProvider(event.memberId));
     final messenger = ScaffoldMessenger.maybeOf(context);
     if (instruction == null || instruction.trim().isEmpty) {
-      messenger?.showSnackBar(const SnackBar(content: Text('원래 지시문을 찾지 못했어요 — 지시 바에 직접 입력하세요')));
+      await showErrorPanel(context, title: '원래 지시문을 찾지 못했어요', message: '대화나 작업 기록을 확인한 뒤 지시 바에 직접 입력해 주세요.');
       return;
     }
-    await Clipboard.setData(ClipboardData(text: instruction));
+    final client = ref.read(rpcClientProvider);
+    try {
+      await Clipboard.setData(ClipboardData(text: instruction));
+    } catch (error) {
+      client.reportFailure('clipboard.copy', error);
+      return;
+    }
     messenger?.showSnackBar(const SnackBar(content: Text('지시문을 복사했어요 — 지시 바에 붙여넣기')));
   }
 

@@ -72,9 +72,17 @@ class _RelocateDepartmentDialogState
                   onPressed: busy
                       ? null
                       : () async {
-                          final selected = await getDirectoryPath();
-                          if (mounted && selected != null) {
-                            setState(() => path.text = selected);
+                          try {
+                            final selected = await getDirectoryPath();
+                            if (mounted && selected != null) {
+                              setState(() => path.text = selected);
+                            }
+                          } catch (e) {
+                            if (!context.mounted) return;
+                            await showErrorPanel(context,
+                              title: '폴더를 선택하지 못했어요',
+                              message: '${errorMessage(e)}\n\n폴더 선택을 다시 시도하거나 경로를 직접 입력해 주세요.',
+                            );
                           }
                         },
                   icon: const Icon(Icons.folder_open),

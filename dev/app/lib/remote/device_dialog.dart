@@ -17,6 +17,7 @@ class _DeviceDialogState extends ConsumerState<DeviceDialog> {
   String get gatewayFailure => _status?['message']?.toString() ?? '원격 연결 사용 불가';
   Map<String, dynamic>? _status, _invite;
   String? _error;
+  String? _lastGatewayFailure;
   bool _busy = false;
   Timer? _timer;
   final _url = TextEditingController();
@@ -41,6 +42,11 @@ class _DeviceDialogState extends ConsumerState<DeviceDialog> {
     try {
       final result = await ref.read(rpcClientProvider).call('remote.status');
       if (!mounted) return;
+      final failure = result['available'] == false ? result['message']?.toString() ?? '원격 연결을 시작하지 못했어요.' : null;
+      if (failure != null && failure != _lastGatewayFailure) {
+        ref.read(rpcClientProvider).reportFailure('remote.status', StateError(failure));
+      }
+      _lastGatewayFailure = failure;
       if (_status == null &&
           (result['publicUrl'] as String? ?? '').startsWith('https://')) {
         _url.text = result['publicUrl'] as String;
@@ -65,6 +71,9 @@ class _DeviceDialogState extends ConsumerState<DeviceDialog> {
     try {
       final result = await ref.read(rpcClientProvider).call(method, params);
       if (!mounted) return;
+      if (method == 'remote.retry' && result['available'] == false) {
+        ref.read(rpcClientProvider).reportFailure(method, StateError(result['message']?.toString() ?? gatewayFailure));
+      }
       if (method == 'remote.pair.create') setState(() => _invite = result);
       if (method == 'remote.configure') setState(() => _invite = null);
       await _load();
@@ -72,6 +81,15 @@ class _DeviceDialogState extends ConsumerState<DeviceDialog> {
       if (mounted) setState(() => _error = errorMessage(e));
     } finally {
       if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  Future<void> _copy(String text) async {
+    final client = ref.read(rpcClientProvider);
+    try {
+      await Clipboard.setData(ClipboardData(text: text));
+    } catch (error) {
+      client.reportFailure('clipboard.copy', error);
     }
   }
 
@@ -255,19 +273,11 @@ class _DeviceDialogState extends ConsumerState<DeviceDialog> {
                                 spacing: 8,
                                 children: [
                                   TextButton(
-                                    onPressed: () => Clipboard.setData(
-                                      ClipboardData(
-                                        text: _invite!['code'] as String,
-                                      ),
-                                    ),
+                                    onPressed: () => _copy(_invite!['code'] as String),
                                     child: const Text('연결 키 복사'),
                                   ),
                                   TextButton(
-                                    onPressed: () => Clipboard.setData(
-                                      ClipboardData(
-                                        text: _invite!['url'] as String,
-                                      ),
-                                    ),
+                                    onPressed: () => _copy(_invite!['url'] as String),
                                     child: const Text('QR 링크 복사'),
                                   ),
                                 ],
