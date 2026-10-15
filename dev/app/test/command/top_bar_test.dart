@@ -192,7 +192,7 @@ void main() {
     ]);
   });
 
-  testWidgets('부서 만들기 RPC 오류는 다이얼로그 안에 표시되고 닫히지 않는다', (tester) async {
+  testWidgets('부서 만들기 RPC 오류는 별도 팝업에 표시되고 생성 창은 유지된다', (tester) async {
     fake.responder = (m, p) => throw const RpcException(RpcException.invalidParams, 'cwd 가 폴더가 아닙니다');
     await pumpApp(tester, fake);
     fake.emitHello();
@@ -205,7 +205,11 @@ void main() {
     await tester.tap(find.byKey(const Key('createDepartment.submit')));
     await tester.pumpAndSettle();
     expect(find.byType(CreateDepartmentDialog), findsOneWidget);
-    expect(find.text('cwd 가 폴더가 아닙니다 (-32602)'), findsOneWidget);
+    expect(find.text('부서 생성 중 문제가 생겼어요').hitTestable(), findsOneWidget);
+    expect(find.textContaining('cwd 가 폴더가 아닙니다').hitTestable(), findsOneWidget);
+    await tester.tap(find.text('닫기'));
+    await tester.pumpAndSettle();
+    expect(find.byType(CreateDepartmentDialog), findsOneWidget);
   });
 
   // ---- U-02(D-51): 허가 방식 --------------------------------------------------------------------

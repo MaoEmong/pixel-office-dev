@@ -13,6 +13,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:pixel_office/panel/ui_prefs.dart';
+import 'package:pixel_office/diagnostics/error_panel.dart';
+import 'package:pixel_office/rpc/rpc_client.dart';
 import 'package:pixel_office/topbar/top_bar.dart';
 
 import 'fake_rpc_client.dart';
@@ -161,10 +163,64 @@ void main() {
 
     picker.error = StateError('선택기 고장');
     await tapPick(tester);
-    expect(find.textContaining('폴더 선택 실패'), findsOneWidget);
+    expect(find.text('폴더를 선택하지 못했어요').hitTestable(), findsOneWidget);
+    expect(find.byType(ErrorPanel), findsOneWidget);
+    expect(find.textContaining('선택기 고장').hitTestable(), findsOneWidget);
+    await tester.tap(find.text('닫기'));
+    await tester.pumpAndSettle();
     // 다이얼로그는 살아 있다.
     expect(find.byType(CreateDepartmentDialog), findsOneWidget);
   });
+
+  for (final failure in <(Object, String)>[
+    (const RpcException(-32003, 'Claude Code 로그인이 필요합니다. 터미널에서 claude auth login을 실행한 뒤 다시 검사하세요.'), 'claude auth login'),
+    (const RpcException(-32003, 'Claude Code 실행 파일을 찾지 못했습니다. CLI를 설치하고 앱을 다시 열어 주세요.'), '실행 파일을 찾지 못했습니다'),
+    (const RpcException(RpcException.timeout, 'timeout after 15000ms (department.create)'), '부서 목록을 확인'),
+    (const RpcException(RpcException.closed, 'socket closed'), '연결이 끊어졌어요'),
+    (Exception('작업 폴더에 기록을 저장할 수 없습니다. 폴더 권한을 확인하세요.'), '폴더 권한을 확인하세요'),
+  ]) {
+    testWidgets('부서 생성 실패는 스크롤 밖 팝업으로 안내하고 입력을 유지한다: ${failure.$2}', (tester) async {
+      tester.view.physicalSize = const Size(1264, 713);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      final fake = FakeRpcClient(responder: (m, p) => throw failure.$1);
+      addTearDown(fake.close);
+      await openDialog(tester, fake: fake, picker: FakePicker(pickedFolder), prefs: MemoryUiPrefsStore());
+      await tapPick(tester);
+      await tester.enterText(find.byKey(const Key('createDepartment.name')), '사원관리프로그램');
+      await tester.enterText(find.byKey(const Key('createDepartment.headName')), '개발부장');
+      await tester.ensureVisible(find.byKey(const Key('createDepartment.advanced')));
+      await tester.tap(find.byKey(const Key('createDepartment.advanced')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('createDepartment.submit')));
+      await tester.pumpAndSettle();
+
+      expect(find.byType(ErrorPanel), findsOneWidget);
+      expect(find.text('부서 생성 중 문제가 생겼어요').hitTestable(), findsOneWidget);
+      expect(find.textContaining(failure.$2).hitTestable(), findsOneWidget);
+      expect(find.text('닫기').hitTestable(), findsOneWidget);
+      expect(fake.calls.length, 1);
+      await tester.tap(find.text('닫기'));
+      await tester.pumpAndSettle();
+      expect(find.byType(CreateDepartmentDialog), findsOneWidget);
+      expect(textOf(tester, 'createDepartment.cwd'), pickedFolder);
+      expect(textOf(tester, 'createDepartment.name'), '사원관리프로그램');
+      expect(textOf(tester, 'createDepartment.headName'), '개발부장');
+      expect(tester.widget<FilledButton>(find.byKey(const Key('createDepartment.submit'))).onPressed, isNotNull);
+
+      fake.responder = (m, p) => {
+        'department': fakeDepartment('dNew', name: p['name'] as String, headId: 'mH'),
+        'head': fakeMember('mH', rank: 'head', departmentId: 'dNew'),
+      };
+      await tester.tap(find.byKey(const Key('createDepartment.submit')));
+      await tester.pumpAndSettle();
+      expect(fake.calls.length, 2);
+      expect(fake.calls.last.$2, fake.calls.first.$2);
+      expect(find.byType(CreateDepartmentDialog), findsNothing);
+      expect(tester.takeException(), isNull);
+    });
+  }
 
   testWidgets('손으로 친 경로 폴백: 없는 폴더면 오류 + 만들기 꺼짐, 있는 폴더면 켜진다', (tester) async {
     final fake = FakeRpcClient();

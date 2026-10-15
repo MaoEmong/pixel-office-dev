@@ -41,6 +41,7 @@ import '../state/selection.dart';
 import '../usage/usage_chips.dart';
 import '../remote/device_dialog.dart';
 import '../diagnostics/environment_dialog.dart';
+import '../diagnostics/error_panel.dart';
 import 'relocate_department_dialog.dart';
 import 'daemon_pill.dart';
 import 'selected_department.dart';
@@ -644,7 +645,6 @@ class _CreateDepartmentDialogState extends ConsumerState<CreateDepartmentDialog>
   /// 비동기 존재 확인의 경합 방지 — 마지막 확인만 반영한다.
   int _checkToken = 0;
   String? _cwdError;
-  String? _error;
 
   @override
   void initState() {
@@ -699,7 +699,14 @@ class _CreateDepartmentDialogState extends ConsumerState<CreateDepartmentDialog>
       _cwd.text = picked; // 리스너가 이름 기본값과 존재 확인을 맡는다
       unawaited(ref.read(lastDepartmentDirProvider.notifier).remember(picked));
     } catch (e) {
-      if (mounted) setState(() => _error = '폴더 선택 실패: $e');
+      if (mounted) {
+        setState(() => _picking = false);
+        await showErrorPanel(
+          context,
+          title: '폴더를 선택하지 못했어요',
+          message: '${errorMessage(e)}\n\n폴더 선택을 다시 시도하거나 작업 폴더 경로를 직접 입력해 주세요.',
+        );
+      }
     } finally {
       if (mounted) setState(() => _picking = false);
     }
@@ -730,10 +737,19 @@ class _CreateDepartmentDialogState extends ConsumerState<CreateDepartmentDialog>
       if (mounted) Navigator.of(context).pop();
     } catch (e) {
       if (mounted) {
-        setState(() {
-          _error = e is RpcException ? '${e.message} (${e.code})' : e.toString();
-          _busy = false;
-        });
+        setState(() => _busy = false);
+        final message = switch (e) {
+          RpcException(code: RpcException.timeout) =>
+            '처리 시간이 길어져 결과를 확인하지 못했어요.\n잠시 기다린 뒤 부서 목록을 확인하고, 부서가 없으면 같은 내용으로 다시 시도해 주세요.',
+          RpcException(code: RpcException.closed) =>
+            '앱과 작업 관리 프로그램의 연결이 끊어졌어요.\n상단의 연결 상태가 정상으로 돌아오면 부서 목록을 확인한 뒤 다시 시도해 주세요.',
+          _ => '${errorMessage(e)}\n\n문제를 해결한 뒤 다시 시도해 주세요.',
+        };
+        await showErrorPanel(
+          context,
+          title: '부서 생성 중 문제가 생겼어요',
+          message: '$message\n\n입력한 내용은 그대로 남아 있습니다.',
+        );
       }
     }
   }
@@ -855,14 +871,6 @@ class _CreateDepartmentDialogState extends ConsumerState<CreateDepartmentDialog>
                   enabled: !_busy,
                   onChanged: (p) => setState(() => _approvalPolicy = p),
                 ),
-              ),
-            ],
-            if (_error != null) ...[
-              const SizedBox(height: 12),
-              Text(
-                _error!,
-                key: const Key('createDepartment.error'),
-                style: TextStyle(color: Theme.of(context).colorScheme.error, fontSize: 12),
               ),
             ],
           ],
