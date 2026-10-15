@@ -9,6 +9,14 @@
 
 ### 환경 점검 (T57)
 
+#### 로그인 터미널과 복구 (T71, 로컬 앱 전용)
+
+- `member.login {memberId}` → `{}`: 유휴/인증 오류 멤버의 작업·대화는 보존하고, 같은 터미널에 실제 `claude auth login` 또는 `codex login`을 연다. 브라우저 인증과 터미널 입력은 CLI가 처리한다.
+- `member.auth.recover {memberId}` → `{member}`: 유효한 로그인 정보를 반영한 뒤 같은 대화 ID로 다시 연결한다. 답변하지 못한 대화나 중단된 입력을 재전송하며 사용자 메시지 행을 중복 생성하지 않는다. 처리 중인 작업·열린 승인은 중단하지 않는다.
+- `member.terminalCommand {memberId,command}` → `{}`: `/help` 같은 한 줄 CLI 명령. AI 업무나 셸 명령으로 해석하지 않는다. 작업·승인 진행 중에는 거부한다. 일반 키 입력은 기존 `member.type`이다.
+- 인증 실패 출력은 `error {summary,code:'authentication-required'}`와 `member.status{error}`를 낸다. 작업·대화는 취소하지 않고 터미널 입력을 유지한다.
+- 전역/프로젝트 로그인 파일만 동기화한다. 인증 값은 이벤트·로그·RPC 결과에 포함하지 않는다. 대화 기록·설정·hook 파일은 공유하지 않는다.
+
 `environment.check {memberId?}` → `{checkedAt,nodeVersion,memberName?,engines}`.
 로컬 인증 클라이언트가 사용한다. memberId는 프로젝트 세션 전용 인증을 검사하며,
 생략하면 전역 Claude/Codex 설치·인증을 검사한다. 결과에는 인증 정보·이메일·원시 CLI 출력이 없다.
@@ -606,7 +614,7 @@ D-02 는 데몬을 "앱과 분리된 상주 프로세스" 로 두었다. D-47 �
 | workflow.get | departmentId | 현재 작업 또는 null |
 | workflow.discuss | departmentId, text | 작업안 대화 시작·추가, 구현 없음 |
 | workflow.start | departmentId, brief? | 구체화 → 회의, 부장 root task 발행 |
-| workflow.resume | departmentId | 누락된 의견·미확정 결정만 재요청 |
+| workflow.resume | departmentId | 현재 부서의 참석자 연결·종료된 세션 복구 후 누락된 의견·미확정 결정만 재요청 |
 | workflow.cancel | departmentId | 취소 기록 후 부서 작업 중단 |
 | workflow.complete | departmentId | 최종 보고 검수 대기 → 완료 |
 
@@ -618,6 +626,12 @@ Workflow 구조와 단계는 `../../docs/design/회의-작업흐름.md` 참조.
 추가 TeamTools: 부장 meeting_open{participants:string[]},
 meeting_decide{workflowId,minutes,assignments:[{leadId,task,acceptance:string[],dependsOn?:string[]}]};
 팀장·팀원 meeting_speak{workflowId,round:1|2,text}.
+
+부장은 `office_status{}`로 현재 부서의 멤버 ID·직급·팀·상태와 작업 흐름을 조회한다. 인증 토큰·개인 실행 설정은 반환하지 않는다.
+`meeting_resume{workflowId,replacements?:[{previousMemberId,memberId}]}`는 중단된 회의의 참석자를 복구한다.
+삭제된 참석자는 같은 부서·역할의 명확한 대체자에 자동 연결하며, 여러 후보는 부장이 조회 결과를 보고 명시적으로 연결한다.
+회의·원래 지시·이미 제출된 의견을 보존하고 교체 이력을 남긴다. 다른 부서, 활동 중 참석자 교체, 중복 자리 연결, 오래된 회의 요청은 거절한다.
+종료된 참석자는 기존 ID로 다시 시작하며, 준비된 멤버가 모두 연결되면 중단된 회의를 자동 재개한다.
 같은 부서의 초대된 살아 있는 참석자만 현재 차례를 한 번 제출할 수 있다.
 전원이 두 차례 제출해야 부장이 모든 참석 팀장의 업무를 확정할 수 있다.
 자기 의존성·없는 팀장·순환 의존성은 배정 전에 거부한다.

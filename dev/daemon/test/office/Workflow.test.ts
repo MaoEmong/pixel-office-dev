@@ -10,6 +10,7 @@ import os from 'node:os';
 import path from 'node:path';
 import {Office} from '../../src/office/Office.js';
 import {FakePty, FakeReceiver, fakeReq} from './fakes.js';
+import {loadFixture} from '../screen/helpers.js';
 
 function setup() {
   const store=new Store(':memory:');
@@ -36,6 +37,45 @@ function setup() {
   return {store,d,head,leads,expert,sent,host,coord,begin,round,plan};
 }
 
+test('deleted meeting participants reconnect to current leads, preserving opinions and recording replacements',t=>{
+  const f=setup();t.after(()=>f.store.close());f.coord.discuss(f.d.id,'work');f.coord.start(f.d.id);const w=f.coord.open(f.head,f.leads.map(m=>m.id));
+  f.coord.speak(f.leads[0]!,w.id,1,'keep this opinion');
+  f.store.updateMember(f.leads[0]!.id,{status:'exited'});
+  f.coord.memberGone(f.store.getMember(f.leads[0]!.id)!);
+  const old=f.leads[0]!;f.store.deleteMember(old.id);
+  const replacement=f.store.createMember({departmentId:f.d.id,teamId:old.teamId,parentId:f.head.id,name:old.name,rank:'lead',engine:'codex',cwd:f.d.cwd,hiredBy:'leader',status:'idle'});
+  f.sent.length=0;const resumed=f.coord.resume(f.d.id);
+  assert.equal(resumed.phase,'meeting');assert.equal(resumed.meeting!.participants[0],replacement.id);
+  assert.equal(resumed.meeting!.contributions[0]!.text,'keep this opinion');
+  assert.equal(resumed.meeting!.contributions[0]!.memberId,replacement.id);
+  assert.equal(resumed.meeting!.replacements![0]!.previousMemberId,old.id);
+  assert.ok(!f.sent.some(s=>s.id===replacement.id),'already submitted opinion is not requested twice');
+  assert.equal(resumed.id,w.id);assert.equal(resumed.rootTaskId,w.rootTaskId);assert.equal(resumed.problem,undefined);
+});
+
+test('legacy meeting with only saved names reconnects all three current leaders',t=>{
+  const f=setup();t.after(()=>f.store.close());const w=f.begin();
+  w.phase='blocked';delete w.meeting!.participantRoles;
+  const ids=w.meeting!.participants;
+  // The legacy fixture used an expert: convert its current seat to a head-owned lead.
+  for(const id of ids){const old=f.store.getMember(id)!;f.store.deleteMember(id);f.store.createMember({departmentId:f.d.id,teamId:old.teamId,parentId:f.head.id,name:old.name,rank:'lead',engine:'codex',cwd:f.d.cwd,hiredBy:'leader',status:'idle'});}
+  f.store.saveWorkflow(w);const resumed=f.coord.resume(f.d.id);
+  assert.equal(resumed.phase,'meeting');assert.equal(resumed.meeting!.replacements!.length,3);
+  assert.ok(resumed.meeting!.participants.every(id=>!ids.includes(id)));
+});
+
+test('ambiguous or invalid replacement plans cannot change the meeting or redirect a live attendee',t=>{
+  const f=setup();t.after(()=>f.store.close());f.coord.discuss(f.d.id,'work');f.coord.start(f.d.id);const w=f.coord.open(f.head,f.leads.map(m=>m.id));const old=f.leads[0]!;
+  f.store.deleteMember(old.id);w.phase='blocked';f.store.saveWorkflow(w);
+  const create=()=>f.store.createMember({departmentId:f.d.id,teamId:old.teamId,parentId:f.head.id,name:old.name,rank:'lead',engine:'claude',cwd:f.d.cwd,hiredBy:'leader',status:'idle'});
+  const a=create();create();const before=structuredClone(f.coord.current(f.d.id));
+  assert.throws(()=>f.coord.resume(f.d.id),/한 명/);assert.deepEqual(f.coord.current(f.d.id),before);
+  assert.throws(()=>f.coord.resume(f.d.id,[{previousMemberId:old.id,memberId:'missing'}]),/참석자가 없습니다/);
+  assert.throws(()=>f.coord.resume(f.d.id,[{previousMemberId:old.id,memberId:a.id},{previousMemberId:f.leads[1]!.id,memberId:a.id}]),/활동 중/);
+  assert.throws(()=>f.coord.resume(f.d.id,[], 'stale-workflow'),/다른 회의/);
+  assert.equal(f.coord.resume(f.d.id,[{previousMemberId:old.id,memberId:a.id}]).phase,'meeting');
+});
+
 test('failed discussion delivery rolls back, and a successful request ID is never sent twice',t=> {
   const f=setup();t.after(()=>f.store.close());
   const send=f.host.send;let changes=0;
@@ -48,6 +88,22 @@ test('failed discussion delivery rolls back, and a successful request ID is neve
   f.coord.discuss(f.d.id,'request',true,'retry-1');
   assert.equal(f.sent.length,1);assert.equal(f.coord.current(f.d.id)?.messages.length,1);
   assert.throws(()=>f.coord.discuss(f.d.id,'different',true,'retry-1'),/다른 내용/);
+});
+
+for (const phase of ['meeting','executing','blocked','review'] as const) test(`user can talk to the head during ${phase} without replacing the plan`,t=> {
+  const f=setup();t.after(()=>f.store.close());const w=f.begin();
+  w.phase=phase;if(phase==='blocked')w.problem='CLI failed';f.store.saveWorkflow(w);
+  const before=structuredClone(w);f.sent.length=0;
+  const updated=f.coord.discuss(f.d.id,'현재 상황을 설명하고 다음 지시를 확인해 줘',true,'followup-1');
+  assert.equal(updated.id,before.id);assert.equal(updated.phase,phase);assert.equal(updated.brief,before.brief);
+  assert.deepEqual(updated.meeting,before.meeting);assert.deepEqual(updated.assignments,before.assignments);
+  assert.equal(updated.problem,before.problem);assert.equal(updated.rootTaskId,before.rootTaskId);
+  assert.match(f.sent[0]!.text,/WORKFLOW FOLLOWUP/);
+  f.coord.discuss(f.d.id,'현재 상황을 설명하고 다음 지시를 확인해 줘',true,'followup-1');
+  assert.equal(f.sent.length,1);
+  f.coord.headText(f.head,'현재 상황에 대한 답변',true);
+  assert.equal(f.coord.current(f.d.id)!.messages.at(-1)!.text,'현재 상황에 대한 답변');
+  assert.equal(f.coord.current(f.d.id)!.phase,phase);
 });
 
 test('partial task creation rolls back meeting and task; retry succeeds exactly once',t=> {
@@ -185,4 +241,79 @@ test('Office gates actual hooks, direct instructions, hiring and early root repo
   assert.equal(reopened.currentWorkflow(department.id)!.phase,'meeting','normal exit must not block recovery');
   reopened.close();
   assert.equal(JSON.parse(fs.readFileSync(path.join(dir,'.pixel-office','workflows',`${w.id}.json`),'utf8')).phase,'meeting');
+});
+
+test('a real queued follow-up reaches the head and its reply cannot finish the root task',async t=> {
+  const dir=fs.mkdtempSync(path.join(os.tmpdir(),'workflow-followup-'));
+  const store=new Store(':memory:'),pty=new FakePty(),receiver=new FakeReceiver();
+  const office=new Office({config:{dataDir:dir,hookPort:0,wsPort:0,mcpPort:0},store,pty,receiver});
+  t.after(async()=>{await office.shutdown();fs.rmSync(dir,{recursive:true,force:true});});
+  await office.start();const {department,head}=office.createDepartment({name:'followup',cwd:dir,headName:'head',headEngine:'claude'});
+  office.workflowDiscuss(department.id,'Original plan');office.workflowStart(department.id);
+  const {lead}=office.teamCreateTeam(head.id,{name:'team',leadName:'lead'});
+  const w=office.workflowGet(department.id)!;w.phase='executing';w.assignments=[{leadId:lead.id,task:'work',acceptance:['done'],status:'done'}];store.saveWorkflow(w);
+  store.updateTask(w.rootTaskId!,{status:'assigned'});
+  const rt=office['runtimes'].get(head.id)!;
+  rt.queue.clear();
+  pty.data(head.id,'\x1b[2J\x1b[H'+loadFixture('claude-ready.txt').join('\r\n'));
+  await new Promise(r=>setTimeout(r,50));
+  const hook=(event:'UserPromptSubmit'|'Stop',extra:Record<string,string>)=>receiver.emit('hook',fakeReq(head.memberToken,event,{session_id:'session',hook_event_name:event,cwd:dir,...extra}).req);
+  hook('UserPromptSubmit',{prompt:'Existing task still running'});
+  office.workflowDiscuss(department.id,'진행 상황을 설명해 줘');
+  assert.ok(!pty.sessions.get(head.id)!.pastes.some(p=>p.includes('WORKFLOW FOLLOWUP')),'a busy model must not receive pasted input in the middle of its response');
+  store.updateMember(head.id,{status:'idle'});rt.queue.tick();
+  await new Promise(r=>setTimeout(r,350));rt.queue.tick();
+  assert.ok(pty.sessions.get(head.id)!.pastes.some(p=>p.includes('WORKFLOW FOLLOWUP') && p.includes('진행 상황을 설명해 줘')));
+  hook('UserPromptSubmit',{prompt:'followup'});rt.queue.tick();
+  assert.throws(()=>office.teamReport(head.id,{taskId:w.rootTaskId!,summary:'현재 상황 설명',status:'done'}),/대화 답변/);
+  hook('Stop',{last_assistant_message:'현재 상태와 다음 조치를 설명합니다.'});
+  assert.equal(store.getTask(w.rootTaskId!)!.status,'assigned');
+  assert.equal(office.workflowGet(department.id)!.phase,'executing');
+  assert.equal(office.workflowGet(department.id)!.messages.at(-1)!.role,'head');
+  assert.equal(office.workflowGet(department.id)!.messages.at(-1)!.followup,true);
+  hook('Stop',{});
+  assert.equal(store.getTask(w.rootTaskId!)!.status,'assigned','a duplicate idle event cannot finish the task either');
+  rt.queue.clear();
+  rt.queue.emit('flushed',{kind:'system',text:'[ALL_REPORTS_IN]'});
+  hook('Stop',{last_assistant_message:'실제 작업 최종 보고'});
+  assert.equal(store.getTask(w.rootTaskId!)!.status,'reported','normal work reporting still works on a later work turn');
+  assert.equal(office.workflowGet(department.id)!.phase,'review');
+});
+
+test('Office recovery reconnects deleted seats and restarts only stopped participants without losing the workflow',async t=>{
+  const dir=fs.mkdtempSync(path.join(os.tmpdir(),'meeting-reconnect-'));
+  const store=new Store(':memory:'),pty=new FakePty(),receiver=new FakeReceiver();
+  const office=new Office({config:{dataDir:dir,hookPort:0,wsPort:0,mcpPort:0},store,pty,receiver});
+  t.after(async()=>{await office.shutdown();fs.rmSync(dir,{recursive:true,force:true});});await office.start();
+  const {department,head}=office.createDepartment({name:'reconnect',cwd:dir,headName:'head',headEngine:'claude'});
+  office.workflowDiscuss(department.id,'keep the original plan');office.workflowStart(department.id);
+  const a=office.teamCreateTeam(head.id,{name:'backend',leadName:'backend lead'});
+  const b=office.teamCreateTeam(head.id,{name:'front',leadName:'front lead'});
+  const w=office['workflows'].open(head,[a.lead.id,b.lead.id]);
+  await office.clockOut(a.lead.id,{byLeader:true});await office.deleteTeam(a.team.id);
+  const replacement=office.teamCreateTeam(head.id,{name:'backend',leadName:'backend lead'});
+  await office.clockOut(b.lead.id,{byLeader:true});const spawns=pty.spawns.length;
+  const first=office.workflowResume(department.id,w.id),second=office.workflowResume(department.id,w.id);
+  assert.equal(first,second,'concurrent recovery shares one attempt');const recovered=await first;
+  assert.equal(recovered.phase,'meeting');assert.equal(recovered.id,w.id);assert.equal(recovered.rootTaskId,w.rootTaskId);
+  assert.deepEqual(recovered.meeting!.participants,[replacement.lead.id,b.lead.id]);assert.equal(pty.spawns.length,spawns+1);
+  const visible=JSON.stringify(office.teamOfficeStatus(head.id));assert.ok(!visible.includes(head.memberToken));
+  assert.throws(()=>office.teamOfficeStatus(b.lead.id),/쓸 수 있는 도구/);
+});
+
+test('startup creates a fresh Codex session when no first-turn session ID exists and keeps a blocked head quiet',async t=>{
+  const dir=fs.mkdtempSync(path.join(os.tmpdir(),'meeting-cold-start-'));const store=new Store(':memory:');
+  const department=store.createDepartment({name:'cold',cwd:dir});
+  const head=store.createMember({departmentId:department.id,teamId:null,parentId:null,name:'head',rank:'head',engine:'claude',cwd:dir,hiredBy:'user',status:'suspended',sessionId:'head-session'});store.updateDepartment(department.id,{headId:head.id});
+  const team=store.createTeam({departmentId:department.id,name:'team',cwd:dir});
+  const lead=store.createMember({departmentId:department.id,teamId:team.id,parentId:head.id,name:'lead',rank:'lead',engine:'codex',cwd:dir,hiredBy:'leader',status:'suspended'});
+  const root=store.createTask({departmentId:department.id,fromMember:'user',toMember:head.id,instruction:'original',status:'assigned'});
+  store.setEnginePolicy(['claude','codex']);
+  const date=new Date().toISOString();store.saveWorkflow({id:'blocked-w',departmentId:department.id,phase:'blocked',brief:'original',messages:[],assignments:[],rootTaskId:root.id,meeting:{round:1,state:'collecting',participants:[lead.id],participantNames:{[lead.id]:'lead'},contributions:[]},createdAt:date,updatedAt:date});
+  const pty=new FakePty(),receiver=new FakeReceiver();const office=new Office({config:{dataDir:dir,hookPort:0,wsPort:0,mcpPort:0},store,pty,receiver});
+  t.after(async()=>{await office.shutdown();fs.rmSync(dir,{recursive:true,force:true});});await office.start();
+  assert.ok(pty.spawns.some(p=>p.memberId===lead.id && !p.resumeSessionId));assert.notEqual(store.getMember(lead.id)!.status,'error');
+  assert.equal(office['runtimes'].get(head.id)!.queue.size(),0,'a blocked workflow does not trigger the head to recreate teams');
+  receiver.emit('hook',fakeReq(lead.memberToken,'SessionStart',{session_id:'first-session',hook_event_name:'SessionStart',cwd:dir,source:'startup'}).req);
+  await new Promise(r=>setTimeout(r,10));assert.equal(office.workflowGet(department.id)!.phase,'meeting','ready participants reconnect automatically');
 });

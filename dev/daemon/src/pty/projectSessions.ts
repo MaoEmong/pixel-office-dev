@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import type { Engine } from './types.js';
+import {AuthenticationBridge} from './authentication.js';
 
 /** Session IDs are internal identifiers, never filesystem paths. */
 function safeId(id: string): string {
@@ -53,6 +54,7 @@ export function prepareProjectSession(
   fs.mkdirSync(localHome, { recursive: true, mode: 0o700 });
   if (engine === 'claude') {
     copyIfMissing(path.join(homes.claude, '.credentials.json'), path.join(localHome, '.credentials.json'));
+    new AuthenticationBridge(homes).sync(engine,localHome);
     copyIfMissing(path.join(homes.claude, 'settings.json'), path.join(localHome, 'settings.json'));
     copyIfMissing(homes.claudeConfig, path.join(localHome, '.claude.json'));
     if (resumeSessionId) {
@@ -73,6 +75,7 @@ export function prepareProjectSession(
     return { CLAUDE_CONFIG_DIR: localHome };
   }
   copyIfMissing(path.join(homes.codex, 'auth.json'), path.join(localHome, 'auth.json'));
+  new AuthenticationBridge(homes).sync(engine,localHome);
   copyIfMissing(path.join(homes.codex, 'config.toml'), path.join(localHome, 'config.toml'));
   if (resumeSessionId) {
     const sid = safeId(resumeSessionId);

@@ -44,6 +44,8 @@ export const ALL_TEAM_TOOLS = [
   'meeting_open',
   'meeting_speak',
   'meeting_decide',
+  'office_status',
+  'meeting_resume',
 ] as const;
 export type TeamToolName = (typeof ALL_TEAM_TOOLS)[number];
 
@@ -57,7 +59,7 @@ export type ReportToolStatus = 'done' | 'blocked' | 'aborted';
  * PROTOCOL.md 의 표가 이 표를 그대로 읽는다.
  */
 export const RANK_TOOLS: Record<TeamToolRank, readonly TeamToolName[]> = {
-  head: ['create_team', 'dismiss_team', 'delegate', 'reply', 'report', 'ask_user', 'meeting_open', 'meeting_decide'],
+  head: ['create_team', 'dismiss_team', 'delegate', 'reply', 'report', 'ask_user', 'meeting_open', 'meeting_decide', 'office_status', 'meeting_resume'],
   lead: ['hire', 'dismiss', 'delegate', 'reply', 'report', 'ask_parent', 'meeting_speak'],
   member: ['report', 'ask_parent', 'meeting_speak'],
 };
@@ -135,6 +137,8 @@ export interface TeamToolsMember {
 
 /** 데몬(Office)이 MCP 서버에 넘기는 연결점. 테스트에서는 가짜. 실패는 throw(→ 도구 결과 isError). */
 export interface TeamToolsHost {
+  officeStatus?(memberId: string): unknown;
+  meetingResume?(memberId: string, input: {workflowId:string;replacements?:import('../workflow/types.js').MeetingReplacement[]}): unknown;
   meetingOpen?(memberId: string, input: {participants:string[]}): unknown;
   meetingSpeak?(memberId: string, input: {workflowId:string;round:number;text:string}): unknown;
   meetingDecide?(memberId: string, input: {workflowId:string;minutes:string;assignments:import('../workflow/types.js').WorkAssignment[]}): unknown;
@@ -450,10 +454,18 @@ export class TeamToolsServer {
     };
     const has = (tool: TeamToolName): boolean => canUseTool(member.rank, tool);
 
+    if(has('office_status'))server.registerTool('office_status',{
+      title:'현재 부서 상태 확인',description:'현재 부서의 실제 멤버 ID·직급·팀·작업 상태와 회의 상태를 조회한다. 오래된 이름이나 세션 폴더로 추측하지 말고 이 목록을 사용하라.',inputSchema:{},annotations:{...annotations,readOnlyHint:true,idempotentHint:true},
+    },async()=>{const d=gate('office_status');if(d)return d;try{return ok(JSON.stringify(await this.host.officeStatus!(memberId)));}catch(e){return fail('office_status',errText(e));}});
+    if(has('meeting_resume'))server.registerTool('meeting_resume',{
+      title:'회의 연결 복구 및 재개',description:'[부장 전용] 중단된 회의의 내부 참석자 연결과 종료된 세션을 복구하고 기존 의견을 유지한 채 재개한다. 대체 참석자가 분명하면 자동 연결한다. 여러 후보라면 office_status를 조회해 replacements로 기존 ID와 현재 ID를 연결하라. 팀을 해산하거나 사용자에게 내부 ID를 찾으라고 하지 마라.',
+      inputSchema:{workflowId:z.string().min(1),replacements:z.array(z.object({previousMemberId:z.string().min(1),memberId:z.string().min(1)})).max(12).optional()},annotations,
+    },async input=>{const d=gate('meeting_resume');if(d)return d;try{return ok(JSON.stringify(await this.host.meetingResume!(memberId,input))+'\n회의 연결을 복구했다. 기존 회의 차례를 이어가며 참석자 의견을 기다려라.');}catch(e){return fail('meeting_resume',errText(e));}});
+
     if (has('meeting_open')) server.registerTool('meeting_open', {
       title:'회의 소집', description:'[부장 전용] 작업 시작 후 살아 있는 같은 부서 팀장·전문가 ID를 초대한다. 부장은 제외. 참석자 전원이 두 차례 의견을 제출하면 결정 요청이 온다. 호출 후 턴을 끝내고 기다려라.',
       inputSchema:{participants:z.array(z.string().min(1)).min(1).max(12)}, annotations,
-    }, async input => { const d=gate('meeting_open'); if(d)return d; try { return ok(JSON.stringify(this.host.meetingOpen!(memberId,input))+'\n참석자 의견을 기다려라.'); } catch(e){return fail('meeting_open',errText(e));} });
+    }, async input => { const d=gate('meeting_open'); if(d)return d; try { return ok(JSON.stringify(await this.host.meetingOpen!(memberId,input))+'\n참석자 의견을 기다려라.'); } catch(e){return fail('meeting_open',errText(e));} });
     if (has('meeting_speak')) server.registerTool('meeting_speak', {
       title:'회의 의견 제출', description:'초대된 현재 회의의 차례에 의견을 한 번 제출한다. 1차 접근 방법·위험, 2차 다른 참가자 의견의 검토·의존성. 구현하거나 delegate하지 말고 호출 뒤 턴을 끝내 다음 회의 메시지를 기다려라.',
       inputSchema:{workflowId:z.string().min(1),round:z.number().int().min(1).max(2),text:z.string().min(1).max(30000)}, annotations,

@@ -290,7 +290,10 @@ export class RpcServer {
       'workflow.get': (_c,p) => ({workflow:workflow(()=>o.workflowGet!(reqStr(p,'departmentId'))) ?? null}),
       'workflow.discuss': (_c,p) => ({workflow:workflow(()=>o.workflowDiscuss!(reqStr(p,'departmentId'),reqStr(p,'text'),optStr(p,'requestId')))}),
       'workflow.start': (_c,p) => ({workflow:workflow(()=>o.workflowStart!(reqStr(p,'departmentId'),optStr(p,'brief'),optStr(p,'requestId')))}),
-      'workflow.resume': (_c,p) => ({workflow:workflow(()=>o.workflowResume!(reqStr(p,'departmentId')))}),
+      'workflow.resume': async (_c,p) => {
+        try{return {workflow:await o.workflowResume!(reqStr(p,'departmentId'))};}
+        catch(err){return workflow(()=>{throw err;});}
+      },
       'workflow.cancel': (_c,p) => ({workflow:workflow(()=>o.workflowCancel!(reqStr(p,'departmentId')))}),
       'workflow.complete': (_c,p) => ({workflow:workflow(()=>o.workflowComplete!(reqStr(p,'departmentId')))}),
 

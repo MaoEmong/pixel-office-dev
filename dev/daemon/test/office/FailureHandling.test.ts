@@ -32,14 +32,30 @@ test('default blocks cross-engine hiring; explicit selection permits it; disable
     assert.equal(store.snapshot().members.length,n);
     assert.match(office.effectiveInstructions(tree.lead.id),/쓸 수 있는 엔진은 claude\./);
     office.setEnginePolicy(['claude','codex']);
+    assert.match(office.buildSessionContext(tree.head.id),/Claude Code \+ Codex 둘 다 사용/);
     const worker=office.teamHire(tree.lead.id,{name:'worker',role:'test',engine:'codex'});
     office.setEnginePolicy(['claude']);
+    assert.match(office.buildSessionContext(tree.head.id),/사용할 AI: Claude Code만 사용/);
     await assert.rejects(office.restart(worker.id),/허용되지/);
     assert.equal(pty.get(worker.id)?.alive,true);
     assert.throws(()=>office.instruct(worker.id,'new task',{force:true}),/허용되지/);
     await office.clockOut(worker.id);
     await assert.rejects(office.rehire(worker.id),/허용되지/);
+    office.setEnginePolicy(['codex']);
+    assert.match(office.buildSessionContext(tree.head.id),/사용할 AI: Codex만 사용/);
+    assert.throws(()=>office.teamHire(tree.lead.id,{name:'disabled Claude',role:'test',engine:'claude'}),/허용되지/);
   } finally {await office.shutdown();fs.rmSync(dir,{recursive:true,force:true});}
+});
+
+test('Codex members receive the account-checked model as a CLI override',async()=>{
+  const dir=fs.mkdtempSync(path.join(os.tmpdir(),'office-model-'));
+  const pty=new FakePty();
+  const office=new Office({config:{dataDir:dir,hookPort:0,mcpPort:0,wsPort:0},store:new Store(':memory:'),pty,receiver:new FakeReceiver(),codexModel:()=> 'account-supported'});
+  try {
+    await office.start();const tree=makeTree(office,{cwd:dir});office.setEnginePolicy(['claude','codex']);
+    const result=office.teamCreateTeam(tree.head.id,{name:'model team',leadName:'model lead',engine:'codex'});
+    assert.deepEqual(pty.spawns.find(s=>s.memberId===result.lead.id)?.extraArgs,['-c','model="account-supported"']);
+  }finally{await office.shutdown();fs.rmSync(dir,{recursive:true,force:true});}
 });
 
 test('spawn failure leaves a recoverable error member, no starting row or open task', async () => {

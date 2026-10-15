@@ -303,7 +303,7 @@ export interface OfficeApi extends EventEmitter<OfficeEvents> {
   workflowGet?(departmentId: string): import('../workflow/types.js').Workflow | undefined;
   workflowDiscuss?(departmentId: string, text: string, requestId?:string): import('../workflow/types.js').Workflow;
   workflowStart?(departmentId: string, brief?: string, requestId?:string): import('../workflow/types.js').Workflow;
-  workflowResume?(departmentId: string): import('../workflow/types.js').Workflow;
+  workflowResume?(departmentId: string): import('../workflow/types.js').Workflow | Promise<import('../workflow/types.js').Workflow>;
   workflowCancel?(departmentId: string): import('../workflow/types.js').Workflow;
   workflowComplete?(departmentId: string): import('../workflow/types.js').Workflow;
   /** 이번 기동의 인증 토큰(daemon.json 과 동일). */
@@ -380,6 +380,7 @@ export interface OfficeApi extends EventEmitter<OfficeEvents> {
 /** PtyManager 의 부분집합(테스트 가짜용). */
 export interface PtyManagerLike {
   spawn(opts: SpawnOptions): PtySession;
+  spawnBare?(opts:import('../pty/PtyManager.js').BareSpawnOptions):PtySession;
   get(memberId: string): PtySession | undefined;
   list(): PtySession[];
   kill(memberId: string, opts?: { graceful?: boolean; timeoutMs?: number }): Promise<void>;

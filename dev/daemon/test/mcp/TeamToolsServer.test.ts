@@ -40,6 +40,8 @@ const LEAD = 'tok_leader';
 const HEAD = 'tok_head';
 
 class FakeHost implements TeamToolsHost {
+  officeStatus(memberId:string){return {members:[{id:'m_lead',name:'반장'}],workflow:{id:'w1',phase:'blocked'},requestedBy:memberId};}
+  async meetingResume(memberId:string,input:{workflowId:string;replacements?:import('../../src/workflow/types.js').MeetingReplacement[]}){this.boom();return {id:input.workflowId,phase:'meeting',requestedBy:memberId,replacements:input.replacements};}
   readonly asks: Array<{ memberId: string; input: AskUserInput }> = [];
   readonly askParents: Array<{ memberId: string; input: AskParentInput }> = [];
   readonly createdTeams: Array<{ memberId: string; input: CreateTeamToolInput }> = [];
@@ -155,6 +157,19 @@ describe('TeamToolsServer (T17)', () => {
     await server.close();
   });
 
+  test('the head can inspect real IDs and invoke asynchronous meeting recovery through MCP',async()=>{
+    const {client}=await connect(port,HEAD);
+    try{
+      const status=await client.callTool({name:'office_status',arguments:{}});
+      const value=JSON.parse((status.content as Array<{text:string}>)[0]!.text);
+      assert.equal(value.members[0].id,'m_lead');assert.equal(value.requestedBy,'m_head');
+      const result=await client.callTool({name:'meeting_resume',arguments:{workflowId:'w1',replacements:[{previousMemberId:'old',memberId:'m_lead'}]}});
+      assert.notEqual(result.isError,true);assert.match((result.content as Array<{text:string}>)[0]!.text,/"phase":"meeting"/);
+      host.failNext='login required';const failed=await client.callTool({name:'meeting_resume',arguments:{workflowId:'w1'}});
+      assert.equal(failed.isError,true);assert.match((failed.content as Array<{text:string}>)[0]!.text,/login required/);
+    }finally{await client.close();}
+  });
+
   test('tools/list exposes ask_user with question(required)/options(optional) schema (부장)', async () => {
     const { client } = await connect(port, HEAD);
     try {
@@ -255,7 +270,7 @@ describe('TeamToolsServer (T17)', () => {
 
   // ---- T35: 직급별 도구 목록(3종) · 직급 전용 도구 --------------------------------------------
 
-  test('T35 tools/list: 부장 8개 / 팀장 7개 / 팀원 3개 — RANK_TOOLS 와 정확히 같다', async () => {
+  test('tools/list: 부장 복구·조회 도구 포함 / 팀장 7개 / 팀원 3개 — RANK_TOOLS 와 정확히 같다', async () => {
     const asMember = await connect(port, TOKEN);
     const asLeader = await connect(port, LEAD);
     const asHead = await connect(port, HEAD);
@@ -263,7 +278,7 @@ describe('TeamToolsServer (T17)', () => {
       const names = async (c: Client) => (await c.listTools()).tools.map((t) => t.name).sort();
       assert.deepEqual(await names(asMember.client), ['ask_parent', 'meeting_speak', 'report']);
       assert.deepEqual(await names(asLeader.client), ['ask_parent', 'delegate', 'dismiss', 'hire', 'meeting_speak', 'reply', 'report']);
-      assert.deepEqual(await names(asHead.client), ['ask_user', 'create_team', 'delegate', 'dismiss_team', 'meeting_decide', 'meeting_open', 'reply', 'report']);
+      assert.deepEqual(await names(asHead.client), ['ask_user', 'create_team', 'delegate', 'dismiss_team', 'meeting_decide', 'meeting_open', 'meeting_resume', 'office_status', 'reply', 'report']);
       // 표 자체가 단일 출처다 — 지시문 템플릿의 도구 이름 줄도 이것을 읽는다.
       assert.deepEqual(await names(asMember.client), [...RANK_TOOLS.member].sort());
       assert.deepEqual(await names(asLeader.client), [...RANK_TOOLS.lead].sort());

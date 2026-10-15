@@ -75,6 +75,15 @@ describe('화면 기반 감시 (T23b)', () => {
   const statusOf = (m: Member) => store.getMember(m.id)!.status;
   const screenIdles = (m: Member) => events.filter((e) => e.memberId === m.id && e.kind === 'idle' && e.detail.summary === SCREEN_IDLE_SUMMARY);
 
+  test('unsupported Codex model API errors become actionable errors instead of idle members', async () => {
+    const member=hire('모델오류','codex');
+    pty.data(member.id,'\x1b[2J\x1b[H■ {"type":"error","status":400,"error":{"type":"invalid_request_error","message":"The model is not supported when using Codex with a ChatGPT account."}}\r\n');
+    await sleep(100);
+    assert.equal(statusOf(member),'error');
+    assert.ok(events.some(e=>e.memberId===member.id && e.kind==='error' && String(e.detail.summary).includes('사용할 수 없는 Codex 모델')));
+    assert.notEqual(pty.get(member.id)?.alive,true);
+  });
+
   // ---- ① 화면 기반 idle 폴백 (D-25) --------------------------------------------------
 
   test('Codex 사용량 한도 화면: Stop hook 없이 프롬프트로 돌아오면 3초 뒤 idle{screen-idle} 로 내려오고 막혀 있던 지시가 흐른다', async () => {

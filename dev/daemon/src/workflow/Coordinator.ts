@@ -1,14 +1,14 @@
 import { randomUUID } from 'node:crypto';
 import type { Store } from '../store/Store.js';
 import type { Member, Task } from '../store/types.js';
-import type { Workflow, WorkAssignment } from './types.js';
+import type { Workflow, WorkAssignment, MeetingReplacement } from './types.js';
 
 export interface WorkflowHost {
   atomic?(fn:()=>Workflow): Workflow;
   head(departmentId: string): Member;
   member(id: string): Member | undefined;
   busy(departmentId: string): boolean;
-  send(memberId: string, text: string, deliveryId?: string): void;
+  send(memberId: string, text: string, deliveryId?: string, conversation?: boolean): void;
   startTask(memberId: string, text: string): number;
   delegate(headId: string, leadId: string, text: string): number;
   task(id: number): Task | undefined;
@@ -65,20 +65,28 @@ export class WorkflowCoordinator {
       if (this.host.busy(departmentId)) throw new Error('진행 중인 작업을 마친 뒤 새 논의를 시작하세요.');
       w = {id:`w_${randomUUID()}`,departmentId,phase:'clarifying',brief:'',messages:[],assignments:[],createdAt:now(),updatedAt:now()};
     }
-    if (w.phase !== 'clarifying') throw new Error('진행 중인 회의·작업을 마치거나 취소한 뒤 논의하세요.');
-    if (w.messages.length >= 100) throw new Error('대화가 길어졌습니다. 작업안을 정리하고 시작하세요.');
-    w.messages.push({role:'user',text:message,at:now(),...(requestId ? {requestId} : {})});
-    w.brief = w.messages.filter(m=>m.role==='user').map(m=>m.text).join('\n').slice(-30_000);
+    const followup=w.phase!=='clarifying';
+    if (w.messages.length >= 100) throw new Error('대화 기록이 가득 찼습니다. 현재 작업을 정리한 뒤 새 대화를 시작하세요.');
+    w.messages.push({role:'user',text:message,at:now(),...(requestId ? {requestId} : {}),...(followup ? {followup:true} : {})});
+    if(!followup)w.brief = w.messages.filter(m=>m.role==='user').map(m=>m.text).join('\n').slice(-30_000);
     this.save(w);
-    if (notify) this.host.send(head.id, `[WORKFLOW DISCUSS ${w.id}]\n사용자와 목표, 범위, 제약, 완료 기준을 구체화하는 대화다. 구현·위임·채용은 하지 마라. 부족한 정보는 사용자에게 질문하고 작업안을 요약해라.\n${message}`);
+    if (notify) this.host.send(head.id, followup
+      ? `[WORKFLOW FOLLOWUP ${w.id}]\n진행 중인 작업에 대한 사용자 메시지다. 현재 단계: ${w.phase}. ${w.problem ? `중단 원인: ${w.problem}.` : ''}\n사용자의 질문에 현재 진행 상황과 문제를 설명하고 변경 지시를 확인하라. 이 대화 답변을 작업 완료 보고로 제출하지 마라. 기존 작업·회의 기록을 유지하고, 계획 변경이나 중단이 필요하면 이유와 다음 조치를 사용자에게 안내하라. 현재 단계에서 허용된 작업 범위는 계속 지켜라.\n${message}`
+      : `[WORKFLOW DISCUSS ${w.id}]\n사용자와 목표, 범위, 제약, 완료 기준을 구체화하는 대화다. 구현·위임·채용은 하지 마라. 부족한 정보는 사용자에게 질문하고 작업안을 요약해라.\n${message}`, undefined, followup);
     return w;
     });
   }
-  headText(member: Member, text: string): void {
+  headText(member: Member, text: string, conversation = false): void {
     const w = this.current(member.departmentId);
-    if (member.rank==='head' && w?.phase==='clarifying' && w.messages.length<100) {
-      w.messages.push({role:'head',text:text.slice(0,30_000),at:now()}); this.save(w);
+    if (member.rank==='head' && w && (w.phase==='clarifying' || conversation) && w.messages.length<100) {
+      w.messages.push({role:'head',text:text.slice(0,30_000),at:now(),...(conversation ? {followup:true} : {})}); this.save(w);
     }
+  }
+  retryConversation(member:Member):boolean {
+    const w=this.current(member.departmentId),message=w?.messages.at(-1);
+    if(member.rank!=='head' || !w || message?.role!=='user' || ['completed','cancelled'].includes(w.phase))return false;
+    this.host.send(member.id,`[WORKFLOW ${message.followup?'FOLLOWUP':'DISCUSS'} ${w.id}]\n로그인 연결이 복구됐다. 아래는 답변하지 못한 마지막 사용자 요청이다. 현재 단계 ${w.phase}의 작업 범위를 지키고 기존 기록을 유지해 답하라. ${message.followup?'이 대화 답변을 작업 완료 보고로 제출하지 마라.':'목표와 완료 기준을 정리하라. 실행은 사용자가 작업 시작을 누른 뒤 진행한다.'}\n${message.text}`,undefined,!!message.followup);
+    return true;
   }
   start(departmentId: string, brief?: string, requestId?:string): Workflow {
     this.checkRequestId(requestId);
@@ -108,13 +116,13 @@ export class WorkflowCoordinator {
       if (!live(m) || m.departmentId!==head.departmentId || m.rank==='head') throw new Error('같은 부서의 살아 있는 팀장·팀원만 초대할 수 있습니다.');
     }
     if (!participants.some(id=>this.host.member(id)!.rank==='lead')) throw new Error('최소 한 명의 팀장이 참석해야 합니다.');
-    w.meeting={round:1,state:'collecting',participants,participantNames:Object.fromEntries(participants.map(id=>[id,this.host.member(id)!.name])),contributions:[]}; this.save(w);
+    w.meeting={round:1,state:'collecting',participants,participantNames:Object.fromEntries(participants.map(id=>[id,this.host.member(id)!.name])),participantRoles:Object.fromEntries(participants.map(id=>{const m=this.host.member(id)!;return [id,{rank:m.rank,parentId:m.parentId}];})),contributions:[]}; this.save(w);
     this.requestMissing(w); return w;
     });
   }
   private requestMissing(w: Workflow): void {
     const meeting=w.meeting!;
-    const history=meeting.contributions.map(c=>`${this.host.member(c.memberId)?.name ?? c.memberId} (${c.round}차): ${c.text}`).join('\n');
+    const history=meeting.contributions.map(c=>`${this.host.member(c.memberId)?.name ?? meeting.participantNames?.[c.memberId] ?? c.memberId} (${c.round}차): ${c.text}`).join('\n');
     if (meeting.state==='deciding') {
       this.host.send(this.host.head(w.departmentId).id, `[MEETING DECIDE ${w.id}]\n작업안: ${w.brief}\n${history}\n두 차례 의견이 모두 모였다. 쟁점을 조정하고 meeting_decide로 minutes와 팀장별 assignments를 확정하라. 아직 실행·delegate하지 마라.`, `${w.id}:decide`);
       return;
@@ -201,16 +209,50 @@ export class WorkflowCoordinator {
       this.save(w);
     }
   }
-  memberGone(member: Member): void {
+  memberGone(member: Member, reason?: string): void {
     const w=this.current(member.departmentId);
     if (!w || !['meeting','executing'].includes(w.phase)) return;
     const required = w.phase==='meeting' ? w.meeting?.participants.includes(member.id)
       : w.assignments.some(a=>a.leadId===member.id && a.status!=='done');
     if (member.rank==='head' || required) {
-      w.phase='blocked'; w.problem=`${member.name} 세션이 종료됐습니다. 재고용 후 회의를 재개하거나 취소하세요.`; this.save(w);
+      w.phase='blocked'; w.problem=reason ?? `${member.name} 세션이 종료됐습니다. 재고용 후 회의를 재개하거나 취소하세요.`; this.save(w);
     }
   }
-  resume(departmentId: string): Workflow {
+  meetingRecoveryPlan(departmentId: string, workflowId?: string, replacements: MeetingReplacement[] = []): MeetingReplacement[] {
+    const w=this.active(departmentId);
+    if(workflowId && w.id!==workflowId)throw new Error('다른 회의로 바뀌었습니다. office_status로 현재 회의를 확인하세요.');
+    if(!w.meeting || w.assignments.length || !['meeting','blocked'].includes(w.phase))throw new Error('실행 전 회의만 복구할 수 있습니다.');
+    if(new Set(replacements.map(r=>r.previousMemberId)).size!==replacements.length || replacements.some(r=>!w.meeting!.participants.includes(r.previousMemberId)))throw new Error('교체할 기존 참석자를 확인하세요.');
+    const head=this.host.head(departmentId);
+    const result=w.meeting.participants.map(id=>{
+      const original=this.host.member(id);
+      const role=w.meeting!.participantRoles?.[id] ?? (original ? {rank:original.rank,parentId:original.parentId} : undefined);
+      const explicit=replacements.find(r=>r.previousMemberId===id);
+      let target=explicit ? this.host.member(explicit.memberId) : original;
+      if(explicit && !target)throw new Error('연결할 현재 참석자가 없습니다. office_status로 다시 확인하세요.');
+      if(!explicit && original && ['error','exited','suspended'].includes(original.status)) {
+        const replacements=this.store.listMembers().filter(m=>live(m) && m.departmentId===departmentId && m.name===original.name && m.rank===original.rank && m.parentId===original.parentId);
+        if(replacements.length>1)throw new Error(`${original.name}: 대체 참석자가 여러 명입니다. office_status로 확인해 연결하세요.`);
+        if(replacements.length===1)target=replacements[0];
+      }
+      if(!target) {
+        const name=w.meeting!.participantNames?.[id];
+        const candidates=this.store.listMembers().filter(m=>m.departmentId===departmentId && m.name===name && m.rank!=='head'
+          && (role ? m.rank===role.rank && m.parentId===role.parentId : m.rank==='lead' && m.parentId===head.id));
+        const available=candidates.filter(live);
+        const matches=available.length ? available : candidates;
+        if(matches.length!==1)throw new Error(`${name ?? id}: 대체 참석자를 ${matches.length===0 ? '찾지 못했습니다' : '한 명으로 정할 수 없습니다'}. office_status로 확인하고 meeting_resume의 replacements로 연결하세요.`);
+        target=matches[0];
+      }
+      if(!target || target.departmentId!==departmentId || target.rank==='head' || (role && (target.rank!==role.rank || target.parentId!==role.parentId)))throw new Error('같은 부서에서 같은 역할을 맡은 참석자로 연결하세요.');
+      if(id!==target.id && live(original))throw new Error('참석자가 아직 활동 중입니다. 진행 중인 참석자를 자동 교체할 수 없습니다.');
+      return {previousMemberId:id,memberId:target.id};
+    });
+    if(new Set(result.map(r=>r.memberId)).size!==result.length)throw new Error('한 사람을 여러 참석자 자리에 연결할 수 없습니다.');
+    if(!result.some(r=>this.host.member(r.memberId)?.rank==='lead'))throw new Error('회의에는 팀장이 한 명 이상 필요합니다.');
+    return result;
+  }
+  resume(departmentId: string, replacements?: MeetingReplacement[], workflowId?: string): Workflow {
     const w=this.active(departmentId);
     if(w.assignments.length && ['executing','blocked'].includes(w.phase)) {
       this.host.head(departmentId);
@@ -222,7 +264,17 @@ export class WorkflowCoordinator {
     if (!w.meeting || !['meeting','blocked'].includes(w.phase)) throw new Error('재개할 회의가 없습니다.');
     if (w.assignments.length) throw new Error('실행 중 문제가 생겼습니다. 작업을 취소하고 보완 논의를 시작하세요.');
     this.host.head(departmentId);
-    if (w.meeting.participants.some(id=>!live(this.host.member(id)))) throw new Error('퇴근·오류 참석자를 먼저 재고용하세요.');
+    const links=this.meetingRecoveryPlan(departmentId,workflowId,replacements);
+    if (links.some(r=>!live(this.host.member(r.memberId)))) throw new Error('퇴근·오류 참석자를 먼저 복구하세요.');
+    for(const link of links) {
+      if(link.previousMemberId===link.memberId)continue;
+      w.meeting.participants=w.meeting.participants.map(id=>id===link.previousMemberId ? link.memberId : id);
+      const member=this.host.member(link.memberId)!;
+      (w.meeting.participantNames ??= {})[member.id]=member.name;
+      (w.meeting.participantRoles ??= {})[member.id]={rank:member.rank,parentId:member.parentId};
+      for(const c of w.meeting.contributions)if(c.memberId===link.previousMemberId)c.memberId=link.memberId;
+      (w.meeting.replacements ??= []).push({...link,at:now()});
+    }
     w.phase='meeting'; delete w.problem; this.save(w); this.requestMissing(w); return w;
     });
   }

@@ -27,7 +27,7 @@ export type InputItem =
   /** 사용자 지시. paste(text) 후 Enter. */
   | { kind: 'instruct'; text: string; id?: string }
   /** 데몬 메시지([TASK#n], [REPORTS ...], [ANSWER q#N], [RESUMED]). instruct 와 동일하게 처리. */
-  | { kind: 'system'; text: string; id?: string }
+  | { kind: 'system'; text: string; id?: string; conversation?: boolean }
   /** 키 시퀀스. 큐를 거치지 않고 즉시 실행(게이트 무시) — 다이얼로그 통과·중단 등. */
   | { kind: 'keys'; keys: QueueKey[] };
 

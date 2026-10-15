@@ -58,6 +58,11 @@ export class FakeSession implements PtySession {
 type PtyEvents = { data: [string, string]; exit: [string, ExitInfo]; warn: [string, string] };
 
 export class FakePty extends EventEmitter<PtyEvents> implements PtyManagerLike {
+  readonly bareSpawns:import('../../src/pty/PtyManager.js').BareSpawnOptions[]=[];
+  spawnBare(opts:import('../../src/pty/PtyManager.js').BareSpawnOptions):PtySession {
+    this.bareSpawns.push(opts);
+    const session=new FakeSession(opts.id,opts.engine,this.nextPid++);this.sessions.set(opts.id,session);return session;
+  }
   readonly spawns: SpawnOptions[] = [];
   readonly kills: Array<{ memberId: string; graceful?: boolean }> = [];
   readonly sessions = new Map<string, FakeSession>();

@@ -11,6 +11,7 @@ import { buildClaudeArgs, buildCodexArgs } from './args.js';
 import { CHILD_TERM, sanitizeEnv, stripDaemonEnv } from './env.js';
 import { ensureCodexHooksFile, writeClaudeSessionSettings } from './hookSettings.js';
 import { prepareProjectSession } from './projectSessions.js';
+import {authenticationBridge} from './authentication.js';
 import type { Engine, ExitInfo, KeyName, PtySession, SpawnOptions } from './types.js';
 
 export type { Engine, ExitInfo, KeyName, PtySession, SpawnOptions } from './types.js';
@@ -203,8 +204,10 @@ export class PtyManager extends EventEmitter<PtyManagerEvents> {
     const env = sanitizeEnv(process.env, opts.memberToken);
     if (opts.sessionDataDir) {
       Object.assign(env, prepareProjectSession(opts.cwd, opts.memberId, opts.engine, opts.resumeSessionId));
+      authenticationBridge.register(opts.memberId,opts.engine,env.CLAUDE_CONFIG_DIR ?? env.CODEX_HOME);
     }
-    return this.spawnRaw(opts.memberId, opts.engine, file, args, opts.cwd, env, opts.cols, opts.rows);
+    try {return this.spawnRaw(opts.memberId, opts.engine, file, args, opts.cwd, env, opts.cols, opts.rows);}
+    catch(error){authenticationBridge.unregister(opts.memberId);throw error;}
   }
 
   /**
@@ -219,7 +222,10 @@ export class PtyManager extends EventEmitter<PtyManagerEvents> {
     if (existing?.alive) throw new Error(`bare session ${opts.id} already alive (pid ${existing.pid})`);
     const file = opts.engine === 'claude' ? this.cfg.claudeExe : this.cfg.codexExe;
     const env = opts.env ?? { ...stripDaemonEnv(process.env), TERM: CHILD_TERM };
-    return this.spawnRaw(opts.id, opts.engine, file, opts.args, opts.cwd, env, opts.cols, opts.rows);
+    const home=env.CLAUDE_CONFIG_DIR ?? env.CODEX_HOME;
+    if(home)authenticationBridge.register(opts.id,opts.engine,home);
+    try{return this.spawnRaw(opts.id, opts.engine, file, opts.args, opts.cwd, env, opts.cols, opts.rows);}
+    catch(error){authenticationBridge.unregister(opts.id);throw error;}
   }
 
   private spawnRaw(
@@ -238,6 +244,7 @@ export class PtyManager extends EventEmitter<PtyManagerEvents> {
 
     proc.onData((chunk) => this.emit('data', id, chunk));
     proc.onExit((e) => {
+      authenticationBridge.unregister(id);
       session.markExited();
       releaseConptyResources(proc, session.killIssued);
       // 그 사이 같은 id 로 새 세션이 떴을 수 있으니 내 것일 때만 지운다.

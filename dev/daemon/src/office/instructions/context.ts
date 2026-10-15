@@ -31,6 +31,7 @@ export interface SessionContextInput {
   children: RosterEntry[];
   /** 유효 지시문(사용자 파일 또는 기본 템플릿). */
   instructions: string;
+  allowedEngines?: Engine[];
 }
 
 /**
@@ -71,11 +72,18 @@ export function sessionPreamble(input: SessionContextInput): string {
     `[사무실] 너는 픽셀 오피스 ${where} 의 ${RANK_LABEL[member.rank]} ${member.name}(엔진 ${member.engine})이다.`,
     `- 직급: ${RANK_LABEL[member.rank]} (부장 → 팀장 → 팀원; 지시·고용은 바로 아래로만, 보고·질문은 바로 위로만)`,
     `- 작업 폴더: ${member.cwd || team?.cwd || department.cwd}`,
+    enginePolicyLine(input.allowedEngines ?? [member.engine]),
     parentLine(input),
     childrenLine(input.children),
     `- ${toolsLine(member.rank)}`,
+    ...(member.rank==='head' ? ['- 내부 멤버 연결·회의 중단은 office_status로 실제 ID와 상태를 확인하고 meeting_resume으로 복구하라. 팀을 해산·재생성하거나 사용자에게 내부 ID·상태 파일을 찾으라고 하지 마라. 도구가 안 보이면 ToolSearch로 찾아라.'] : []),
     '아래는 너의 지시문(INSTRUCTIONS.md)이다 — 프로젝트의 CLAUDE.md/AGENTS.md 위에 얹히는 개인 규칙이다.',
   ].join('\n');
+}
+
+export function enginePolicyLine(engines:Engine[]):string {
+  const label=engines.length===2 ? 'Claude Code + Codex 둘 다 사용' : engines[0]==='codex' ? 'Codex만 사용' : 'Claude Code만 사용';
+  return `- 사용할 AI: ${label}. create_team과 hire는 이 목록 안에서만 선택하라 (${engines.join(', ')}). 로그인 표시로 사용 범위를 추정하지 마라.`;
 }
 
 /** SessionStart 의 additionalContext 로 나가는 전체 텍스트. 상한을 넘으면 사용자 본문만 잘린다. */

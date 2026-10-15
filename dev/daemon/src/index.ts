@@ -11,14 +11,26 @@ import { bindOrRefuse, DaemonStartRefusedError } from './office/singleton.js';
 import { RpcServer } from './rpc/RpcServer.js';
 import { OptionalRemote } from './remote/OptionalRemote.js';
 import {EnvironmentDiagnostics} from './diagnostics/environment.js';
+import {CodexModelGuard} from './diagnostics/codexModels.js';
 import {storageHealth,storageFailures} from './storage/files.js';
+import {authenticationBridge} from './pty/authentication.js';
+import {projectMemberDir} from './pty/projectSessions.js';
+import path from 'node:path';
 
 // 첫 줄을 찍기 전에 로그 목적지를 정한다. 앱이 띄운 데몬(`PIXEL_DAEMON_LOG` 있음)은 **stdout 을 쓰지 않는다** —
 // 읽는 쪽(앱)이 사라진 파이프에 한 줄만 써도 이벤트 루프가 그 자리에서 멈춘다(까닭과 실측은 `log.ts` 머리말).
 installFileLog();
 
 const environment=new EnvironmentDiagnostics();
-const office = new Office({beforeHire:engine=>environment.require(engine)});
+const codexModels=new CodexModelGuard();
+const office = new Office({
+ codexModel:()=>codexModels.selected(),
+ beforeHire:async engine=>{await environment.require(engine);if(engine==='codex')await codexModels.prepare();},
+});
+authenticationBridge.onFailure=message=>office.emit('notice','error',message);
+if(office.store.listMembers().some(member=>member.engine==='codex' && !['error','exited'].includes(member.status))) {
+ await codexModels.prepare().then(model=>console.log(`[daemon] Codex 사용 모델: ${model}`)).catch(error=>console.warn(`[daemon] ${error.message}`));
+}
 storageHealth.on('failure',(_file,message)=>office.emit('notice','error',`저장 실패: ${message}. 환경 점검에서 저장 상태를 확인하세요.`));
 storageHealth.on('recovered',()=>office.emit('notice','info','저장 기록이 다시 정상적으로 저장됩니다.'));
 
@@ -43,21 +55,27 @@ try {
 const remote = new OptionalRemote({port:Number(process.env.PIXEL_REMOTE_PORT ?? (config.wsPort===7420 ? 7423 : 0)),dataDir:config.dataDir,upstreamUrl:()=>`ws://127.0.0.1:${rpc.port}`,token:()=>office.token});
 const rpc = new RpcServer(office, { port: config.wsPort,
  journal:office.store,
- localHandlers:{...remote.localHandlers(),'storage.get':()=>({failures:storageFailures()}),'storage.backup':()=>({path:office.store.backup(true)}),'resources.get':()=>office.resourceLimits(),'resources.set':p=>office.setResourceLimits(p),'remote.retry':async()=>{const port=await remote.start();if(port)office.updateDaemonInfo({remotePort:port});return remote.status();},'engines.get':()=>office.enginePolicy(),'engines.set':p=>office.setEnginePolicy(p.allowedEngines),'environment.check':p=>environment.check(office.snapshot().members.find(m=>m.id===p.memberId))},
+ localHandlers:{...remote.localHandlers(),
+  'member.login':async p=>{await office.loginMember(String(p.memberId));return {};},
+  'member.terminalCommand':p=>{office.terminalCommand(String(p.memberId),String(p.command));return {};},
+  'member.auth.recover':async p=>({member:await office.reconnectAuthentication(String(p.memberId))}),
+  'storage.get':()=>({failures:storageFailures()}),'storage.backup':()=>({path:office.store.backup(true)}),'resources.get':()=>office.resourceLimits(),'resources.set':p=>office.setResourceLimits(p),'remote.retry':async()=>{const port=await remote.start();if(port)office.updateDaemonInfo({remotePort:port});return remote.status();},'engines.get':()=>office.enginePolicy(),'engines.set':p=>office.setEnginePolicy(p.allowedEngines),'environment.check':p=>environment.check(office.snapshot().members.find(m=>m.id===p.memberId))},
  beforeOperation:async(method,p)=>{
   const head=office.store.liveHead(String(p.departmentId ?? ''));
   let engine:unknown;
   if(method==='department.create')engine=p.headEngine;
   if(method==='team.create')engine=p.leadEngine ?? head?.engine;
   if(method==='member.hire')engine=p.engine;
-  if(['member.instruct','member.rehire','member.restart'].includes(method))engine=office.snapshot().members.find(m=>m.id===p.memberId)?.engine;
+  if(['member.instruct','member.rehire','member.restart','member.auth.recover'].includes(method))engine=office.snapshot().members.find(m=>m.id===p.memberId)?.engine;
   if(['workflow.discuss','workflow.start','workflow.resume'].includes(method))engine=head?.engine;
   const target=['workflow.discuss','workflow.start','workflow.resume'].includes(method)
    ?head
    :office.snapshot().members.find(m=>m.id===p.memberId);
   if(engine==='claude'||engine==='codex'){
     office.requireEngine(engine,target?.departmentId ?? String(p.departmentId ?? ''));
+    if(method==='member.auth.recover' && target)authenticationBridge.sync(engine,path.join(projectMemberDir(target.cwd,target.id),engine),true);
     await environment.require(engine,target);
+    if(engine==='codex')await codexModels.prepare();
   }
  }
 });

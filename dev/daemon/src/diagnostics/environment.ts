@@ -5,6 +5,7 @@ import {OfficeError,RPC_ERROR} from '../office/errors.js';
 import fs from 'node:fs';import path from 'node:path';
 import {projectMemberDir} from '../pty/projectSessions.js';
 import type {Member} from '../store/types.js';
+import {authenticationBridge} from '../pty/authentication.js';
 
 export type ConnectionProbe=(engine:Engine,sessionEnv?:Record<string,string>)=>Promise<EngineConnection>;
 const defaultProbe:ConnectionProbe=(engine,sessionEnv)=>engine==='claude'?probeClaudeConnection({sessionEnv}):probeCodexConnection({sessionEnv});
@@ -12,6 +13,7 @@ function memberEnvironment(member?:Pick<Member,'cwd'|'id'|'engine'>):Record<stri
  if(!member)return undefined;
  const home=path.join(projectMemberDir(member.cwd,member.id),member.engine);
  if(!fs.existsSync(home))return undefined; // New members initialize their home at spawn.
+ authenticationBridge.sync(member.engine,home);
  return member.engine==='claude'?{CLAUDE_CONFIG_DIR:home}:{CODEX_HOME:home,CODEX_SQLITE_HOME:home};
 }
 function sessionRepair(member:Pick<Member,'cwd'|'id'|'engine'>){

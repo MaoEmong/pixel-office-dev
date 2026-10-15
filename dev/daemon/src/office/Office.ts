@@ -25,7 +25,7 @@ import { Store, type RetentionResult } from '../store/Store.js';
 import { PtyManager } from '../pty/PtyManager.js';
 import { WorkflowCoordinator } from '../workflow/Coordinator.js';
 import { workflowToolDenial } from '../workflow/guards.js';
-import type { Workflow, WorkAssignment } from '../workflow/types.js';
+import type { Workflow, WorkAssignment, MeetingReplacement } from '../workflow/types.js';
 import { assertProjectFolder, ensureProjectDataDir, projectDataDir, projectMemberDir } from '../pty/projectSessions.js';
 import { toForwardSlashes } from '../pty/hookSettings.js';
 import type { ExitInfo, PtySession } from '../pty/types.js';
@@ -68,7 +68,11 @@ import { RECOVER_BOOT_SLOT_MS, RECOVER_MAX_IN_FLIGHT, needsResumedText, recovery
 import { assertSingleDaemon, bindOrRefuse, defaultSingletonProbe, type SingletonProbe } from './singleton.js';
 import { ShellMutex, shellLockCommand, type ShellLockInfo } from './ShellMutex.js';
 import { RANK_LABEL, defaultInstructions, type TemplateScope } from './instructions/templates.js';
-import { buildSessionContext, type RosterEntry } from './instructions/context.js';
+import { buildSessionContext, enginePolicyLine, type RosterEntry } from './instructions/context.js';
+import {isUnsupportedCodexModel} from '../diagnostics/codexModels.js';
+import {authenticationFailed} from '../diagnostics/authFailure.js';
+import {prepareProjectSession} from '../pty/projectSessions.js';
+import {CHILD_TERM,stripDaemonEnv} from '../pty/env.js';
 import type {
   ApprovalRespondParams,
   AskParentPayload,
@@ -186,6 +190,7 @@ const COLS_RANGE = [20, 500] as const;
 const ROWS_RANGE = [5, 300] as const;
 
 export interface OfficeOptions {
+  codexModel?:()=>string;
   beforeHire?: (engine: Engine) => Promise<void>;
   /** config.ts 기본값 위에 덮어쓴다(테스트 격리·임시 포트). */
   config?: Partial<Config>;
@@ -267,6 +272,13 @@ interface MemberRuntime {
   lastAttached?: string;
   /** Stop 의 last_assistant_message. v1a 에서는 이것이 task 의 report_text(01 §TeamTools "사용자 지시도 task"). */
   lastText?: string;
+  /** A reply to a user's mid-work message must never complete their assigned task. */
+  conversationTurn?: boolean;
+  authFailure?: boolean;
+  authLogin?: boolean;
+  authOutput?: string;
+  lastInput?: Extract<import('../input/InputQueue.js').InputItem,{kind:'system'|'instruct'}>;
+  pausedInputs?: import('../input/InputQueue.js').InputItem[];
   /** 데몬이 의도한 종료면 exit 시 error 이벤트를 내지 않는다. */
   exitMode?: 'clockOut' | 'restart' | 'shutdown' | 'bootFailure';
   lastInterruptAt?: number;
@@ -326,8 +338,11 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
 
   readonly store: Store;
   private readonly beforeHire: (engine: Engine) => Promise<void>;
+  private readonly codexModel?:()=>string;
   private deferredWorkflowInputs?: Array<()=>void>;
   private readonly workflows: WorkflowCoordinator;
+  private readonly meetingRecoveries = new Map<string, Promise<Workflow>>();
+  private readonly meetingRecoveryRequests = new Set<string>();
   readonly pty: PtyManagerLike;
   readonly receiver: HookReceiverLike;
   readonly mcp: TeamToolsServerLike;
@@ -383,6 +398,7 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
   constructor(opts: OfficeOptions = {}) {
     super();
     this.beforeHire = opts.beforeHire ?? (async () => {});
+    this.codexModel=opts.codexModel;
     this.cfg = { ...defaultConfig, ...opts.config };
     this.fallbackWindowMs = opts.recovery?.fallbackWindowMs ?? RESUME_FALLBACK_WINDOW_MS;
     this.orphanOps = opts.recovery?.orphanOps ?? defaultOrphanOps;
@@ -411,10 +427,10 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
       member: (id) => this.store.getMember(id),
       busy: (id) => this.store.listTasks({departmentId:id}).some(t=>['queued','assigned'].includes(t.status))
         || this.store.snapshot().pending.some(p=>this.store.getMember(p.memberId)?.departmentId===id),
-      send: (id,text,deliveryId) => {
+      send: (id,text,deliveryId,conversation) => {
         const member=this.member(id);this.requireEngine(member.engine,member.departmentId);assertProjectFolder(member.cwd);
         const rt=this.liveRuntime(member);
-        const send=()=>rt.queue.enqueue({kind:'system',text,id:deliveryId});
+        const send=()=>rt.queue.enqueue({kind:'system',text:`${enginePolicyLine(this.allowedEngines(member.departmentId,member.engine))}\n${text}`,id:deliveryId,conversation});
         if(this.deferredWorkflowInputs)this.deferredWorkflowInputs.push(send);else send();
       },
       startTask: (id,text) => this.instruct(id,text,{workflow:true}),
@@ -467,7 +483,17 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
             const m = this.store.getMemberByToken(token);
             return m && !GONE.has(m.status) ? { id: m.id, name: m.name, rank: m.rank } : undefined;
           },
-          meetingOpen: (id,input) => this.workflows.open(this.member(id),input.participants),
+          officeStatus: id => this.teamOfficeStatus(id),
+          meetingResume: (id,input) => {
+            const head=this.requireToolRank(id,'meeting_resume');
+            return this.workflowResume(head.departmentId,input.workflowId,input.replacements);
+          },
+          meetingOpen: (id,input) => {
+            const head=this.requireToolRank(id,'meeting_open');
+            const w=this.workflows.current(head.departmentId);
+            if(w?.phase==='blocked' && w.meeting && !w.assignments.length)return this.workflowResume(head.departmentId,w.id);
+            return this.workflows.open(head,input.participants);
+          },
           meetingSpeak: (id,input) => this.workflows.speak(this.member(id),input.workflowId,input.round,input.text),
           meetingDecide: (id,input) => this.workflows.decide(this.member(id),input.workflowId,input.minutes,input.assignments),
           // T35: 직급별 도구. 직급·대상 검사는 전부 아래 team* 메서드(=store)가 한다(MCP 는 목록만 가른다).
@@ -918,7 +944,48 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
     return w;
   }
   workflowStart(departmentId: string, brief?: string, requestId?:string): Workflow { return this.workflows.start(departmentId,brief,requestId); }
-  workflowResume(departmentId: string): Workflow { return this.workflows.resume(departmentId); }
+  workflowResume(departmentId: string, workflowId?: string, replacements?: MeetingReplacement[]): Promise<Workflow> {
+    const current=this.workflows.current(departmentId);
+    if(workflowId && current?.id!==workflowId)return Promise.reject(badState('회의가 바뀌었습니다. office_status로 다시 확인하세요.'));
+    const pending=this.meetingRecoveries.get(departmentId);
+    if(pending)return replacements?.length ? Promise.reject(badState('회의 복구 중입니다. 끝난 뒤 상태를 확인하세요.')) : pending;
+    const run=async()=>{
+      if(!current?.meeting || current.assignments.length)return this.workflows.resume(departmentId);
+      const links=this.workflows.meetingRecoveryPlan(departmentId,current.id,replacements);
+      // Validate the entire connection plan before starting a stopped participant.
+      const targets=links.map(link=>this.member(link.memberId));
+      for(const target of targets)if(!this.runtimes.get(target.id)?.session.alive){
+        this.requireEngine(target.engine,departmentId);await this.beforeHire(target.engine);
+        if(this.workflows.current(departmentId)?.id!==current.id || !['meeting','blocked'].includes(this.workflows.current(departmentId)!.phase))throw badState('복구 중 회의 상태가 바뀌었습니다.');
+        this.spawnMember(this.member(target.id),true);
+      }
+      return this.workflows.resume(departmentId,links,current.id);
+    };
+    const result=run().finally(()=>this.meetingRecoveries.delete(departmentId));
+    this.meetingRecoveries.set(departmentId,result);return result;
+  }
+  teamOfficeStatus(memberId: string): unknown {
+    const member=this.requireToolRank(memberId,'office_status');
+    const members=this.store.listMembers().filter(m=>m.departmentId===member.departmentId);
+    return {departmentId:member.departmentId,members:members.map(m=>({id:m.id,name:m.name,rank:m.rank,engine:m.engine,status:m.status,parentId:m.parentId,teamId:m.teamId,teamName:m.teamId ? this.store.getTeam(m.teamId)?.name : undefined})),workflow:this.workflows.current(member.departmentId) ?? null};
+  }
+  private reconnectReadyMeeting(departmentId: string): void {
+    const w=this.workflows.current(departmentId);
+    if(this.stopping || w?.phase!=='blocked' || !w.meeting || w.assignments.length || this.meetingRecoveries.has(departmentId))return;
+    let links:MeetingReplacement[];
+    try{links=this.workflows.meetingRecoveryPlan(departmentId,w.id);}catch(error){
+      const head=this.store.liveHead(departmentId),rt=head && this.runtimes.get(head.id);
+      if(!head || !rt?.session.alive)return;
+      const roster=this.store.listMembers().filter(m=>m.departmentId===departmentId && m.rank!=='head').map(m=>`${m.id}:${m.status}`).sort().join(',');
+      const key=`${w.id}:${roster}`;
+      if(this.meetingRecoveryRequests.has(key))return;
+      this.meetingRecoveryRequests.add(key);
+      rt.queue.enqueue({kind:'system',conversation:true,text:`[MEETING RECOVERY NEEDED ${w.id}]\n내부 참석자 연결 복구가 필요하다: ${errMsg(error)}\noffice_status로 현재 부서의 실제 멤버와 회의를 조회하고, meeting_resume(workflowId="${w.id}", replacements=[{previousMemberId,memberId}])로 복구하라. 기존 의견·작업안을 유지하라. 팀을 해산하거나 사용자에게 내부 ID를 찾으라고 하지 마라. 아직 대체 멤버가 없다면 필요한 역할만 구성한 뒤 복구하라. 로그인·허가 등 사용자만 처리할 수 있는 문제만 사용자에게 알려라. 도구가 안 보이면 ToolSearch로 찾아라.`});
+      this.notice('info','부장 AI가 회의 참석자 연결을 확인합니다.');return;
+    }
+    if(links.some(link=>!this.runtimes.get(link.memberId)?.session.alive || !['idle','working','starting'].includes(this.member(link.memberId).status)))return;
+    void this.workflowResume(departmentId,w.id).then(()=>this.notice('info','회의 참석자 연결을 복구해 진행을 이어갑니다.')).catch(error=>this.notice('error',`회의 연결 복구 실패: ${errMsg(error)}`));
+  }
   workflowCancel(departmentId: string): Workflow { return this.workflows.cancel(departmentId); }
   workflowComplete(departmentId: string): Workflow { return this.workflows.complete(departmentId); }
 
@@ -1310,13 +1377,15 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
   setEnginePolicy(value: unknown): {allowedEngines: Engine[] | null} {
     if (value !== null && (!Array.isArray(value) || !value.length || value.some(e=>e!=='claude' && e!=='codex'))) throw invalidParams('사용 엔진은 Claude, Codex 중 하나 이상 선택하세요.');
     this.store.setEnginePolicy(value === null ? null : [...new Set(value)] as Engine[]);
+    this.emit('tree','department.update');
     return this.enginePolicy();
   }
   private allowedEngines(departmentId: string, fallback: Engine): Engine[] {
     return this.store.enginePolicy() ?? [this.store.snapshot().members.slice().reverse().find(m=>m.departmentId===departmentId && m.rank==='head')?.engine ?? fallback];
   }
   requireEngine(engine: Engine, departmentId: string): void {
-    if (!this.allowedEngines(departmentId, engine).includes(engine)) throw badState('사용 설정에서 '+engine+' 엔진이 허용되지 않았습니다. 환경 점검의 사용 엔진 설정을 확인하세요.');
+    const allowed=this.allowedEngines(departmentId,engine);
+    if (!allowed.includes(engine)) throw badState(`${engine==='codex' ? 'Codex' : 'Claude Code'}는 현재 사용 AI 설정에서 허용되지 않았습니다. ${enginePolicyLine(allowed).split('. ')[0]}입니다. 상단의 AI 설정 변경에서 사용 범위를 확인하세요.`);
   }
 
   private spawnNewMember(input: {
@@ -1473,6 +1542,52 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
     rt.queue.typeRaw(data);
   }
 
+  /** Slash commands are CLI input, never a shell command or an AI task. */
+  terminalCommand(memberId:string,command:string):void {
+    const member=this.member(memberId),rt=this.liveRuntime(member);
+    if(!/^\/[a-z][a-z0-9_-]*(?: [^\r\n\x00-\x1f]*)?$/i.test(command) || command.length>500)throw invalidParams('명령은 /login처럼 /로 시작하는 한 줄이어야 합니다.');
+    if(this.store.listOpenPending(memberId).length || (!rt.authFailure && !['idle','starting'].includes(member.status)))throw badState('진행 중인 응답이나 확인 요청을 마친 뒤 터미널 명령을 사용하세요.');
+    if(!rt.screen.promptReady() && !rt.authFailure)throw badState('터미널 입력 화면이 준비되지 않았습니다. 화면을 먼저 확인하세요.');
+    rt.queue.typeRaw('\x15'+command+'\r');
+  }
+
+  async loginMember(memberId:string):Promise<void> {
+    const member=this.member(memberId),old=this.runtimes.get(memberId);
+    if(!this.pty.spawnBare)throw badState('이 실행 환경에서 로그인 터미널을 열 수 없습니다.');
+    if(old?.authLogin && old.session.alive)throw badState('이미 로그인 창이 열려 있습니다. 터미널에서 안내를 따라 주세요.');
+    if(this.store.listOpenPending(memberId).length || (!old?.authFailure && !['idle','error','exited'].includes(member.status)))throw badState('진행 중인 응답이나 확인 요청을 마친 뒤 로그인하세요.');
+    const pending=old?.pausedInputs ?? old?.queue.clear() ?? [];
+    if(old?.session.alive){old.exitMode='restart';old.queue.stop();await this.pty.kill(memberId,{graceful:false});}
+    const cols=this.cfg.cols,rows=this.cfg.rows;
+    const session=this.pty.spawnBare({id:memberId,engine:member.engine,cwd:member.cwd,args:member.engine==='claude'?['auth','login']:['login'],cols,rows,env:{...stripDaemonEnv(process.env),TERM:CHILD_TERM,...prepareProjectSession(member.cwd,member.id,member.engine)}});
+    const screen=new ScreenModel({engine:member.engine,cols,rows});
+    const queue=new InputQueue({session,screen,isIdle:()=>false});
+    this.runtimes.set(memberId,{memberId,session,screen,queue,attached:old?.attached ?? new Set(),lastAttached:old?.lastAttached,authLogin:true,authFailure:true,lastInput:old?.lastInput,pausedInputs:pending});
+    this.store.updateMember(memberId,{childPid:session.pid});
+    this.setStatus(memberId,'idle');
+    this.emit('term',memberId,'\x1b[H\x1b[2J');
+  }
+
+  /** Keep history and unfinished tasks; retry only the request that had no reply. */
+  async reconnectAuthentication(memberId:string):Promise<Member> {
+    const member=this.member(memberId),old=this.runtimes.get(memberId);
+    if(this.store.listOpenPending(memberId).length || (!old?.authFailure && !['idle','error','exited'].includes(member.status)))throw badState('진행 중인 작업이나 확인 요청을 마친 뒤 로그인 연결을 갱신하세요.');
+    const input=old?.authFailure ? old.lastInput : undefined;
+    const pending=old?.pausedInputs ?? [];
+    if(old?.session.alive){old.exitMode='restart';old.queue.stop();old.queue.clear();await this.pty.kill(memberId,{graceful:false});}
+    const fresh=this.spawnMember(this.member(memberId),true);
+    const w=this.workflows.current(member.departmentId);
+    if(input)fresh.queue.enqueue(input);
+    else if(!this.workflows.retryConversation(this.member(memberId))) {
+      for(const task of this.store.listTasks({toMember:memberId}).filter(t=>OPEN_TASKS.includes(t.status)))this.enqueueTask(fresh,task);
+    }
+    for(const item of pending)fresh.queue.enqueue(item);
+    // Meeting requests already held in the queue are preserved, so do not open a new meeting.
+    if(w?.phase==='blocked' && w.problem?.includes('로그인') && !w.assignments.length && !input && !pending.length)this.workflows.resume(member.departmentId);
+    this.notice('info',`${member.name}: 로그인 연결을 갱신했습니다. 답변하지 못한 요청을 이어갑니다.`);
+    return this.member(memberId);
+  }
+
   /**
    * Ctrl+C. 큐의 미전송 항목은 버리고(중단 후 이어서 타이핑되면 안 되므로) task aborted·pending expired(01 §공통 후처리).
    * Ctrl+C 에는 Stop hook 이 없어 화면 준비 문구가 보이면 idle 로 되돌린다.
@@ -1586,6 +1701,7 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
       member,
       parent: parent ? { name: parent.name, rank: parent.rank } : undefined,
       children,
+      allowedEngines:this.allowedEngines(member.departmentId,member.engine),
       instructions: this.effectiveInstructions(memberId),
     });
     const w=this.workflows.current(member.departmentId);
@@ -1905,6 +2021,7 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
   teamReport(memberId: string, input: TeamReportInput): { task: Task; to: 'user' | 'parent' } {
     return this.workflowMutation(()=>{
     const workflow=this.workflows.current(this.member(memberId).departmentId);
+    if(this.runtimes.get(memberId)?.conversationTurn && input.taskId===workflow?.rootTaskId)throw badState('사용자와의 대화 답변을 작업 완료 보고로 제출할 수 없습니다.');
     if (workflow && input.taskId===workflow.rootTaskId && (workflow.phase!=='executing' || workflow.assignments.some(a=>a.status!=='done'))) throw badState('회의와 담당 업무를 모두 마친 뒤 최종 보고하세요.');
     const member = this.requireToolRank(memberId, 'report');
     const summary = input.summary.trim();
@@ -2214,6 +2331,7 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
       // TeamTools MCP: Claude 는 mcp.json + `--mcp-config`(T17), Codex 는 `-c mcp_servers.team.url=…`(T22).
       mcpConfigPath: member.engine === 'claude' ? this.writeMcpConfig(member) : undefined,
       mcpUrl: member.engine === 'codex' ? this.mcpUrl(member) : undefined,
+      extraArgs: member.engine==='codex' && this.codexModel ? ['-c',`model=${JSON.stringify(this.codexModel())}`] : undefined,
     });
     try {
       const screen = new ScreenModel({ engine: member.engine, cols, rows });
@@ -2222,6 +2340,12 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
       this.runtimes.set(member.id, rt);
 
       queue.on('flushed', (item) => {
+        if(item.kind==='system' || item.kind==='instruct') {
+          rt.lastInput=item;
+          rt.authOutput='';
+          rt.conversationTurn=item.kind==='system' && item.conversation===true;
+          rt.lastText=undefined;
+        }
         // id 는 task 번호(instruct·위임 system) 또는 pending id(`[ANSWER q#…]`) — 숫자인 것만 task 다.
         if ((item.kind !== 'instruct' && item.kind !== 'system') || !item.id) return;
         const taskId = Number(item.id);
@@ -2527,7 +2651,7 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
       this.markRecoveryFailure(member, 'restart: parent gone', result);
       return false;
     }
-    if (!member.sessionId) {
+    if (!member.sessionId && member.engine!=='codex') {
       this.markRecoveryFailure(member, 'restart: no session id to resume', result);
       return false;
     }
@@ -2536,7 +2660,7 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
     // 열린 질문은 만료를 **거친 뒤** 남은 것만 센다(허가는 이미 만료됐고, `ask_*` 질문은 살아 있다).
     const openQuestions = this.store.listOpenPending(member.id).filter((p) => p.type === 'question');
     const issued = this.store.openTasksIssuedBy(member.id);
-    const speak = needsResumedText({ assigned, queued, issued, openQuestions });
+    const speak = this.workflows.current(member.departmentId)?.phase!=='blocked' && needsResumedText({ assigned, queued, issued, openQuestions });
     // 상위 직급의 [RESUMED] 에는 "내가 낸 일 + 직속 부하" 가 같이 실린다 — 깨어나자마자 누구를 기다리는지 알아야 한다.
     const resumedText = speak
       ? buildResumedText({ assigned, events: recent, expiredCount: expired.length, issued, children: this.store.childrenOf(member.id) })
@@ -2554,7 +2678,7 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
     if (!speak) result.silent.push(member.id);
     result.requeued.push(...queued.map((t) => t.id));
     console.log(
-      `[office] recover ${member.name}(${member.id}): --resume ${member.sessionId}, assigned ${assigned.length}, requeued ${queued.length}, expired ${expired.length}${speak ? '' : ', 말없이'}`,
+      `[office] recover ${member.name}(${member.id}): ${member.sessionId ? `--resume ${member.sessionId}` : '첫 대화 전 세션 다시 시작'}, assigned ${assigned.length}, requeued ${queued.length}, expired ${expired.length}${speak ? '' : ', 말없이'}`,
     );
     return true;
   }
@@ -2683,6 +2807,15 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
     this.releaseShellLocks(memberId); // T27 후처리(퇴근·재시작·크래시 공통)
     this.releaseBootSlot(memberId); // T46-1: 복구 중 죽은 멤버가 "기동 중" 자리를 붙잡고 있으면 줄이 막힌다
     const rt = this.runtimes.get(memberId);
+    if(rt?.authLogin && !rt.exitMode) {
+      rt.queue.stop();clearWatches(rt);
+      this.store.updateMember(memberId,{childPid:null});
+      this.setStatus(memberId,info.exitCode===0?'idle':'error');
+      this.notice(info.exitCode===0?'info':'error',info.exitCode===0
+        ? '로그인 명령이 끝났습니다. 터미널의 ‘로그인 연결 · 요청 재시도’를 눌러 연결을 확인하고 이어가세요.'
+        : '로그인을 완료하지 못했습니다. 터미널의 안내를 확인하고 ‘로그인’을 다시 눌러 주세요.');
+      return;
+    }
     if (rt) {
       rt.queue.stop();
       rt.queue.clear();
@@ -2853,7 +2986,7 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
     this.on('event', (ev) => {
       const member = this.store.getMember(ev.memberId);
       if (!member) return;
-      if (ev.kind==='text' && typeof ev.detail.text==='string') this.workflows.headText(member,ev.detail.text);
+      if (ev.kind==='text' && typeof ev.detail.text==='string') this.workflows.headText(member,ev.detail.text,this.runtimes.get(member.id)?.conversationTurn);
       try {
         this.writeProjectSession(member);
         appendLog(path.join(projectMemberDir(member.cwd, member.id), 'events.jsonl'), JSON.stringify(ev) + '\n');
@@ -2953,7 +3086,27 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
 
     this.pty.on('data', (memberId, chunk) => {
       const rt = this.runtimes.get(memberId);
-      if (rt) rt.screen.feed(chunk).catch(() => {});
+      if (rt) rt.screen.feed(chunk).then(()=>{
+        const member=this.store.getMember(memberId);
+        if(member && rt.authOutput!==undefined && !rt.authFailure) {
+          rt.authOutput=(rt.authOutput+chunk).slice(-12000);
+          if(authenticationFailed(rt.authOutput)) {
+            rt.authFailure=true;rt.queue.stop();rt.pausedInputs=rt.queue.clear();
+            const summary=`${member.name}: 로그인이 만료되었거나 인증에 실패해 응답이 중단됐습니다. 터미널의 ‘로그인 연결 · 요청 재시도’를 누르세요. 로그인이 필요하면 ‘로그인’을 눌러 앱 안에서 진행할 수 있습니다. 기존 작업과 요청은 보존됩니다.`;
+            this.appendEvent(member,'error',{summary,code:'authentication-required'});
+            this.setStatus(memberId,'error');
+            return;
+          }
+        }
+        if(!member || member.engine!=='codex' || member.status==='error' || member.status==='exited')return;
+        if(!isUnsupportedCodexModel(rt.screen.lines().join('\n')))return;
+        const summary=`${member.name}: 현재 계정에서 사용할 수 없는 Codex 모델로 응답이 중단됐습니다. 앱을 다시 연 뒤 이 멤버를 재고용하고 회의를 재개하세요.`;
+        rt.exitMode='bootFailure';rt.queue.stop();rt.queue.clear();
+        this.settle(memberId,'error');this.store.updateMember(memberId,{childPid:null});
+        this.workflows.memberGone(member,summary);
+        this.appendEvent(member,'error',{summary});this.setStatus(memberId,'error');this.notice('error',summary);
+        void this.pty.kill(memberId,{graceful:false}).catch(error=>this.notice('error',errMsg(error)));
+      }).catch(() => {});
       this.emit('term', memberId, chunk);
     });
     this.pty.on('exit', (memberId, info) => this.onPtyExit(memberId, info));
@@ -2973,6 +3126,10 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
     if (ev.kind !== 'idle' || ev.detail.summary !== undefined) return;
     const member = this.store.getMember(ev.memberId);
     if (!member) return;
+    if(rt?.conversationTurn) {
+      rt.lastText=undefined;
+      return;
+    }
     const phase=this.workflows.current(member.departmentId)?.phase;
     if (phase && !['executing','completed','cancelled'].includes(phase)) return;
     // Codex 폴백(T22): 질문으로 끝난 턴은 "끝난 작업"이 아니다 — 질문 pending 을 만들고 task 는 assigned 로 둔다.
@@ -3050,6 +3207,10 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
     if (status !== 'starting') this.releaseBootSlot(memberId);
     // T25 유휴 감시: 유휴가 되는 순간 밀려 있던 위임(queued)을 전달한다. 게이트는 dispatchTask 가 다시 본다.
     if (status === 'idle') this.dispatchQueuedTasks(memberId);
+    if (status === 'idle') {
+      const member=this.store.getMember(memberId);
+      if(member)queueMicrotask(()=>this.reconnectReadyMeeting(member.departmentId));
+    }
   }
 
   /**
