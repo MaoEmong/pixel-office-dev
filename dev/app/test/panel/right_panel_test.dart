@@ -129,7 +129,7 @@ void main() {
       expect(find.text(inboxHeaderLabel(2)), findsOneWidget);
       // 인박스는 헤더 아래 · 탭 위
       expect(tester.getTopLeft(find.byKey(const Key('inbox'))).dy, greaterThan(tester.getBottomLeft(find.byType(PanelHeader)).dy - 1));
-      expect(tester.getBottomLeft(find.byType(ApprovalCard)).dy, lessThanOrEqualTo(tester.getTopLeft(find.byType(TabBar)).dy + 1));
+      expect(tester.getBottomLeft(find.byKey(const Key('inbox'))).dy, lessThanOrEqualTo(tester.getTopLeft(find.byType(TabBar)).dy + 1));
 
       // m2 로 바꿔도 같은 목록이 그대로(선택 무관).
       await pumpPanel(tester, daemon, const RightPanel(memberId: 'm2'), overrides: overrides);
@@ -138,6 +138,7 @@ void main() {
       expect(find.byType(ApprovalCard), findsOneWidget);
 
       // 허가 → 그 카드만 사라진다
+      await tester.ensureVisible(find.text('허가'));
       await tester.tap(find.text('허가'));
       await pumpUntil(tester, () => daemon.countOf('approval.respond') == 1);
       await pumpUntil(tester, () => find.byType(ApprovalCard).evaluate().isEmpty, reason: 'card gone after allow');

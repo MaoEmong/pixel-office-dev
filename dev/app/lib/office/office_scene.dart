@@ -593,10 +593,15 @@ class OfficeScene {
     // 내 책상에는 **사용자가 답할 것**만 선다(T37, D-32): 허가는 직급 무관 전부, 질문은 부장의 `ask_user`
     // (와 턴을 붙잡는 TUI 질문). `ask_parent` 는 상사에게 가는 것이라 여기 없다 — 그 멤버는 상사 책상으로 간다.
     final userPending = [for (final p in openPending) if (p.goesToUser(rank: members[p.memberId]?.rank)) p];
-    final withUserPending = {for (final p in userPending) p.memberId};
     // 누구 몫이든 열린 허가·질문이 있는 멤버 — "대기 이벤트가 아직 유효한가" 의 근거(U-01).
     final withOpenPending = {for (final p in openPending) p.memberId};
-    final otherPending = {for (final p in openPending) if (!p.goesToUser(rank: members[p.memberId]?.rank)) p.memberId};
+    final withApproval = {for (final p in openPending) if (p.type == PendingType.approval) p.memberId};
+    final questionLabels = <String, String>{};
+    for (final p in openPending) {
+      if (p.type == PendingType.question && !withApproval.contains(p.memberId)) {
+        questionLabels.putIfAbsent(p.memberId, () => p.questionWaitingLabel(members));
+      }
+    }
     // `ask_parent` 질문자 → 답을 기다리는 상사(같은 화면에 있을 때만 책상 번호를 얻는다).
     final askParentTarget = <String, int>{};
     // 같은 상사에게 동시에 질문한 사람의 순번(오래된 질문부터 0, 1, 2 …) — 방문 자리 배정(T40-3).
@@ -611,12 +616,6 @@ class OfficeScene {
       askParentVisitorIndex[p.memberId] = visitorsPerDesk[idx] ?? 0;
       visitorsPerDesk[idx] = (visitorsPerDesk[idx] ?? 0) + 1;
     }
-
-    // 줄에 서는 기준(T19 함정 1): "사용자 몫 pending 이 있다" 또는 "파생/raw status 가 waiting".
-    // 단 `ask_parent` 같은 남의 몫 pending 때문에 waiting 인 멤버는 서지 않는다.
-    bool isQueuedMember(Member m) =>
-        withUserPending.contains(m.id) ||
-        (!otherPending.contains(m.id) && ((derived[m.id]?.isWaiting ?? false) || m.status.isWaiting));
 
     // 줄(슬롯)은 **인박스 카드와 1:1** 이다(D6) — `queue[k]` 가 슬롯 k 의 카드고, 슬롯 k 에 서는 사람은
     // 그 카드의 주인이다. 그래서 멤버의 슬롯 번호를 따로 매기지 않고 **카드 목록에서 찾는다**
@@ -636,11 +635,7 @@ class OfficeScene {
     for (var k = 0; k < queue.length; k++) {
       queued.putIfAbsent(queue[k].memberId, () => k);
     }
-    // 카드 없이 상태만 waiting 인 멤버(pending 이 아직 안 온 찰나)는 카드 뒤에 createdAt 순으로 선다.
-    var tail = queue.length;
-    for (final m in ordered) {
-      if (isQueuedMember(m) && !queued.containsKey(m.id)) queued[m.id] = tail++;
-    }
+    // 상태 알림이 늦어도 승인한 사람이 빈 슬롯에 남지 않도록 실제 카드가 있는 사람만 세운다.
 
     final sceneMembers = <SceneMember>[
       for (var i = 0; i < ordered.length; i++)
@@ -652,7 +647,8 @@ class OfficeScene {
           rank: ordered[i].rank,
           teamId: ordered[i].teamId,
           deskIndex: i,
-          summary: activityLabels[ordered[i].id] ?? summarize(
+          summary: (ordered[i].status.isGone || ordered[i].status == MemberStatus.suspended
+              ? null : questionLabels[ordered[i].id]) ?? activityLabels[ordered[i].id] ?? summarize(
             ordered[i].status,
             latestEvents[ordered[i].id],
             derived: derived[ordered[i].id],

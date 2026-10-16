@@ -26,6 +26,7 @@ void main() {
   testWidgets(
     'login and recovery use dedicated calls; slash commands go directly to the terminal',
     (tester) async {
+      daemon.snapshotBody['members'] = [memberJson('m1')];
       daemon.handlers['member.login'] = (_) => {};
       daemon.handlers['member.auth.recover'] = (_) => {};
       daemon.handlers['member.terminalCommand'] = (_) => {};
@@ -93,6 +94,109 @@ void main() {
       });
     },
   );
+
+  testWidgets(
+    'working AI cannot be interrupted by login controls; idle enables them live',
+    (tester) async {
+      daemon.handlers['member.auth.recover'] = (_) => {};
+      await tester.runAsync(() async {
+        final c = await pumpPanel(
+          tester,
+          daemon,
+          const TerminalTab(memberId: 'm1'),
+        );
+        await pumpUntilConnected(tester, c);
+        await pumpUntil(tester, () => bufferText(tester).contains('SCREEN:m1'));
+        for (final key in ['terminal.login', 'terminal.recoverAuth']) {
+          expect(
+            tester.widget<OutlinedButton>(find.byKey(Key(key))).onPressed,
+            isNull,
+          );
+        }
+        expect(find.textContaining('현재 작업 중이에요'), findsOneWidget);
+        expect(daemon.countOf('member.login'), 0);
+        expect(daemon.countOf('member.auth.recover'), 0);
+        daemon.push('member.status', {
+          'memberId': 'm1',
+          'status': 'idle',
+          'derived': 'free',
+        });
+        await pumpUntil(
+          tester,
+          () =>
+              tester
+                  .widget<OutlinedButton>(
+                    find.byKey(const Key('terminal.recoverAuth')),
+                  )
+                  .onPressed !=
+              null,
+        );
+        expect(find.textContaining('평소에는 다시 로그인할 필요가 없어요'), findsOneWidget);
+        await tester.tap(find.byKey(const Key('terminal.recoverAuth')));
+        await pumpUntil(
+          tester,
+          () => daemon.countOf('member.auth.recover') == 1,
+        );
+        expect(
+          daemon.countOf('member.login'),
+          0,
+          reason: 'existing login recovery must not launch a new login',
+        );
+      });
+    },
+  );
+
+  for (final type in ['approval', 'question']) {
+    testWidgets(
+      'idle AI with an open $type cannot reconnect until it is answered',
+      (tester) async {
+        daemon.snapshotBody['members'] = [memberJson('m1')];
+        daemon.snapshotBody['pending'] = [
+          pendingJson('p1', type: type, payload: {}),
+        ];
+        await tester.runAsync(() async {
+          final c = await pumpPanel(
+            tester,
+            daemon,
+            const TerminalTab(memberId: 'm1'),
+          );
+          await pumpUntilConnected(tester, c);
+          await pumpUntil(
+            tester,
+            () => bufferText(tester).contains('SCREEN:m1'),
+          );
+          for (final key in ['terminal.login', 'terminal.recoverAuth']) {
+            expect(
+              tester.widget<OutlinedButton>(find.byKey(Key(key))).onPressed,
+              isNull,
+            );
+          }
+          expect(find.textContaining('질문·승인 응답을 기다리고 있어요'), findsOneWidget);
+          // An unrelated member's pending request must not lock this member.
+          daemon.snapshotBody['pending'] = [
+            pendingJson('p2', memberId: 'm2', type: type, payload: {}),
+          ];
+          daemon.push('snapshot', {...daemon.snapshotBody, 'seq': 10});
+          await pumpUntil(
+            tester,
+            () =>
+                tester
+                    .widget<OutlinedButton>(
+                      find.byKey(const Key('terminal.recoverAuth')),
+                    )
+                    .onPressed !=
+                null,
+          );
+          expect(
+            tester
+                .widget<OutlinedButton>(find.byKey(const Key('terminal.login')))
+                .onPressed,
+            isNotNull,
+          );
+        });
+      },
+    );
+  }
 
   testWidgets('탭이 뜨면 member.attach{memberId, cols, rows} → screen 이 버퍼에 쓰인다', (
     tester,

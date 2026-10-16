@@ -327,7 +327,7 @@ void main() {
       await tester.runAsync(() async {
         final c = await pumpPanel(tester, daemon, QuestionCard(pending: pendingOf(askPending)));
         await pumpUntilConnected(tester, c);
-        expect(find.text('❓ 질문'), findsOneWidget);
+        expect(find.text('❓ 사용자에게 온 질문'), findsOneWidget);
         expect(find.text('점심'), findsOneWidget);
         expect(find.text('점심 뭐 먹을까?'), findsOneWidget);
         expect(find.text('김밥'), findsOneWidget);
@@ -385,7 +385,7 @@ void main() {
       await tester.runAsync(() async {
         final c = await pumpPanel(tester, daemon, QuestionCard(pending: pendingOf(multi)));
         await pumpUntilConnected(tester, c);
-        expect(find.text('❓ 질문 2개'), findsOneWidget);
+        expect(find.text('❓ 사용자에게 온 질문 2개'), findsOneWidget);
         expect(find.byType(Checkbox), findsNWidgets(3));
         await tester.tap(find.text('햄'));
         await tester.tap(find.text('치즈'));
@@ -536,9 +536,11 @@ void main() {
         final c = await pumpPanel(tester, daemon, const PendingCards(memberId: 'm2'));
         await pumpUntilConnected(tester, c);
         await pumpUntil(tester, () => find.byType(AskParentCard).evaluate().isNotEmpty, reason: 'ask_parent card');
-        expect(find.textContaining(askParentCardTitle), findsOneWidget);
+        expect(find.textContaining('하루(팀원)에게 보낸 질문'), findsOneWidget);
         // 상사(m1 하루) 이름과 직급, 질문 본문.
-        expect(find.textContaining('하루(팀원) 에게: 이 폴더 지워도 됩니까?'), findsOneWidget);
+        expect(find.text('모시 → 하루(팀원)'), findsOneWidget);
+        expect(find.text('이 폴더 지워도 됩니까?'), findsOneWidget);
+        expect(find.text('사용자 답변은 필요하지 않습니다. 상사가 답변할 차례입니다.'), findsOneWidget);
         expect(find.textContaining('보기: 네 / 아니오'), findsOneWidget);
         // 답하기 UI 는 접혀 있다 — 사용자 몫이 아니기 때문.
         expect(find.byType(QuestionCard), findsNothing);
@@ -556,6 +558,9 @@ void main() {
         await tester.tap(find.byKey(const Key('askParent.override')));
         await tester.pump();
         expect(find.byType(QuestionCard), findsOneWidget);
+        expect(find.text('❓ 사용자가 대신 답변하기'), findsOneWidget);
+        expect(find.text('하루(팀원) 대신 사용자가 보내는 답변입니다.'), findsOneWidget);
+        expect(find.text('대신 답변 보내기'), findsOneWidget);
 
         await tester.tap(find.text('네'));
         await pumpUntil(tester, () => daemon.countOf('question.respond') == 1, reason: 'respond sent');

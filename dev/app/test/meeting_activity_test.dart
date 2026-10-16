@@ -23,6 +23,50 @@ Map<String, dynamic> meeting() => {
 };
 
 void main() {
+  testWidgets('질문 수신자가 상태와 말풍선에 표시되고 답변 후 함께 사라진다', (tester) async {
+    final w = {...meeting(), 'phase': 'executing', 'assignments': [{'leadId': 'l1', 'status': 'assigned'}]};
+    final fake = FakeRpcClient(responder: (_, _) => {'workflow': w});
+    addTearDown(fake.close);
+    final key = GlobalKey();
+    await tester.pumpWidget(ProviderScope(overrides: fake.overrides,
+        child: MaterialApp(key: key, home: const SizedBox.shrink())));
+    final container = ProviderScope.containerOf(key.currentContext!);
+    container.read(officeProvider);
+    final members = [
+      fakeMember('h', rank: 'head', name: '부장'),
+      fakeMember('l1', rank: 'lead', name: '프론트팀장', parentId: 'h'),
+      fakeMember('w', name: '디자이너', parentId: 'l1'),
+    ];
+    final questions = [
+      {'id': 'q1', 'memberId': 'w', 'type': 'question', 'status': 'open', 'createdAt': 'c',
+        'payload': {'source': 'ask_parent', 'to': 'l1', 'question': '디자인을 확정할까요?'}},
+      {'id': 'q2', 'memberId': 'h', 'type': 'question', 'status': 'open', 'createdAt': 'c',
+        'payload': {'source': 'ask_user', 'question': '배포할까요?'}},
+    ];
+    fake.emitHello(departments: [fakeDepartment('d1', headId: 'h')], members: members, pending: questions);
+    await tester.pumpAndSettle();
+    final labels = container.read(meetingActivityLabelsProvider('d1'));
+    expect(labels['w'], '프론트팀장(팀장) 답변 대기');
+    expect(labels['h'], '사용자 답변 대기');
+    final scene = container.read(officeSceneProvider('d1'));
+    expect(scene.memberById('w')!.summary, labels['w']);
+    expect(scene.memberById('h')!.summary, labels['h']);
+    expect(scene.memberById('w')!.isQueued, isFalse);
+    expect(scene.queue.single.memberId, 'h');
+    expect(scene.memberById('w')!.askParentDeskIndex, isNotNull);
+
+    // 받는 사람이 생략된 옛 질문도 직속 상사의 이름을 표시한다.
+    final legacy = Pending.fromJson({...questions.first, 'payload': {'source': 'ask_parent'}});
+    expect(legacy.questionRecipientLabel(container.read(membersProvider)), '프론트팀장(팀장)');
+    expect(legacy.questionRecipientLabel(const {}), '상사');
+
+    fake.emitHello(departments: [fakeDepartment('d1', headId: 'h')], members: members);
+    await tester.pumpAndSettle();
+    expect(container.read(meetingActivityLabelsProvider('d1'))['w'], isNull);
+    expect(container.read(officeSceneProvider('d1')).memberById('w')!.summary,
+        isNot(contains('답변 대기')));
+  });
+
   test(
     'an idle lead with queued planned work is shown as waiting for prerequisite work',
     () {

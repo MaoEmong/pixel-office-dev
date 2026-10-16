@@ -1,6 +1,6 @@
 // Pending — dev/daemon/src/store/types.ts `Pending`. 스냅샷에는 status='open' 만 온다.
 
-import 'member.dart' show MemberRank;
+import 'member.dart' show Member, MemberRank;
 
 enum PendingType {
   approval,
@@ -75,6 +75,16 @@ class Pending {
 
   /// `ask_parent` 질문을 낸 멤버 id(payload `from`). 보통 [memberId] 와 같다.
   String? get askParentFrom => isAskParent ? payload['from'] as String? : null;
+
+  /// 질문을 실제로 받는 사람. 상사 정보가 아직 없으면 내부 번호 대신 역할을 표시한다.
+  String questionRecipientLabel(Map<String, Member> members) {
+    if (!isAskParent) return '사용자';
+    final recipient = members[askParentTo ?? members[memberId]?.parentId];
+    return recipient == null ? '상사' : '${recipient.name}(${recipient.rank.label})';
+  }
+
+  String questionWaitingLabel(Map<String, Member> members) =>
+      '${questionRecipientLabel(members)} 답변 대기';
 
   /// 사용자가 답해야 하는 pending 인가 — 내 책상 줄·카드에 들어갈 자격(T37, D-32).
   ///  - **허가(approval)는 직급과 무관하게 사용자에게** 온다(D-32 3: 셸 허가는 보고 체계와 별개인 안전 문제).

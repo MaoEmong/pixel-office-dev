@@ -202,7 +202,7 @@ void main() {
         latestEvents: {'m1': event('m1', OfficeEventKind.asking, detail: {'summary': '어느 폴더?'})},
         pending: {'q1': askUserQuestion('q1', 'm1', '어느 폴더?')},
       );
-      expect(asking.memberById('m1')!.summary, '❓ 질문');
+      expect(asking.memberById('m1')!.summary, '사용자 답변 대기');
       expect(asking.memberById('m1')!.isAlert, isTrue);
     });
 
@@ -225,7 +225,7 @@ void main() {
       expect(scene.queue.map((q) => q.line(scene.queue.indexOf(q))), ['1. 이음 — 질문: 어느 폴더?', '2. 하루 — 허가: rm -rf build/']);
     });
 
-    test('열린 pending 이 있으면 raw status 와 무관하게 줄에 선다; pending 없이 waiting 인 멤버는 그 뒤에', () {
+    test('열린 pending 이 있는 사람만 줄에 선다 — 상태만 대기인 사람은 자기 자리에 남는다', () {
       final scene = OfficeScene.build(
         members: {
           'm1': member('m1', status: MemberStatus.working, createdAt: '1'),
@@ -240,7 +240,8 @@ void main() {
       );
       expect(scene.memberById('m3')!.queueIndex, 0); // pending 생성 순
       expect(scene.memberById('m1')!.queueIndex, 1); // working 이지만 열린 pending 이 있다
-      expect(scene.memberById('m2')!.queueIndex, 2); // pending 없이 waiting → 뒤에
+      expect(scene.memberById('m2')!.queueIndex, isNull);
+      expect(scene.queue, hasLength(2));
     });
 
     test('T19b: 부장의 ask_user 질문(raw idle · 파생 waiting_answer)도 내 책상 줄에 서고 말풍선은 "❓ 질문"', () {
@@ -259,7 +260,7 @@ void main() {
       );
       expect(scene.memberById('m1')!.queueIndex, 0);
       expect(scene.memberById('m1')!.isAlert, isTrue);
-      expect(scene.memberById('m1')!.summary, '❓ 질문');
+      expect(scene.memberById('m1')!.summary, '사용자 답변 대기');
       expect(scene.memberById('m2')!.queueIndex, isNull);
       expect(scene.queue.single.line(0), '1. 모시 — 질문: 점심은?');
 
@@ -302,7 +303,7 @@ void main() {
       // 팀장은 파생이 waiting_answer 여도 사용자 줄에 서지 않고 부장 책상(책상 0) 옆으로 간다.
       expect(scene.memberById('mL')!.queueIndex, isNull);
       expect(scene.memberById('mL')!.askParentDeskIndex, 0);
-      expect(scene.memberById('mL')!.summary, askParentSummary);
+      expect(scene.memberById('mL')!.summary, '부장(부장) 답변 대기');
     });
 
     test('T37: 팀장의 ask_user 는 사용자 줄에 세우지 않는다(부장 전용 경로)', () {

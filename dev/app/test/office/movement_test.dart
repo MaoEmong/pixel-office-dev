@@ -5,7 +5,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:pixel_office/model/models.dart';
-import 'package:pixel_office/office/office_scene.dart' show askParentSummary;
 import 'package:pixel_office/office/office_view.dart';
 import 'package:pixel_office/state/office_state.dart';
 
@@ -289,7 +288,7 @@ void main() {
     expect(scene.queue, isEmpty);
     expect(scene.memberById('m1')!.queueIndex, isNull);
     expect(scene.memberById('m1')!.askParentDeskIndex, 1); // 팀장 책상
-    expect(scene.memberById('m1')!.summary, askParentSummary);
+    expect(scene.memberById('m1')!.summary, '반장(팀장) 답변 대기');
     expect(scene.memberById('m1')!.isAlert, isTrue);
 
     await settleMotion(tester);

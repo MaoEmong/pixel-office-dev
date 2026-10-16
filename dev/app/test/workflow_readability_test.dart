@@ -208,7 +208,7 @@ void main() {
           findsWidgets,
         );
       }
-      await tester.tap(find.text('작업 시작 · 회의 소집'));
+      await tester.tap(find.text('지금 바로 시작'));
       await tester.pumpAndSettle();
       w = {...w, 'phase': 'executing'};
       fake.pushNotification('workflow.changed', w);

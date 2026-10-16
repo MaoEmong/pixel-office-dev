@@ -15,6 +15,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:xterm/xterm.dart';
 
+import '../model/member.dart';
 import '../rpc/rpc_client.dart';
 import '../state/office_state.dart';
 import 'labels.dart';
@@ -204,6 +205,26 @@ class _TerminalTabState extends ConsumerState<TerminalTab> {
   @override
   Widget build(BuildContext context) {
     final status = ref.watch(memberStatusProvider(widget.memberId));
+    final connected =
+        ref.watch(connectionStateProvider) == RpcConnectionState.connected;
+    final hasPending = ref
+        .watch(openPendingProvider)
+        .values
+        .any((pending) => pending.memberId == widget.memberId);
+    // Reconnecting replaces the CLI process. Never offer it while that process
+    // is working or waiting for an answer, even when its raw status is idle.
+    final authenticationHold = !connected
+        ? '앱 연결이 끊어져 로그인 기능을 사용할 수 없어요.'
+        : hasPending || (status?.isWaiting ?? false)
+        ? '질문·승인 응답을 기다리고 있어요. 응답을 마치면 로그인 기능을 사용할 수 있어요.'
+        : status == MemberStatus.working
+        ? '현재 작업 중이에요. 작업을 보호하기 위해 로그인·연결 갱신을 잠시 막아 두었어요.'
+        : status == MemberStatus.starting ||
+              status == MemberStatus.suspended ||
+              status == null
+        ? 'AI 연결을 준비하고 있어요. 준비가 끝나면 로그인 기능을 사용할 수 있어요.'
+        : null;
+    final authenticationEnabled = !_commandBusy && authenticationHold == null;
     final gone = status?.isGone ?? false;
     final banner =
         _notice ?? (gone ? '${memberStatusLabel(status!)}한 멤버 — 마지막 화면' : null);
@@ -219,28 +240,37 @@ class _TerminalTabState extends ConsumerState<TerminalTab> {
             children: [
               OutlinedButton.icon(
                 key: const Key('terminal.login'),
-                onPressed: _commandBusy
-                    ? null
-                    : () => _runCommand('member.login'),
+                onPressed: authenticationEnabled
+                    ? () => _runCommand('member.login')
+                    : null,
                 icon: const Icon(Icons.login, size: 16),
-                label: const Text('로그인'),
+                label: const Text('새 로그인'),
               ),
               OutlinedButton.icon(
                 key: const Key('terminal.recoverAuth'),
-                onPressed: _commandBusy
-                    ? null
-                    : () => _runCommand('member.auth.recover'),
+                onPressed: authenticationEnabled
+                    ? () => _runCommand('member.auth.recover')
+                    : null,
                 icon: const Icon(Icons.sync, size: 16),
-                label: const Text('로그인 연결 · 요청 재시도'),
+                label: const Text('기존 로그인으로 연결 갱신'),
               ),
             ],
           ),
         ),
-        const Padding(
-          padding: EdgeInsets.symmetric(horizontal: 10),
-          child: Text(
-            '터미널에서 로그인했다면 연결을 갱신하세요. 새 로그인은 이 화면에서 진행하며 브라우저 인증이 열릴 수 있습니다.',
-            style: TextStyle(fontSize: 12, color: Colors.white60),
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 10),
+          // Keep the terminal size stable when status changes the help text.
+          child: SizedBox(
+            height: 56,
+            child: Align(
+              alignment: Alignment.centerLeft,
+              child: Text(
+                authenticationHold ??
+                    '평소에는 다시 로그인할 필요가 없어요. 로그인 오류가 났다면 먼저 기존 로그인으로 연결을 갱신해 보세요. 새 로그인은 인증이 필요할 때만 사용하세요.',
+                key: const Key('terminal.authenticationHint'),
+                style: const TextStyle(fontSize: 12, color: Colors.white60),
+              ),
+            ),
           ),
         ),
         Padding(

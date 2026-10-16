@@ -193,7 +193,8 @@ void main() {
       motion.sync(sceneOf(idle2, events: {'m1': event('m1', OfficeEventKind.reporting, seq: 1)}), layout, ms(1));
       expect(motion.isVisiting('m1'), isTrue);
       final waiting = [member('m1', createdAt: '1', status: MemberStatus.waitingApproval), member('m2', createdAt: '2')];
-      motion.sync(sceneOf(waiting, events: {'m1': event('m1', OfficeEventKind.reporting, seq: 1)}), layout, ms(2));
+      motion.sync(sceneOf(waiting, pending: {'a1': approval('a1', 'm1', 'ls')},
+          events: {'m1': event('m1', OfficeEventKind.reporting, seq: 1)}), layout, ms(2));
       expect(motion.isVisiting('m1'), isFalse);
       expect(motion.movements['m1']!.to.center, layout.queueSlot(0)); // 줄 자리(허가 대기)
     });

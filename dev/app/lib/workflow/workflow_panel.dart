@@ -13,16 +13,19 @@ final meetingActivityLabelsProvider =
     Provider.family<Map<String, String>, String>((ref, id) {
       final workflow = ref.watch(workflowProvider(id)).asData?.value;
       final derived = ref.watch(officeProvider.select((s) => s.derived));
-      return {
-        for (final member
-            in ref
-                .watch(membersProvider)
-                .values
-                .where((m) => m.departmentId == id))
-          if (meetingMemberActivity(workflow, member, derived[member.id])
-              case final String label)
-            member.id: label,
-      };
+      final members = ref.watch(membersProvider);
+      final pending = ref.watch(openPendingProvider);
+      final labels = <String, String>{};
+      for (final member in members.values.where((m) => m.departmentId == id)) {
+        if (member.status.isGone || member.status == MemberStatus.suspended) continue;
+        final ownPending = pending.values.where((p) => p.memberId == member.id);
+        final question = ownPending.where((p) => p.type == PendingType.question).firstOrNull;
+        final label = question != null && !ownPending.any((p) => p.type == PendingType.approval)
+            ? question.questionWaitingLabel(members)
+            : meetingMemberActivity(workflow, member, derived[member.id]);
+        if (label != null) labels[member.id] = label;
+      }
+      return labels;
     });
 
 class MeetingProgress extends ConsumerWidget {
@@ -199,24 +202,26 @@ final workflowProvider = StreamProvider.autoDispose
 
 String workflowPhaseLabel(WorkflowData? data) {
   if (data == null) return '작업 구체화부터 시작';
+  String? phase;
   if (data['phase'] == 'meeting') {
     final meeting = data['meeting'] as Map?;
-    return switch (meeting?['state']) {
+    phase = switch (meeting?['state']) {
       'collecting' => '회의 · 1차 의견',
       'reviewing' => '회의 · 상호 검토',
       'deciding' => '회의 · 부장 결정',
       _ => '회의 준비',
     };
   }
-  return const {
+  phase ??= const {
         'clarifying': '목표 구체화',
         'executing': '계획에 따라 실행 중',
-        'review': '최종 보고 · 검수 대기',
-        'completed': '검수 완료',
+        'review': '부장이 단계 결과 확인 중',
+        'completed': '전체 작업 완료',
         'blocked': '확인이 필요한 문제',
         'cancelled': '작업 취소',
       }[data['phase']] ??
       '작업 상태 확인';
+  return data['stage'] == null ? phase : '${data['stage']}단계 · ${data['stageTitle'] ?? '작업 진행'} · $phase';
 }
 
 class WorkflowBar extends ConsumerWidget {
@@ -226,6 +231,19 @@ class WorkflowBar extends ConsumerWidget {
     final id = ref.watch(activeDepartmentIdProvider);
     if (id == null) return const SizedBox.shrink();
     final state = ref.watch(workflowProvider(id));
+    final stages = workflowRows(state.asData?.value?['stages']);
+    ref.listen(workflowProvider(id), (previous, next) {
+      if (previous?.asData == null) return;
+      final before = workflowRows(previous!.asData?.value?['stages']);
+      final after = workflowRows(next.asData?.value?['stages']);
+      if (after.length <= before.length || !context.mounted) return;
+      final last = after.last;
+      ScaffoldMessenger.maybeOf(context)?.showSnackBar(SnackBar(
+        content: Text('${last['number']}단계 완료 · ${last['summary']}', maxLines: 2, overflow: TextOverflow.ellipsis),
+        action: SnackBarAction(label: '단계 기록', onPressed: () => showDialog<void>(context: context,
+            builder: (_) => WorkflowDialog(departmentId: id, initialTab: 3))),
+      ));
+    });
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
       decoration: BoxDecoration(
@@ -248,6 +266,14 @@ class WorkflowBar extends ConsumerWidget {
                 ),
                 HeadReplyStatus(departmentId: id),
                 MeetingProgress(departmentId: id, compact: true),
+                if (stages.isNotEmpty)
+                  InkWell(
+                    onTap: () => showDialog<void>(context: context,
+                        builder: (_) => WorkflowDialog(departmentId: id, initialTab: 3)),
+                    child: Text('최근 완료: ${stages.last['number']}단계 · ${stages.last['summary']} · 단계 기록 ${stages.length}건',
+                        key: const Key('workflow.latestStage'), maxLines: 1, overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(color: Color(0xFF9EDCC2), fontSize: 12)),
+                  ),
               ],
             ),
           ),
@@ -266,8 +292,9 @@ class WorkflowBar extends ConsumerWidget {
 }
 
 class WorkflowDialog extends ConsumerStatefulWidget {
-  const WorkflowDialog({super.key, required this.departmentId});
+  const WorkflowDialog({super.key, required this.departmentId, this.initialTab = 0});
   final String departmentId;
+  final int initialTab;
   @override
   ConsumerState<WorkflowDialog> createState() => _WorkflowDialogState();
 }
@@ -276,7 +303,7 @@ class _WorkflowDialogState extends ConsumerState<WorkflowDialog>
     with SingleTickerProviderStateMixin {
   final _text = TextEditingController();
   final _conversationScroll = ScrollController();
-  late final _tabs = TabController(length: 3, vsync: this);
+  late final _tabs = TabController(length: 4, initialIndex: widget.initialTab, vsync: this);
   bool _busy = false;
   String? _error;
   @override
@@ -412,6 +439,7 @@ class _WorkflowDialogState extends ConsumerState<WorkflowDialog>
                   readingTab('대화', rows(w?['messages']).length),
                   readingTab('회의', rows(meeting?['contributions']).length),
                   readingTab('작업 계획', assignments.length),
+                  readingTab('단계 기록', rows(w?['stages']).length),
                 ],
               ),
               Expanded(
@@ -430,6 +458,7 @@ class _WorkflowDialogState extends ConsumerState<WorkflowDialog>
                       ),
                     ),
                     WorkflowPlan(workflow: w, name: name),
+                    WorkflowStageHistory(workflow: w),
                   ],
                 ),
               ),
@@ -481,7 +510,7 @@ class _WorkflowDialogState extends ConsumerState<WorkflowDialog>
                           ? null
                           : () => run('workflow.start'),
                       icon: const Icon(Icons.play_arrow),
-                      label: const Text('작업 시작 · 회의 소집'),
+                      label: const Text('지금 바로 시작'),
                     ),
                   if (meeting != null &&
                       assignments.isEmpty &&
@@ -495,7 +524,7 @@ class _WorkflowDialogState extends ConsumerState<WorkflowDialog>
                   if (phase == 'review')
                     FilledButton(
                       onPressed: _busy ? null : () => run('workflow.complete'),
-                      child: const Text('검수 완료'),
+                      child: const Text('사용자가 직접 완료 처리'),
                     ),
                   if (assignments.isNotEmpty &&
                       ['executing', 'blocked'].contains(phase))

@@ -801,10 +801,10 @@ List<PendingOption> _parseOptions(Object? raw) {
 // ---- ask_parent 안내 카드(T37) -------------------------------------------------------
 
 /// 상사에게 올라간 질문 카드의 제목 앞머리.
-const String askParentCardTitle = '팀장/부장에게 질문 중';
+const String askParentCardTitle = '상사에게 보낸 질문';
 
 /// 사용자가 상사 대신 답하는 버튼(월권이지만 막히면 풀 방법이 있어야 한다).
-const String askParentOverrideLabel = '대신 답하기';
+const String askParentOverrideLabel = '사용자가 대신 답변하기';
 
 /// `ask_parent`(payload `{source:'ask_parent', question, options, from, to}`) 질문 — **사용자 몫이 아니다**.
 /// 내 책상 줄·카드 목록에는 안 나오고, 질문한 멤버의 패널에만 "누구에게 무엇을 물었는지" 를 보여 준다.
@@ -824,21 +824,26 @@ class _AskParentCardState extends ConsumerState<AskParentCard> {
   @override
   Widget build(BuildContext context) {
     final p = widget.pending;
-    final to = p.askParentTo;
-    final parent = to == null ? null : ref.watch(memberProvider(to));
-    final parentLabel = parent == null ? (to ?? '상사') : '${parent.name}(${parent.rank.label})';
+    final members = ref.watch(membersProvider);
+    final parentLabel = p.questionRecipientLabel(members);
+    final senderLabel = members[p.memberId]?.name ?? '질문한 AI';
     final questions = parseQuestions(p.payload);
     final q = questions.isEmpty ? '' : questions.first.question;
     return _CardFrame(
-      accent: Colors.white38,
-      title: '↑ $askParentCardTitle',
+      accent: Colors.lightBlueAccent,
+      title: '↑ $parentLabel에게 보낸 질문',
       focused: false,
       children: [
         Text(
-          '$parentLabel 에게: $q',
+          '$senderLabel → $parentLabel',
           key: const Key('askParent.text'),
-          style: const TextStyle(fontSize: 12.5, color: Colors.white70),
+          style: const TextStyle(fontSize: 12.5, color: Colors.lightBlueAccent, fontWeight: FontWeight.w600),
         ),
+        const SizedBox(height: 6),
+        const Text('사용자 답변은 필요하지 않습니다. 상사가 답변할 차례입니다.',
+            style: TextStyle(fontSize: 12, color: Colors.white70)),
+        const SizedBox(height: 8),
+        Text(q, style: const TextStyle(fontSize: 12.5, color: Colors.white70)),
         if (questions.isNotEmpty && questions.first.options.isNotEmpty) ...[
           const SizedBox(height: 4),
           Text(
@@ -951,7 +956,9 @@ class _QuestionCardState extends ConsumerState<QuestionCard> {
   Widget build(BuildContext context) {
     final connected = ref.watch(connectionStateProvider) == RpcConnectionState.connected;
     final locked = _sent || !connected;
-    final title = _questions.length == 1 ? '❓ 질문' : '❓ 질문 ${_questions.length}개';
+    final title = widget.pending.isAskParent
+        ? '❓ 사용자가 대신 답변하기'
+        : _questions.length == 1 ? '❓ 사용자에게 온 질문' : '❓ 사용자에게 온 질문 ${_questions.length}개';
     // 허가 카드와 같은 골격 — 만료 메타도 같이(D12 5). `ask_parent` 안내 카드 안에 들어갈 때는 메타를 숨긴다.
     final expired = isApprovalExpired(widget.pending.createdAt);
     return Listener(
@@ -977,6 +984,11 @@ class _QuestionCardState extends ConsumerState<QuestionCard> {
                     : null,
             focused: _focus.hasPrimaryFocus,
             children: [
+              if (widget.pending.isAskParent) ...[
+                Text('${widget.pending.questionRecipientLabel(ref.watch(membersProvider))} 대신 사용자가 보내는 답변입니다.',
+                    style: const TextStyle(fontSize: 12, color: Colors.amber)),
+                const SizedBox(height: 8),
+              ],
               for (var i = 0; i < _questions.length; i++) ...[
                 if (i > 0) const Divider(height: 14, color: Colors.white12),
                 _questionBlock(i, locked),
@@ -990,7 +1002,7 @@ class _QuestionCardState extends ConsumerState<QuestionCard> {
                   FilledButton(
                     style: _smallButtonStyle(),
                     onPressed: locked || !_allAnswered ? null : _send,
-                    child: const Text('확인'),
+                    child: Text(widget.pending.isAskParent ? '대신 답변 보내기' : '확인'),
                   ),
                   if (_sent) const _SentBadge(),
                 ],

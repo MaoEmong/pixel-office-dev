@@ -76,7 +76,7 @@ class ActiveProblemsBanner extends ConsumerWidget {
 /// Map user operations to useful titles; connection probes and cleanup stay quiet.
 String? actionErrorTitle(String method) => const {
   'member.login': '로그인 화면을 열지 못했어요',
-  'member.auth.recover': '로그인 연결을 복구하지 못했어요',
+  'member.auth.recover': '연결 갱신을 진행하지 못했어요',
   'member.terminalCommand': '터미널 명령을 보내지 못했어요',
   'clipboard.copy': '내용을 복사하지 못했어요',
   'department.update': '부서 설정을 바꾸지 못했어요',
@@ -116,13 +116,21 @@ String? actionErrorTitle(String method) => const {
   'remote.device.revoke': '기기 연결을 해제하지 못했어요',
 }[method];
 
-String actionErrorMessage(Object error) => switch (error) {
-  RpcException(code: RpcException.closed) =>
-    '작업 관리 프로그램과 연결이 끊어졌어요.\n상단의 연결 상태가 정상으로 돌아오면 처리 결과를 확인한 뒤 다시 시도해 주세요.',
-  RpcException(code: RpcException.timeout) =>
-    '처리 시간이 길어져 결과를 확인하지 못했어요.\n잠시 기다린 뒤 처리 결과를 확인하고, 반영되지 않았다면 다시 시도해 주세요.',
-  _ => '${errorMessage(error)}\n\n문제를 해결한 뒤 다시 시도해 주세요.',
-};
+String actionErrorMessage(Object error, {String? method}) {
+  if ((method == 'member.auth.recover' || method == 'member.login') &&
+      error is RpcException &&
+      error.code == RpcException.badState &&
+      error.message.startsWith('진행 중')) {
+    return '${error.message}\n\n진행 중인 작업을 보호하기 위한 안내입니다. 로그인이 만료되었다는 뜻은 아니에요.';
+  }
+  return switch (error) {
+    RpcException(code: RpcException.closed) =>
+      '작업 관리 프로그램과 연결이 끊어졌어요.\n상단의 연결 상태가 정상으로 돌아오면 처리 결과를 확인한 뒤 다시 시도해 주세요.',
+    RpcException(code: RpcException.timeout) =>
+      '처리 시간이 길어져 결과를 확인하지 못했어요.\n잠시 기다린 뒤 처리 결과를 확인하고, 반영되지 않았다면 다시 시도해 주세요.',
+    _ => '${errorMessage(error)}\n\n문제를 해결한 뒤 다시 시도해 주세요.',
+  };
+}
 
 /// One app-wide listener also covers keyboard shortcuts and terminal input whose
 /// callers deliberately ignore exceptions. No request text or credentials are kept.
@@ -162,7 +170,7 @@ class _ActionErrorPopupsState extends ConsumerState<ActionErrorPopups> {
       }
       final title = actionErrorTitle(failure.method);
       if (title == null) return;
-      final message = actionErrorMessage(failure.error);
+      final message = actionErrorMessage(failure.error, method: failure.method);
       if (const [
         'remote.status',
         'workflow.get',

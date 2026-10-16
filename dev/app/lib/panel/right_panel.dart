@@ -16,6 +16,7 @@
 // `panelTabRequestProvider` 에 요청이 오면(재지시 카드 "터미널에서 답하기") 그 탭으로 animateTo.
 
 import 'dart:async';
+import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -35,6 +36,7 @@ import 'panel_splitter.dart';
 import 'panel_tabs.dart';
 import 'pending_card.dart';
 import 'report_tab.dart';
+import 'redo_card.dart';
 import 'delivery_cards.dart';
 import 'terminal_tab.dart';
 import 'ui_prefs.dart';
@@ -76,14 +78,40 @@ export 'labels.dart'
         panelDangerTint,
         panelDangerColor;
 export 'log_tab.dart' show LogTab, LogRow;
-export 'member_gone_banner.dart' show MemberGoneBanner, RecoveryHint, memberFailureEventsProvider, recoveryExpiredCountProvider;
-export 'member_log.dart' show memberLogProvider, memberBackfillProvider, latestTextEventProvider, MemberBackfill;
+export 'member_gone_banner.dart'
+    show
+        MemberGoneBanner,
+        RecoveryHint,
+        memberFailureEventsProvider,
+        recoveryExpiredCountProvider;
+export 'member_log.dart'
+    show
+        memberLogProvider,
+        memberBackfillProvider,
+        latestTextEventProvider,
+        MemberBackfill;
 export 'panel_splitter.dart';
-export 'panel_tabs.dart' show RightPanelTab, PanelTabRequest, panelTabRequestProvider;
+export 'panel_tabs.dart'
+    show RightPanelTab, PanelTabRequest, panelTabRequestProvider;
 export 'pending_card.dart'
-    show PendingCards, PendingCard, ApprovalCard, QuestionCard, AskParentCard, askParentCardTitle, askParentOverrideLabel, userInboxPendings;
+    show
+        PendingCards,
+        PendingCard,
+        ApprovalCard,
+        QuestionCard,
+        AskParentCard,
+        askParentCardTitle,
+        askParentOverrideLabel,
+        userInboxPendings;
 export 'redo_card.dart'
-    show RedoCards, RedoCard, redoNeededProvider, globalRedoNeededProvider, redoInstructionProvider, describeRedoSummary, redoExpiredTitle;
+    show
+        RedoCards,
+        RedoCard,
+        redoNeededProvider,
+        globalRedoNeededProvider,
+        redoInstructionProvider,
+        describeRedoSummary,
+        redoExpiredTitle;
 export 'report_tab.dart'
     show
         ReportTab,
@@ -95,8 +123,10 @@ export 'report_tab.dart'
         reportHeaderLine,
         reportReadProvider,
         reportUnreadProvider;
-export '../usage/usage_line.dart' show MemberUsageLine, usageLineHeight, usageLineLabel;
-export 'terminal_cache.dart' show terminalCacheProvider, TerminalCache, CachedTerminal;
+export '../usage/usage_line.dart'
+    show MemberUsageLine, usageLineHeight, usageLineLabel;
+export 'terminal_cache.dart'
+    show terminalCacheProvider, TerminalCache, CachedTerminal;
 export 'terminal_tab.dart' show TerminalTab, describeAttachError;
 export 'ui_prefs.dart';
 
@@ -107,7 +137,11 @@ const double pendingCardsMaxHeight = 320;
 const String panelNoSelectionHint = '캐릭터를 선택하세요';
 
 class RightPanel extends ConsumerWidget {
-  const RightPanel({super.key, required this.memberId, this.initialTab = RightPanelTab.log});
+  const RightPanel({
+    super.key,
+    required this.memberId,
+    this.initialTab = RightPanelTab.log,
+  });
 
   /// 선택된 멤버. null 이면 인박스 + 안내 문구.
   final String? memberId;
@@ -126,7 +160,12 @@ class RightPanel extends ConsumerWidget {
             // 인박스가 제 높이 안에서 스크롤한다(T40d ②).
             Flexible(child: PendingInbox()),
             Expanded(
-              child: Center(child: Text(panelNoSelectionHint, style: TextStyle(color: Colors.white38, fontSize: 14))),
+              child: Center(
+                child: Text(
+                  panelNoSelectionHint,
+                  style: TextStyle(color: Colors.white38, fontSize: 14),
+                ),
+              ),
             ),
           ],
         ),
@@ -139,8 +178,7 @@ class RightPanel extends ConsumerWidget {
         length: RightPanelTab.values.length,
         initialIndex: initialTab.index,
         child: _TabRequestListener(
-          child: LayoutBuilder(
-            builder: (context, box) => Column(
+          child: Column(
             children: [
               if (member == null)
                 _UnknownMemberHeader(memberId: id)
@@ -152,51 +190,266 @@ class RightPanel extends ConsumerWidget {
               // `backfillMemberId` 는 목록에 영향을 주지 않고 **만료 흔적**만 그 멤버의 백필에서 더 긁어온다.
               // 블록 높이는 `min(패널 높이 × inboxMaxHeightFraction, 내용)` 이고, 카드는 그 안에서
               // 스크롤한다. 헤더와 "+N" 줄은 스크롤 밖에 고정이라 접힘선 아래로 밀리지 않는다(T40d ②).
-              ConstrainedBox(
-                constraints: BoxConstraints(
-                  maxHeight: box.hasBoundedHeight ? box.maxHeight * inboxMaxHeightFraction : pendingCardsMaxHeight,
-                ),
-                child: PendingInbox(
-                  backfillMemberId: id,
-                  belowCards: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
+              Expanded(
+                child: LayoutBuilder(
+                  builder: (context, remaining) => Column(
                     children: [
-                      RecoveryHint(memberId: id),
-                      DeliveryCards(memberId: id),
-                      // 이 멤버 패널에만 남는 카드 = `ask_parent` 안내("대신 답하기"). 인박스 카드 뒤 · 탭 위.
-                      PendingCards(memberId: id),
+                      // Budget from the space LEFT AFTER the header, so notices cannot
+                      // reduce the actual reading area to a couple of lines.
+                      ConstrainedBox(
+                        constraints: BoxConstraints(
+                          maxHeight: math.max(
+                            0,
+                            math.min(
+                              remaining.maxHeight * 0.45,
+                              remaining.maxHeight -
+                                  kTextTabBarHeight -
+                                  math.min(220, remaining.maxHeight * 0.5),
+                            ),
+                          ),
+                        ),
+                        child: _PanelAttention(memberId: id),
+                      ),
+                      _PanelTabBar(memberId: id),
+                      Expanded(
+                        key: const Key('panel.readingArea'),
+                        child: TabBarView(
+                          children: [
+                            LogTab(memberId: id),
+                            // 오버레이(Ctrl+T)가 열려 있으면 여기서는 붙이지 않는다 — attach 는 한 곳만(panel_splitter.dart).
+                            ref.watch(terminalOverlayProvider)
+                                ? Center(
+                                    child: Padding(
+                                      padding: const EdgeInsets.all(16),
+                                      child: Text(
+                                        terminalMovedToOverlay,
+                                        key: const Key('panel.terminalMoved'),
+                                        textAlign: TextAlign.center,
+                                        style: const TextStyle(
+                                          fontSize: 12,
+                                          color: Colors.white38,
+                                        ),
+                                      ),
+                                    ),
+                                  )
+                                : TerminalTab(memberId: id),
+                            InstructionsTab(memberId: id),
+                            ReportTab(memberId: id),
+                          ],
+                        ),
+                      ),
                     ],
                   ),
                 ),
               ),
-              _PanelTabBar(memberId: id),
-              Expanded(
-                child: TabBarView(
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// The inline notices share a small, scrollable area. A separate reader shows
+/// the full contents without shrinking logs or the terminal.
+class _PanelAttention extends ConsumerStatefulWidget {
+  const _PanelAttention({required this.memberId});
+  final String memberId;
+  @override
+  ConsumerState<_PanelAttention> createState() => _PanelAttentionState();
+}
+
+class _PanelAttentionState extends ConsumerState<_PanelAttention> {
+  bool? _expanded;
+
+  @override
+  Widget build(BuildContext context) {
+    ref.listen<InboxFocusRequest?>(inboxFocusProvider, (previous, next) {
+      if (next != null && next != previous) setState(() => _expanded = true);
+    });
+    final items = ref.watch(inboxItemsProvider(widget.memberId));
+    final questions = ref
+        .watch(openPendingProvider)
+        .values
+        .where((p) => p.memberId == widget.memberId && p.isAskParent)
+        .toList();
+    final deliveries = ref
+        .watch(openTasksProvider)
+        .values
+        .where(
+          (t) =>
+              t.toMember == widget.memberId &&
+              ['failed', 'submitting'].contains(t.delivery),
+        )
+        .length;
+    final count = items.length + questions.length + deliveries;
+    return LayoutBuilder(
+      builder: (context, box) {
+        final expanded = _expanded ?? box.maxHeight >= 140;
+        return Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (count > 0)
+              Padding(
+                padding: const EdgeInsets.only(left: 12, right: 4),
+                child: Row(
                   children: [
-                    LogTab(memberId: id),
-                    // 오버레이(Ctrl+T)가 열려 있으면 여기서는 붙이지 않는다 — attach 는 한 곳만(panel_splitter.dart).
-                    ref.watch(terminalOverlayProvider)
-                        ? Center(
-                            child: Padding(
-                              padding: const EdgeInsets.all(16),
-                              child: Text(
-                                terminalMovedToOverlay,
-                                key: const Key('panel.terminalMoved'),
-                                textAlign: TextAlign.center,
-                                style: const TextStyle(fontSize: 12, color: Colors.white38),
-                              ),
-                            ),
-                          )
-                        : TerminalTab(memberId: id),
-                    InstructionsTab(memberId: id),
-                    ReportTab(memberId: id),
+                    Expanded(
+                      child: Text(
+                        questions.isNotEmpty && items.isEmpty && deliveries == 0
+                            ? '팀장·부장 답변 대기 ${questions.length}건 · 사용자 답변 불필요'
+                            : '알림·질문 $count건',
+                        style: const TextStyle(
+                          fontSize: 12.5,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ),
+                    TextButton.icon(
+                      key: const Key('panel.attention.open'),
+                      onPressed: () => showDialog<void>(
+                        context: context,
+                        builder: (_) =>
+                            _AttentionDialog(memberId: widget.memberId),
+                      ),
+                      icon: const Icon(Icons.open_in_full, size: 16),
+                      label: const Text('크게 보기'),
+                    ),
+                    IconButton(
+                      key: const Key('panel.attention.collapse'),
+                      tooltip: expanded ? '알림 접고 기록 넓게 보기' : '알림 펼치기',
+                      onPressed: () => setState(() => _expanded = !expanded),
+                      icon: Icon(
+                        expanded ? Icons.expand_less : Icons.expand_more,
+                      ),
+                      visualDensity: VisualDensity.compact,
+                    ),
                   ],
                 ),
               ),
-            ],
+            Flexible(
+              child: Visibility(
+                visible: expanded || count == 0,
+                maintainState: true,
+                child: PendingInbox(
+                  backfillMemberId: widget.memberId,
+                  belowCards: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      DeliveryCards(memberId: widget.memberId),
+                      PendingCards(memberId: widget.memberId),
+                    ],
+                  ),
+                ),
+              ),
             ),
-          ),
+          ],
+        );
+      },
+    );
+  }
+}
+
+class _AttentionDialog extends ConsumerWidget {
+  const _AttentionDialog({required this.memberId});
+  final String memberId;
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final items = ref.watch(inboxItemsProvider(memberId));
+    final hasParentQuestion = ref
+        .watch(openPendingProvider)
+        .values
+        .any((p) => p.memberId == memberId && p.isAskParent);
+    return Dialog(
+      key: const Key('panel.attention.dialog'),
+      insetPadding: const EdgeInsets.all(24),
+      child: SizedBox(
+        width: 900,
+        height: MediaQuery.sizeOf(context).height - 64,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(20, 12, 12, 8),
+              child: Row(
+                children: [
+                  const Expanded(
+                    child: Text(
+                      '알림·질문 자세히 보기',
+                      style: TextStyle(
+                        fontSize: 20,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  ),
+                  IconButton(
+                    tooltip: '닫기',
+                    onPressed: () => Navigator.of(context).pop(),
+                    icon: const Icon(Icons.close),
+                  ),
+                ],
+              ),
+            ),
+            const Divider(height: 1),
+            Expanded(
+              child: SingleChildScrollView(
+                padding: const EdgeInsets.all(16),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    Text(
+                      items.any((i) => i is InboxPendingItem)
+                          ? '사용자 확인이 필요한 요청'
+                          : '지금 사용자가 답변해야 할 요청은 없어요.',
+                      style: const TextStyle(
+                        fontSize: 14,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    for (final item in items) ...[
+                      const SizedBox(height: 12),
+                      Text(
+                        ref.watch(memberProvider(item.memberId))?.name ?? 'AI',
+                        style: const TextStyle(
+                          fontSize: 13,
+                          color: Colors.white70,
+                        ),
+                      ),
+                      switch (item) {
+                        InboxPendingItem(:final pending) => PendingCard(
+                          key: ValueKey('attention-${item.id}'),
+                          pending: pending,
+                        ),
+                        InboxExpiredItem(:final event) => RedoCard(
+                          key: ValueKey('attention-${item.id}'),
+                          event: event,
+                          expired: true,
+                        ),
+                      },
+                    ],
+                    DeliveryCards(memberId: memberId),
+                    if (hasParentQuestion) ...[
+                      const SizedBox(height: 20),
+                      const Text(
+                        'AI끼리 주고받는 질문',
+                        style: TextStyle(
+                          fontSize: 16,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                      const SizedBox(height: 6),
+                      const Text(
+                        '아래 질문은 표시된 팀장·부장이 답변할 차례입니다. 사용자가 대신 답할 필요는 없어요.',
+                        style: TextStyle(fontSize: 14, height: 1.5),
+                      ),
+                      PendingCards(memberId: memberId),
+                    ],
+                  ],
+                ),
+              ),
+            ),
+          ],
         ),
       ),
     );
@@ -226,7 +479,9 @@ class _PanelTabBarState extends ConsumerState<_PanelTabBar> {
       ref.read(reportReadProvider.notifier).markRead(widget.memberId);
     }
     // 터미널 탭이 열려 있는 동안 패널이 660 으로 벌어진다(패스 6).
-    ref.read(panelWidthProvider.notifier).setTerminalActive(c.index == RightPanelTab.terminal.index);
+    ref
+        .read(panelWidthProvider.notifier)
+        .setTerminalActive(c.index == RightPanelTab.terminal.index);
   }
 
   @override
@@ -240,8 +495,12 @@ class _PanelTabBarState extends ConsumerState<_PanelTabBar> {
     // 보고서·터미널 탭이 이미 열린 채로 들어왔으면(initialTab, 멤버 교체) 바로 반영.
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
-      if (c.index == RightPanelTab.report.index) ref.read(reportReadProvider.notifier).markRead(widget.memberId);
-      ref.read(panelWidthProvider.notifier).setTerminalActive(c.index == RightPanelTab.terminal.index);
+      if (c.index == RightPanelTab.report.index) {
+        ref.read(reportReadProvider.notifier).markRead(widget.memberId);
+      }
+      ref
+          .read(panelWidthProvider.notifier)
+          .setTerminalActive(c.index == RightPanelTab.terminal.index);
     });
   }
 
@@ -276,11 +535,21 @@ class _PanelTabBarState extends ConsumerState<_PanelTabBar> {
                 const SizedBox(width: 5),
                 Container(
                   key: const Key('panel.reportBadge'),
-                  padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
-                  decoration: BoxDecoration(color: legendColor(LegendSlot.idle), borderRadius: BorderRadius.circular(8)),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 5,
+                    vertical: 1,
+                  ),
+                  decoration: BoxDecoration(
+                    color: legendColor(LegendSlot.idle),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
                   child: Text(
                     '$unread',
-                    style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Colors.black87),
+                    style: const TextStyle(
+                      fontSize: 10,
+                      fontWeight: FontWeight.bold,
+                      color: Colors.black87,
+                    ),
                   ),
                 ),
               ],
@@ -311,10 +580,16 @@ class _TabRequestListener extends ConsumerWidget {
 }
 
 /// 비-부장 멤버 패널에 붙는 안내 — 사용자 지시는 부장에게만 간다(D-32). 터미널 직접 타이핑은 그대로 된다.
-const String panelNotInstructableHint = '지시는 부장에게 — 이 멤버는 상사가 일을 줍니다 (터미널 직접 입력은 가능)';
+const String panelNotInstructableHint =
+    '지시는 부장에게 — 이 멤버는 상사가 일을 줍니다 (터미널 직접 입력은 가능)';
 
 /// 트리 한 줄: `직급 · 상사: 이름(직급) · 직속 부하 N명`. 테스트·문서에서 참조.
-String panelTreeLine({required MemberRank rank, required String? parentName, MemberRank? parentRank, required int childCount}) {
+String panelTreeLine({
+  required MemberRank rank,
+  required String? parentName,
+  MemberRank? parentRank,
+  required int childCount,
+}) {
   final parent = parentName == null
       ? (rank == MemberRank.head ? '사용자' : '없음')
       : '$parentName(${(parentRank ?? MemberRank.member).label})';
@@ -329,21 +604,36 @@ class PanelHeader extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final team = member.teamId == null ? null : ref.watch(teamsProvider)[member.teamId];
+    final team = member.teamId == null
+        ? null
+        : ref.watch(teamsProvider)[member.teamId];
     final department = ref.watch(departmentProvider(member.departmentId));
     final parent = ref.watch(parentProvider(member.id));
     final children = ref.watch(childrenProvider(member.id));
     final derived = ref.watch(derivedStatusProvider(member.id));
-    final activity=ref.watch(meetingActivityLabelsProvider(member.departmentId))[member.id];
-    final statusLabel = activity ?? (derived != null && derived.wire != member.status.wire
-        ? derivedStatusLabel(derived)
-        : memberStatusLabel(member.status));
+    final activity = ref.watch(
+      meetingActivityLabelsProvider(member.departmentId),
+    )[member.id];
+    final statusLabel =
+        activity ??
+        (derived != null && derived.wire != member.status.wire
+            ? derivedStatusLabel(derived)
+            : memberStatusLabel(member.status));
     // 상태 점은 범례 7칸 매핑을 쓴다(D-42 3) — 사무실 링 색·하단 범례와 같은 색.
     // `ask_parent` 로 상사 답을 기다리는 중이면 "내 차례" 가 아니라 "대기" 다.
-    final askingParent = ref.watch(openPendingProvider).values.any((p) => p.isAskParent && p.memberId == member.id);
-    final legend = legendSlotFor(status: member.status, derived: derived, askingParent: askingParent);
+    final askingParent = ref
+        .watch(openPendingProvider)
+        .values
+        .any((p) => p.isAskParent && p.memberId == member.id);
+    final legend = legendSlotFor(
+      status: member.status,
+      derived: derived,
+      askingParent: askingParent,
+    );
     final hired = DateTime.tryParse(member.createdAt);
-    final model = ref.watch(memberUsageProvider(member.id).select((u) => u?.model));
+    final model = ref.watch(
+      memberUsageProvider(member.id).select((u) => u?.model),
+    );
     final cwd = department?.cwd ?? team?.cwd ?? member.cwd;
     final scope = [
       if (department != null) department.name,
@@ -357,7 +647,13 @@ class PanelHeader extends ConsumerWidget {
         children: [
           Row(
             children: [
-              Text(member.name, style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold)),
+              Text(
+                member.name,
+                style: const TextStyle(
+                  fontSize: 15,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
               const SizedBox(width: 8),
               _Badge(member.engine.name),
               // U-05: 엔진만으로는 Opus 인지 Fable 인지, astra 인지 알 수 없다 — 세션이 쓰는 모델을 옆에 붙인다.
@@ -367,24 +663,33 @@ class PanelHeader extends ConsumerWidget {
                 Flexible(
                   child: Tooltip(
                     message: '모델 ${model.fullLabel}',
-                    child: _Badge(model.shortLabel, key: const Key('panel.model')),
+                    child: _Badge(
+                      model.shortLabel,
+                      key: const Key('panel.model'),
+                    ),
                   ),
                 ),
               ],
-              const SizedBox(width: 8),
-              Tooltip(
-                message: '${legend.label}${legend.icon.isEmpty ? '' : ' ${legend.icon}'}',
-                child: Icon(
-                  legend.dashedRing ? Icons.circle_outlined : Icons.circle,
-                  key: const Key('panel.statusDot'),
-                  size: 9,
-                  color: legendColor(legend),
-                ),
-              ),
-              const SizedBox(width: 4),
-              Flexible(flex:2,child:Tooltip(message:statusLabel,child:Text(statusLabel,overflow:TextOverflow.ellipsis,style:const TextStyle(fontSize:12,color:Colors.white70)))),
               const Spacer(),
               if (hired != null) ElapsedSince(since: hired),
+            ],
+          ),
+          const SizedBox(height: 6),
+          Row(
+            children: [
+              Icon(
+                legend.dashedRing ? Icons.circle_outlined : Icons.circle,
+                key: const Key('panel.statusDot'),
+                size: 9,
+                color: legendColor(legend),
+              ),
+              const SizedBox(width: 6),
+              Expanded(
+                child: Text(
+                  statusLabel,
+                  style: const TextStyle(fontSize: 13, color: Colors.white70),
+                ),
+              ),
             ],
           ),
           const SizedBox(height: 4),
@@ -402,7 +707,12 @@ class PanelHeader extends ConsumerWidget {
           const SizedBox(height: 2),
           Text(
             '${scope.isEmpty ? member.departmentId : scope} · $cwd',
-            style: const TextStyle(fontSize: 11, color: Colors.white54, fontFamily: panelMonoFamily, fontFamilyFallback: panelMonoFallback),
+            style: const TextStyle(
+              fontSize: 11,
+              color: Colors.white54,
+              fontFamily: panelMonoFamily,
+              fontFamilyFallback: panelMonoFallback,
+            ),
             overflow: TextOverflow.ellipsis,
           ),
           const SizedBox(height: 2),
@@ -413,7 +723,12 @@ class PanelHeader extends ConsumerWidget {
             Text(
               panelNotInstructableHint,
               key: const Key('panel.notInstructable'),
-              style: TextStyle(fontSize: 11, color: Theme.of(context).colorScheme.primary.withValues(alpha: 0.9)),
+              style: TextStyle(
+                fontSize: 11,
+                color: Theme.of(
+                  context,
+                ).colorScheme.primary.withValues(alpha: 0.9),
+              ),
             ),
           ],
         ],
@@ -428,11 +743,14 @@ class _UnknownMemberHeader extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => Container(
-        width: double.infinity,
-        padding: const EdgeInsets.fromLTRB(12, 10, 12, 8),
-        color: Theme.of(context).colorScheme.surfaceContainerHigh,
-        child: Text('멤버 정보 없음 · $memberId', style: const TextStyle(fontSize: 13, color: Colors.white54)),
-      );
+    width: double.infinity,
+    padding: const EdgeInsets.fromLTRB(12, 10, 12, 8),
+    color: Theme.of(context).colorScheme.surfaceContainerHigh,
+    child: Text(
+      '멤버 정보 없음 · $memberId',
+      style: const TextStyle(fontSize: 13, color: Colors.white54),
+    ),
+  );
 }
 
 class _Badge extends StatelessWidget {
@@ -441,19 +759,19 @@ class _Badge extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => Container(
-        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
-        decoration: BoxDecoration(
-          border: Border.all(color: Colors.white24),
-          borderRadius: BorderRadius.circular(4),
-        ),
-        child: Text(
-          text,
-          style: const TextStyle(fontSize: 11, color: Colors.white70),
-          maxLines: 1,
-          softWrap: false,
-          overflow: TextOverflow.ellipsis,
-        ),
-      );
+    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+    decoration: BoxDecoration(
+      border: Border.all(color: Colors.white24),
+      borderRadius: BorderRadius.circular(4),
+    ),
+    child: Text(
+      text,
+      style: const TextStyle(fontSize: 11, color: Colors.white70),
+      maxLines: 1,
+      softWrap: false,
+      overflow: TextOverflow.ellipsis,
+    ),
+  );
 }
 
 /// "출근 N분" — 30초마다 갱신.
@@ -486,7 +804,7 @@ class _ElapsedSinceState extends State<ElapsedSince> {
 
   @override
   Widget build(BuildContext context) => Text(
-        '${widget.prefix}${formatElapsed(DateTime.now().difference(widget.since))}',
-        style: const TextStyle(fontSize: 11, color: Colors.white54),
-      );
+    '${widget.prefix}${formatElapsed(DateTime.now().difference(widget.since))}',
+    style: const TextStyle(fontSize: 11, color: Colors.white54),
+  );
 }

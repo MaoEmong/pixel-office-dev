@@ -91,7 +91,7 @@ void main() {
     final m2 = painter.scene.memberById('m2')!;
     expect(m2.status, MemberStatus.idle); // raw 는 그대로 idle
     expect(m2.queueIndex, 0);
-    expect(m2.summary, '❓ 질문');
+    expect(m2.summary, '사용자 답변 대기');
     expect(m2.isAlert, isTrue);
     expect(painter.scene.queue.single.line(0), '1. 모시 — 질문: 점심은?');
     // 부장은 맨 윗줄(책상 0) 이라 장면 순서의 첫 자리다.

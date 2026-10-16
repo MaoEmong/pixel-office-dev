@@ -56,9 +56,14 @@ class _DeliveryCardsState extends ConsumerState<DeliveryCards> {
                     retryLabel: '지시 재제출',
                     actions: [
                       TextButton(
-                        onPressed: () => ref
-                            .read(panelTabRequestProvider.notifier)
-                            .request(RightPanelTab.terminal),
+                        onPressed: () {
+                          ref
+                              .read(panelTabRequestProvider.notifier)
+                              .request(RightPanelTab.terminal);
+                          if (ModalRoute.of(context) is PopupRoute) {
+                            Navigator.of(context).pop();
+                          }
+                        },
                         child: const Text('터미널 확인'),
                       ),
                     ],

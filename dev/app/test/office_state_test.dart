@@ -4,6 +4,7 @@ import 'dart:async';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:pixel_office/model/models.dart';
+import 'package:pixel_office/office/office_scene.dart';
 import 'package:pixel_office/rpc/rpc_client.dart';
 import 'package:pixel_office/state/office_state.dart';
 
@@ -315,6 +316,61 @@ void main() {
     daemon.push('member.status', {'memberId': 'm1', 'status': 'working', 'derived': 'working'});
     await until(container, (s) => s.derived['m1'] == DerivedStatus.working);
     expect(container.read(openPendingProvider), isEmpty);
+  });
+
+  for (final allow in [true, false]) {
+    test('승인 응답 성공($allow): 다음 상태 알림 없이도 대기를 끝내고 자리로 돌아간다', () async {
+      await until(container, (s) => s.isConnected && s.members.isNotEmpty);
+      daemon.push('member.status', {'memberId': 'm1', 'status': 'waiting_approval', 'derived': 'waiting_approval'});
+      await until(container, (s) => s.derived['m1'] == DerivedStatus.waitingApproval);
+      final n = container.read(officeProvider.notifier);
+      n.applyEvent(OfficeEvent.fromJson(sampleEvent(20, memberId: 'm1', kind: 'waiting_approval', ref: {'approvalId': 'a1'})));
+      daemon.handlers['approval.respond'] = (_) => {};
+
+      await n.respondApproval('a1', allow: allow);
+
+      final s = container.read(officeProvider);
+      expect(s.pending, isEmpty);
+      expect(s.members['m1']!.status, MemberStatus.working);
+      expect(s.derived['m1'], DerivedStatus.working);
+      final scene = OfficeScene.build(members: s.members, latestEvents: s.latestEvent, pending: s.pending, derived: s.derived);
+      expect(scene.myDeskHeader, '내 책상 · 대기 없음');
+      expect(scene.memberById('m1')!.isQueued, isFalse);
+      expect(scene.memberById('m1')!.isAlert, isFalse);
+      expect(scene.memberById('m1')!.summary, isNot(contains('허가 대기')));
+    });
+  }
+
+  test('승인 응답: 다른 승인·질문은 남기고 실패한 응답은 대기를 지우지 않는다', () async {
+    await until(container, (s) => s.isConnected && s.members.isNotEmpty);
+    final n = container.read(officeProvider.notifier);
+    daemon.push('member.status', {'memberId': 'm1', 'status': 'waiting_approval', 'derived': 'waiting_approval'});
+    await until(container, (s) => s.derived['m1'] == DerivedStatus.waitingApproval);
+    n.applyEvent(OfficeEvent.fromJson(sampleEvent(20, memberId: 'm1', kind: 'waiting_approval', ref: {'approvalId': 'a2'})));
+    n.applyEvent(OfficeEvent.fromJson(sampleEvent(21, memberId: 'm1', kind: 'asking', detail: {'tool': 'AskUserQuestion'}, ref: {'questionId': 'q1'})));
+    await expectLater(n.respondApproval('a1', allow: true), throwsA(isA<RpcException>()));
+    expect(container.read(officeProvider).pending.keys, contains('a1'));
+    expect(container.read(officeProvider).derived['m1'], DerivedStatus.waitingApproval);
+
+    daemon.handlers['approval.respond'] = (_) => {};
+    await n.respondApproval('a1', allow: true);
+    expect(container.read(officeProvider).pending.keys.toSet(), {'a2', 'q1'});
+    expect(container.read(officeProvider).derived['m1'], DerivedStatus.waitingApproval);
+    await n.respondApproval('a2', allow: true);
+    expect(container.read(officeProvider).pending.keys, ['q1']);
+    expect(container.read(officeProvider).derived['m1'], DerivedStatus.waitingAnswer);
+  });
+
+  test('승인 응답보다 먼저 도착한 최신 상태는 되돌리지 않는다', () async {
+    await until(container, (s) => s.isConnected && s.members.isNotEmpty);
+    final n = container.read(officeProvider.notifier);
+    daemon.handlers['approval.respond'] = (_) {
+      daemon.push('member.status', {'memberId': 'm1', 'status': 'idle', 'derived': 'free'});
+      return {};
+    };
+    await n.respondApproval('a1', allow: true);
+    await until(container, (s) => s.derived['m1'] == DerivedStatus.free);
+    expect(container.read(officeProvider).members['m1']!.status, MemberStatus.idle);
   });
 
   test('T19b: working 알림은 ask_user 질문만 남기고 나머지(허가·TUI 질문)는 지운다', () async {

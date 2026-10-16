@@ -153,7 +153,7 @@ void main() {
         '목표와 완료 기준',
       );
       expect(fake.calls.where((c) => c.$1 == 'workflow.start'), isEmpty);
-      await tester.tap(find.text('작업 시작 · 회의 소집'));
+      await tester.tap(find.text('지금 바로 시작'));
       await tester.pumpAndSettle();
       expect(fake.calls.where((c) => c.$1 == 'workflow.start'), hasLength(1));
       expect(find.byType(TextField), findsOneWidget);
@@ -175,13 +175,13 @@ void main() {
       await tester.tap(find.text('회의'));
       await tester.pumpAndSettle();
       expect(find.text('참석자: 퇴근팀장'), findsOneWidget);
-      await tester.tap(find.text('검수 완료'));
+      await tester.tap(find.text('사용자가 직접 완료 처리'));
       await tester.pumpAndSettle();
       expect(
         fake.calls.where((c) => c.$1 == 'workflow.complete'),
         hasLength(1),
       );
-      expect(find.text('검수 완료'), findsOneWidget);
+      expect(find.text('전체 작업 완료'), findsOneWidget);
       expect(tester.takeException(), isNull);
     },
   );

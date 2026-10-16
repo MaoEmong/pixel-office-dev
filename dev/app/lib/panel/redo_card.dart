@@ -33,13 +33,38 @@ const Color _redoColor = Colors.deepOrangeAccent;
 const Color _expiredColor = Color(0xFF8A93A8);
 
 /// 재지시 필요 흔적(error{pendingId})인가.
-bool isRedoEvent(OfficeEvent ev) => ev.kind == OfficeEventKind.error && ev.detail.pendingId != null;
+bool isRedoEvent(OfficeEvent ev) =>
+    ev.kind == OfficeEventKind.error && ev.detail.pendingId != null;
 
 /// 멤버가 새 턴을 끝냈다고 볼 이벤트(이 뒤의 재지시 흔적만 유효).
 bool isTurnBoundary(OfficeEvent ev) =>
-    ev.kind == OfficeEventKind.idle || (ev.kind == OfficeEventKind.text && (ev.detail.text ?? '').isNotEmpty);
+    ev.kind == OfficeEventKind.idle ||
+    (ev.kind == OfficeEventKind.text && (ev.detail.text ?? '').isNotEmpty);
 
-final redoNeededProvider = Provider.family<List<OfficeEvent>, String>((ref, memberId) {
+// Remember the exact historical expiry superseded by an open request. Closing
+// that restored request must not resurrect the old alert; a NEW expiry still
+// has a larger sequence number and remains visible.
+final _restoredExpiryProvider = Provider<Map<String, int>>((ref) => {});
+
+List<OfficeEvent> _activeExpiries(Ref ref, Iterable<OfficeEvent> events) {
+  final open = ref.watch(openPendingProvider);
+  final restored = ref.watch(_restoredExpiryProvider);
+  final out = <OfficeEvent>[];
+  for (final event in events) {
+    final id = event.detail.pendingId!;
+    if (open.containsKey(id)) {
+      if (event.seq > (restored[id] ?? -1)) restored[id] = event.seq;
+    } else if (event.seq > (restored[id] ?? -1)) {
+      out.add(event);
+    }
+  }
+  return out;
+}
+
+final redoNeededProvider = Provider.family<List<OfficeEvent>, String>((
+  ref,
+  memberId,
+) {
   final log = ref.watch(memberLogProvider(memberId));
   final byPending = <String, OfficeEvent>{};
   for (final ev in log) {
@@ -49,7 +74,9 @@ final redoNeededProvider = Provider.family<List<OfficeEvent>, String>((ref, memb
       byPending[ev.detail.pendingId!] = ev;
     }
   }
-  return byPending.values.toList(growable: false);
+  // The current snapshot is authoritative: a restored request is no longer an
+  // expired request, even if its historical expiry remains in the log.
+  return _activeExpiries(ref, byPending.values);
 });
 
 /// 전 멤버의 재지시 흔적(seq 순) — 전역 인박스가 쓴다(T40-4 D10: 만료 카드가 인박스 안으로).
@@ -60,17 +87,26 @@ final globalRedoNeededProvider = Provider<List<OfficeEvent>>((ref) {
     if (isTurnBoundary(ev)) {
       byMember[ev.memberId]?.clear();
     } else if (isRedoEvent(ev)) {
-      (byMember[ev.memberId] ??= <String, OfficeEvent>{})[ev.detail.pendingId!] = ev;
+      (byMember[ev.memberId] ??=
+              <String, OfficeEvent>{})[ev.detail.pendingId!] =
+          ev;
     }
   }
-  final out = [for (final m in byMember.values) ...m.values]..sort((a, b) => a.seq.compareTo(b.seq));
+  final out = _activeExpiries(ref, [
+    for (final m in byMember.values) ...m.values,
+  ])..sort((a, b) => a.seq.compareTo(b.seq));
   return List<OfficeEvent>.unmodifiable(out);
 });
 
-final redoInstructionProvider = Provider.family<String?, String>((ref, memberId) {
+final redoInstructionProvider = Provider.family<String?, String>((
+  ref,
+  memberId,
+) {
   Task? latest;
   for (final t in ref.watch(openTasksProvider).values) {
-    if (t.toMember == memberId && (latest == null || t.id > latest.id)) latest = t;
+    if (t.toMember == memberId && (latest == null || t.id > latest.id)) {
+      latest = t;
+    }
   }
   if (latest != null) return latest.instruction;
   final log = ref.watch(memberLogProvider(memberId));
@@ -91,9 +127,15 @@ String describeRedoSummary(String? summary, {String? pendingType}) {
     'question' => '질문',
     _ => '허가·질문',
   };
-  if (s.contains('timed out')) return '$what 보류가 시간 초과로 닫혔어요 — CLI 가 자기 프롬프트를 띄웠으니 터미널에서 직접 답하세요';
-  if (s.contains('connection closed')) return '$what 보류가 답하기 전에 끊겼어요 — 터미널에서 직접 답하세요';
-  if (s.startsWith('재지시 필요')) return '$s — 데몬이 재시작되며 열려 있던 $what이 사라졌어요. 필요하면 다시 지시하세요';
+  if (s.contains('timed out')) {
+    return '$what의 답변 시간이 지나 닫혔어요. 계속하려면 ‘터미널에서 답하기’를 눌러 AI 화면에 남은 요청을 확인해 주세요.';
+  }
+  if (s.contains('connection closed')) {
+    return '$what에 답하기 전에 AI 연결이 끊겼어요. ‘터미널에서 답하기’를 눌러 현재 화면을 확인해 주세요.';
+  }
+  if (s.startsWith('재지시 필요')) {
+    return '작업 연결이 다시 시작되면서 이전 $what이 닫혔어요.\n계속해야 할 내용이라면 AI 화면을 확인하거나, 부장과 대화에서 요청 내용을 다시 보내 주세요.';
+  }
   return s.isEmpty ? '$what이 답 없이 닫혔어요' : s;
 }
 
@@ -109,13 +151,16 @@ class RedoCards extends ConsumerWidget {
     if (events.isEmpty) return const SizedBox.shrink();
     return Column(
       mainAxisSize: MainAxisSize.min,
-      children: [for (final ev in events) RedoCard(key: ValueKey('redo-${ev.detail.pendingId}'), event: ev)],
+      children: [
+        for (final ev in events)
+          RedoCard(key: ValueKey('redo-${ev.detail.pendingId}'), event: ev),
+      ],
     );
   }
 }
 
 /// 인박스 안에서 쓰는 회색 카드의 제목(D10: "복구로 만료된 허가는 인박스에 회색 만료 — 재지시 카드").
-const String redoExpiredTitle = '만료 — 재지시';
+const String redoExpiredTitle = '이전 요청 · 다시 확인 필요';
 
 class RedoCard extends ConsumerWidget {
   const RedoCard({super.key, required this.event, this.expired = false});
@@ -129,7 +174,11 @@ class RedoCard extends ConsumerWidget {
     final instruction = ref.read(redoInstructionProvider(event.memberId));
     final messenger = ScaffoldMessenger.maybeOf(context);
     if (instruction == null || instruction.trim().isEmpty) {
-      await showErrorPanel(context, title: '원래 지시문을 찾지 못했어요', message: '대화나 작업 기록을 확인한 뒤 지시 바에 직접 입력해 주세요.');
+      await showErrorPanel(
+        context,
+        title: '원래 지시문을 찾지 못했어요',
+        message: '대화나 작업 기록을 확인한 뒤 지시 바에 직접 입력해 주세요.',
+      );
       return;
     }
     final client = ref.read(rpcClientProvider);
@@ -139,7 +188,12 @@ class RedoCard extends ConsumerWidget {
       client.reportFailure('clipboard.copy', error);
       return;
     }
-    messenger?.showSnackBar(const SnackBar(content: Text('지시문을 복사했어요 — 지시 바에 붙여넣기')));
+    if (context.mounted && ModalRoute.of(context) is PopupRoute) {
+      Navigator.of(context).pop();
+    }
+    messenger?.showSnackBar(
+      const SnackBar(content: Text('이전 지시문을 복사했어요. 부장과 대화에서 붙여 넣어 보내 주세요.')),
+    );
   }
 
   @override
@@ -162,14 +216,28 @@ class RedoCard extends ConsumerWidget {
             children: [
               Text(
                 expired ? redoExpiredTitle : '⚠ 재지시 필요',
-                style: TextStyle(fontSize: 13.5, fontWeight: FontWeight.bold, color: accent),
+                style: TextStyle(
+                  fontSize: 13.5,
+                  fontWeight: FontWeight.bold,
+                  color: accent,
+                ),
               ),
               const Spacer(),
-              Text(formatClock(event.ts), style: const TextStyle(fontSize: 11, color: Colors.white38)),
+              Text(
+                formatClock(event.ts),
+                style: const TextStyle(fontSize: 11, color: Colors.white38),
+              ),
             ],
           ),
           const SizedBox(height: 6),
-          Text(describeRedoSummary(event.detail.summary, pendingType: pendingType), style: const TextStyle(fontSize: 12.5, color: Colors.white, height: 1.35)),
+          Text(
+            describeRedoSummary(event.detail.summary, pendingType: pendingType),
+            style: const TextStyle(
+              fontSize: 12.5,
+              color: Colors.white,
+              height: 1.35,
+            ),
+          ),
           const SizedBox(height: 8),
           Wrap(
             spacing: 6,
@@ -178,14 +246,21 @@ class RedoCard extends ConsumerWidget {
               FilledButton(
                 key: ValueKey('redo-terminal-${event.detail.pendingId}'),
                 style: _smallButtonStyle(),
-                onPressed: () => ref.read(panelTabRequestProvider.notifier).request(RightPanelTab.terminal),
+                onPressed: () {
+                  ref
+                      .read(panelTabRequestProvider.notifier)
+                      .request(RightPanelTab.terminal);
+                  if (ModalRoute.of(context) is PopupRoute) {
+                    Navigator.of(context).pop();
+                  }
+                },
                 child: const Text('터미널에서 답하기'),
               ),
               OutlinedButton(
                 key: ValueKey('redo-instruct-${event.detail.pendingId}'),
                 style: _smallButtonStyle(),
                 onPressed: () => _copyInstruction(context, ref),
-                child: const Text('다시 지시'),
+                child: const Text('이전 지시문 복사'),
               ),
             ],
           ),
@@ -196,10 +271,14 @@ class RedoCard extends ConsumerWidget {
 }
 
 ButtonStyle _smallButtonStyle() => ButtonStyle(
-      visualDensity: VisualDensity.compact,
-      padding: const WidgetStatePropertyAll(EdgeInsets.symmetric(horizontal: 10, vertical: 4)),
-      minimumSize: const WidgetStatePropertyAll(Size(0, 30)),
-      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-      textStyle: const WidgetStatePropertyAll(TextStyle(fontSize: 12.5)),
-      shape: WidgetStatePropertyAll(RoundedRectangleBorder(borderRadius: BorderRadius.circular(3))),
-    );
+  visualDensity: VisualDensity.compact,
+  padding: const WidgetStatePropertyAll(
+    EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+  ),
+  minimumSize: const WidgetStatePropertyAll(Size(0, 30)),
+  tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+  textStyle: const WidgetStatePropertyAll(TextStyle(fontSize: 12.5)),
+  shape: WidgetStatePropertyAll(
+    RoundedRectangleBorder(borderRadius: BorderRadius.circular(3)),
+  ),
+);

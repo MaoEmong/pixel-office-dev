@@ -111,7 +111,7 @@ class OfficeState {
 
   /// 열린 pending(id → Pending). 스냅샷 + waiting_approval/asking 이벤트로 추가.
   /// 제거는 (a) `error{pendingId}`, (b) 스냅샷에서 빠짐, (c) `member.status` 의 raw·파생이 **둘 다** waiting 이 아님
-  /// (단 `ask_user` 질문은 raw 가 idle/종료 일 때만 — [_onMemberStatus] 주석) — 세 가지뿐.
+  /// (단 `ask_user` 질문은 raw 가 idle/종료 일 때만 — [_onMemberStatus] 주석), (d) 응답 성공.
   final Map<String, Pending> pending;
 
   /// 열린 task(queued|assigned, id → Task).
@@ -329,7 +329,46 @@ class OfficeNotifier extends Notifier<OfficeState> {
 
   void upsertTask(Task t) => state = state.copyWith(tasks: {...state.tasks, t.id: t});
   void removeTask(int id) => state = state.copyWith(tasks: {...state.tasks}..remove(id));
-  void removePending(String id) => state = state.copyWith(pending: {...state.pending}..remove(id));
+
+  /// 응답이 확인된 항목과 그 항목 때문에 남은 대기 표시를 함께 정리한다.
+  /// 상태 알림이 먼저 처리된 경우에는 이미 최신 상태이므로 그대로 둔다.
+  void removePending(String id) {
+    final closed = state.pending[id];
+    if (closed == null) return;
+    final pending = {...state.pending}..remove(id);
+    final member = state.members[closed.memberId];
+    if (member == null || member.status.isGone || member.status == MemberStatus.suspended) {
+      state = state.copyWith(pending: pending);
+      return;
+    }
+    final remaining = pending.values.where((p) => p.memberId == member.id);
+    final hasApproval = remaining.any((p) => p.type == PendingType.approval);
+    final hasQuestion = remaining.any((p) => p.type == PendingType.question);
+    var status = member.status;
+    if ((status == MemberStatus.waitingApproval && !hasApproval) ||
+        (status == MemberStatus.waitingAnswer && !hasQuestion)) {
+      status = MemberStatus.working;
+    }
+    final currentDerived = state.derived[member.id] ?? member.derived;
+    final DerivedStatus derived;
+    if (hasApproval) {
+      derived = DerivedStatus.waitingApproval;
+    } else if (hasQuestion) {
+      derived = DerivedStatus.waitingAnswer;
+    } else if (currentDerived != null && !currentDerived.isWaiting && status == member.status) {
+      derived = currentDerived;
+    } else if (status == MemberStatus.idle && state.tasks.values.any((t) => t.fromMember == member.id)) {
+      derived = DerivedStatus.waitingReports;
+    } else {
+      derived = DerivedStatus.fromStatus(status,
+          hasAssignedTask: state.tasks.values.any((t) => t.toMember == member.id));
+    }
+    state = state.copyWith(
+      pending: pending,
+      members: status == member.status ? null : {...state.members, member.id: member.copyWith(status: status)},
+      derived: {...state.derived, member.id: derived},
+    );
+  }
 
   // ---- 수신 처리 -------------------------------------------------------------------
 

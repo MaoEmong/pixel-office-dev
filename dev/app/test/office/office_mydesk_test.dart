@@ -177,6 +177,26 @@ void main() {
   });
 
   group('슬롯·배지 클릭(위젯)', () {
+    testWidgets('카드가 닫히면 늦은 대기 상태가 남아도 내 책상에서 자기 자리로 돌아간다', (tester) async {
+      final state = waitingOffice(1);
+      final notifier = FakeOfficeNotifier(state);
+      await pumpHarness(tester, notifier);
+      await settleMotion(tester);
+      var painter = painterOf(tester);
+      expect(painter.lastPlacements.firstWhere((p) => p.memberId == 'mH').center,
+          painter.lastLayout!.slotCenter(0));
+
+      notifier.set(state.copyWith(pending: const {}));
+      await tester.pump();
+      await settleMotion(tester);
+      painter = painterOf(tester);
+      final member = painter.scene.memberById('mH')!;
+      expect(painter.scene.myDeskHeader, '내 책상 · 대기 없음');
+      expect(member.isQueued, isFalse);
+      expect(painter.lastPlacements.firstWhere((p) => p.memberId == 'mH').center,
+          painter.lastLayout!.seatCenter(member.deskIndex));
+    });
+
     testWidgets('슬롯 클릭 = 그 멤버 선택 + onSelectPending(pendingId)', (tester) async {
       final picks = <String?>[];
       final pendings = <String>[];

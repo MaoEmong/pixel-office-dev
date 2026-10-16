@@ -33,6 +33,45 @@ Future<void> pumpHost(
 
 void main() {
   testWidgets(
+    'busy recovery is explained as work protection rather than expired login',
+    (tester) async {
+      final fake = FakeRpcClient();
+      addTearDown(fake.close);
+      await pumpHost(tester, fake);
+      fake.reportFailure(
+        'member.auth.recover',
+        const RpcException(
+          RpcException.badState,
+          '진행 중인 작업이나 확인 요청을 마친 뒤 로그인 연결을 갱신하세요.',
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(find.text('연결 갱신을 진행하지 못했어요'), findsOneWidget);
+      expect(find.textContaining('로그인이 만료되었다는 뜻은 아니에요.'), findsOneWidget);
+      expect(find.text('로그인 연결을 복구하지 못했어요'), findsNothing);
+      await tester.tap(find.text('닫기'));
+      await tester.pumpAndSettle();
+    },
+  );
+
+  test('real login failures keep the actual reason', () {
+    const error = RpcException(
+      RpcException.badState,
+      '로그인이 만료되었습니다. 인증을 확인하세요.',
+    );
+    final message = actionErrorMessage(error, method: 'member.auth.recover');
+    expect(message, contains(error.message));
+    expect(message, isNot(contains('뜻은 아니에요')));
+    expect(
+      actionErrorMessage(
+        const RpcException(RpcException.closed, 'closed'),
+        method: 'member.auth.recover',
+      ),
+      contains('연결이 끊어졌어요'),
+    );
+  });
+
+  testWidgets(
     'authentication errors open a popup with a direct route to the affected terminal',
     (tester) async {
       final fake = FakeRpcClient();

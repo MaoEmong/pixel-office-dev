@@ -77,7 +77,8 @@ void main() {
       final c = await pumpPanel(tester, daemon, const RightPanel(memberId: 'm1'));
       await pumpUntilConnected(tester, c);
       expect(find.byKey(const Key('panel.goneBanner')), findsNothing);
-      await pumpUntil(tester, () => find.text('데몬이 재시작됐어요 — 만료된 요청 2건').evaluate().isNotEmpty, reason: 'hint');
+      await pumpUntil(tester, () => find.byType(RedoCard).evaluate().isNotEmpty, reason: 'actionable previous requests');
+      expect(find.byType(RecoveryHint), findsNothing, reason: 'do not repeat the same expiry as a second technical warning');
       // T40-4: 만료 카드는 인박스 안 — 2장까지 펼치고 나머지는 "+N" 으로 접힌다(D6).
       expect(find.byType(RedoCard), findsNWidgets(2));
       expect(find.text(inboxMoreLabel(1)), findsOneWidget);
@@ -87,7 +88,7 @@ void main() {
       await tester.pump();
       expect(find.byType(RedoCard), findsNWidgets(3));
       daemon.emitEvent(ev(20, kind: 'text', detail: {'text': '점검 끝, 이어서 진행합니다'}));
-      await pumpUntil(tester, () => find.byKey(const Key('panel.recoveryHint')).evaluate().isEmpty, reason: 'hint gone');
+      await pumpUntil(tester, () => find.byType(RedoCard).evaluate().isEmpty, reason: 'previous requests cleared by completed turn');
       expect(find.byType(RedoCard), findsNothing);
     });
   });

@@ -52,10 +52,10 @@ const String headInstructionTemplate = r'''# 부장 지시문
 너는 이 부서의 부장이다. 사용자의 [TASK#n from user] 지시를 받으면:
 1. 일을 팀 단위로 쪼갠다. 필요한 팀이 없으면 team MCP의 create_team(name, leadName, engine?, instructions?)으로 만든다.
 2. delegate(to_member=팀장, task)로 팀장에게만 배정한다. 팀원은 팀장이 직접 고용한다 — 네가 팀원을 만들지 않는다.
-3. 팀장의 보고는 [REPORTS ...] 메시지로 온다. [ALL_REPORTS_IN]이 오면 취합해 report(taskId, summary, status)로 사용자에게 보고한다.
+3. 팀장의 보고는 [REPORTS ...] 메시지로 온다. 작업 흐름이 있으면 완료 기준을 검증하고 stage_complete로 단계 결과·검증 근거·다음 단계를 기록한다. 전체 목표가 남으면 사용자 확인을 기다리지 않고 다음 회의를 진행한다. 개별 지시만 report(taskId, summary, status)로 보고한다.
 4. 팀장이 [QUESTION from ...]으로 물으면 reply(to_member, text)로 답한다. 네가 판단할 수 없는 "진짜 중요한 문제"만 ask_user로 사용자에게 올린다.
 5. 끝난 팀은 dismiss_team(teamId)로 정리한다.
-도구 이름: mcp__team__create_team, mcp__team__dismiss_team, mcp__team__delegate, mcp__team__reply, mcp__team__report, mcp__team__ask_user (도구 목록에 없으면 ToolSearch로 찾는다).
+도구 이름: mcp__team__workflow_start, mcp__team__stage_complete, mcp__team__create_team, mcp__team__dismiss_team, mcp__team__delegate, mcp__team__reply, mcp__team__report, mcp__team__ask_user (도구 목록에 없으면 ToolSearch로 찾는다).
 ''';
 
 /// 직급별 기본 템플릿. 직급을 모르면(멤버 행이 없으면) 팀원 것.

@@ -388,7 +388,7 @@ class WorkflowPlan extends StatelessWidget {
         if (workflow?['result'] != null)
           WorkflowEntryCard(
             author: '부장',
-            label: '최종 보고 · 검수',
+            label: '부장 결과 확인',
             text: workflow!['result'].toString(),
           ),
         if (brief.isNotEmpty)
@@ -431,6 +431,53 @@ class WorkflowPlan extends StatelessWidget {
             accent: a['status'] == 'done'
                 ? const Color(0xFF9EDCC2)
                 : const Color(0xFFB7C9FF),
+          ),
+      ],
+    );
+  }
+}
+
+/// 단계가 바뀌어도 당시 회의·담당 결과와 부장의 판단 근거를 남긴다.
+class WorkflowStageHistory extends StatelessWidget {
+  const WorkflowStageHistory({super.key, required this.workflow});
+  final Map? workflow;
+
+  @override
+  Widget build(BuildContext context) {
+    final stages = workflowRows(workflow?['stages']).reversed.toList();
+    return ListView(
+      key: const PageStorageKey('workflow.stageHistory.scroll'),
+      padding: const EdgeInsets.only(top: 12, right: 10),
+      children: [
+        if (stages.isEmpty)
+          const Padding(padding: EdgeInsets.symmetric(vertical: 24),
+              child: Text('부장이 각 단계의 완료한 일과 검증 결과, 다음 단계를 여기에 기록합니다.\n단계 진행을 위해 사용자가 버튼을 누를 필요는 없습니다.',
+                  style: TextStyle(color: Colors.white60, height: 1.7))),
+        for (var i = 0; i < stages.length; i++)
+          ExpansionTile(
+            key: PageStorageKey('workflow.stageHistory.${workflow?['id']}.${stages[i]['number']}'),
+            initiallyExpanded: i == 0,
+            tilePadding: EdgeInsets.zero,
+            leading: const Icon(Icons.task_alt, color: Color(0xFF9EDCC2)),
+            title: Text('${stages[i]['number']}단계 · ${stages[i]['title']}',
+                style: const TextStyle(fontWeight: FontWeight.w700)),
+            subtitle: Text('${workflowMessageTime(stages[i]['at'])} · ${stages[i]['decision'] == 'complete' ? '전체 작업 완료' : '다음 단계로 자동 진행'}'),
+            children: [
+              WorkflowEntryCard(
+                author: '부장', label: '단계 완료 정리', time: stages[i]['at'],
+                text: '${stages[i]['summary']}\n\n### 검증 결과\n${(stages[i]['verification'] as List? ?? []).map((v) => '- $v').join('\n')}\n\n### 다음 진행\n${stages[i]['decision'] == 'complete' ? '요청한 전체 작업을 완료했습니다.' : '${(stages[i]['nextStage'] as Map?)?['title'] ?? ''}\n${(stages[i]['nextStage'] as Map?)?['brief'] ?? ''}'}',
+                accent: const Color(0xFF9EDCC2),
+              ),
+              if ((stages[i]['meeting'] as Map?)?['minutes'] case final String minutes)
+                ExpansionTile(
+                  key: PageStorageKey('workflow.stageHistory.${workflow?['id']}.${stages[i]['number']}.meeting'),
+                  title: const Text('이 단계의 회의 결정'),
+                  children: [Padding(padding: const EdgeInsets.all(12), child: WorkflowText(minutes))],
+                ),
+              for (final assignment in workflowRows(stages[i]['assignments']))
+                WorkflowEntryCard(author: '${assignment['leadName'] ?? '담당 팀장'}', label: '담당 결과',
+                    text: '${assignment['task']}\n\n${assignment['report'] ?? '완료 보고 확인'}'),
+            ],
           ),
       ],
     );
