@@ -192,6 +192,8 @@ const ROWS_RANGE = [5, 300] as const;
 export interface OfficeOptions {
   codexModel?:()=>string;
   beforeHire?: (engine: Engine) => Promise<void>;
+  /** Check real member environments before sending implementation work. */
+  beforeWork?: (members: Member[]) => Promise<void>;
   /** config.ts 기본값 위에 덮어쓴다(테스트 격리·임시 포트). */
   config?: Partial<Config>;
   /** 생략 시 `${dataDir}/pixel-office.db`. 테스트는 `new Store(':memory:')`. */
@@ -291,6 +293,10 @@ interface MemberRuntime {
   screenIdleSince?: number;
   /** 이 멤버의 마지막 hook 도착 시각(화면 기반 idle 폴백의 "그 사이 새 hook 없음" 판정). */
   lastHookAt?: number;
+  workflowReady?: boolean;
+  /** Delivery deduplication belongs to a CLI lifetime, not the daemon lifetime. */
+  parentQuestions?: Map<string, { attempts: number; queued: boolean; escalated?: boolean }>;
+  internalQuestionId?: string;
   /**
    * 이 멤버 세션의 기록 파일 경로(Claude transcript / Codex rollout). 모든 hook 페이로드와 statusLine 이
    * 같이 주므로 조립하지 않고 받아 둔다 — 턴 종료 때 꼬리를 읽어 사용량을 갱신한다(T43).
@@ -338,6 +344,8 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
 
   readonly store: Store;
   private readonly beforeHire: (engine: Engine) => Promise<void>;
+  private readonly beforeWork: (members: Member[]) => Promise<void>;
+  private readonly workEnvironmentProblems=new Map<string,string>();
   private readonly codexModel?:()=>string;
   private deferredWorkflowInputs?: Array<()=>void>;
   private readonly workflows: WorkflowCoordinator;
@@ -398,6 +406,7 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
   constructor(opts: OfficeOptions = {}) {
     super();
     this.beforeHire = opts.beforeHire ?? (async () => {});
+    this.beforeWork = opts.beforeWork ?? (async () => {});
     this.codexModel=opts.codexModel;
     this.cfg = { ...defaultConfig, ...opts.config };
     this.fallbackWindowMs = opts.recovery?.fallbackWindowMs ?? RESUME_FALLBACK_WINDOW_MS;
@@ -436,6 +445,11 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
       startTask: (id,text) => this.instruct(id,text,{workflow:true}),
       delegate: (id,lead,text) => this.teamDelegate(id,lead,text).task.id,
       task: (id) => this.store.getTask(id),
+      finished: (head,taskId,summary) => {
+        this.deferredWorkflowInputs!.push(()=>this.inFlight.delete(taskId));
+        this.appendEvent(head,'reporting',{summary:truncate(summary,300),status:'done'},{taskId});
+        this.syncDerived(head.id);
+      },
       interrupt: (id) => this.interrupt(id),
       changed: (w) => {
         if(this.deferredWorkflowInputs){this.deferredWorkflowInputs.push(()=>this.publishWorkflow(w));return;}
@@ -484,9 +498,11 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
             return m && !GONE.has(m.status) ? { id: m.id, name: m.name, rank: m.rank } : undefined;
           },
           officeStatus: id => this.teamOfficeStatus(id),
+          workflowStart: (id,input) => this.workflows.startByHead(this.requireToolRank(id,'workflow_start'),input.workflowId),
+          stageComplete: (id,input) => this.workflows.stageComplete(this.requireToolRank(id,'stage_complete'),input),
           meetingResume: (id,input) => {
             const head=this.requireToolRank(id,'meeting_resume');
-            return this.workflowResume(head.departmentId,input.workflowId,input.replacements);
+            return this.workflowResume(head.departmentId,input.workflowId,input.replacements,true);
           },
           meetingOpen: (id,input) => {
             const head=this.requireToolRank(id,'meeting_open');
@@ -495,7 +511,12 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
             return this.workflows.open(head,input.participants);
           },
           meetingSpeak: (id,input) => this.workflows.speak(this.member(id),input.workflowId,input.round,input.text),
-          meetingDecide: (id,input) => this.workflows.decide(this.member(id),input.workflowId,input.minutes,input.assignments),
+          meetingDecide: async (id,input) => {
+            const head=this.requireToolRank(id,'meeting_decide');
+            const targets=[head,...input.assignments.map(a=>this.requireChild(head,a.leadId,'위임'))];
+            await this.checkWorkEnvironment(head.departmentId,targets);
+            return this.workflows.decide(this.member(id),input.workflowId,input.minutes,input.assignments);
+          },
           // T35: 직급별 도구. 직급·대상 검사는 전부 아래 team* 메서드(=store)가 한다(MCP 는 목록만 가른다).
           askUser: (memberId, input) => ({ questionId: this.teamAskUser(memberId, input).id }),
           askParent: (memberId, input) => {
@@ -533,7 +554,10 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
             const m = await this.teamDismiss(memberId, input.memberId);
             return { memberId: m.id, name: m.name };
           },
-          delegate: (memberId, input) => {
+          delegate: async (memberId, input) => {
+            const leader=this.requireToolRank(memberId,'delegate');
+            const target=this.requireChild(leader,input.to_member,'위임');
+            await this.checkWorkEnvironment(leader.departmentId,[target]);
             const r = this.teamDelegate(memberId, input.to_member, input.task);
             return { taskId: r.task.id, name: r.to.name, status: r.assigned ? 'assigned' : 'queued' };
           },
@@ -547,7 +571,8 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
       store: this.store,
       // T26b: hook 에 나가는 것은 파일 본문이 아니라 **런타임 프리앰블 + 유효 지시문**(아래 buildSessionContext).
       getInstructions: (memberId: string) => this.buildSessionContext(memberId) || undefined,
-      toolPolicy: (member,tool,input) => workflowToolDenial(this.workflows.current(member.departmentId),tool,input),
+      toolPolicy: (member,tool,input) => this.workflows.canContinueAssignedWork(member)
+        ? undefined : workflowToolDenial(this.workflows.current(member.departmentId),tool,input),
       // T27: 셸 도구(읽기 전용 제외)의 PreToolUse 는 팀 락을 잡을 때까지 응답을 보류한다.
       toolGate: (memberId, tool, input, ctx) => this.shellGate(memberId, tool, input, ctx),
       // U-02: 부서의 허가 방식이 허락하면 허가 요청을 사람에게 묻지 않고 넘긴다.
@@ -909,6 +934,19 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
   // ---- 조회 ------------------------------------------------------------------------
 
   workflowGet(departmentId: string): Workflow | undefined { return this.workflows.current(departmentId); }
+  private async checkWorkEnvironment(departmentId:string,targets?:Member[],notifyFailure=true):Promise<void>{
+    const members=targets??this.store.listMembers().filter(m=>m.departmentId===departmentId&&!GONE.has(m.status));
+    try{
+      await this.beforeWork(members);
+      this.workEnvironmentProblems.delete(departmentId);
+    }catch(error){
+      const message=error instanceof Error ? error.message : '작업 시작 전 실행 환경 점검에 실패했습니다. 환경 점검에서 다시 검사하세요.';
+      if(notifyFailure&&this.workEnvironmentProblems.get(departmentId)!==message){
+        this.workEnvironmentProblems.set(departmentId,message);this.notice('error',message);
+      }
+      throw error;
+    }
+  }
   private publishWorkflow(w:Workflow):void {
     const department=this.store.getDepartment(w.departmentId);
     if(department)try{
@@ -944,13 +982,19 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
     return w;
   }
   workflowStart(departmentId: string, brief?: string, requestId?:string): Workflow { return this.workflows.start(departmentId,brief,requestId); }
-  workflowResume(departmentId: string, workflowId?: string, replacements?: MeetingReplacement[]): Promise<Workflow> {
+  workflowResume(departmentId: string, workflowId?: string, replacements?: MeetingReplacement[], notifyFailure=false): Promise<Workflow> {
     const current=this.workflows.current(departmentId);
     if(workflowId && current?.id!==workflowId)return Promise.reject(badState('회의가 바뀌었습니다. office_status로 다시 확인하세요.'));
     const pending=this.meetingRecoveries.get(departmentId);
     if(pending)return replacements?.length ? Promise.reject(badState('회의 복구 중입니다. 끝난 뒤 상태를 확인하세요.')) : pending;
     const run=async()=>{
-      if(!current?.meeting || current.assignments.length)return this.workflows.resume(departmentId);
+      if(!current?.meeting || current.assignments.length){
+        const targets=current ? [this.store.liveHead(departmentId),...current.assignments.filter(a=>a.status!=='done').map(a=>this.store.getMember(a.leadId))].filter((m):m is Member=>!!m) : [];
+        // User RPC failures already open a popup. AI-initiated retries need a
+        // notice because their MCP error is otherwise visible only to the model.
+        await this.checkWorkEnvironment(departmentId,targets,notifyFailure);
+        return this.workflowMutation(()=>this.workflows.resume(departmentId,undefined,current?.id));
+      }
       const links=this.workflows.meetingRecoveryPlan(departmentId,current.id,replacements);
       // Validate the entire connection plan before starting a stopped participant.
       const targets=links.map(link=>this.member(link.memberId));
@@ -1705,7 +1749,8 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
       instructions: this.effectiveInstructions(memberId),
     });
     const w=this.workflows.current(member.departmentId);
-    return w ? `${context}\n\n현재 작업 흐름: ${JSON.stringify(w)}\n계획 확정 전에는 구현·delegate하지 말고 회의 차례에 참여하라. mcp__team__meeting_open, mcp__team__meeting_speak, mcp__team__meeting_decide 도구를 사용한다.` : context;
+    const current=w ? {...w,stages:w.stages?.map(s=>({number:s.number,title:s.title,summary:s.summary.slice(0,300),decision:s.decision}))} : undefined;
+    return current ? `${context}\n\n현재 작업 흐름: ${JSON.stringify(current)}\n계획 확정 전에는 구현·delegate하지 말고 회의 차례에 참여하라. 부장은 workflow_start와 stage_complete로 단계 진행과 결과 기록을 직접 판단하고 사용자 진행 승인을 기다리지 마라. mcp__team__meeting_open, mcp__team__meeting_speak, mcp__team__meeting_decide 도구를 사용한다.` : context;
   }
 
   /**
@@ -1819,12 +1864,22 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
     const rt = this.liveRuntime(member);
     // Codex 질문 폴백(T22)에는 기다리는 MCP 호출이 없다 → `[ANSWER q#…]` 봉투 없이 사용자가 친 것처럼 그대로 넣는다.
     const text = isFallbackQuestion(pending.payload) ? answerBody(answers) : buildAnswerText(pending.id, answers);
-    this.store.answerPending(pending.id, answers);
+    this.store.answerPending(pending.id, answers, { awaitDelivery: isAskParentPayload(pending.payload) });
+    if (isAskParentPayload(pending.payload)) {
+      // A user override or another reply can resolve a question before its
+      // queued reminder reaches the parent. Never send that stale reminder.
+      const parentQueue = this.runtimes.get(pending.payload.to)?.queue;
+      if (parentQueue) {
+        const waiting = parentQueue.clear();
+        for (const item of waiting) if (item.kind === 'keys' || item.id !== `question:${pending.id}`) parentQueue.enqueue(item);
+      }
+    }
     if (this.store.getMember(member.id)?.status === 'waiting_answer') this.setStatus(member.id, 'working');
     else this.emitStatus(member.id, this.store.getMember(member.id)!.status); // derived(waiting_answer → idle/free) 갱신
     const waiting = rt.queue.clear();
     rt.queue.enqueue({ kind: 'system', text, id: pending.id });
-    for (const item of waiting) rt.queue.enqueue(item);
+    if (isAskParentPayload(pending.payload)) this.enqueueAfterInternalAnswer(rt, waiting);
+    else for (const item of waiting) rt.queue.enqueue(item);
   }
 
   // ---- TeamTools 오케스트레이션 (T25 → T35 직급별 도구) --------------------------------------
@@ -1985,9 +2040,9 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
    * 유휴 감시(`dispatchQueuedTasks`)가 전달한다.
    */
   teamDelegate(leaderId: string, toMemberId: string, task: string): { task: Task; to: Member; assigned: boolean } {
-    const phase=this.workflows.current(this.member(leaderId).departmentId)?.phase;
-    if (phase && !['executing','completed','cancelled'].includes(phase)) throw badState('회의 계획 확정 전에는 구현 업무를 위임할 수 없습니다.');
     const leader = this.requireToolRank(leaderId, 'delegate');
+    const phase=this.workflows.current(leader.departmentId)?.phase;
+    if (phase && !['executing','completed','cancelled'].includes(phase) && !this.workflows.canContinueAssignedWork(leader)) throw badState('회의 계획 확정 전에는 구현 업무를 위임할 수 없습니다.');
     const text = task.trim();
     if (!text) throw invalidParams('task 가 비었습니다');
     const target = this.requireChild(leader, toMemberId, '위임');
@@ -2072,11 +2127,81 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
     if (options.length > 0) detail.options = options;
     this.appendEvent(member, 'asking', detail, { questionId: pending.id });
     this.setStatus(memberId, 'waiting_answer');
-    const rt = this.runtimes.get(parent.id);
-    if (rt?.session.alive) rt.queue.enqueue({ kind: 'system', text: buildQuestionText(pending.id, member.name, question, options) });
-    else this.notice('warn', `질문을 전달할 상사가 없습니다 — q#${pending.id} (${parent.name})`);
+    this.dispatchParentQuestions();
     this.emitStatus(parent.id, this.store.getMember(parent.id)?.status ?? parent.status);
     return pending;
+  }
+
+  /** Open questions are the durable outbox: redeliver after either side reconnects. */
+  private dispatchParentQuestions(): void {
+    if (this.stopping) return;
+    for (const pending of this.store.listOpenPending()) {
+      if (!isAskParentPayload(pending.payload)) continue;
+      const child = this.store.getMember(pending.memberId);
+      const parent = this.store.getMember(pending.payload.to);
+      if (!child || !parent || child.parentId !== parent.id || child.departmentId !== parent.departmentId
+          || GONE.has(child.status) || GONE.has(parent.status)) continue;
+      const childRt = this.runtimes.get(child.id), rt = this.runtimes.get(parent.id);
+      if (!childRt?.session.alive || childRt.authLogin || childRt.authFailure || childRt.exitMode
+          || !rt?.session.alive || rt.authLogin || rt.authFailure || rt.exitMode) continue;
+      const deliveries = rt.parentQuestions ??= new Map();
+      const delivery = deliveries.get(pending.id) ?? { attempts: 0, queued: false };
+      if (delivery.queued || delivery.attempts >= 3) continue;
+      delivery.attempts++;delivery.queued = true;deliveries.set(pending.id, delivery);
+      const hasWork = this.store.listTasks({toMember:parent.id,status:[...OPEN_TASKS]}).length > 0
+        || this.store.openTasksIssuedBy(parent.id).length > 0;
+      const text = buildQuestionText(pending.id, child.name, pending.payload.question, pending.payload.options)
+        + `\n\n이 질문은 사용자가 아니라 당신(${parent.name})에게 보낸 내부 질문이다. reply(to_member="${child.id}", text="판단한 답변") 도구로 답해 대기를 끝내라. 일반 문장으로만 답하거나 사용자에게 대신 답하라고 하지 마라. 도구가 보이지 않으면 ToolSearch로 찾아라.`
+        + (!hasWork ? '\n현재 당신에게 남아 있는 배정 업무나 보고 대기 업무는 없다. 이 질문에 reply로 답한 뒤 턴을 끝내라. 예전 대화의 구현·테스트·검수 작업을 다시 시작하거나 새 업무를 위임하지 마라. 새 작업은 부장의 정식 지시가 있어야 시작한다.' : '')
+        + (delivery.attempts > 1 ? '\n앞선 답변에서 reply 호출이 확인되지 않았다. 같은 질문을 새로 만들지 말고 답변 도구를 사용하라.' : '');
+      rt.queue.enqueue({ kind: 'system', id: `question:${pending.id}`, text });
+    }
+  }
+
+  /** Store the answer before queuing it; acknowledge only after CLI acceptance. */
+  private dispatchInternalAnswers(memberId: string): void {
+    if (this.stopping) return;
+    const member = this.store.getMember(memberId), rt = this.runtimes.get(memberId);
+    if (!member || !rt?.session.alive || rt.authLogin || rt.authFailure || rt.exitMode || GONE.has(member.status)) return;
+    const answers = this.store.undeliveredInternalAnswers(memberId);
+    if (!answers.length) return;
+    const waiting = rt.queue.clear();
+    for (const answer of answers) rt.queue.enqueue({kind:'system', id:answer.id, text:buildAnswerText(answer.id, answer.answer as Record<string,string>)});
+    this.enqueueAfterInternalAnswer(rt, waiting);
+  }
+
+  private enqueueAfterInternalAnswer(rt: MemberRuntime, waiting: import('../input/InputQueue.js').InputItem[]): void {
+    // The answer already resumes an idle question. A second, stale RESUMED
+    // prompt would wake an otherwise finished AI and create more questions.
+    // Keep recovery instructions when real assigned/issued work remains.
+    const hasWork = this.store.listTasks({toMember:rt.memberId,status:[...OPEN_TASKS]}).length > 0
+      || this.store.openTasksIssuedBy(rt.memberId).length > 0;
+    for (const item of waiting) {
+      if (!hasWork && item.kind === 'system' && item.text.startsWith('[RESUMED]')) continue;
+      rt.queue.enqueue(item);
+    }
+  }
+
+  private finishInternalQuestionTurn(rt: MemberRuntime): boolean {
+    const id = rt.internalQuestionId;
+    if (!id) return false;
+    rt.internalQuestionId = undefined;rt.lastText = undefined;
+    const pending = this.store.getPending(id), delivery = rt.parentQuestions?.get(id);
+    if (pending?.status === 'open' && delivery) {
+      delivery.queued = false;
+      if (delivery.attempts < 3) queueMicrotask(() => this.dispatchParentQuestions());
+      else if (!delivery.escalated) {
+        delivery.escalated = true;
+        const parent = this.store.getMember(rt.memberId);
+        const head = parent && this.store.liveHead(parent.departmentId);
+        const headRt = head && head.id !== parent?.id ? this.runtimes.get(head.id) : undefined;
+        if (headRt?.session.alive) {
+          headRt.queue.enqueue({kind:'system', id:`question-help:${id}`, conversation:true,
+            text:`[내부 질문 답변 누락 복구]\n${parent!.name}에게 보낸 질문(q#${id})의 reply 답변이 누락되어 있다. 사용자에게 맡기지 말고 office_status로 상태를 확인한 뒤 해당 팀장에게 reply로 직접 답변하도록 지시하라. 질문한 팀원: ${pending.memberId}. 질문: ${pending.payload.question}`});
+        } else this.notice('error', '내부 질문에 대한 AI 답변 도구 호출이 반복해서 누락됐습니다. 질문은 보존되어 있으며 상사 연결 복구 시 다시 전달됩니다.');
+      }
+    }
+    return true;
   }
 
   /**
@@ -2098,7 +2223,7 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
       return { to: target, questionId: open.id };
     }
     const rt = this.runtimes.get(target.id)!;
-    rt.queue.enqueue({ kind: 'system', text: buildMessageText(parent.name, text) });
+    rt.queue.enqueue({ kind: 'system', text: buildMessageText(parent.name, text), conversation: true });
     return { to: target };
   }
 
@@ -2136,6 +2261,15 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
     const rt = this.runtimes.get(leaderId);
     if (!leader || GONE.has(leader.status) || !rt?.session.alive) {
       this.notice('warn', `보고를 전달할 상사가 없습니다 — ${lines.map((l) => `task#${l.taskId}`).join(', ')} (${leaderId})`);
+      return;
+    }
+    const workflow=this.workflows.current(leader.departmentId);
+    if(allIn && leader.rank==='head' && workflow && workflow.stageReviewRequested===(workflow.stage ?? 1)
+      && workflow.assignments.length>0 && workflow.assignments.every(a=>a.status==='done')
+      && lines.every(line=>workflow.assignments.some(a=>a.taskId===line.taskId))) {
+      // The stage-review message already contains these reports. Do not wake the head twice
+      // with an old stage's ALL_REPORTS_IN after it has moved on to the next meeting.
+      this.emitStatus(leaderId,leader.status);
       return;
     }
     rt.queue.enqueue({ kind: 'system', text: buildReportsText(lines, allIn) });
@@ -2345,6 +2479,7 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
           rt.authOutput='';
           rt.conversationTurn=item.kind==='system' && item.conversation===true;
           rt.lastText=undefined;
+          rt.internalQuestionId = item.id?.startsWith('question:') ? item.id.slice('question:'.length) : undefined;
         }
         // id 는 task 번호(instruct·위임 system) 또는 pending id(`[ANSWER q#…]`) — 숫자인 것만 task 다.
         if ((item.kind !== 'instruct' && item.kind !== 'system') || !item.id) return;
@@ -2358,6 +2493,7 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
         }
       });
       queue.on('submitted',item=>{
+        if (item.id) this.store.markInternalAnswerDelivered(item.id);
         const task=item.id && this.store.getTask(Number(item.id));
         if(task && OPEN_TASKS.includes(task.status)){this.store.updateTask(task.id,{delivery:'accepted'});this.emit('tree','task.delivery');}
       });
@@ -2467,6 +2603,7 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
       rt.screenIdleSince = undefined;
       this.appendEvent(member, 'idle', { summary: SCREEN_IDLE_SUMMARY });
       this.setStatus(member.id, 'idle');
+      this.finishInternalQuestionTurn(rt);
       // T43: Stop 없이 끝난 턴에서도 사용량은 갱신돼야 한다(Codex 한도가 이 경로로 들어오는 일이 있다).
       this.refreshMemberUsage(member.id, null);
     }, IDLE_SCREEN_STEP_MS);
@@ -3126,12 +3263,13 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
     if (ev.kind !== 'idle' || ev.detail.summary !== undefined) return;
     const member = this.store.getMember(ev.memberId);
     if (!member) return;
+    if (rt && this.finishInternalQuestionTurn(rt)) return;
     if(rt?.conversationTurn) {
       rt.lastText=undefined;
       return;
     }
     const phase=this.workflows.current(member.departmentId)?.phase;
-    if (phase && !['executing','completed','cancelled'].includes(phase)) return;
+    if (phase && !['executing','completed','cancelled'].includes(phase) && !this.workflows.canContinueAssignedWork(member)) return;
     // Codex 폴백(T22): 질문으로 끝난 턴은 "끝난 작업"이 아니다 — 질문 pending 을 만들고 task 는 assigned 로 둔다.
     if (member.engine === 'codex' && this.codexQuestionFallback(member, rt?.lastText)) {
       // 같은 문장으로 다음 턴에 또 묻지 않도록 비운다(마지막 메시지가 없는 턴이 이어질 수 있다).
@@ -3185,7 +3323,10 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
 
   private isIdle(memberId: string): boolean {
     const m = this.store.getMember(memberId);
-    return m?.status === 'idle' && this.store.listOpenPending(memberId).length === 0;
+    return m?.status === 'idle'
+      && this.store.listOpenPending(memberId).length === 0
+      // hook보다 화면이 먼저 갱신될 수 있다. 이때 제출을 실패로 판단해 Enter를 반복해서는 안 된다.
+      && !this.runtimes.get(memberId)?.screen.busyIndicator();
   }
 
   /** 파생 상태(01 §2, T28). 규칙은 derived.ts 하나에만 있고 snapshot·`member.status` 알림이 같이 쓴다. */
@@ -3208,8 +3349,24 @@ export class Office extends EventEmitter<OfficeEvents> implements OfficeApi {
     // T25 유휴 감시: 유휴가 되는 순간 밀려 있던 위임(queued)을 전달한다. 게이트는 dispatchTask 가 다시 본다.
     if (status === 'idle') this.dispatchQueuedTasks(memberId);
     if (status === 'idle') {
+      queueMicrotask(() => {
+        if (this.stopping) return;
+        this.dispatchInternalAnswers(memberId);
+        this.dispatchParentQuestions();
+      });
       const member=this.store.getMember(memberId);
       if(member)queueMicrotask(()=>this.reconnectReadyMeeting(member.departmentId));
+      const rt=this.runtimes.get(memberId);
+      if(rt && !rt.workflowReady) {
+        rt.workflowReady=true;
+        if(member?.rank==='head')queueMicrotask(()=>{
+          try {
+            if(!this.stopping && !this.store.listOpenPending(memberId).some(p=>p.type==='question'))this.workflows.resumeStageReview(member);
+          } catch(error) {
+            this.notice('error',`${member.name}: 단계 결과 확인을 재개하지 못했습니다. ${errMsg(error)}`);
+          }
+        });
+      }
     }
   }
 

@@ -26,6 +26,9 @@ const codexModels=new CodexModelGuard();
 const office = new Office({
  codexModel:()=>codexModels.selected(),
  beforeHire:async engine=>{await environment.require(engine);if(engine==='codex')await codexModels.prepare();},
+ beforeWork:async members=>{await Promise.all(members.map(member=>Promise.all([
+  environment.require(member.engine,member),environment.requireExecution(member),
+ ])));},
 });
 authenticationBridge.onFailure=message=>office.emit('notice','error',message);
 if(office.store.listMembers().some(member=>member.engine==='codex' && !['error','exited'].includes(member.status))) {
@@ -75,6 +78,7 @@ const rpc = new RpcServer(office, { port: config.wsPort,
     office.requireEngine(engine,target?.departmentId ?? String(p.departmentId ?? ''));
     if(method==='member.auth.recover' && target)authenticationBridge.sync(engine,path.join(projectMemberDir(target.cwd,target.id),engine),true);
     await environment.require(engine,target);
+    if(method==='member.instruct'&&target)await environment.requireExecution(target);
     if(engine==='codex')await codexModels.prepare();
   }
  }

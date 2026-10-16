@@ -4,6 +4,17 @@ export interface MeetingContribution { memberId: string; round: number; text: st
 export interface WorkAssignment {
   leadId: string; task: string; acceptance: string[]; dependsOn?: string[];
   taskId?: number; status?: 'queued' | 'assigned' | 'done' | 'blocked' | 'aborted';
+  report?: string;
+}
+export interface NextStage { title: string; brief: string }
+export interface StageCompleteInput {
+  workflowId: string; stage: number; summary: string; verification: string[];
+  complete: boolean; nextStage?: NextStage;
+}
+export interface StageRecord {
+  number: number; title: string; summary: string; verification: string[];
+  decision: 'continue' | 'complete'; nextStage?: NextStage; at: string;
+  assignments: Array<WorkAssignment & {leadName: string}>; meeting?: Meeting;
 }
 export interface Meeting {
   participantNames?: Record<string, string>;
@@ -19,4 +30,6 @@ export interface Workflow {
   messages: WorkflowMessage[]; meeting?: Meeting; assignments: WorkAssignment[];
   rootTaskId?: number; result?: string; problem?: string; createdAt: string; updatedAt: string;
   startRequestId?: string;
+  stage?: number; stageTitle?: string; stageBrief?: string;
+  stages?: StageRecord[]; stageReviewRequested?: number;
 }

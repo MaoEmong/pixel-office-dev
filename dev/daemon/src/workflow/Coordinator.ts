@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { Store } from '../store/Store.js';
 import type { Member, Task } from '../store/types.js';
-import type { Workflow, WorkAssignment, MeetingReplacement } from './types.js';
+import type { Workflow, WorkAssignment, MeetingReplacement, StageCompleteInput } from './types.js';
 
 export interface WorkflowHost {
   atomic?(fn:()=>Workflow): Workflow;
@@ -14,6 +14,7 @@ export interface WorkflowHost {
   task(id: number): Task | undefined;
   interrupt(memberId: string): void;
   changed(workflow: Workflow): void;
+  finished?(head: Member, taskId: number, summary: string): void;
 }
 
 const now = () => new Date().toISOString();
@@ -25,6 +26,13 @@ export class WorkflowCoordinator {
   private batching = false;
   constructor(private readonly store: Store, private readonly host: WorkflowHost) {}
   current(departmentId: string): Workflow | undefined { return this.store.currentWorkflow(departmentId); }
+  /** Preserve approved, independent work when a different team reports a failure. */
+  canContinueAssignedWork(member: Member): boolean {
+    const w=this.current(member.departmentId);
+    const leadId=member.rank==='lead' ? member.id : member.rank==='member' ? member.parentId : undefined;
+    return !!(w?.phase==='blocked' && w.meeting?.minutes && leadId
+      && w.assignments.some(a=>a.leadId===leadId && a.taskId && a.status==='assigned'));
+  }
   private save(w: Workflow): Workflow {
     w.updatedAt = now(); this.store.saveWorkflow(w);
     if (this.batching) this.pendingChange=w; else this.host.changed(w);
@@ -72,7 +80,7 @@ export class WorkflowCoordinator {
     this.save(w);
     if (notify) this.host.send(head.id, followup
       ? `[WORKFLOW FOLLOWUP ${w.id}]\n진행 중인 작업에 대한 사용자 메시지다. 현재 단계: ${w.phase}. ${w.problem ? `중단 원인: ${w.problem}.` : ''}\n사용자의 질문에 현재 진행 상황과 문제를 설명하고 변경 지시를 확인하라. 이 대화 답변을 작업 완료 보고로 제출하지 마라. 기존 작업·회의 기록을 유지하고, 계획 변경이나 중단이 필요하면 이유와 다음 조치를 사용자에게 안내하라. 현재 단계에서 허용된 작업 범위는 계속 지켜라.\n${message}`
-      : `[WORKFLOW DISCUSS ${w.id}]\n사용자와 목표, 범위, 제약, 완료 기준을 구체화하는 대화다. 구현·위임·채용은 하지 마라. 부족한 정보는 사용자에게 질문하고 작업안을 요약해라.\n${message}`, undefined, followup);
+      : `[WORKFLOW DISCUSS ${w.id}]\n사용자와 목표, 범위, 제약, 완료 기준을 구체화하라. 일반적인 선택은 부장이 판단하고 가정을 요약하라. 목표가 충분히 정해지면 사용자에게 시작 버튼이나 추가 진행 승인을 요구하지 말고 mcp__team__workflow_start(workflowId="${w.id}")로 회의를 시작하라. 시작 전에는 구현·위임·채용하지 마라. 사용자만 제공할 수 있는 필수 정보가 없을 때만 질문하라.\n${message}`, undefined, followup);
     return w;
     });
   }
@@ -85,7 +93,7 @@ export class WorkflowCoordinator {
   retryConversation(member:Member):boolean {
     const w=this.current(member.departmentId),message=w?.messages.at(-1);
     if(member.rank!=='head' || !w || message?.role!=='user' || ['completed','cancelled'].includes(w.phase))return false;
-    this.host.send(member.id,`[WORKFLOW ${message.followup?'FOLLOWUP':'DISCUSS'} ${w.id}]\n로그인 연결이 복구됐다. 아래는 답변하지 못한 마지막 사용자 요청이다. 현재 단계 ${w.phase}의 작업 범위를 지키고 기존 기록을 유지해 답하라. ${message.followup?'이 대화 답변을 작업 완료 보고로 제출하지 마라.':'목표와 완료 기준을 정리하라. 실행은 사용자가 작업 시작을 누른 뒤 진행한다.'}\n${message.text}`,undefined,!!message.followup);
+    this.host.send(member.id,`[WORKFLOW ${message.followup?'FOLLOWUP':'DISCUSS'} ${w.id}]\n로그인 연결이 복구됐다. 아래는 답변하지 못한 마지막 사용자 요청이다. 현재 단계 ${w.phase}의 작업 범위를 지키고 기존 기록을 유지해 답하라. ${message.followup?'이 대화 답변을 작업 완료 보고로 제출하지 마라.':'목표와 완료 기준을 정리하고 충분하면 workflow_start로 직접 시작하라. 사용자에게 단계 진행 승인을 요구하지 마라.'}\n${message.text}`,undefined,!!message.followup);
     return true;
   }
   start(departmentId: string, brief?: string, requestId?:string): Workflow {
@@ -100,8 +108,9 @@ export class WorkflowCoordinator {
     if (this.host.busy(departmentId)) throw new Error('열린 작업·질문·승인을 마친 뒤 시작하세요.');
     const outline=w.messages.filter(m=>m.role==='head').at(-1)?.text;
     w.brief = this.text(brief ?? [w.brief,outline ? `부장이 정리한 작업안:\n${outline}` : ''].filter(Boolean).join('\n'));
-    w.phase='meeting'; w.startRequestId=requestId; this.save(w);
-    w.rootTaskId = this.host.startTask(head.id, `[WORKFLOW START ${w.id}]\n${w.brief}\n먼저 필요한 팀장들을 create_team으로 구성하라. 전문가가 필요하면 팀장이 hire하게 협의하라. 살아 있는 팀장·전문가 ID로 meeting_open을 호출하고 결과를 기다려라. 회의 중 구현하거나 delegate하지 마라. 의견 두 차례가 끝나면 meeting_decide로 회의록, 담당 팀장, 업무, acceptance(완료 기준), dependsOn(선행 팀장 ID)을 확정하라. 도구 이름: mcp__team__meeting_open, mcp__team__meeting_speak, mcp__team__meeting_decide. 도구가 안 보이면 ToolSearch로 찾아라.`);
+    w.phase='meeting'; w.stage=1; w.stageTitle='첫 단계'; w.stageBrief=w.brief; w.stages=[];
+    w.startRequestId=requestId; this.save(w);
+    w.rootTaskId = this.host.startTask(head.id, `[WORKFLOW START ${w.id}]\n${w.brief}\n먼저 필요한 팀장들을 create_team으로 구성하라. 전문가가 필요하면 팀장이 hire하게 협의하라. 살아 있는 팀장·전문가 ID로 meeting_open을 호출하고 결과를 기다려라. 회의 중 구현하거나 delegate하지 마라. 의견 두 차례가 끝나면 meeting_decide로 회의록, 담당 팀장, 업무, acceptance(완료 기준), dependsOn(선행 팀장 ID)을 확정하라. 각 단계가 끝나면 부장이 검증하고 mcp__team__stage_complete로 단계 결과와 검증 근거를 기록하라. 전체 목표가 남으면 nextStage를 정해 자동으로 다음 회의를 시작하고, 모두 충족했을 때만 complete=true로 종료하라. 사용자에게 단계 진행 승인을 요구하지 마라. 도구가 안 보이면 ToolSearch로 찾아라.`);
     return this.save(w);
     });
   }
@@ -124,12 +133,12 @@ export class WorkflowCoordinator {
     const meeting=w.meeting!;
     const history=meeting.contributions.map(c=>`${this.host.member(c.memberId)?.name ?? meeting.participantNames?.[c.memberId] ?? c.memberId} (${c.round}차): ${c.text}`).join('\n');
     if (meeting.state==='deciding') {
-      this.host.send(this.host.head(w.departmentId).id, `[MEETING DECIDE ${w.id}]\n작업안: ${w.brief}\n${history}\n두 차례 의견이 모두 모였다. 쟁점을 조정하고 meeting_decide로 minutes와 팀장별 assignments를 확정하라. 아직 실행·delegate하지 마라.`, `${w.id}:decide`);
+      this.host.send(this.host.head(w.departmentId).id, `[MEETING DECIDE ${w.id} STAGE ${w.stage ?? 1}]\n전체 목표: ${w.brief}\n이번 단계 작업안: ${w.stageBrief ?? w.brief}\n${history}\n두 차례 의견이 모두 모였다. 쟁점을 조정하고 meeting_decide로 minutes와 팀장별 assignments를 확정하라. 아직 실행·delegate하지 마라.`, `${w.id}:stage${w.stage ?? 1}:decide`);
       return;
     }
     for (const id of meeting.participants) {
       if (meeting.contributions.some(c=>c.memberId===id && c.round===meeting.round)) continue;
-      this.host.send(id, `[MEETING ${w.id} ROUND ${meeting.round}]\n작업안: ${w.brief}\n${meeting.round===2 ? `다른 참가자의 의견:\n${history}\n다른 의견과 충돌·의존성·위험을 검토하라.` : '접근 방법, 담당 범위, 위험, 완료 기준에 대한 의견을 제시하라.'}\n구현·delegate하지 마라. mcp__team__meeting_speak(workflowId="${w.id}",round=${meeting.round},text=의견)으로 한 번 제출하고 턴을 끝내라. 도구가 안 보이면 ToolSearch로 찾아라.`, `${w.id}:${meeting.round}:${id}`);
+      this.host.send(id, `[MEETING ${w.id} STAGE ${w.stage ?? 1} ROUND ${meeting.round}]\n전체 목표: ${w.brief}\n이번 단계 작업안: ${w.stageBrief ?? w.brief}\n${meeting.round===2 ? `다른 참가자의 의견:\n${history}\n다른 의견과 충돌·의존성·위험을 검토하라.` : '접근 방법, 담당 범위, 위험, 완료 기준에 대한 의견을 제시하라.'}\n구현·delegate하지 마라. mcp__team__meeting_speak(workflowId="${w.id}",round=${meeting.round},text=의견)으로 한 번 제출하고 턴을 끝내라. 도구가 안 보이면 ToolSearch로 찾아라.`, `${w.id}:stage${w.stage ?? 1}:${meeting.round}:${id}`);
     }
   }
   speak(member: Member, workflowId: string, round: number, text: string): Workflow {
@@ -182,7 +191,8 @@ export class WorkflowCoordinator {
           const fresh=this.current(w.departmentId)!;
           const assignment=fresh.assignments.find(row=>row.leadId===a.leadId)!;
           if (!live(lead)) throw new Error('담당 팀장이 퇴근하거나 오류 상태입니다.');
-          assignment.taskId=this.host.delegate(this.host.head(w.departmentId).id,a.leadId,`${a.task}\n완료 기준:\n${a.acceptance.join('\n')}\n회의 결정:\n${fresh.meeting!.minutes}`);
+          const retry=assignment.report ? `\n[중단된 업무 재개]\n이전 보고: ${assignment.report.slice(-3000)}\n실행 환경과 현재 변경 내용을 먼저 확인하고 미완료 항목만 이어서 수행하라. 이미 완료한 변경을 중복 적용하지 말고, 최종 검증 근거를 새로 확인하라. 승인 절차는 그대로 지켜라.` : '';
+          assignment.taskId=this.host.delegate(this.host.head(w.departmentId).id,a.leadId,`${a.task}\n완료 기준:\n${a.acceptance.join('\n')}\n회의 결정:\n${fresh.meeting!.minutes}${retry}`);
           assignment.status='assigned'; return this.save(fresh);
         });
       } catch(err) {
@@ -198,16 +208,91 @@ export class WorkflowCoordinator {
     if (!w || !['executing','blocked'].includes(w.phase) || !taskId) return;
     const a=w.assignments.find(a=>a.taskId===taskId);
     if (a) {
-      a.status=status==='done' ? 'done' : 'blocked';
+      a.status=status==='done' ? 'done' : 'blocked'; a.report=summary;
       if (a.status==='blocked') { w.phase='blocked'; w.problem=summary || '담당 업무가 막혔습니다.'; }
-      this.save(w); if (w.phase==='executing') this.dispatch(w);
+      this.save(w); if (w.phase==='executing') {
+        this.dispatch(w);
+        if (w.assignments.every(a=>a.status==='done')) this.requestStageReview(this.current(member.departmentId)!);
+      }
     }
     if (taskId===w.rootTaskId) {
       const done=status==='done' && w.assignments.length>0 && w.assignments.every(a=>a.status==='done');
       w.phase=done ? 'review' : 'blocked'; w.result=summary;
       if (!done) w.problem='모든 담당 업무가 완료되지 않았습니다.';
       this.save(w);
+      if (done) {
+        // An older chair may still use report instead of stage_complete. Its report
+        // is not a request for a human gate: wake it to record the stage decision.
+        delete w.stageReviewRequested;
+        this.requestStageReview(w);
+      }
     }
+  }
+
+  private requestStageReview(w: Workflow): void {
+    const stage=w.stage ?? 1;
+    if(w.stageReviewRequested===stage)return;
+    w.stageReviewRequested=stage;this.save(w);
+    const reports=w.assignments.map(a=>`${this.host.member(a.leadId)?.name ?? a.leadId}: ${a.report ?? this.host.task(a.taskId!)?.reportText ?? '완료 보고됨'}`).join('\n');
+    this.host.send(this.host.head(w.departmentId).id,
+      `[STAGE REVIEW ${w.id} STAGE ${stage}]\n전체 목표: ${w.brief}\n이번 단계: ${w.stageBrief ?? w.brief}\n담당 결과:\n${reports}\n부장이 완료 기준과 검증 결과를 확인하라. 사용자에게 검수 완료나 다음 단계 승인을 요구하지 마라. mcp__team__stage_complete(workflowId="${w.id}",stage=${stage},summary=완료한 일,verification=검증 근거 목록,complete=전체 목표 충족 여부,nextStage=남은 목표의 다음 단계 제목과 작업안)로 기록하라. 전체 목표가 남았으면 nextStage를 반드시 정하고, 원래 범위를 벗어나 새 일을 만들지 마라.`,
+      `${w.id}:stage${stage}:review`, true);
+  }
+
+  resumeStageReview(head: Member): void {
+    const w=this.current(head.departmentId);
+    if(head.rank!=='head' || !w || !['executing','review'].includes(w.phase)
+      || !w.assignments.length || w.assignments.some(a=>a.status!=='done'))return;
+    this.atomic(()=>{delete w.stageReviewRequested;this.requestStageReview(w);return w;});
+  }
+
+  startByHead(head: Member, workflowId: string): Workflow {
+    const w=this.active(head.departmentId);
+    if(head.rank!=='head' || this.host.head(head.departmentId).id!==head.id || w.id!==workflowId)throw new Error('현재 부서의 부장만 작업을 시작할 수 있습니다.');
+    if(w.phase!=='clarifying')return w; // A repeated tool call must not create another root task.
+    return this.start(head.departmentId);
+  }
+
+  stageComplete(head: Member, input: StageCompleteInput): Workflow {
+    return this.atomic(()=>{
+      let w=this.active(head.departmentId);
+      if(head.rank!=='head' || this.host.head(head.departmentId).id!==head.id || input.workflowId!==w.id)throw new Error('현재 부서의 부장만 단계 결과를 확정할 수 있습니다.');
+      const summary=this.text(input.summary);
+      if(!Array.isArray(input.verification) || !input.verification.length || input.verification.length>20)throw new Error('단계 완료에는 검증 근거가 1~20개 필요합니다.');
+      const verification=input.verification.map(v=>this.text(v));
+      if(typeof input.complete!=='boolean' || (input.complete ? !!input.nextStage : !input.nextStage))throw new Error('전체 완료 또는 다음 단계 중 하나를 정하세요.');
+      const nextStage=input.nextStage ? {title:this.text(input.nextStage.title),brief:this.text(input.nextStage.brief)} : undefined;
+      const previous=w.stages?.find(s=>s.number===input.stage);
+      if(previous) {
+        if(previous.summary!==summary || JSON.stringify(previous.verification)!==JSON.stringify(verification) || previous.decision!==(input.complete?'complete':'continue') || JSON.stringify(previous.nextStage)!==JSON.stringify(nextStage))throw new Error('이미 기록된 단계입니다. 현재 단계 번호를 확인하세요.');
+        return w;
+      }
+      if(!Number.isInteger(input.stage) || input.stage!==(w.stage ?? 1) || !['executing','review'].includes(w.phase))throw new Error('현재 실행 단계를 마친 뒤 결과를 기록하세요.');
+      if(!w.assignments.length || w.assignments.some(a=>a.status!=='done'))throw new Error('모든 담당 업무가 완료돼야 다음 단계로 넘어갈 수 있습니다.');
+      const record={number:input.stage,title:w.stageTitle ?? '첫 단계',summary,verification,
+        decision:input.complete ? 'complete' as const : 'continue' as const,nextStage,at:now(),
+        assignments:w.assignments.map(a=>({...structuredClone(a),leadName:this.host.member(a.leadId)?.name ?? a.leadId})),
+        meeting:w.meeting ? structuredClone(w.meeting) : undefined};
+      (w.stages ??= []).push(record);
+      delete w.problem;
+      if(input.complete) {
+        w.phase='completed';w.result=summary;
+        const task=w.rootTaskId===undefined ? undefined : this.host.task(w.rootTaskId);
+        if(task && ['queued','assigned'].includes(task.status)) {
+          this.store.updateTask(task.id,{status:'reported',reportStatus:'done',reportText:summary});
+          this.host.finished?.(head,task.id,summary);
+        }
+        return this.save(w);
+      }
+      w.stage=input.stage+1;w.stageTitle=nextStage!.title;w.stageBrief=nextStage!.brief;
+      w.phase='meeting';w.assignments=[];delete w.meeting;delete w.result;delete w.stageReviewRequested;
+      this.save(w);
+      const instruction=`[WORKFLOW NEXT STAGE ${w.id} STAGE ${w.stage}]\n전체 목표: ${w.brief}\n직전 단계 완료: ${summary}\n검증: ${verification.join('\n')}\n다음 단계: ${nextStage!.title}\n${nextStage!.brief}\n사용자의 진행 승인을 기다리지 말고 office_status로 실제 팀을 확인하고 meeting_open으로 다음 단계 회의를 소집하라. 이번 단계도 두 차례 의견과 계획 확정 후 실행하고 stage_complete로 정리하라.`;
+      const root=w.rootTaskId===undefined ? undefined : this.host.task(w.rootTaskId);
+      if(!root || !['queued','assigned'].includes(root.status))w.rootTaskId=this.host.startTask(head.id,instruction);
+      else this.host.send(head.id,instruction,`${w.id}:stage${w.stage}:start`);
+      return this.save(w);
+    });
   }
   memberGone(member: Member, reason?: string): void {
     const w=this.current(member.departmentId);
@@ -254,10 +339,18 @@ export class WorkflowCoordinator {
   }
   resume(departmentId: string, replacements?: MeetingReplacement[], workflowId?: string): Workflow {
     const w=this.active(departmentId);
+    if(workflowId && w.id!==workflowId)throw new Error('다른 회의 또는 작업으로 바뀌었습니다. 현재 작업을 다시 확인하세요.');
     if(w.assignments.length && ['executing','blocked'].includes(w.phase)) {
       this.host.head(departmentId);
-      if(w.assignments.some(a=>a.taskId && ['blocked','aborted'].includes(a.status ?? ''))) throw new Error('실행한 업무의 보고에 문제가 있습니다. 작업을 취소하고 보완 논의를 시작하세요.');
+      if(w.assignments.some(a=>a.status==='aborted'))throw new Error('취소된 담당 업무가 있습니다. 부장과 작업 범위를 다시 확인하세요.');
       for(const a of w.assignments) if(a.status!=='done' && !live(this.host.member(a.leadId)))throw new Error('퇴근·오류 담당자를 먼저 재고용하세요.');
+      for(const a of w.assignments)if(a.status==='blocked' && a.taskId) {
+        const previous=this.host.task(a.taskId);
+        if(!previous || previous.status!=='reported' || previous.reportStatus!=='blocked')throw new Error('중단 보고를 확인하지 못했습니다. 담당자의 작업 상태를 먼저 확인하세요.');
+      }
+      // Create a new delivery only for a reported failure. Old task rows retain
+      // the failure report; active/completed branches and the meeting stay intact.
+      for(const a of w.assignments)if(a.status==='blocked'){delete a.taskId;a.status='queued';}
       w.phase='executing';delete w.problem;this.save(w);return this.dispatch(w);
     }
     return this.atomic(()=>{

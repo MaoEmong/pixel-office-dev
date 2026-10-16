@@ -94,14 +94,22 @@ describe('buildClaudeArgs', () => {
 });
 
 describe('buildCodexArgs', () => {
+  test('Windows command isolation prefers MXC without bypassing the workspace or approval policy', () => {
+    for (const args of [buildCodexArgs(), buildCodexArgs('resumed'), buildCodexProbeArgs()]) {
+      assert.ok(args.includes('features.prefer_mxc=true'));
+      assert.ok(args.includes('approval_policy="on-request"'));
+      assert.ok(!args.includes('--dangerously-bypass-approvals-and-sandbox'));
+      assert.ok(!args.some(arg => arg.includes('danger-full-access')));
+    }
+  });
   test('fresh session', () => {
     assert.deepEqual(buildCodexArgs(), [
-      '--dangerously-bypass-hook-trust', '-c', 'approval_policy="on-request"', '-c', 'sandbox_mode="workspace-write"',
+      '--dangerously-bypass-hook-trust', '-c', 'approval_policy="on-request"', '-c', 'sandbox_mode="workspace-write"', '-c', 'features.prefer_mxc=true',
     ]);
   });
   test('resume subcommand goes first, extra args last', () => {
     assert.deepEqual(buildCodexArgs('01a09f4f', ['-m', 'x']), [
-      'resume', '01a09f4f', '--dangerously-bypass-hook-trust', '-c', 'approval_policy="on-request"', '-c', 'sandbox_mode="workspace-write"', '-m', 'x',
+      'resume', '01a09f4f', '--dangerously-bypass-hook-trust', '-c', 'approval_policy="on-request"', '-c', 'sandbox_mode="workspace-write"', '-c', 'features.prefer_mxc=true', '-m', 'x',
     ]);
   });
 });

@@ -37,6 +37,100 @@ function setup() {
   return {store,d,head,leads,expert,sent,host,coord,begin,round,plan};
 }
 
+test('head starts autonomously, records two verified stages and completes without user transitions',t=>{
+  const f=setup();t.after(()=>f.store.close());
+  let w=f.coord.discuss(f.d.id,'Build and verify the whole product');
+  assert.match(f.sent.at(-1)!.text,/workflow_start/);
+  assert.throws(()=>f.coord.startByHead(f.leads[0]!,w.id),/부장/);
+  w=f.coord.startByHead(f.head,w.id);
+  const root=w.rootTaskId;
+  assert.equal(f.coord.startByHead(f.head,w.id).rootTaskId,root);
+  assert.equal(f.store.listTasks().length,1);
+  const finish=(w:Workflow)=>{
+    for(const leadId of w.assignments.map(a=>a.leadId)){
+      const a=f.coord.current(f.d.id)!.assignments.find(a=>a.leadId===leadId)!;
+      f.store.updateTask(a.taskId!,{status:'reported',reportStatus:'done',reportText:`verified ${a.task}`});
+      f.coord.report(f.store.getMember(a.leadId)!,a.taskId,'done',`verified ${a.task}`);
+    }
+  };
+  w=f.coord.open(f.head,[...f.leads.map(m=>m.id),f.expert.id]);f.round(w,1);f.round(w,2);
+  w=f.coord.decide(f.head,w.id,'first meeting',f.plan());finish(w);
+  assert.equal(f.sent.filter(s=>s.text.includes('[STAGE REVIEW')).length,1);
+  const decision={workflowId:w.id,stage:1,summary:'Foundation complete',verification:['Unit tests passed'],complete:false,nextStage:{title:'Integration',brief:'Connect and test the remaining features'}};
+  w=f.coord.stageComplete(f.head,decision);
+  assert.equal(w.stage,2);assert.equal(w.phase,'meeting');assert.equal(w.rootTaskId,root);
+  assert.equal(w.brief,'Build and verify the whole product');
+  assert.equal(w.stages!.length,1);assert.equal(w.stages![0]!.meeting!.minutes,'first meeting');
+  assert.equal(w.stages![0]!.assignments[0]!.report,'verified write');
+  const sent=f.sent.length;
+  f.coord.stageComplete(f.head,decision);
+  assert.equal(f.sent.length,sent,'retry cannot repeat the next-stage delivery');
+  assert.throws(()=>f.coord.stageComplete(f.head,{...decision,summary:'changed'}),/이미 기록/);
+  const recovered=new WorkflowCoordinator(f.store,f.host);
+  assert.equal(recovered.current(f.d.id)!.stages![0]!.summary,'Foundation complete');
+  w=recovered.open(f.head,[...f.leads.map(m=>m.id),f.expert.id]);f.round(w,1);f.round(w,2);
+  assert.match(f.sent.at(-1)!.text,/Connect and test the remaining features/);
+  w=recovered.decide(f.head,w.id,'second meeting',f.plan());
+  assert.throws(()=>recovered.stageComplete(f.head,{...decision,stage:2,complete:true,nextStage:undefined}),/모든 담당/);
+  finish(w);
+  w=recovered.stageComplete(f.head,{workflowId:w.id,stage:2,summary:'Whole product verified',verification:['Integration tests passed'],complete:true});
+  assert.equal(w.phase,'completed');assert.equal(w.stages!.length,2);
+  assert.equal(f.store.getTask(root!)!.status,'reported');
+  assert.equal(f.store.getTask(root!)!.reportText,'Whole product verified');
+  assert.equal(w.stages![0]!.summary,'Foundation complete','later work cannot overwrite an earlier checkpoint');
+});
+
+test('stage validation and failed next-stage delivery preserve the existing work',t=>{
+  const f=setup();t.after(()=>f.store.close());let w=f.begin();f.round(w,1);f.round(w,2);
+  w=f.coord.decide(f.head,w.id,'plan',f.plan());
+  const input={workflowId:w.id,stage:1,summary:'summary',verification:['tests'],complete:false,nextStage:{title:'next',brief:'remaining goal'}};
+  assert.throws(()=>f.coord.stageComplete(f.leads[0]!,input),/부장/);
+  assert.throws(()=>f.coord.stageComplete(f.head,{...input,verification:[]}),/검증/);
+  assert.throws(()=>f.coord.stageComplete(f.head,{...input,complete:true}),/하나/);
+  assert.throws(()=>f.coord.stageComplete(f.head,input),/모든 담당/);
+  for(const leadId of w.assignments.map(a=>a.leadId)){
+    const a=f.coord.current(f.d.id)!.assignments.find(a=>a.leadId===leadId)!;
+    f.coord.report(f.store.getMember(leadId)!,a.taskId,'done','verified');
+  }
+  const before=structuredClone(f.coord.current(f.d.id));
+  f.host.send=()=>{throw new Error('delivery failed');};
+  assert.throws(()=>f.coord.stageComplete(f.head,input),/delivery failed/);
+  assert.deepEqual(f.coord.current(f.d.id),before);
+  f.store.updateMember(f.head.id,{status:'idle'});
+  w=f.coord.current(f.d.id)!;w.phase='blocked';f.store.saveWorkflow(w);
+  assert.throws(()=>f.coord.stageComplete(f.head,input),/현재 실행/);
+});
+
+test('an older reviewed workflow can continue automatically with a new root and preserved history',t=>{
+  const f=setup();t.after(()=>f.store.close());let w=f.begin();f.round(w,1);f.round(w,2);
+  w=f.coord.decide(f.head,w.id,'legacy plan',f.plan());
+  for(const leadId of w.assignments.map(a=>a.leadId)){
+    const a=f.coord.current(f.d.id)!.assignments.find(a=>a.leadId===leadId)!;
+    f.coord.report(f.store.getMember(leadId)!,a.taskId,'done','verified');
+  }
+  const oldRoot=w.rootTaskId!;f.store.updateTask(oldRoot,{status:'reported',reportStatus:'done'});
+  f.coord.report(f.head,oldRoot,'done','first phase done');
+  w=f.coord.current(f.d.id)!;delete w.stage;delete w.stages;f.store.saveWorkflow(w);
+  w=f.coord.stageComplete(f.head,{workflowId:w.id,stage:1,summary:'legacy phase done',verification:['verified'],complete:false,nextStage:{title:'remaining work',brief:'finish original goal'}});
+  assert.equal(w.phase,'meeting');assert.equal(w.stage,2);assert.notEqual(w.rootTaskId,oldRoot);
+  assert.equal(f.store.getTask(oldRoot)!.status,'reported');assert.equal(w.stages!.length,1);
+});
+
+test('a restored head resumes pending verification instead of waiting for a user review button',t=>{
+  const f=setup();t.after(()=>f.store.close());let w=f.begin();f.round(w,1);f.round(w,2);
+  w=f.coord.decide(f.head,w.id,'plan',f.plan());
+  for(const leadId of w.assignments.map(a=>a.leadId)){
+    const a=f.coord.current(f.d.id)!.assignments.find(a=>a.leadId===leadId)!;
+    f.coord.report(f.store.getMember(leadId)!,a.taskId,'done','verified');
+  }
+  assert.equal(f.coord.current(f.d.id)!.stageReviewRequested,1);
+  f.sent.length=0;
+  const restored=new WorkflowCoordinator(f.store,f.host);
+  restored.resumeStageReview(f.head);
+  assert.match(f.sent[0]!.text,/STAGE REVIEW/);
+  assert.match(f.sent[0]!.text,/stage_complete/);
+});
+
 test('deleted meeting participants reconnect to current leads, preserving opinions and recording replacements',t=>{
   const f=setup();t.after(()=>f.store.close());f.coord.discuss(f.d.id,'work');f.coord.start(f.d.id);const w=f.coord.open(f.head,f.leads.map(m=>m.id));
   f.coord.speak(f.leads[0]!,w.id,1,'keep this opinion');
@@ -211,6 +305,95 @@ test('planning hooks allow reading and meeting tools, never writes or disguised 
   assert.equal(workflowToolDenial({...w,phase:'executing'},'Write',{}),undefined);
 });
 
+test('one blocked team does not revoke the approved work of another team',t=> {
+  const f=setup();t.after(()=>f.store.close());let w=f.begin();f.round(w,1);f.round(w,2);
+  w=f.coord.decide(f.head,w.id,'approved plan',f.plan().map(a=>({...a,dependsOn:[]})));
+  f.coord.report(f.leads[1]!,w.assignments[1]!.taskId,'blocked','Windows sandbox setup failed');
+  w=f.coord.current(f.d.id)!;
+  assert.equal(w.phase,'blocked');
+  assert.equal(f.coord.canContinueAssignedWork(f.leads[0]!),true);
+  assert.equal(f.coord.canContinueAssignedWork(f.expert),true);
+  assert.equal(f.coord.canContinueAssignedWork(f.leads[1]!),false,'the blocked team cannot silently resume');
+  assert.equal(f.coord.canContinueAssignedWork(f.head),false,'a blocked workflow is not permission for new work');
+  assert.equal(w.assignments[0]!.status,'assigned');
+  assert.equal(w.assignments[1]!.status,'blocked');
+  f.store.saveWorkflow({...w,phase:'meeting'});
+  assert.equal(f.coord.canContinueAssignedWork(f.leads[0]!),false);
+  f.store.saveWorkflow({...w,assignments:[]});
+  assert.equal(f.coord.canContinueAssignedWork(f.leads[0]!),false);
+});
+
+test('reported failures resume the same plan without duplicating running or completed work',t=> {
+  const f=setup();t.after(()=>f.store.close());let w=f.begin();f.round(w,1);f.round(w,2);
+  w=f.coord.decide(f.head,w.id,'keep approved plan',f.plan().map(a=>({...a,dependsOn:[]})));
+  const root=w.rootTaskId,active=w.assignments[0]!.taskId!,failed=w.assignments[1]!.taskId!;
+  f.store.updateTask(failed,{status:'reported',reportStatus:'blocked',reportText:'sandbox ACL denied'});
+  f.coord.report(f.leads[1]!,failed,'blocked','sandbox ACL denied');
+  const blocked=structuredClone(f.coord.current(f.d.id));
+  assert.throws(()=>f.coord.resume(f.d.id,undefined,'stale-workflow'),/다른 회의 또는 작업/);
+  f.store.updateMember(f.leads[1]!.id,{status:'error'});
+  assert.throws(()=>f.coord.resume(f.d.id),/재고용/);
+  assert.deepEqual(f.coord.current(f.d.id),blocked);
+  f.store.updateMember(f.leads[1]!.id,{status:'idle'});
+  w=new WorkflowCoordinator(f.store,f.host).resume(f.d.id);
+  assert.equal(w.phase,'executing');assert.equal(w.problem,undefined);
+  assert.equal(w.id,blocked!.id);assert.equal(w.rootTaskId,root);
+  assert.equal(w.meeting!.minutes,'keep approved plan');
+  assert.equal(w.assignments[0]!.taskId,active);
+  assert.notEqual(w.assignments[1]!.taskId,failed);
+  assert.equal(f.store.getTask(failed)!.reportText,'sandbox ACL denied');
+  assert.match(f.store.getTask(w.assignments[1]!.taskId!)!.instruction,/sandbox ACL denied/);
+  assert.match(f.store.getTask(w.assignments[1]!.taskId!)!.instruction,/미완료/);
+  const count=f.store.listTasks().length;
+  f.coord.resume(f.d.id);assert.equal(f.store.listTasks().length,count);
+  f.store.updateTask(active,{status:'reported',reportStatus:'done'});
+  f.coord.report(f.leads[0]!,active,'done','verified');
+  const second=w.assignments[1]!.taskId!;
+  f.store.updateTask(second,{status:'reported',reportStatus:'blocked'});
+  f.coord.report(f.leads[1]!,second,'blocked','another recoverable failure');
+  w=f.coord.resume(f.d.id);
+  assert.equal(w.assignments[0]!.status,'done');assert.equal(w.assignments[0]!.taskId,active);
+});
+
+test('Office keeps an independent team hook open after a failure and resumes only failed deliveries',async t=> {
+  const dir=fs.mkdtempSync(path.join(os.tmpdir(),'workflow-branch-failure-'));
+  const store=new Store(':memory:'),pty=new FakePty(),receiver=new FakeReceiver();
+  const office=new Office({config:{dataDir:dir,hookPort:0,wsPort:0,mcpPort:0},store,pty,receiver});
+  t.after(async()=>{await office.shutdown();fs.rmSync(dir,{recursive:true,force:true});});
+  await office.start();
+  const {department,head}=office.createDepartment({name:'branches',cwd:dir,headName:'head',headEngine:'claude'});
+  office.workflowDiscuss(department.id,'finish the approved work');office.workflowStart(department.id);
+  const a=office.teamCreateTeam(head.id,{name:'healthy',leadName:'healthy lead'}).lead;
+  const b=office.teamCreateTeam(head.id,{name:'failed',leadName:'failed lead'}).lead;
+  const worker=office.teamHire(a.id,{name:'healthy worker',role:'implement assigned part'});
+  const coord=office['workflows'];let w=coord.open(head,[a.id,b.id]);
+  for(const round of [1,2])for(const lead of [a,b])coord.speak(lead,w.id,round,'agreed');
+  w=coord.decide(head,w.id,'approved work',[a,b].map(lead=>({leadId:lead.id,task:'implement',acceptance:['verified']})));
+  const active=w.assignments[0]!.taskId,failed=w.assignments[1]!.taskId!;
+  office.teamReport(b.id,{taskId:failed,status:'blocked',summary:'sandbox initialization failed'});
+  const hook=(lead:Member)=>fakeReq(lead.memberToken,'PreToolUse',{session_id:'session',hook_event_name:'PreToolUse',cwd:dir,tool_name:'Write',tool_input:{file_path:path.join(dir,'output.txt'),content:'work'}});
+  const allowed=hook(a);receiver.emit('hook',allowed.req);await new Promise(r=>setTimeout(r,0));
+  assert.deepEqual(allowed.sent,[{}],'a healthy assigned team still passes the actual tool hook');
+  const denied=hook(b);receiver.emit('hook',denied.req);
+  assert.match(JSON.stringify(denied.sent),/deny/);
+  const delegated=office.teamDelegate(a.id,worker.id,'implement remaining approved part');
+  assert.equal(delegated.to.id,worker.id);
+  assert.throws(()=>office.teamDelegate(head.id,a.id,'new head assignment'),/확정/);
+  store.updateTask(delegated.task.id,{status:'assigned'});
+  store.updateTask(active!,{status:'assigned'});
+  for(const member of [worker,a]){
+    receiver.emit('hook',fakeReq(member.memberToken,'UserPromptSubmit',{session_id:`session-${member.id}`,hook_event_name:'UserPromptSubmit',cwd:dir,prompt:'assigned work'}).req);
+    receiver.emit('hook',fakeReq(member.memberToken,'Stop',{session_id:`session-${member.id}`,hook_event_name:'Stop',cwd:dir,last_assistant_message:'Assigned work finished and verified.'}).req);
+  }
+  assert.equal(store.getTask(delegated.task.id)!.status,'reported');
+  assert.equal(store.getTask(active!)!.status,'reported');
+  assert.equal(office.workflowGet(department.id)!.phase,'blocked');
+  w=await office.workflowResume(department.id,w.id);
+  assert.equal(w.phase,'executing');assert.equal(w.assignments[0]!.taskId,active);
+  assert.notEqual(w.assignments[1]!.taskId,failed);
+  assert.equal(store.getTask(failed)!.reportStatus,'blocked');
+});
+
 test('Office gates actual hooks, direct instructions, hiring and early root report; shutdown preserves meeting',async t=> {
   const dir=fs.mkdtempSync(path.join(os.tmpdir(),'workflow-office-'));
   const db=path.join(dir,'test.db');
@@ -275,9 +458,9 @@ test('a real queued follow-up reaches the head and its reply cannot finish the r
   assert.equal(store.getTask(w.rootTaskId!)!.status,'assigned','a duplicate idle event cannot finish the task either');
   rt.queue.clear();
   rt.queue.emit('flushed',{kind:'system',text:'[ALL_REPORTS_IN]'});
-  hook('Stop',{last_assistant_message:'실제 작업 최종 보고'});
-  assert.equal(store.getTask(w.rootTaskId!)!.status,'reported','normal work reporting still works on a later work turn');
-  assert.equal(office.workflowGet(department.id)!.phase,'review');
+  office['workflows'].stageComplete(head,{workflowId:w.id,stage:1,summary:'실제 작업 최종 보고',verification:['완료 기준 확인'],complete:true});
+  assert.equal(store.getTask(w.rootTaskId!)!.status,'reported','the head can complete verified work without another user button');
+  assert.equal(office.workflowGet(department.id)!.phase,'completed');
 });
 
 test('Office recovery reconnects deleted seats and restarts only stopped participants without losing the workflow',async t=>{

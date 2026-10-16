@@ -298,7 +298,16 @@ export class ScreenModel {
 
   /** 작업 중 표시(스피너 줄 또는 "esc to interrupt" 상태줄). */
   busyIndicator(): boolean {
-    const ls = this.lines();
+    // 좁은 패널에서는 상태 문구가 두 화면 줄로 나뉜다. 실제 줄바꿈과 구분해서 이어 읽어야
+    // "esc to interrupt"가 잘렸다는 이유로 일하는 CLI를 idle로 바꾸지 않는다.
+    const buf = this.term.buffer.active;
+    const ls: string[] = [];
+    for (let y = 0; y < this.term.rows; y++) {
+      const line = buf.getLine(buf.baseY + y);
+      const text = line?.translateToString(false) ?? '';
+      if (line?.isWrapped && ls.length > 0) ls[ls.length - 1] += text;
+      else ls.push(text);
+    }
     return this.tuiMap.busy.some((r) => ls.some((l) => r.test(l)));
   }
 

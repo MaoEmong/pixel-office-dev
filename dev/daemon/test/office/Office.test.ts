@@ -211,6 +211,34 @@ describe('Office', () => {
   };
   const clockIn = (name = 'kim', instructions?: string) => office.clockIn({ teamId: team.id, engine: 'claude', name, instructions });
 
+  test('Codex busy screen confirms submission before a delayed hook and prevents repeated Enter', async () => {
+    const m = office.clockIn({ teamId: team.id, engine: 'codex', name: '백엔드팀장' });
+    const rt = office['runtimes'].get(m.id)!;
+    rt.queue.stop(); // drive the real queue with a fixed clock instead of background polling
+    await rt.screen.feed('› Ask Codex to do anything\r\n  gpt-6-astra low · E:\\portfolio');
+    store.updateMember(m.id, { status: 'idle' });
+    const submitted: string[] = [];
+    const lost: string[] = [];
+    rt.queue.on('submitted', item => submitted.push(item.text));
+    rt.queue.on('submitLost', item => lost.push(item.text));
+    const startedAt = Date.now();
+    let now = startedAt;
+    Object.defineProperty(rt.queue, 'now', { value: () => now });
+    rt.queue.enqueue({ kind: 'system', text: '추가 확인 요청', id: 'q-followup' });
+    now += 301;
+    rt.queue.tick();
+    assert.deepEqual(pty.last().keys, ['enter']);
+    await rt.screen.feed('\x1b[2J\x1b[H• Working (18m 49s • esc to interrupt)\r\n\r\n› Ask Codex to do anything\r\n  gpt-6-astra low · E:\\portfolio');
+    assert.equal(store.getMember(m.id)!.status, 'idle', 'reproduce the delayed status notice');
+    for (let i = 0; i < 7; i++) {
+      now += 2501;
+      rt.queue.tick();
+    }
+    assert.deepEqual(submitted, ['추가 확인 요청']);
+    assert.deepEqual(lost, []);
+    assert.deepEqual(pty.last().keys, ['enter'], 'never send Enter again to a working CLI');
+  });
+
   test('start(): daemon.json has wsPort/hookPort/mcpPort/token/pid/startedAt/version; token is 32 random bytes', async () => {
     const info = JSON.parse(fs.readFileSync(path.join(dataDir, 'daemon.json'), 'utf8'));
     assert.deepEqual(Object.keys(info).sort(), ['hookPort', 'mcpPort', 'pid', 'startedAt', 'token', 'version', 'wsPort']);

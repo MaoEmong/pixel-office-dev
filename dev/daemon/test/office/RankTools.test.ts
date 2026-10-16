@@ -258,8 +258,9 @@ describe('직급별 도구 (T35 rev 3)', () => {
     assert.equal(derivedOf(worker.id), 'waiting_answer');
 
     await sleep(FLUSH_MS);
-    assert.deepEqual(pastesOf(lead), [buildQuestionText(p.id, '이음', '어느 폴더에 쓸까요?', ['src', 'docs'])]);
-    assert.equal(pastesOf(lead)[0], `[QUESTION from 이음 q#${p.id}]\n어느 폴더에 쓸까요?\n(옵션: src | docs)`);
+    assert.equal(pastesOf(lead).length, 1);
+    assert.ok(pastesOf(lead)[0]!.startsWith(buildQuestionText(p.id, '이음', '어느 폴더에 쓸까요?', ['src', 'docs'])));
+    assert.ok(pastesOf(lead)[0]!.includes(`reply(to_member="${worker.id}"`));
 
     // 팀장이 답한다 → 그 질문이 닫히고 팀원 큐에 [ANSWER]
     stop(worker);
@@ -283,7 +284,8 @@ describe('직급별 도구 (T35 rev 3)', () => {
 
     const p = office.askParent(lead.id, { question: '예산을 더 쓸까요?' });
     await sleep(FLUSH_MS);
-    assert.equal(pastesOf(head)[0], `[QUESTION from 팀장A q#${p.id}]\n예산을 더 쓸까요?`);
+    assert.ok(pastesOf(head)[0]!.startsWith(`[QUESTION from 팀장A q#${p.id}]\n예산을 더 쓸까요?`));
+    assert.ok(pastesOf(head)[0]!.includes(`reply(to_member="${lead.id}"`));
     office.teamReply(head.id, { toMember: lead.id, text: '아니, 지금 인원으로' });
     assert.equal(store.getPending(p.id)!.status, 'answered');
 

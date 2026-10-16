@@ -871,11 +871,22 @@ export class Store {
   }
 
   /** open → answered. 이미 닫힌 건 변경하지 않고 현재 행을 돌려준다. */
-  answerPending(id: string, answer: unknown): Pending | undefined {
+  answerPending(id: string, answer: unknown, opts: { awaitDelivery?: boolean } = {}): Pending | undefined {
     this.db
-      .prepare("UPDATE pending SET status = 'answered', answer = ?, answered_at = ? WHERE id = ? AND status = 'open'")
+      .prepare(opts.awaitDelivery
+        ? "UPDATE pending SET status = 'answered', answer = ?, answered_at = ?, payload = json_set(payload, '$.answerDelivery', 'pending') WHERE id = ? AND status = 'open'"
+        : "UPDATE pending SET status = 'answered', answer = ?, answered_at = ? WHERE id = ? AND status = 'open'")
       .run(JSON.stringify(answer ?? null), nowIso(), id);
     return this.getPending(id);
+  }
+
+  /** Durable internal replies. Legacy answered rows are deliberately excluded. */
+  undeliveredInternalAnswers(memberId: string): Pending[] {
+    return (this.db.prepare("SELECT * FROM pending WHERE member_id = ? AND status = 'answered' AND json_extract(payload, '$.source') = 'ask_parent' AND json_extract(payload, '$.answerDelivery') = 'pending' ORDER BY rowid").all(memberId) as Row[]).map(rowToPending);
+  }
+
+  markInternalAnswerDelivered(id: string): void {
+    this.db.prepare("UPDATE pending SET payload = json_set(payload, '$.answerDelivery', 'delivered') WHERE id = ? AND status = 'answered' AND json_extract(payload, '$.source') = 'ask_parent' AND json_extract(payload, '$.answerDelivery') = 'pending'").run(id);
   }
 
   /** open → expired. */

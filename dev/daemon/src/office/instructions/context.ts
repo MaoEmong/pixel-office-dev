@@ -77,6 +77,7 @@ export function sessionPreamble(input: SessionContextInput): string {
     childrenLine(input.children),
     `- ${toolsLine(member.rank)}`,
     ...(member.rank==='head' ? ['- 내부 멤버 연결·회의 중단은 office_status로 실제 ID와 상태를 확인하고 meeting_resume으로 복구하라. 팀을 해산·재생성하거나 사용자에게 내부 ID·상태 파일을 찾으라고 하지 마라. 도구가 안 보이면 ToolSearch로 찾아라.'] : []),
+    ...(member.rank==='head' ? ['- 단계 진행은 부장이 판단한다. 목표가 정해지면 workflow_start, 팀별 완료 보고 뒤 검증하면 stage_complete로 완료한 일·검증 근거·다음 단계를 기록하라. 전체 목표가 남으면 다음 단계 회의를 열고, 모두 충족하면 전체 완료한다. 진행 확인을 사용자에게 반복해서 요구하지 마라. 필수 정보·로그인·명시적 권한 승인이 필요한 문제는 숨기지 마라.'] : []),
     '아래는 너의 지시문(INSTRUCTIONS.md)이다 — 프로젝트의 CLAUDE.md/AGENTS.md 위에 얹히는 개인 규칙이다.',
   ].join('\n');
 }

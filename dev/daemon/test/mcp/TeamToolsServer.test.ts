@@ -40,6 +40,8 @@ const LEAD = 'tok_leader';
 const HEAD = 'tok_head';
 
 class FakeHost implements TeamToolsHost {
+  workflowStart(memberId:string,input:{workflowId:string}){this.boom();return {id:input.workflowId,phase:'meeting',requestedBy:memberId};}
+  stageComplete(memberId:string,input:import('../../src/workflow/types.js').StageCompleteInput){this.boom();return {...input,requestedBy:memberId};}
   officeStatus(memberId:string){return {members:[{id:'m_lead',name:'반장'}],workflow:{id:'w1',phase:'blocked'},requestedBy:memberId};}
   async meetingResume(memberId:string,input:{workflowId:string;replacements?:import('../../src/workflow/types.js').MeetingReplacement[]}){this.boom();return {id:input.workflowId,phase:'meeting',requestedBy:memberId,replacements:input.replacements};}
   readonly asks: Array<{ memberId: string; input: AskUserInput }> = [];
@@ -170,6 +172,27 @@ describe('TeamToolsServer (T17)', () => {
     }finally{await client.close();}
   });
 
+  test('head can start and record stages through real MCP while other ranks cannot', async () => {
+    const {client}=await connect(port,HEAD);
+    const {client:worker}=await connect(port,TOKEN);
+    try {
+      const started=await client.callTool({name:'workflow_start',arguments:{workflowId:'w1'}});
+      assert.notEqual(started.isError,true);
+      assert.match((started.content as Array<{text:string}>)[0]!.text,/"phase":"meeting"/);
+      const input={workflowId:'w1',stage:1,summary:'foundation ready',verification:['tests passed'],complete:false,nextStage:{title:'integration',brief:'connect the remaining parts'}};
+      const recorded=await client.callTool({name:'stage_complete',arguments:input});
+      assert.notEqual(recorded.isError,true);
+      assert.match((recorded.content as Array<{text:string}>)[0]!.text,/integration/);
+      const denied=await worker.callTool({name:'stage_complete',arguments:input});
+      assert.equal(denied.isError,true);
+      const invalid=await client.callTool({name:'stage_complete',arguments:{...input,verification:[]}});
+      assert.equal(invalid.isError,true);
+      host.failNext='storage failed';
+      const failed=await client.callTool({name:'stage_complete',arguments:input});
+      assert.equal(failed.isError,true);
+    } finally {await client.close();await worker.close();}
+  });
+
   test('tools/list exposes ask_user with question(required)/options(optional) schema (부장)', async () => {
     const { client } = await connect(port, HEAD);
     try {
@@ -278,7 +301,7 @@ describe('TeamToolsServer (T17)', () => {
       const names = async (c: Client) => (await c.listTools()).tools.map((t) => t.name).sort();
       assert.deepEqual(await names(asMember.client), ['ask_parent', 'meeting_speak', 'report']);
       assert.deepEqual(await names(asLeader.client), ['ask_parent', 'delegate', 'dismiss', 'hire', 'meeting_speak', 'reply', 'report']);
-      assert.deepEqual(await names(asHead.client), ['ask_user', 'create_team', 'delegate', 'dismiss_team', 'meeting_decide', 'meeting_open', 'meeting_resume', 'office_status', 'reply', 'report']);
+      assert.deepEqual(await names(asHead.client), ['ask_user', 'create_team', 'delegate', 'dismiss_team', 'meeting_decide', 'meeting_open', 'meeting_resume', 'office_status', 'reply', 'report', 'stage_complete', 'workflow_start']);
       // 표 자체가 단일 출처다 — 지시문 템플릿의 도구 이름 줄도 이것을 읽는다.
       assert.deepEqual(await names(asMember.client), [...RANK_TOOLS.member].sort());
       assert.deepEqual(await names(asLeader.client), [...RANK_TOOLS.lead].sort());

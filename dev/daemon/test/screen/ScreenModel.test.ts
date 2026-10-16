@@ -20,6 +20,28 @@ test('feed is async: lines() reflects data only after await', async () => {
   sm.dispose();
 });
 
+test('Codex queued-message notice means a turn is still active even when its spinner is not visible', async () => {
+  const sm = new ScreenModel({ engine: 'codex', cols: 60, rows: 40 });
+  try {
+    await sm.feed([
+      '• Messages to be submitted after next tool call (press esc to interrupt and send immediately)',
+      '  ↳ [QUESTION from 팀원] 결과를 확인해 주세요.',
+      '',
+      '› Ask Codex to do anything',
+      '  gpt-6-astra low · E:\\portfolio',
+    ].join('\r\n'));
+    assert.equal(sm.busyIndicator(), true);
+    assert.equal(sm.promptReady(), false);
+    await sm.feed('\x1b[2J\x1b[H› Ask Codex to do anything\r\n  gpt-6-astra low · E:\\portfolio');
+    assert.equal(sm.busyIndicator(), false, 'handled messages must not leave a permanent busy state');
+    assert.equal(sm.promptReady(), true);
+    await sm.feed('\x1b[2J\x1b[Hesc to\r\ninterrupt\r\n› Ask Codex to do anything');
+    assert.equal(sm.busyIndicator(), false, 'separate real lines must not be joined into a status message');
+  } finally {
+    sm.dispose();
+  }
+});
+
 test('lines() is the viewport (bottom rows), not the top of the scrollback', async () => {
   const sm = new ScreenModel({ engine: 'codex', cols: 40, rows: 5 });
   const all = Array.from({ length: 12 }, (_, i) => `line ${i + 1}`);

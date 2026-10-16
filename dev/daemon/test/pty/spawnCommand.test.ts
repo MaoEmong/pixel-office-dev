@@ -43,7 +43,7 @@ describe('prepareSpawnCommand', () => {
   test('codex: 실측 플래그 + cwd 의 .codex/hooks.json (pixel-office 마커, node hook 명령)', () => {
     const cmd = prepareSpawnCommand({ ...cfg, dataDir: dir }, opts());
     assert.equal(cmd.file, 'C:\\codex.exe');
-    assert.deepEqual(cmd.args, ['--dangerously-bypass-hook-trust', '-c', 'approval_policy="on-request"', '-c', 'sandbox_mode="workspace-write"']);
+    assert.deepEqual(cmd.args, ['--dangerously-bypass-hook-trust', '-c', 'approval_policy="on-request"', '-c', 'sandbox_mode="workspace-write"', '-c', 'features.prefer_mxc=true']);
     assert.equal(cmd.warn, undefined);
 
     const file = codexHooksPath(cwd);
@@ -66,6 +66,8 @@ describe('prepareSpawnCommand', () => {
       'approval_policy="on-request"',
       '-c',
       'sandbox_mode="workspace-write"',
+      '-c',
+      'features.prefer_mxc=true',
       '-c',
       `mcp_servers.team.url="${url}"`,
     ]);

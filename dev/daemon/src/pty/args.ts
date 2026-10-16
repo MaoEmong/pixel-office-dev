@@ -36,7 +36,7 @@ export function buildClaudeProbeArgs(): string[] {
  * 쓰기가 필요 없는 세션이라 샌드박스는 **읽기 전용**이다(멤버는 `workspace-write`).
  */
 export function buildCodexProbeArgs(): string[] {
-  return ['--dangerously-bypass-hook-trust', '-c', 'approval_policy="on-request"', '-c', 'sandbox_mode="read-only"'];
+  return ['--dangerously-bypass-hook-trust', '-c', 'approval_policy="on-request"', '-c', 'sandbox_mode="read-only"', '-c', 'features.prefer_mxc=true'];
 }
 
 export interface CodexArgsOptions {
@@ -64,6 +64,11 @@ export function buildCodexArgs(resumeSessionId?: string, extraArgs: readonly str
     'approval_policy="on-request"',
     '-c',
     'sandbox_mode="workspace-write"',
+    // Prefer native Windows process isolation when supported. Legacy provisioning
+    // can fail on project-local CODEX_HOME ACLs before even a read command starts.
+    // Codex retains its configured legacy fallback on unsupported hosts.
+    '-c',
+    'features.prefer_mxc=true',
     ...(opts.mcpUrl ? ['-c', `${CODEX_MCP_URL_KEY(CODEX_MCP_SERVER_NAME)}="${opts.mcpUrl}"`] : []),
     ...extraArgs,
   ];

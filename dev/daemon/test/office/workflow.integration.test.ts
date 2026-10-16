@@ -8,7 +8,7 @@ import type {DaemonInfo} from '../../src/office/types.js';
 import type {Department, Member} from '../../src/store/types.js';
 import {Client, IT, SANDBOX, itEnv, startDaemon, waitExit, killTree, sweepClaudeByDataDir, snapshotOnce, pidAlive} from './it-helpers.js';
 
-test('real meeting: clarify → two rounds → approved write → dependent verification → report → restart → complete',
+test('real autonomous meeting: clarify → two rounds → approved write → verification → stage record → completed → restart',
   {skip: IT ? false : 'set PIXEL_IT=1 to run', timeout:900_000}, async()=> {
   const filename=`workflow-it-${Date.now()}.txt`, target=path.join(SANDBOX,filename);
   const {dataDir,env}=await itEnv('workflow');
@@ -29,11 +29,7 @@ test('real meeting: clarify → two rounds → approved write → dependent veri
     await c!.waitStatus(head.id,'idle',120000);
     const seq=c!.lastSeq;
     await c!.call('workflow.discuss',{departmentId:department.id,text:
-      `Plan a tiny acceptance test: create only ${filename} using Write with exactly MEETING_OK. Two Claude leads only: Writer performs Write directly, Reviewer reads and verifies after Writer reports done. No workers. No shell commands. No implementation until the meeting decision. No questions needed; scope and acceptance are fully specified. Reply briefly with the outline.`});
-    const answer=await c!.waitEvent(head.id,'text',seq,180000);
-    await c!.waitEvent(head.id,'idle',answer.seq,60000);
-    assert.equal(fs.existsSync(target),false,'discussion must not implement');
-    await c!.call('workflow.start',{departmentId:department.id});
+      `Plan a tiny acceptance test: create only ${filename} using Write with exactly MEETING_OK. Two Claude leads only: Writer performs Write directly, Reviewer reads and verifies after Writer reports done. No workers. No shell commands. No implementation until the meeting decision. Scope and acceptance are fully specified. Use workflow_start yourself without asking the user to press Start. After verification use stage_complete with complete=true; no additional work is needed.`});
     const approval=await c!.waitFor('Write approval after meeting',n=>n.method==='event' && n.params.kind==='waiting_approval',480000);
     const before=(await c!.call<{workflow:Workflow}>('workflow.get',{departmentId:department.id})).workflow;
     assert.equal(before.phase,'executing');
@@ -44,11 +40,12 @@ test('real meeting: clarify → two rounds → approved write → dependent veri
     assert.equal(fs.existsSync(target),false,'Write waits for explicit approval');
     assert.equal((approval.params.detail as Record<string,unknown>).tool,'Write');
     await c!.call('approval.respond',{pendingId:(approval.params.ref as Record<string,unknown>).approvalId,behavior:'allow'});
-    const final=await c!.waitFor('final review',n=>n.method==='workflow.changed' && n.params.id===before.id && n.params.phase==='review',300000);
+    const final=await c!.waitFor('autonomous completion',n=>n.method==='workflow.changed' && n.params.id===before.id && n.params.phase==='completed',300000);
     const completed=final.params as unknown as Workflow;
     assert.ok(completed.assignments.every(a=>a.status==='done'));
     assert.equal(fs.readFileSync(target,'utf8').trim(),'MEETING_OK');
     assert.ok(completed.result);
+    assert.ok(completed.stages?.length);assert.ok(completed.stages!.at(-1)!.verification.length);
     const snap=await snapshotOnce(info.wsPort,info.token,'workflow-before-restart');
     const sessionId=snap.members.find(m=>m.id===head.id)!.sessionId;
     assert.ok(sessionId);
@@ -62,8 +59,6 @@ test('real meeting: clarify → two rounds → approved write → dependent veri
     await c!.waitStatus(head.id,'idle',180000);
     const recovered=await snapshotOnce(info.wsPort,info.token,'workflow-recovered');
     assert.equal(recovered.members.find(m=>m.id===head.id)!.sessionId,sessionId);
-    const checked=await c!.call<{workflow:Workflow}>('workflow.complete',{departmentId:department.id});
-    assert.equal(checked.workflow.phase,'completed');
     const exported=JSON.parse(fs.readFileSync(path.join(SANDBOX,'.pixel-office','workflows',`${before.id}.json`),'utf8'));
     assert.equal(exported.phase,'completed');
     await c!.call('daemon.shutdown',{});

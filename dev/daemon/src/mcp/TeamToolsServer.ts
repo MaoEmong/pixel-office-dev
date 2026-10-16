@@ -46,6 +46,8 @@ export const ALL_TEAM_TOOLS = [
   'meeting_decide',
   'office_status',
   'meeting_resume',
+  'workflow_start',
+  'stage_complete',
 ] as const;
 export type TeamToolName = (typeof ALL_TEAM_TOOLS)[number];
 
@@ -59,7 +61,7 @@ export type ReportToolStatus = 'done' | 'blocked' | 'aborted';
  * PROTOCOL.md 의 표가 이 표를 그대로 읽는다.
  */
 export const RANK_TOOLS: Record<TeamToolRank, readonly TeamToolName[]> = {
-  head: ['create_team', 'dismiss_team', 'delegate', 'reply', 'report', 'ask_user', 'meeting_open', 'meeting_decide', 'office_status', 'meeting_resume'],
+  head: ['create_team', 'dismiss_team', 'delegate', 'reply', 'report', 'ask_user', 'meeting_open', 'meeting_decide', 'office_status', 'meeting_resume', 'workflow_start', 'stage_complete'],
   lead: ['hire', 'dismiss', 'delegate', 'reply', 'report', 'ask_parent', 'meeting_speak'],
   member: ['report', 'ask_parent', 'meeting_speak'],
 };
@@ -142,6 +144,8 @@ export interface TeamToolsHost {
   meetingOpen?(memberId: string, input: {participants:string[]}): unknown;
   meetingSpeak?(memberId: string, input: {workflowId:string;round:number;text:string}): unknown;
   meetingDecide?(memberId: string, input: {workflowId:string;minutes:string;assignments:import('../workflow/types.js').WorkAssignment[]}): unknown;
+  workflowStart?(memberId: string, input: {workflowId:string}): unknown;
+  stageComplete?(memberId: string, input: import('../workflow/types.js').StageCompleteInput): unknown;
   /** URL 의 memberToken → 멤버. 모르는 토큰·이미 종료된 멤버면 undefined(→ 404). */
   resolveMember(memberToken: string): TeamToolsMember | undefined;
   /** ask_user(부장 전용): pending(question) 등록 후 id 반환. */
@@ -157,7 +161,7 @@ export interface TeamToolsHost {
   /** dismiss(팀장): 직속 팀원을 퇴근시킨다(프로세스 종료라 비동기). */
   dismiss(memberId: string, input: DismissInput): Promise<{ memberId: string; name: string }>;
   /** delegate(부장·팀장): task 행을 만들고 대상이 유휴면 바로 배정(assigned), 아니면 queued. */
-  delegate(memberId: string, input: DelegateInput): { taskId: number; name: string; status: 'assigned' | 'queued' };
+  delegate(memberId: string, input: DelegateInput): { taskId: number; name: string; status: 'assigned' | 'queued' } | Promise<{ taskId: number; name: string; status: 'assigned' | 'queued' }>;
   /** reply(부장·팀장): 직속 부하의 열린 ask_parent 에 답하거나(questionId) 그냥 메시지를 넣는다. */
   reply(memberId: string, input: ReplyInput): { name: string; questionId?: string };
   /** report(전원): 배정받은 task 를 닫는다. `to` 는 이 보고가 올라간 곳(부장은 사용자). */
@@ -454,6 +458,14 @@ export class TeamToolsServer {
     };
     const has = (tool: TeamToolName): boolean => canUseTool(member.rank, tool);
 
+    if(has('workflow_start'))server.registerTool('workflow_start',{
+      title:'부장 판단으로 작업 시작',description:'[부장 전용] 목표와 완료 기준이 충분하면 사용자 버튼이나 진행 승인을 기다리지 않고 현재 작업의 회의를 시작한다. 원래 사용자 요청 범위 안에서 판단한다.',
+      inputSchema:{workflowId:z.string().min(1)},annotations,
+    },async input=>{const d=gate('workflow_start');if(d)return d;try{return ok(JSON.stringify(this.host.workflowStart!(memberId,input)));}catch(e){return fail('workflow_start',errText(e));}});
+    if(has('stage_complete'))server.registerTool('stage_complete',{
+      title:'단계 결과 정리 및 다음 단계 진행',description:'[부장 전용] 모든 팀장 업무가 완료된 뒤 부장이 결과와 검증 근거를 기록한다. 전체 목표가 남았으면 complete=false와 nextStage(제목·작업안)를 정해 다음 회의로 자동 진행한다. 전체 완료 기준을 충족했을 때만 complete=true로 종료한다. 사용자에게 단계 진행 승인을 요구하지 마라. 같은 단계의 같은 결과는 중복 기록하지 않는다.',
+      inputSchema:{workflowId:z.string().min(1),stage:z.number().int().min(1),summary:z.string().min(1).max(30000),verification:z.array(z.string().min(1).max(30000)).min(1).max(20),complete:z.boolean(),nextStage:z.object({title:z.string().min(1).max(30000),brief:z.string().min(1).max(30000)}).optional()},annotations,
+    },async input=>{const d=gate('stage_complete');if(d)return d;try{return ok(JSON.stringify(this.host.stageComplete!(memberId,input))+'\n단계 결과가 저장됐다. 다음 단계가 있으면 사용자 승인을 기다리지 말고 meeting_open으로 회의를 시작하라. 전체 완료면 사용자에게 최종 결과를 안내하고 턴을 마쳐라.');}catch(e){return fail('stage_complete',errText(e));}});
     if(has('office_status'))server.registerTool('office_status',{
       title:'현재 부서 상태 확인',description:'현재 부서의 실제 멤버 ID·직급·팀·작업 상태와 회의 상태를 조회한다. 오래된 이름이나 세션 폴더로 추측하지 말고 이 목록을 사용하라.',inputSchema:{},annotations:{...annotations,readOnlyHint:true,idempotentHint:true},
     },async()=>{const d=gate('office_status');if(d)return d;try{return ok(JSON.stringify(await this.host.officeStatus!(memberId)));}catch(e){return fail('office_status',errText(e));}});
@@ -471,9 +483,9 @@ export class TeamToolsServer {
       inputSchema:{workflowId:z.string().min(1),round:z.number().int().min(1).max(2),text:z.string().min(1).max(30000)}, annotations,
     }, async input => { const d=gate('meeting_speak'); if(d)return d; try { return ok(JSON.stringify(this.host.meetingSpeak!(memberId,input))+'\n의견 접수됨. 지금 턴을 끝내고 다음 메시지를 기다려라.'); } catch(e){return fail('meeting_speak',errText(e));} });
     if (has('meeting_decide')) server.registerTool('meeting_decide', {
-      title:'회의 계획 확정', description:'[부장 전용] 두 차례 의견이 모인 뒤 회의록과 참석한 직속 팀장별 업무·완료 기준·선행 팀장 ID를 확정한다. 데몬이 계획대로 delegate한다. 중복·순환 계획은 거절된다. 받은 rootTaskId는 최종 보고용이다. 팀장 보고를 기다리고 report로 최종 결과를 보고하라.',
+      title:'회의 계획 확정', description:'[부장 전용] 두 차례 의견이 모인 뒤 회의록과 참석한 직속 팀장별 업무·완료 기준·선행 팀장 ID를 확정한다. 데몬이 계획대로 delegate한다. 중복·순환 계획은 거절된다. 팀장 보고가 모이면 부장이 검증하고 stage_complete로 결과와 다음 단계 또는 전체 완료를 정한다. 사용자 진행 승인을 기다리지 마라.',
       inputSchema:{workflowId:z.string().min(1),minutes:z.string().min(1).max(30000),assignments:z.array(z.object({leadId:z.string().min(1),task:z.string().min(1).max(30000),acceptance:z.array(z.string().min(1)).min(1).max(20),dependsOn:z.array(z.string()).optional()})).min(1).max(12)},annotations,
-    }, async input => { const d=gate('meeting_decide'); if(d)return d; try { return ok(JSON.stringify(this.host.meetingDecide!(memberId,input))+'\n업무 배정됨. 담당 팀장들의 완료 보고를 기다려라.'); } catch(e){return fail('meeting_decide',errText(e));} });
+    }, async input => { const d=gate('meeting_decide'); if(d)return d; try { return ok(JSON.stringify(await this.host.meetingDecide!(memberId,input))+'\n업무 배정됨. 담당 팀장들의 완료 보고를 기다려라.'); } catch(e){return fail('meeting_decide',errText(e));} });
 
     if (has('create_team')) {
       server.registerTool(
@@ -551,7 +563,7 @@ export class TeamToolsServer {
           const denied = gate('delegate');
           if (denied) return denied;
           try {
-            const r = this.host.delegate(memberId, input);
+            const r = await this.host.delegate(memberId, input);
             return ok(delegateResultText(r.taskId, r.name, r.status));
           } catch (err) {
             return fail('delegate', errText(err));
