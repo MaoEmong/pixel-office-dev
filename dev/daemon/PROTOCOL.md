@@ -20,6 +20,10 @@
 `environment.check {memberId?}` → `{checkedAt,nodeVersion,memberName?,engines}`.
 로컬 인증 클라이언트가 사용한다. memberId는 프로젝트 세션 전용 인증을 검사하며,
 생략하면 전역 Claude/Codex 설치·인증을 검사한다. 결과에는 인증 정보·이메일·원시 CLI 출력이 없다.
+Windows Codex 멤버 검사에는 `engines[].execution:{ok,checked,reason?,message}`가 포함된다.
+`connected`는 인증 상태이며 실행 성공 여부와 별개다. 실제 멤버의 CODEX_HOME과 cwd로 고정된 출력 명령을 실행하고,
+시간 초과만 한 번 재검사한다. 권한 오류·세션 폴더 누락·지원하지 않는 점검 명령·기타 실패는 구분해 안내한다.
+계획 확정·MCP 위임·실행 업무 재개·사용자의 새 멤버 지시는 관련 사전 검사를 통과해야 업무를 전달한다.
 관련 사용자 작업은 미설치·로그아웃이 확인되면 -32003과 복구 안내를 반환하고 실행하지 않는다.
 확인 불가는 로그아웃으로 단정하지 않는다. 원격 gateway allowlist에는 이 관리 RPC를 추가하지 않는다.
 
@@ -338,6 +342,12 @@ v1a 에서 데몬이 만드는 이벤트(어댑터 표는 worklog T04 참고):
 - `delegate`/`reply`/`hire`/`dismiss` 의 대상은 **살아 있는 직속 부하**(`members.parent_id` 가 나인 멤버)여야 한다. 팀이 아니라 트리 간선이 기준이다 — 부장은 팀장에게만, 팀장은 자기 팀원에게만.
 - `report`/`ask_parent` 는 **직속 상사**에게 간다. 부장의 `report` 는 사용자 책상으로, 부장의 `ask_user` 만 사용자에게 간다.
 
+내부 질문은 열린 `ask_parent` 기록을 기준으로 상사 세션에 전달한다. 재시작 뒤에도 미응답 질문을
+다시 연결하며, 답변은 `payload.answerDelivery='pending'`으로 저장한 뒤 전달한다.
+CLI가 답변 입력을 받은 것이 확인되면 `delivered`로 바꾸고 이후 재시작에서 반복하지 않는다.
+기존의 오래된 answered 행은 새로 재전달하지 않는다. 상사가 답변 도구를 누락하면 최대 세 차례
+요청한 뒤 부장에게 내부 조정을 요청하며 사용자 질문으로 바꾸거나 답을 임의로 만들지 않는다.
+
 **직급은 모델 말이 아니라 store 가 기준이다(D-06). 요청마다 `members.rank` 를 다시 읽는다.** 두 겹이다:
 
 1. **도구 목록이 직급별로 다르다.** 팀원의 `tools/list` 에는 `report`·`ask_parent` 만 나온다(없는 도구는 등록되지 않으므로 이름으로 불러도 `-32602 Tool hire not found`).
@@ -627,6 +637,18 @@ Workflow 구조와 단계는 `../../docs/design/회의-작업흐름.md` 참조.
 meeting_decide{workflowId,minutes,assignments:[{leadId,task,acceptance:string[],dependsOn?:string[]}]};
 팀장·팀원 meeting_speak{workflowId,round:1|2,text}.
 
+부장 전용 자동 단계 도구:
+- `workflow_start{workflowId}`: 목표가 정해진 현재 작업을 부장이 직접 시작한다. 같은 작업을 다시 시작해도 root task는 중복 생성하지 않는다.
+- `stage_complete{workflowId,stage,summary,verification:string[],complete:boolean,nextStage?:{title,brief}}`:
+  모든 담당 업무가 done일 때만 기록한다. 검증 근거는 1~20개가 필요하다.
+  `complete=false`면 nextStage가 필수이며 다음 회의로 이동한다. `complete=true`면 nextStage 없이 전체 완료하고 열린 root task를 보고 처리한다.
+  같은 단계의 같은 내용은 중복 기록·배정하지 않으며, 다른 내용으로 재기록하면 거절한다.
+
+Workflow에는 `stage`, `stageTitle`, `stageBrief`, `stages:StageRecord[]`가 추가된다.
+`brief`는 원래 목표이며 다음 단계로 넘어가도 유지한다. StageRecord에는 번호·제목·완료 요약·검증 근거·판단·다음 작업·시각·당시 담당자 이름과 보고·회의 기록을 보관한다.
+이 필드는 기존 Workflow JSON과 함께 저장·내보내기·`workflow.changed` 알림에 포함된다.
+기존 `review` 작업도 부장 복구 후 검증 요청을 다시 받아 사용자 완료 버튼 없이 다음 단계를 판단할 수 있다.
+
 부장은 `office_status{}`로 현재 부서의 멤버 ID·직급·팀·상태와 작업 흐름을 조회한다. 인증 토큰·개인 실행 설정은 반환하지 않는다.
 `meeting_resume{workflowId,replacements?:[{previousMemberId,memberId}]}`는 중단된 회의의 참석자를 복구한다.
 삭제된 참석자는 같은 부서·역할의 명확한 대체자에 자동 연결하며, 여러 후보는 부장이 조회 결과를 보고 명시적으로 연결한다.
@@ -680,7 +702,9 @@ PC 또는 기기에서 해제하면 WS를 닫고 다음 서명을 거부한다.
 - task.retrySubmit{taskId}: 기존 세션의 실패한 입력에 Enter만 다시 전송한다. 입력 변경·확인 창·살아 있지 않은 세션은 거부한다.
   로컬과 승인된 원격 기기에서 사용할 수 있다.
 - workflow.resume: 회의 재개 외에 executing/blocked 계획의 미배정 업무를 재시도한다.
-  기존 taskId가 있는 업무는 중복 생성하지 않는다. 실패 보고된 업무는 취소/보완이 필요하다.
+  진행 중이거나 완료된 업무는 중복 생성하지 않는다. `reported/blocked`가 확인된 실패 업무는
+  기존 보고 행을 보존한 채 새 taskId로 재개하며 기존 회의·완료 기준·다른 업무 상태를 유지한다.
+  취소된 업무와 확인되지 않은 중단 보고는 자동 재개하지 않는다.
 - 로컬 변경 RPC의 선택 requestId 보호: department.create, team.create, member.hire/instruct/rehire/restart,
   workflow.resume/cancel/complete, approval.respond, question.respond, task.retrySubmit.
   동일 ID/내용은 저장된 결과를 반환한다. ID가 같고 내용이 다르면 -32602.
